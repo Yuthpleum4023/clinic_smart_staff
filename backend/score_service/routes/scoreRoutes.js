@@ -1,0 +1,24 @@
+const express = require("express");
+const router = express.Router();
+
+const auth = require("../middleware/authMiddleware");
+const ctrl = require("../controllers/scoreController");
+
+// GET /staff/:staffId/score
+router.get("/staff/:staffId/score", auth, ctrl.getStaffScore);
+
+// GET /trustscore?staffId=xxx
+router.get("/trustscore", auth, (req, res, next) => {
+  const staffId = (req.query.staffId || "").trim();
+  if (!staffId) return res.status(400).json({ message: "staffId required" });
+  req.params.staffId = staffId;
+  return ctrl.getStaffScore(req, res, next);
+});
+
+// GET /trustscore/:staffId
+router.get("/trustscore/:staffId", auth, ctrl.getStaffScore);
+
+// POST /events/attendance
+router.post("/events/attendance", auth, ctrl.postAttendanceEvent);
+
+module.exports = router;

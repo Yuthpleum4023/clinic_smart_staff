@@ -1,0 +1,69 @@
+name: clinic_payroll
+description: "A Flutter project for clinic payroll management."
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.10.4
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # ไอคอนพื้นฐานสำหรับ iOS
+  cupertino_icons: ^1.0.8
+
+  # -------------------------------
+  # Network / API (เรียก backend score_service)
+  # -------------------------------
+  http: ^1.2.2
+
+  # -------------------------------
+  # Storage (เก็บข้อมูลพนักงาน / OT / Settings)
+  # -------------------------------
+  shared_preferences: ^2.2.2
+
+  # -------------------------------
+  # PDF & Printing (สลิปเงินเดือน)
+  # -------------------------------
+  pdf: ^3.10.7
+  printing: ^5.11.1
+  path_provider: ^2.1.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  flutter_lints: ^2.0.0
+
+  # ✅ ทำไอคอนให้ Android/iOS อัตโนมัติ
+  flutter_launcher_icons: ^0.13.1
+
+flutter:
+  uses-material-design: true
+
+  # -------------------------------
+  # Assets
+  # -------------------------------
+  assets:
+    # (ถ้ายังใช้โลโก้ใน UI)
+    - assets/logo.png
+
+    # ✅ ไอคอนใหม่ (โล่ม่วง 1024x1024)
+    - assets/icons/app_icon_1024.png
+
+  # -------------------------------
+  # (Optional) ฟอนต์ภาษาไทย สำหรับ PDF
+  # -------------------------------
+  # fonts:
+  #   - family: THSarabunNew
+  #     fonts:
+  #       - asset: assets/fonts/THSarabunNew.ttf
+
+# ✅ ตั้งค่า launcher icons (ใช้ไอคอนใหม่)
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: assets/icons/app_icon_1024.png
+  remove_alpha_ios: true

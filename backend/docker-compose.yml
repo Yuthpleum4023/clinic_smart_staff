@@ -1,0 +1,70 @@
+version: "3.9"
+
+services:
+  # =========================
+  # Auth User Service
+  # =========================
+  auth_user_service:
+    build:
+      context: ./auth_user_service
+      dockerfile: Dockerfile
+    container_name: auth_user_service
+    env_file:
+      - ./auth_user_service/.env
+    ports:
+      - "3101:3101"
+    volumes:
+      - ./auth_user_service:/app
+      - /app/node_modules
+    restart: unless-stopped
+
+  # =========================
+  # Payroll Service
+  # =========================
+  payroll_service:
+    build:
+      context: ./payroll_service
+      dockerfile: Dockerfile
+    container_name: payroll_service
+    env_file:
+      - ./payroll_service/.env
+    ports:
+      - "3102:3102"
+    volumes:
+      - ./payroll_service:/app
+      - /app/node_modules
+    restart: unless-stopped
+
+  # =========================
+  # Score Service
+  # =========================
+  score_service:
+    build:
+      context: ./score_service
+      dockerfile: Dockerfile
+    container_name: score_service
+    env_file:
+      - ./score_service/.env
+    ports:
+      - "3103:3103"
+    volumes:
+      - ./score_service:/app
+      - /app/node_modules
+    restart: unless-stopped
+
+  # =========================
+  # Staff Service
+  # =========================
+  staff_service:
+    build:
+      context: ./staff_service
+      dockerfile: Dockerfile
+    container_name: staff_service
+    env_file:
+      - ./staff_service/.env
+    ports:
+      - "3104:3104"
+    volumes:
+      - ./staff_service:/app
+      - /app/node_modules
+    restart: unless-stopped
