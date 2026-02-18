@@ -21,7 +21,9 @@ app.use((req, res, next) => {
   console.log(`   Authorization: ${auth ? "YES" : "NO"}`);
 
   res.on("finish", () => {
-    console.log(`⬅️  ${req.method} ${req.originalUrl} -> ${res.statusCode} (${Date.now() - start}ms)`);
+    console.log(
+      `⬅️  ${req.method} ${req.originalUrl} -> ${res.statusCode} (${Date.now() - start}ms)`
+    );
     console.log("==========================================");
   });
 
@@ -42,6 +44,9 @@ app.use("/shift-needs", require("./routes/shiftNeedRoutes"));
 
 // ✅ NEW: Payroll Close (ปิดงวดจริง + YTD)
 app.use("/payroll-close", require("./routes/payrollCloseRoutes"));
+
+// ✅ NEW: Clinics (location for navigation)
+app.use("/clinics", require("./routes/clinicRoutes"));
 
 // -------------------- Start --------------------
 const PORT = Number(process.env.PORT || 3102);

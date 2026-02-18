@@ -1,4 +1,4 @@
-// server.js (CommonJS) - FINAL / DEBUG+SAFE (AUTH + INVITES + TAX PROFILES + INTERNAL TAX)
+// server.js (CommonJS) - FINAL / DEBUG+SAFE (AUTH + INVITES + TAX PROFILES + INTERNAL TAX + STAFF SEARCH)
 
 const express = require("express");
 const mongoose = require("mongoose");
@@ -51,7 +51,8 @@ app.use((req, res, next) => {
 // Safety Timeout (กัน request หมุนค้าง)
 // ===================================================
 app.use((req, res, next) => {
-  res.setTimeout(10000, () => {
+  // ✅ 15s เหมาะกับ production มากกว่า 10s (Atlas/Cold start)
+  res.setTimeout(15000, () => {
     if (!res.headersSent) {
       console.log(
         `⏱️ [${req._rid}] TIMEOUT ${req.method} ${req.originalUrl}`
@@ -65,8 +66,15 @@ app.use((req, res, next) => {
 // ===================================================
 // Health Check
 // ===================================================
+const BOOT_AT = Date.now();
 app.get("/health", (req, res) => {
-  res.json({ ok: true, service: "auth_user_service" });
+  const uptimeSec = Math.floor((Date.now() - BOOT_AT) / 1000);
+  res.json({
+    ok: true,
+    service: "auth_user_service",
+    uptimeSec,
+    env: process.env.NODE_ENV || "dev",
+  });
 });
 
 // ===================================================
@@ -79,6 +87,9 @@ const taxProfileRoutes = require("./routes/taxProfileRoutes");
 // ✅ NEW: INTERNAL TAX ROUTES (🔥 ตัวฆ่า 500 ตอนปิดงวด)
 const payrollTaxRoutes = require("./routes/payrollTaxRoutes");
 
+// ✅ NEW: STAFF SEARCH ROUTES (ทาง B)
+const staffRoutes = require("./routes/staffRoutes");
+
 // AUTH (no prefix)
 app.use("/", authRoutes);
 
@@ -90,6 +101,9 @@ app.use("/users", taxProfileRoutes);
 
 // ✅ INTERNAL TAX (สำคัญมาก)
 app.use("/", payrollTaxRoutes);
+
+// ✅ Staff Search (สำคัญสำหรับ TrustScore UX)
+app.use("/staff", staffRoutes);
 
 // ===================================================
 // Global Error Handler (กัน throw แล้วค้าง)
@@ -111,8 +125,16 @@ if (!MONGO_URI) {
   process.exit(1);
 }
 
+// ✅ ลด warning/พฤติกรรม query แปลก ๆ และทำให้ predictable
+mongoose.set("strictQuery", true);
+
 mongoose
-  .connect(MONGO_URI)
+  .connect(MONGO_URI, {
+    // ✅ กัน DNS/Handshake ช้าใน production
+    serverSelectionTimeoutMS: 10000,
+    connectTimeoutMS: 10000,
+    socketTimeoutMS: 20000,
+  })
   .then(() => {
     console.log("✅ MongoDB connected (auth_user_service)");
   })
@@ -137,8 +159,9 @@ process.on("uncaughtException", (err) => {
 // ===================================================
 const server = http.createServer(app);
 
-server.headersTimeout = 15000;
-server.requestTimeout = 15000;
+// ✅ ให้สัมพันธ์กับ res.setTimeout(15s) และกัน connection ค้าง
+server.headersTimeout = 20000;
+server.requestTimeout = 20000;
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 auth_user_service listening on port ${PORT}`);
