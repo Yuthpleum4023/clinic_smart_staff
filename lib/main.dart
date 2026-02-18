@@ -44,14 +44,77 @@ class AppRoutes {
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
 
+  // ✅ สีม่วงหลักของแอป (ปรับ hex ได้ตามที่ท่านต้องการ)
+  static const Color _purplePrimary = Color(0xFF6A1B9A);
+
+  // ✅ สีพื้นหลังม่วงอ่อน (ให้ vibe เหมือนในภาพ)
+  static const Color _bgLavender = Color(0xFFF6F1FF);
+
   @override
   Widget build(BuildContext context) {
+    final colorScheme = ColorScheme.fromSeed(
+      seedColor: _purplePrimary,
+      brightness: Brightness.light,
+    );
+
     return MaterialApp(
       title: 'Clinic Payroll',
       debugShowCheckedModeBanner: false,
+
+      // ✅ ล็อค Light Mode กันสีเพี้ยนตอน deploy (ไม่ตาม Dark Mode เครื่อง)
+      themeMode: ThemeMode.light,
+
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
         useMaterial3: true,
+        colorScheme: colorScheme,
+
+        // ✅ พื้นหลังโดยรวม
+        scaffoldBackgroundColor: _bgLavender,
+
+        // ✅ AppBar ให้ดูสะอาด + โทนเข้ากับม่วง
+        appBarTheme: AppBarTheme(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          centerTitle: false,
+          foregroundColor: Colors.black,
+          surfaceTintColor: Colors.transparent,
+          titleTextStyle: const TextStyle(
+            fontSize: 20,
+            fontWeight: FontWeight.w700,
+            color: Colors.black,
+          ),
+        ),
+
+        // ✅ ปุ่มหลักให้ม่วงชัด (กันบางเครื่องปรับสีเอง)
+        elevatedButtonTheme: ElevatedButtonThemeData(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: _purplePrimary,
+            foregroundColor: Colors.white,
+            textStyle: const TextStyle(fontWeight: FontWeight.w700),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          ),
+        ),
+
+        // ✅ TextField ให้โทนม่วง (optional แต่ช่วยให้ “ทั้งระบบ” ไปทางเดียวกัน)
+        inputDecorationTheme: InputDecorationTheme(
+          filled: true,
+          fillColor: Colors.white,
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide(color: colorScheme.outlineVariant),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide(color: colorScheme.outlineVariant),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide(color: _purplePrimary, width: 2),
+          ),
+        ),
       ),
 
       // ✅ เริ่มที่ AuthGate เสมอ
