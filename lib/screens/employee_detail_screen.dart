@@ -16,11 +16,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'package:clinic_payroll/models/employee_model.dart';
-import 'package:clinic_payroll/services/storage_service.dart';
+import 'package:clinic_smart_staff/models/employee_model.dart';
+import 'package:clinic_smart_staff/services/storage_service.dart';
 
-import 'package:clinic_payroll/screens/payroll/payroll_after_tax_preview_screen.dart';
-import 'package:clinic_payroll/screens/clinic/clinic_home_screen.dart';
+import 'package:clinic_smart_staff/screens/payroll/payroll_after_tax_preview_screen.dart';
+import 'package:clinic_smart_staff/screens/clinic/clinic_home_screen.dart';
 
 /// ✅ Part-time work hours entry (ตามแนวทางใหม่ของคุณ: {date, hours})
 class WorkHourEntry {

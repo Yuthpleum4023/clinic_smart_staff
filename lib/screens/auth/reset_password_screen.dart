@@ -13,11 +13,11 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
-import 'package:clinic_payroll/api/api_config.dart';
-import 'package:clinic_payroll/screens/auth/login_screen.dart';
+import 'package:clinic_smart_staff/api/api_config.dart';
+import 'package:clinic_smart_staff/screens/auth/login_screen.dart';
 
 // ✅ NEW: เพื่อกลับหน้า HomeScreen ได้ทันที
-import 'package:clinic_payroll/screens/home_screen.dart';
+import 'package:clinic_smart_staff/screens/home_screen.dart';
 
 class ResetPasswordScreen extends StatefulWidget {
   const ResetPasswordScreen({super.key});

@@ -3,8 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'package:clinic_payroll/models/employee_model.dart';
-import 'package:clinic_payroll/services/storage_service.dart';
+import 'package:clinic_smart_staff/models/employee_model.dart';
+import 'package:clinic_smart_staff/services/storage_service.dart';
 
 class AddEmployeeScreen extends StatefulWidget {
   const AddEmployeeScreen({super.key});

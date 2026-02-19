@@ -14,10 +14,12 @@ class AddHelperAvailabilityScreen extends StatefulWidget {
   });
 
   @override
-  State<AddHelperAvailabilityScreen> createState() => _AddHelperAvailabilityScreenState();
+  State<AddHelperAvailabilityScreen> createState() =>
+      _AddHelperAvailabilityScreenState();
 }
 
-class _AddHelperAvailabilityScreenState extends State<AddHelperAvailabilityScreen> {
+class _AddHelperAvailabilityScreenState
+    extends State<AddHelperAvailabilityScreen> {
   DateTime? _date;
   TimeOfDay? _start;
   TimeOfDay? _end;
@@ -39,7 +41,9 @@ class _AddHelperAvailabilityScreenState extends State<AddHelperAvailabilityScree
   }
 
   void _snack(String msg) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(msg)));
   }
 
   Future<void> _pickDate() async {
@@ -51,7 +55,10 @@ class _AddHelperAvailabilityScreenState extends State<AddHelperAvailabilityScree
       lastDate: DateTime(now.year + 2),
       helpText: 'เลือกวันที่ว่าง',
     );
-    if (picked != null) setState(() => _date = DateTime(picked.year, picked.month, picked.day));
+    if (picked != null) {
+      setState(() =>
+          _date = DateTime(picked.year, picked.month, picked.day));
+    }
   }
 
   Future<void> _pickStart() async {
@@ -77,6 +84,7 @@ class _AddHelperAvailabilityScreenState extends State<AddHelperAvailabilityScree
       _snack('กรุณาเลือก วันที่/เวลาเริ่ม/เวลาสิ้นสุด ให้ครบ');
       return;
     }
+
     final role = _roleCtrl.text.trim();
     if (role.isEmpty) {
       _snack('กรุณากรอกบทบาท/ตำแหน่ง');
@@ -95,13 +103,13 @@ class _AddHelperAvailabilityScreenState extends State<AddHelperAvailabilityScree
       note: _noteCtrl.text.trim(),
     );
 
-    // validate hours
     if (item.hours <= 0 || item.hours > 24) {
       _snack('ช่วงเวลาที่เลือกผิดปกติ (${item.hours.toStringAsFixed(2)} ชม.)');
       return;
     }
 
     await HelperAvailabilityService.add(item);
+
     if (!mounted) return;
     Navigator.pop(context, true);
   }
@@ -115,16 +123,20 @@ class _AddHelperAvailabilityScreenState extends State<AddHelperAvailabilityScree
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('ลงเวลาว่าง (ผู้ช่วย)'),
-        backgroundColor: Colors.blue,
-        foregroundColor: Colors.white,
+        // ✅ ไม่กำหนดสี → ใช้ Theme ม่วง
       ),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          Text('ผู้ช่วย: ${widget.helperName}', style: const TextStyle(fontWeight: FontWeight.bold)),
+          Text(
+            'ผู้ช่วย: ${widget.helperName}',
+            style: const TextStyle(fontWeight: FontWeight.bold),
+          ),
           const SizedBox(height: 12),
 
           TextField(
@@ -141,27 +153,40 @@ class _AddHelperAvailabilityScreenState extends State<AddHelperAvailabilityScree
               Expanded(
                 child: OutlinedButton(
                   onPressed: _pickDate,
-                  child: Text(_date == null ? 'เลือกวันที่' : 'วันที่: ${_fmtDate(_date!)}'),
+                  child: Text(
+                    _date == null
+                        ? 'เลือกวันที่'
+                        : 'วันที่: ${_fmtDate(_date!)}',
+                  ),
                 ),
               ),
               const SizedBox(width: 10),
               Expanded(
                 child: OutlinedButton(
                   onPressed: _pickStart,
-                  child: Text(_start == null ? 'เวลาเริ่ม' : 'เริ่ม: ${_start!.format(context)}'),
+                  child: Text(
+                    _start == null
+                        ? 'เวลาเริ่ม'
+                        : 'เริ่ม: ${_start!.format(context)}',
+                  ),
                 ),
               ),
               const SizedBox(width: 10),
               Expanded(
                 child: OutlinedButton(
                   onPressed: _pickEnd,
-                  child: Text(_end == null ? 'เวลาจบ' : 'จบ: ${_end!.format(context)}'),
+                  child: Text(
+                    _end == null
+                        ? 'เวลาจบ'
+                        : 'จบ: ${_end!.format(context)}',
+                  ),
                 ),
               ),
             ],
           ),
 
           const SizedBox(height: 10),
+
           TextField(
             controller: _noteCtrl,
             maxLines: 3,
@@ -172,6 +197,7 @@ class _AddHelperAvailabilityScreenState extends State<AddHelperAvailabilityScree
           ),
 
           const SizedBox(height: 16),
+
           SizedBox(
             height: 48,
             child: ElevatedButton.icon(

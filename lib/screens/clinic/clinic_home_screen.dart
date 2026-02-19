@@ -1,34 +1,32 @@
 // lib/screens/clinic_home_screen.dart
 //
-// ✅ FIXED (MY CLINIC DASHBOARD)
+// ✅ FIXED (MY CLINIC DASHBOARD) + NO BLUE (USE THEME)
 // - ✅ หน้านี้คือ "My Clinic" (ไม่ใช่ Home ซ้อน Home)
 // - ✅ อ่าน clinicId/userId จาก prefs keys ใหม่: app_clinic_id / app_user_id
 // - ✅ TrustScore ต้องผ่าน PIN คลินิกก่อน (ตาม requirement)
 // - ✅ Payroll(Local) เปิดไปหน้า LocalPayrollScreen (ไม่ย้อนกลับไป Home รวม)
-// - ✅ FIX FLOW: Clinic Admin (Settings) -> ไปหน้า ClinicAdminSettingsScreen ได้จริง (ไม่ใช่ TODO)
+// - ✅ FIX FLOW: Clinic Admin (Settings) -> ไปหน้า ClinicAdminSettingsScreen ได้จริง
+// - ✅ FIX UI: ไม่ hardcode สีฟ้า -> ใช้ Theme สีม่วงทั้งระบบ
 //
-// NOTE:
-// - ถ้าไฟล์นี้อยู่ใน path อื่น เช่น lib/screens/clinic/clinic_home_screen.dart
-//   ให้ย้ายไฟล์/แก้ import ให้ตรงกันทั้งโปรเจกต์
 
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'package:clinic_payroll/screens/auth/auth_gate_screen.dart';
+import 'package:clinic_smart_staff/screens/auth/auth_gate_screen.dart';
 
 // ✅ existing screens
-import 'package:clinic_payroll/screens/clinic_shift_need_screen.dart';
-import 'package:clinic_payroll/screens/clinic_invites_screen.dart';
-import 'package:clinic_payroll/screens/trustscore_lookup_screen.dart';
+import 'package:clinic_smart_staff/screens/clinic_shift_need_screen.dart';
+import 'package:clinic_smart_staff/screens/clinic_invites_screen.dart';
+import 'package:clinic_smart_staff/screens/trustscore_lookup_screen.dart';
 
 // ✅ ใช้ AuthService verify PIN
-import 'package:clinic_payroll/services/auth_service.dart';
+import 'package:clinic_smart_staff/services/auth_service.dart';
 
-// ✅ Local payroll screen (ผมย้าย payroll list ไปอยู่ใน My แล้ว)
-import 'package:clinic_payroll/screens/home_screen.dart' show LocalPayrollScreen;
+// ✅ Local payroll screen
+import 'package:clinic_smart_staff/screens/home_screen.dart' show LocalPayrollScreen;
 
-// ✅ NEW: Clinic Admin Settings (ของคุณมีอยู่แล้ว)
-import 'package:clinic_payroll/screens/clinic/clinic_admin_setting_service.dart';
+// ✅ Clinic Admin Settings (ของคุณมีอยู่แล้ว)
+import 'package:clinic_smart_staff/screens/clinic/clinic_admin_setting_service.dart';
 
 class ClinicHomeScreen extends StatefulWidget {
   /// optional: ถ้าหน้าอื่นส่งมา
@@ -230,7 +228,7 @@ class _ClinicHomeScreenState extends State<ClinicHomeScreen> {
     );
   }
 
-  // ✅ FIXED: Clinic Admin -> เปิดหน้า Settings จริง
+  // ✅ Clinic Admin -> เปิดหน้า Settings จริง
   Future<void> _openClinicAdmin() async {
     await Navigator.push(
       context,
@@ -250,8 +248,8 @@ class _ClinicHomeScreenState extends State<ClinicHomeScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('My Clinic'),
-        backgroundColor: Colors.blue,
-        foregroundColor: Colors.white,
+        // ✅ ไม่ hardcode สีฟ้า -> ใช้ Theme (ม่วง) ของแอป
+        // backgroundColor / foregroundColor ไม่ต้องใส่
         actions: [
           IconButton(
             tooltip: 'รีเฟรช',
@@ -296,7 +294,8 @@ class _ClinicHomeScreenState extends State<ClinicHomeScreen> {
           // ------------------------------
           // ✅ ภายในคลินิก
           // ------------------------------
-          const Text('ภายในคลินิก', style: TextStyle(fontWeight: FontWeight.w900)),
+          const Text('ภายในคลินิก',
+              style: TextStyle(fontWeight: FontWeight.w900)),
           const SizedBox(height: 8),
 
           Card(
@@ -314,7 +313,8 @@ class _ClinicHomeScreenState extends State<ClinicHomeScreen> {
           // ------------------------------
           // ✅ ตลาดแรงงาน / ผู้ช่วย
           // ------------------------------
-          const Text('ตลาดแรงงาน / ผู้ช่วย', style: TextStyle(fontWeight: FontWeight.w900)),
+          const Text('ตลาดแรงงาน / ผู้ช่วย',
+              style: TextStyle(fontWeight: FontWeight.w900)),
           const SizedBox(height: 8),
 
           Card(
@@ -354,7 +354,8 @@ class _ClinicHomeScreenState extends State<ClinicHomeScreen> {
           // ------------------------------
           // ✅ Clinic Admin (Settings)
           // ------------------------------
-          const Text('ตั้งค่าคลินิก', style: TextStyle(fontWeight: FontWeight.w900)),
+          const Text('ตั้งค่าคลินิก',
+              style: TextStyle(fontWeight: FontWeight.w900)),
           const SizedBox(height: 8),
 
           Card(

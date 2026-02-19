@@ -5,7 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'package:clinic_payroll/api/api_config.dart';
+import 'package:clinic_smart_staff/api/api_config.dart';
 
 class HelperOpenNeedsScreen extends StatefulWidget {
   const HelperOpenNeedsScreen({super.key});
@@ -33,7 +33,12 @@ class _HelperOpenNeedsScreenState extends State<HelperOpenNeedsScreen> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
-  Uri _u(String path) => Uri.parse('${ApiConfig.payrollBaseUrl}$path');
+  Uri _u(String path) {
+    // ✅ sanitize baseUrl กัน slash ซ้ำ
+    final base = ApiConfig.payrollBaseUrl.trim().replaceAll(RegExp(r'\/+$'), '');
+    final p = path.startsWith('/') ? path : '/$path';
+    return Uri.parse('$base$p');
+  }
 
   Future<void> _load() async {
     setState(() => _loading = true);
@@ -114,10 +119,13 @@ class _HelperOpenNeedsScreenState extends State<HelperOpenNeedsScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('งานว่างจากคลินิก (ShiftNeeds)'),
-        backgroundColor: Colors.blue,
-        foregroundColor: Colors.white,
+        // ✅ ไม่ hardcode Colors.blue → ใช้ Theme ม่วงเหมือนหน้าอื่น
         actions: [
-          IconButton(onPressed: _load, icon: const Icon(Icons.refresh)),
+          IconButton(
+            tooltip: 'รีเฟรช',
+            onPressed: _load,
+            icon: const Icon(Icons.refresh),
+          ),
         ],
       ),
       body: _loading
@@ -170,7 +178,8 @@ class _HelperOpenNeedsScreenState extends State<HelperOpenNeedsScreen> {
                             const SizedBox(height: 10),
                             SizedBox(
                               width: double.infinity,
-                              child: ElevatedButton.icon(
+                              // ✅ ปุ่มหลักให้ม่วงชัด (Theme)
+                              child: FilledButton.icon(
                                 onPressed: (applied || id.isEmpty)
                                     ? null
                                     : () => _apply(id),

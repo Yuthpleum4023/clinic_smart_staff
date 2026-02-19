@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'package:clinic_payroll/api/api_config.dart';
+import 'package:clinic_smart_staff/api/api_config.dart';
 
 class TrustScoreLookupScreen extends StatefulWidget {
   const TrustScoreLookupScreen({super.key});

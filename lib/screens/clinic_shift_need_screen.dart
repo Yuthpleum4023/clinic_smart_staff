@@ -6,6 +6,7 @@
 // - ✅ ไม่ตัด function ใด ๆ ออก (คงครบ) + เพิ่ม resolver/cache ให้เสถียร
 // - ✅ FIX BASE URL: ใช้ ApiConfig.payrollBaseUrl ตรง ๆ (อย่าตัด /payroll ออกเอง)
 // - ✅ show real API on UI เหมือนเดิม
+// - ✅ FIX UI: ไม่ hardcode สีฟ้า -> ใช้ Theme สีม่วงทั้งระบบ
 //
 
 import 'dart:convert';
@@ -14,15 +15,12 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'package:clinic_payroll/api/api_config.dart';
+import 'package:clinic_smart_staff/api/api_config.dart';
 
 /// ✅ endpoint สำหรับประกาศงานว่าง (ShiftNeed)
 const String kCreateNeedPath = '/shift-needs';
 
 class ClinicShiftNeedScreen extends StatefulWidget {
-  /// ✅ รองรับของเดิม
-  /// - ถ้าส่งมาจะใช้ก่อน
-  /// - ถ้าไม่ส่ง ระบบจะ resolve จาก prefs อัตโนมัติ
   final String? clinicId;
 
   const ClinicShiftNeedScreen({
@@ -54,7 +52,7 @@ class _ClinicShiftNeedScreenState extends State<ClinicShiftNeedScreen> {
   // ✅ show real API on UI
   String _apiBase = '';
 
-  // ✅ clinicId resolved (ไม่บังคับให้ user จำ)
+  // ✅ clinicId resolved
   String _clinicId = '';
   bool _ctxLoaded = false;
 
@@ -66,11 +64,8 @@ class _ClinicShiftNeedScreenState extends State<ClinicShiftNeedScreen> {
     _recalcExpectedHours();
 
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      // โหลด base url
       final base = await _NeedApi.getBaseUrl();
       if (mounted) setState(() => _apiBase = base);
-
-      // resolve clinicId
       await _resolveClinicId();
     });
   }
@@ -126,16 +121,10 @@ class _ClinicShiftNeedScreenState extends State<ClinicShiftNeedScreen> {
     return true;
   }
 
-  // ============================================================
-  // ✅ AppContext Pattern: resolve clinicId อัตโนมัติ
-  // - priority: widget.clinicId -> prefs(app_clinic_id) -> prefs(legacy keys)
-  // ============================================================
   Future<String?> _getClinicIdFromPrefs() async {
     final prefs = await SharedPreferences.getInstance();
     for (final k in [
-      // ✅ pattern ใหม่ทั้งแอป
       'app_clinic_id',
-      // ✅ legacy เผื่อของเดิม
       'clinicId',
       'currentClinicId',
       'userClinicId',
@@ -151,11 +140,7 @@ class _ClinicShiftNeedScreenState extends State<ClinicShiftNeedScreen> {
 
   Future<void> _cacheClinicId(String clinicId) async {
     final prefs = await SharedPreferences.getInstance();
-
-    // ✅ pattern ใหม่
     await prefs.setString('app_clinic_id', clinicId);
-
-    // ✅ legacy keys (เผื่อหน้าบางหน้าที่คุณยังไม่ refactor)
     await prefs.setString('clinicId', clinicId);
     await prefs.setString('currentClinicId', clinicId);
     await prefs.setString('myClinicId', clinicId);
@@ -164,7 +149,6 @@ class _ClinicShiftNeedScreenState extends State<ClinicShiftNeedScreen> {
   Future<void> _resolveClinicId() async {
     if (_ctxLoaded) return;
 
-    // 1) widget
     final fromWidget = (widget.clinicId ?? '').trim();
     if (fromWidget.isNotEmpty) {
       await _cacheClinicId(fromWidget);
@@ -176,7 +160,6 @@ class _ClinicShiftNeedScreenState extends State<ClinicShiftNeedScreen> {
       return;
     }
 
-    // 2) prefs
     final fromPrefs = await _getClinicIdFromPrefs();
     if (fromPrefs != null && fromPrefs.trim().isNotEmpty) {
       if (!mounted) return;
@@ -187,7 +170,6 @@ class _ClinicShiftNeedScreenState extends State<ClinicShiftNeedScreen> {
       return;
     }
 
-    // 3) ยังไม่เจอ
     if (!mounted) return;
     setState(() {
       _clinicId = '';
@@ -199,7 +181,6 @@ class _ClinicShiftNeedScreenState extends State<ClinicShiftNeedScreen> {
     FocusScope.of(context).unfocus();
     if (!_formKey.currentState!.validate()) return;
 
-    // ✅ ensure clinicId loaded
     if (!_ctxLoaded) {
       await _resolveClinicId();
     }
@@ -253,12 +234,23 @@ class _ClinicShiftNeedScreenState extends State<ClinicShiftNeedScreen> {
   @override
   Widget build(BuildContext context) {
     final clinicId = _clinicId.trim();
+    final api = _apiBase.trim().replaceAll(RegExp(r'\/+$'), '');
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('คลินิก: ต้องการผู้ช่วย'),
-        backgroundColor: Colors.blue,
-        foregroundColor: Colors.white,
+        // ✅ ไม่ hardcode สีฟ้า ให้ Theme คุม
+        actions: [
+          IconButton(
+            tooltip: 'รีเฟรช clinicId',
+            onPressed: () async {
+              await _resolveClinicId();
+              final base = await _NeedApi.getBaseUrl();
+              if (mounted) setState(() => _apiBase = base);
+            },
+            icon: const Icon(Icons.refresh),
+          ),
+        ],
       ),
       body: Padding(
         padding: const EdgeInsets.all(16),
@@ -267,7 +259,7 @@ class _ClinicShiftNeedScreenState extends State<ClinicShiftNeedScreen> {
           child: ListView(
             children: [
               Text(
-                'API: ${_apiBase.isEmpty ? '(loading...)' : '$_apiBase$kCreateNeedPath'}',
+                'API: ${api.isEmpty ? '(loading...)' : '$api$kCreateNeedPath'}',
                 style: TextStyle(color: Colors.grey.shade700),
               ),
               const SizedBox(height: 6),
@@ -380,16 +372,20 @@ class _ClinicShiftNeedScreenState extends State<ClinicShiftNeedScreen> {
               ),
               const SizedBox(height: 14),
 
-              ElevatedButton.icon(
-                onPressed: _loading ? null : _submit,
-                icon: _loading
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.send),
-                label: const Text('ประกาศงานว่าง'),
+              // ✅ ปุ่มหลักให้ม่วงชัดตาม Theme (Material 3)
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  onPressed: _loading ? null : _submit,
+                  icon: _loading
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.send),
+                  label: const Text('ประกาศงานว่าง'),
+                ),
               ),
             ],
           ),
@@ -424,7 +420,6 @@ class _NeedApi {
 
   static Future<String> getBaseUrl() async {
     // ✅ ใช้ ApiConfig.payrollBaseUrl ตรง ๆ
-    // (ห้ามตัด /payroll ออกเอง เพราะ service นี้คือ payroll_service)
     var base = ApiConfig.payrollBaseUrl.trim();
     base = base.replaceAll(RegExp(r'\/+$'), '');
     return base;

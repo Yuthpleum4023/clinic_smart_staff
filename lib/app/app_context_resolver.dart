@@ -1,6 +1,6 @@
 // lib/app/app_context_resolver.dart
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:clinic_payroll/app/app_context.dart';
+import 'package:clinic_smart_staff/app/app_context.dart';
 
 class AppContextResolver {
   static const _kClinicId = 'app_clinic_id';

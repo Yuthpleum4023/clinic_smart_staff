@@ -35,25 +35,18 @@ android {
     }
 
     // =====================================================
-    // ✅ FIX mergeDebugJavaResource (pdf / printing / kotlin)
+    // ✅ FIX mergeDebugJavaResource (NUCLEAR - DEBUG PASS)
+    // - ตัด META-INF ทั้งหมด -> กัน VerifyException (no message)
+    // - pickFirsts "**/*" -> ให้ resource ซ้ำ “เลือกอันแรก” ทั้งหมด (กันพังเงียบ)
     // =====================================================
     packaging {
         resources {
-            excludes += setOf(
-                "META-INF/DEPENDENCIES",
-                "META-INF/LICENSE",
-                "META-INF/LICENSE.txt",
-                "META-INF/LICENSE.md",
-                "META-INF/NOTICE",
-                "META-INF/NOTICE.txt",
-                "META-INF/NOTICE.md",
-                "META-INF/AL2.0",
-                "META-INF/LGPL2.1",
-                "META-INF/*.kotlin_module",
-                "META-INF/*.version",
-                "META-INF/INDEX.LIST",
-                "META-INF/io.netty.versions.properties"
-            )
+            // ⭐ KILL SWITCH: กัน META-INF ชนกัน
+            excludes += setOf("META-INF/**")
+
+            // ⭐ NUCLEAR: กัน resource ซ้ำทุกชนิด (debug build ให้ผ่านก่อน)
+            // หมายเหตุ: ใช้เพื่อให้รันได้คืนนี้ก่อน พรุ่งนี้ค่อยหรี่ให้แคบลง
+            pickFirsts += setOf("**/*")
         }
     }
 }

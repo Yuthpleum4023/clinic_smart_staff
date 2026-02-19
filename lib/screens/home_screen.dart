@@ -19,28 +19,28 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 
-import 'package:clinic_payroll/api/api_config.dart';
-import 'package:clinic_payroll/services/auth_storage.dart';
-import 'package:clinic_payroll/services/auth_service.dart';
+import 'package:clinic_smart_staff/api/api_config.dart';
+import 'package:clinic_smart_staff/services/auth_storage.dart';
+import 'package:clinic_smart_staff/services/auth_service.dart';
 
-import 'package:clinic_payroll/app/app_context.dart';
-import 'package:clinic_payroll/app/app_context_resolver.dart';
+import 'package:clinic_smart_staff/app/app_context.dart';
+import 'package:clinic_smart_staff/app/app_context_resolver.dart';
 
-import 'package:clinic_payroll/screens/clinic/clinic_home_screen.dart';
-import 'package:clinic_payroll/screens/helper/helper_home_screen.dart';
+import 'package:clinic_smart_staff/screens/clinic/clinic_home_screen.dart';
+import 'package:clinic_smart_staff/screens/helper/helper_home_screen.dart';
 
-import 'package:clinic_payroll/screens/clinic_shift_need_list_screen.dart';
-import 'package:clinic_payroll/screens/helper_open_needs_screen.dart';
+import 'package:clinic_smart_staff/screens/clinic_shift_need_list_screen.dart';
+import 'package:clinic_smart_staff/screens/helper_open_needs_screen.dart';
 
 // ✅ Local payroll screen อยู่ในไฟล์นี้ (เหมือนเดิม)
-import 'package:clinic_payroll/models/employee_model.dart';
-import 'package:clinic_payroll/services/storage_service.dart';
-import 'package:clinic_payroll/screens/employee_detail_screen.dart';
-import 'package:clinic_payroll/screens/add_employee_screen.dart';
-import 'package:clinic_payroll/screens/payslip_preview_screen.dart';
+import 'package:clinic_smart_staff/models/employee_model.dart';
+import 'package:clinic_smart_staff/services/storage_service.dart';
+import 'package:clinic_smart_staff/screens/employee_detail_screen.dart';
+import 'package:clinic_smart_staff/screens/add_employee_screen.dart';
+import 'package:clinic_smart_staff/screens/payslip_preview_screen.dart';
 
 // ✅ route names จาก main.dart
-import 'package:clinic_payroll/main.dart';
+import 'package:clinic_smart_staff/main.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});

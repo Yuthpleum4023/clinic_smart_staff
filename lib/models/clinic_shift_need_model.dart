@@ -6,6 +6,12 @@
 // - role: เช่น "ผู้ช่วยทันตแพทย์"
 // - requiredCount: จำนวนที่ต้องการ
 // - status: open / filled / cancelled
+//
+// ✅ FIX สำคัญ:
+// - backend (Mongo) มักส่ง id เป็น "_id" ไม่ใช่ "id"
+// - บางที่อาจส่ง "needId"
+// => ทำให้ id ว่าง แล้วเปิดรายชื่อผู้สมัครไม่ได้ (needId ว่าง)
+// => เลยต้อง resolve id ให้ robust
 
 class ClinicShiftNeed {
   final String id;
@@ -34,7 +40,32 @@ class ClinicShiftNeed {
     this.note = '',
   });
 
+  // =========================
+  // Helpers
+  // =========================
+  static String _s(dynamic v, {String def = ''}) {
+    final x = (v ?? def).toString().trim();
+    if (x.isEmpty || x == 'null') return def;
+    return x;
+  }
+
+  static int _i(dynamic v, {int def = 0}) {
+    if (v == null) return def;
+    if (v is num) return v.toInt();
+    return int.tryParse(v.toString()) ?? def;
+  }
+
+  /// ✅ id resolver: รองรับ id/_id/needId
+  static String _pickId(Map<String, dynamic> map) {
+    return _s(
+      map['_id'] ?? map['id'] ?? map['needId'],
+      def: '',
+    );
+  }
+
   Map<String, dynamic> toMap() => {
+        // ✅ เวลา create/update มักส่งเป็น field ชื่อ id ได้
+        // (backend จะ map เป็น _id เองตอน save)
         'id': id,
         'clinicId': clinicId,
         'clinicName': clinicName,
@@ -48,17 +79,20 @@ class ClinicShiftNeed {
       };
 
   factory ClinicShiftNeed.fromMap(Map<String, dynamic> map) {
+    final id = _pickId(map);
+
     return ClinicShiftNeed(
-      id: (map['id'] ?? '').toString(),
-      clinicId: (map['clinicId'] ?? '').toString(),
-      clinicName: (map['clinicName'] ?? '').toString(),
-      role: (map['role'] ?? 'ผู้ช่วย').toString(),
-      date: (map['date'] ?? '').toString(),
-      start: (map['start'] ?? '00:00').toString(),
-      end: (map['end'] ?? '00:00').toString(),
-      requiredCount: (map['requiredCount'] as num? ?? 1).toInt(),
-      status: (map['status'] ?? 'open').toString(),
-      note: (map['note'] ?? '').toString(),
+      // ✅ FIX: รับ _id ด้วย
+      id: id,
+      clinicId: _s(map['clinicId']),
+      clinicName: _s(map['clinicName']),
+      role: _s(map['role'], def: 'ผู้ช่วย'),
+      date: _s(map['date']),
+      start: _s(map['start'], def: '00:00'),
+      end: _s(map['end'], def: '00:00'),
+      requiredCount: _i(map['requiredCount'], def: 1),
+      status: _s(map['status'], def: 'open'),
+      note: _s(map['note']),
     );
   }
 

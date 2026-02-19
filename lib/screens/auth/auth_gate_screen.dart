@@ -10,14 +10,14 @@
 
 import 'package:flutter/material.dart';
 
-import 'package:clinic_payroll/api/auth_api.dart';
-import 'package:clinic_payroll/services/auth_storage.dart';
+import 'package:clinic_smart_staff/api/auth_api.dart';
+import 'package:clinic_smart_staff/services/auth_storage.dart';
 
-import 'package:clinic_payroll/screens/auth/login_screen.dart';
-import 'package:clinic_payroll/app/app_context_resolver.dart';
+import 'package:clinic_smart_staff/screens/auth/login_screen.dart';
+import 'package:clinic_smart_staff/app/app_context_resolver.dart';
 
 // ✅ route names จาก main.dart
-import 'package:clinic_payroll/main.dart';
+import 'package:clinic_smart_staff/main.dart';
 
 class AuthGateScreen extends StatefulWidget {
   const AuthGateScreen({super.key});

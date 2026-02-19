@@ -1,5 +1,5 @@
-name: clinic_payroll
-description: "A Flutter project for clinic payroll management."
+name: clinic_smart_staff
+description: "A Flutter project for clinic smart staff management."
 publish_to: 'none'
 
 version: 1.0.0+1
@@ -11,21 +11,41 @@ dependencies:
   flutter:
     sdk: flutter
 
-  # ไอคอนพื้นฐานสำหรับ iOS
   cupertino_icons: ^1.0.8
 
   # -------------------------------
-  # Network / API (เรียก backend score_service)
+  # Network / API
   # -------------------------------
   http: ^1.2.2
 
   # -------------------------------
-  # Storage (เก็บข้อมูลพนักงาน / OT / Settings)
+  # Storage
   # -------------------------------
   shared_preferences: ^2.2.2
 
   # -------------------------------
-  # PDF & Printing (สลิปเงินเดือน)
+  # ✅ Location (GPS)
+  # -------------------------------
+  geolocator: ^10.1.0
+
+  # -------------------------------
+  # ✅ Map
+  # -------------------------------
+  flutter_map: ^6.1.0
+  latlong2: ^0.9.1
+
+  # -------------------------------
+  # ✅ เปิด Google Maps / โทรศัพท์
+  # -------------------------------
+  url_launcher: ^6.3.0
+
+  # -------------------------------
+  # ✅ Share (Invite / LINE / etc)
+  # -------------------------------
+  share_plus: ^10.0.2
+
+  # -------------------------------
+  # PDF & Printing
   # -------------------------------
   pdf: ^3.10.7
   printing: ^5.11.1
@@ -36,32 +56,15 @@ dev_dependencies:
     sdk: flutter
 
   flutter_lints: ^2.0.0
-
-  # ✅ ทำไอคอนให้ Android/iOS อัตโนมัติ
   flutter_launcher_icons: ^0.13.1
 
 flutter:
   uses-material-design: true
 
-  # -------------------------------
-  # Assets
-  # -------------------------------
   assets:
-    # (ถ้ายังใช้โลโก้ใน UI)
     - assets/logo.png
-
-    # ✅ ไอคอนใหม่ (โล่ม่วง 1024x1024)
     - assets/icons/app_icon_1024.png
 
-  # -------------------------------
-  # (Optional) ฟอนต์ภาษาไทย สำหรับ PDF
-  # -------------------------------
-  # fonts:
-  #   - family: THSarabunNew
-  #     fonts:
-  #       - asset: assets/fonts/THSarabunNew.ttf
-
-# ✅ ตั้งค่า launcher icons (ใช้ไอคอนใหม่)
 flutter_launcher_icons:
   android: true
   ios: true

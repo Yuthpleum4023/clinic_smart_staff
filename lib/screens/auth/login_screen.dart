@@ -12,11 +12,11 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'package:clinic_payroll/api/api_config.dart';
-import 'package:clinic_payroll/api/auth_api.dart';
-import 'package:clinic_payroll/screens/auth/auth_gate_screen.dart';
-import 'package:clinic_payroll/screens/auth/reset_password_screen.dart';
-import 'package:clinic_payroll/services/auth_storage.dart';
+import 'package:clinic_smart_staff/api/api_config.dart';
+import 'package:clinic_smart_staff/api/auth_api.dart';
+import 'package:clinic_smart_staff/screens/auth/auth_gate_screen.dart';
+import 'package:clinic_smart_staff/screens/auth/reset_password_screen.dart';
+import 'package:clinic_smart_staff/services/auth_storage.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});

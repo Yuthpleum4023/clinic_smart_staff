@@ -12,11 +12,11 @@
 
 import 'package:flutter/material.dart';
 
-import 'package:clinic_payroll/models/clinic_shift_need_model.dart';
-import 'package:clinic_payroll/services/clinic_shift_need_service.dart';
+import 'package:clinic_smart_staff/models/clinic_shift_need_model.dart';
+import 'package:clinic_smart_staff/services/clinic_shift_need_service.dart';
 
-import 'package:clinic_payroll/screens/clinic_shift_need_screen.dart';
-import 'package:clinic_payroll/screens/clinic_shift_need_applicants_screen.dart';
+import 'package:clinic_smart_staff/screens/clinic_shift_need_screen.dart';
+import 'package:clinic_smart_staff/screens/clinic_shift_need_applicants_screen.dart';
 
 class ClinicShiftNeedListScreen extends StatefulWidget {
   final String clinicId;

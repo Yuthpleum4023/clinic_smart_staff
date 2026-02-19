@@ -19,8 +19,8 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'package:clinic_payroll/api/api_config.dart';
-import 'package:clinic_payroll/services/auth_storage.dart';
+import 'package:clinic_smart_staff/api/api_config.dart';
+import 'package:clinic_smart_staff/services/auth_storage.dart';
 
 class AuthApi {
   // 🔧 ถ้า backend ใช้ /auth/login ให้เปลี่ยนเป็น '/auth/login'

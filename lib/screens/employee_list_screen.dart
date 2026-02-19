@@ -1,11 +1,11 @@
 // lib/screens/employee_list_screen.dart
 import 'package:flutter/material.dart';
 
-import 'package:clinic_payroll/models/employee_model.dart';
-import 'package:clinic_payroll/services/storage_service.dart';
+import 'package:clinic_smart_staff/models/employee_model.dart';
+import 'package:clinic_smart_staff/services/storage_service.dart';
 
-import 'package:clinic_payroll/screens/employee_detail_screen.dart';
-import 'package:clinic_payroll/screens/add_employee_screen.dart';
+import 'package:clinic_smart_staff/screens/employee_detail_screen.dart';
+import 'package:clinic_smart_staff/screens/add_employee_screen.dart';
 
 class EmployeeListScreen extends StatefulWidget {
   const EmployeeListScreen({super.key});

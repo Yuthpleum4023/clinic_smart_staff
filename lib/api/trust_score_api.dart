@@ -1,33 +1,26 @@
-import 'dart:convert';
-import 'package:http/http.dart' as http;
-
-import 'package:clinic_payroll/api/api_config.dart';
+// lib/api/trust_score_api.dart
+//
+// ✅ FINAL — USE ApiClient (single source of truth for Authorization)
+// - ไม่รับ token จากภายนอกแล้ว (กัน token เพี้ยน)
+// - ใช้ ApiClient ที่ sanitize token + Render-safe timeout
+// - รองรับ score_service mount ที่ /score ตาม ApiConfig.staffScore()
+//
+import 'package:clinic_smart_staff/api/api_client.dart';
+import 'package:clinic_smart_staff/api/api_config.dart';
 
 class TrustScoreApi {
+  static ApiClient get _client => ApiClient(baseUrl: ApiConfig.scoreBaseUrl);
+
   /// GET trust score ของ staff
   static Future<Map<String, dynamic>> getStaffScore({
     required String staffId,
-    String? token, // ถ้า backend เปิด auth
+    bool auth = true,
   }) async {
-    final url = Uri.parse(
-      ApiConfig.scoreBaseUrl + ApiConfig.staffScore(staffId),
+    // ApiConfig.staffScore(staffId) => '/score/staff/:id/score'
+    return _client.get(
+      ApiConfig.staffScore(staffId),
+      auth: auth,
     );
-
-    final res = await http.get(
-      url,
-      headers: {
-        'Content-Type': 'application/json',
-        if (token != null && token.isNotEmpty) 'Authorization': 'Bearer $token',
-      },
-    );
-
-    if (res.statusCode != 200) {
-      throw Exception(
-        'getStaffScore failed: ${res.statusCode} ${res.body}',
-      );
-    }
-
-    return json.decode(res.body) as Map<String, dynamic>;
   }
 
   /// POST attendance event (update score)
@@ -37,33 +30,18 @@ class TrustScoreApi {
     required String status, // completed | late | no_show | cancelled_early
     String shiftId = '',
     int minutesLate = 0,
-    String? token,
+    bool auth = true,
   }) async {
-    final url = Uri.parse(
-      ApiConfig.scoreBaseUrl + ApiConfig.attendanceEvent,
-    );
-
-    final res = await http.post(
-      url,
-      headers: {
-        'Content-Type': 'application/json',
-        if (token != null && token.isNotEmpty) 'Authorization': 'Bearer $token',
-      },
-      body: json.encode({
+    return _client.post(
+      ApiConfig.attendanceEvent, // '/score/events/attendance'
+      auth: auth,
+      body: {
         'clinicId': clinicId,
         'staffId': staffId,
         'shiftId': shiftId,
         'status': status,
         'minutesLate': minutesLate,
-      }),
+      },
     );
-
-    if (res.statusCode != 200) {
-      throw Exception(
-        'postAttendanceEvent failed: ${res.statusCode} ${res.body}',
-      );
-    }
-
-    return json.decode(res.body) as Map<String, dynamic>;
   }
 }

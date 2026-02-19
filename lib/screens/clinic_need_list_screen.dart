@@ -13,6 +13,11 @@
 // - ✅ ดึง baseUrl จาก prefs ก่อน -> fallback ไป ApiConfig.payrollBaseUrl
 // - ✅ sanitize baseUrl ตัด /api /payroll /shift-needs กัน path ซ้ำ
 // - ✅ แสดง API ที่ใช้งานจริงบนหน้าจอ
+//
+// ✅ UI THEME:
+// - ❌ ไม่ hardcode Colors.blue
+// - ✅ ใช้ Theme (ม่วง) ให้เหมือนหน้าอื่นทั้งระบบ
+//
 
 import 'dart:convert';
 
@@ -21,7 +26,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'package:clinic_payroll/api/api_config.dart';
+import 'package:clinic_smart_staff/api/api_config.dart';
 
 class ClinicNeedListScreen extends StatefulWidget {
   final String clinicId;
@@ -172,7 +177,8 @@ class _ClinicNeedListScreenState extends State<ClinicNeedListScreen> {
             onPressed: () => Navigator.pop(ctx, false),
             child: const Text('ไม่ยกเลิก'),
           ),
-          ElevatedButton(
+          // ✅ ปุ่มยืนยันเป็น primary (ม่วงตาม Theme)
+          FilledButton(
             onPressed: () => Navigator.pop(ctx, true),
             child: const Text('ยกเลิกงาน'),
           ),
@@ -232,7 +238,8 @@ class _ClinicNeedListScreenState extends State<ClinicNeedListScreen> {
             onPressed: () => Navigator.pop(ctx, false),
             child: const Text('ยกเลิก'),
           ),
-          ElevatedButton(
+          // ✅ ปุ่มยืนยันเป็น primary (ม่วงตาม Theme)
+          FilledButton(
             onPressed: () => Navigator.pop(ctx, true),
             child: const Text('Generate'),
           ),
@@ -266,8 +273,7 @@ class _ClinicNeedListScreenState extends State<ClinicNeedListScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('คลินิก: รายการประกาศงาน (ShiftNeed)'),
-        backgroundColor: Colors.blue,
-        foregroundColor: Colors.white,
+        // ✅ ไม่ hardcode สี → ใช้ Theme (ม่วง) เหมือนหน้าอื่น
         actions: [
           IconButton(
             tooltip: 'เปลี่ยนเดือน',
@@ -286,8 +292,10 @@ class _ClinicNeedListScreenState extends State<ClinicNeedListScreen> {
           : ListView(
               padding: const EdgeInsets.all(16),
               children: [
-                Text('คลินิก: $clinicLabel',
-                    style: const TextStyle(fontWeight: FontWeight.bold)),
+                Text(
+                  'คลินิก: $clinicLabel',
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
                 const SizedBox(height: 6),
 
                 // ✅ show actual API
@@ -297,6 +305,7 @@ class _ClinicNeedListScreenState extends State<ClinicNeedListScreen> {
                 ),
 
                 const SizedBox(height: 10),
+
                 Row(
                   children: [
                     Expanded(
@@ -314,6 +323,7 @@ class _ClinicNeedListScreenState extends State<ClinicNeedListScreen> {
                     ),
                   ],
                 ),
+
                 const SizedBox(height: 10),
 
                 Row(
@@ -327,7 +337,9 @@ class _ClinicNeedListScreenState extends State<ClinicNeedListScreen> {
                         DropdownMenuItem(value: 'open', child: Text('open')),
                         DropdownMenuItem(value: 'filled', child: Text('filled')),
                         DropdownMenuItem(
-                            value: 'cancelled', child: Text('cancelled')),
+                          value: 'cancelled',
+                          child: Text('cancelled'),
+                        ),
                       ],
                       onChanged: (v) async {
                         setState(() => _statusFilter = v ?? '');
@@ -346,6 +358,7 @@ class _ClinicNeedListScreenState extends State<ClinicNeedListScreen> {
                       ),
                   ],
                 ),
+
                 const SizedBox(height: 10),
 
                 if (monthItems.isEmpty)
@@ -393,7 +406,8 @@ class _ClinicNeedListScreenState extends State<ClinicNeedListScreen> {
                             children: [
                               SizedBox(
                                 width: 110,
-                                child: ElevatedButton(
+                                // ✅ ปุ่มหลักให้เป็นม่วงชัดตาม Theme
+                                child: FilledButton(
                                   onPressed: (_acting || !canGenerate)
                                       ? null
                                       : () => _generate(n),
@@ -403,6 +417,7 @@ class _ClinicNeedListScreenState extends State<ClinicNeedListScreen> {
                               const SizedBox(height: 6),
                               SizedBox(
                                 width: 110,
+                                // ✅ OutlinedButton ขอบม่วงตาม Theme
                                 child: OutlinedButton(
                                   onPressed: (_acting || !canCancel)
                                       ? null

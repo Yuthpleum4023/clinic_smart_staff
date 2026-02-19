@@ -1,8 +1,8 @@
 // lib/screens/edit_employee_screen.dart
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:clinic_payroll/models/employee_model.dart';
-import 'package:clinic_payroll/services/storage_service.dart';
+import 'package:clinic_smart_staff/models/employee_model.dart';
+import 'package:clinic_smart_staff/services/storage_service.dart';
 
 class EditEmployeeScreen extends StatefulWidget {
   final EmployeeModel employee;
