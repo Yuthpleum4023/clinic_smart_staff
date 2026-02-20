@@ -1,8 +1,11 @@
 // controllers/availabilityController.js
 //
-// ✅ FINAL FIX (MATCH models/Availability.js)
+// ✅ FINAL FIX (MATCH models/Availability.js) + ENRICH CONTACT FROM TOKEN
 // - staffId ต้องมาจาก req.user.staffId เท่านั้น (ห้ามเอา userId มาแทน staffId)
 // - userId เก็บแยก field userId
+// - ✅ ENRICH: fullName/phone มาจาก token เป็นหลัก (req.user.fullName/req.user.phone)
+//   -> ไม่ต้อง query user ซ้ำ
+//   -> กัน client ปลอมข้อมูล
 // - /open: ไม่กรอง clinicId แน่นอน + role filter แบบ normalize กันส่งค่าคนละภาษา
 // - overlap: กันเวลาซ้อนทับจริง (ไม่ใช่แค่ start/end ตรงกัน)
 //
@@ -24,13 +27,16 @@ const Availability = require("../models/Availability");
 // ---------------- helpers ----------------
 function normalizeRoles(r) {
   if (!r) return [];
-  if (Array.isArray(r)) return r.map((x) => String(x || "").trim()).filter(Boolean);
+  if (Array.isArray(r))
+    return r.map((x) => String(x || "").trim()).filter(Boolean);
   return [String(r || "").trim()].filter(Boolean);
 }
 
 function mustRoleAny(req, roles = []) {
   const have = normalizeRoles(req.user?.role).map((x) => x.toLowerCase());
-  const want = (roles || []).map((x) => String(x || "").trim().toLowerCase()).filter(Boolean);
+  const want = (roles || [])
+    .map((x) => String(x || "").trim().toLowerCase())
+    .filter(Boolean);
   const ok = have.some((x) => want.includes(x));
   if (!ok) {
     const err = new Error("forbidden");
@@ -69,6 +75,15 @@ function getUserId(req) {
   return s(req.user?.userId || req.user?.id || req.user?._id);
 }
 
+// ✅ ENRICH CONTACT FROM TOKEN (primary) with fallback from body (secondary)
+function getFullName(req, body) {
+  return s(req.user?.fullName) || s(body?.fullName);
+}
+
+function getPhone(req, body) {
+  return s(req.user?.phone) || s(body?.phone);
+}
+
 // time format "HH:mm"
 function isHHmm(x) {
   const t = s(x);
@@ -104,7 +119,13 @@ function normalizeRoleValue(x) {
   if (!v) return "";
 
   // map อังกฤษ -> ไทย default ใน schema
-  if (v === "helper" || v === "assistant" || v === "ผู้ช่วย" || v === "dental assistant") return "ผู้ช่วย";
+  if (
+    v === "helper" ||
+    v === "assistant" ||
+    v === "ผู้ช่วย" ||
+    v === "dental assistant"
+  )
+    return "ผู้ช่วย";
 
   // ถ้าท่านมี role อื่นในอนาคต ค่อยเติม map ตรงนี้
   // เช่น "พนักงาน" ฯลฯ
@@ -137,8 +158,9 @@ async function createAvailability(req, res) {
       end,
       role = "ผู้ช่วย",
       note = "",
-      fullName = "",
-      phone = "",
+      // ❗ ยังรับไว้เพื่อ backward-compatible แต่จะ enrich จาก token เป็นหลัก
+      fullName: _fullNameBody = "",
+      phone: _phoneBody = "",
     } = req.body || {};
 
     if (!isYMD(date)) bad("date required (YYYY-MM-DD)");
@@ -149,6 +171,10 @@ async function createAvailability(req, res) {
     if (a === null || b === null) bad("invalid time");
     if (b <= a) bad("end must be after start");
 
+    // ✅ ENRICH contact from token (primary) with fallback from body (secondary)
+    const fullName = getFullName(req, req.body);
+    const phone = getPhone(req, req.body);
+
     // ✅ กันซ้อนทับจริง (เฉพาะรายการที่ยังไม่ cancelled)
     const sameDay = await Availability.find({
       staffId,
@@ -156,7 +182,9 @@ async function createAvailability(req, res) {
       status: { $ne: "cancelled" },
     }).lean();
 
-    const hit = (sameDay || []).find((it) => overlaps(it.start, it.end, start, end));
+    const hit = (sameDay || []).find((it) =>
+      overlaps(it.start, it.end, start, end)
+    );
     if (hit) {
       return res.status(409).json({
         ok: false,
@@ -173,8 +201,11 @@ async function createAvailability(req, res) {
       end: s(end),
       role: s(role) || "ผู้ช่วย",
       note: s(note),
+
+      // ✅ contact fields for clinic to call
       fullName: s(fullName),
       phone: s(phone),
+
       status: "open",
       bookedByClinicId: "",
       bookedAt: null,

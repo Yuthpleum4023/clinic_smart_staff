@@ -1,5 +1,7 @@
 const jwt = require("jsonwebtoken");
 
+const AUTH_LOG = String(process.env.AUTH_LOG || "false").toLowerCase() === "true";
+
 function extractToken(req) {
   const raw = String(req.headers.authorization || "").trim();
   if (!raw) return "";
@@ -25,32 +27,38 @@ function auth(req, res, next) {
   try {
     const token = extractToken(req);
 
-    console.log("======================================");
-    console.log("🔐 AUTH CHECK");
-    console.log("🔐 Authorization:", req.headers.authorization ? "YES" : "NO");
-    console.log("🔐 Token Preview:", String(token).slice(0, 30));
-    console.log("🔐 Token Dots:", (String(token).match(/\./g) || []).length);
+    if (AUTH_LOG) {
+      console.log("======================================");
+      console.log("🔐 AUTH CHECK");
+      console.log("🔐 Authorization:", req.headers.authorization ? "YES" : "NO");
+      console.log("🔐 Token Preview:", String(token).slice(0, 30));
+      console.log("🔐 Token Dots:", (String(token).match(/\./g) || []).length);
+    }
 
     if (!token) {
-      console.log("❌ Missing token");
+      if (AUTH_LOG) console.log("❌ Missing token");
       return res.status(401).json({ message: "Missing token" });
     }
 
     // JWT ต้องมี dot อย่างน้อย 2 จุด
     const dotCount = (String(token).match(/\./g) || []).length;
     if (dotCount < 2) {
-      console.log("❌ JWT malformed (structure)");
+      if (AUTH_LOG) console.log("❌ JWT malformed (structure)");
       return res.status(401).json({ message: "Invalid token (malformed)" });
     }
 
     const payload = jwt.verify(token, process.env.JWT_SECRET);
 
-    console.log("✅ JWT OK:", payload);
+    if (AUTH_LOG) {
+      // ระวัง log token/payload เยอะใน prod
+      console.log("✅ JWT OK:", payload);
+    }
 
+    // ✅ แค่นี้พอ: controller จะใช้ req.user.fullName/phone ถ้า token มี field มา
     req.user = payload;
     next();
   } catch (err) {
-    console.log("❌ JWT ERROR:", err.name, err.message);
+    if (AUTH_LOG) console.log("❌ JWT ERROR:", err.name, err.message);
 
     return res.status(401).json({
       message: "Invalid token",
