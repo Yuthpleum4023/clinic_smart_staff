@@ -13,7 +13,8 @@ const EMP_PREFIX = (process.env.EMPLOYEE_ID_PREFIX || "emp_").toString();
 const STAFF_PREFIX = (process.env.STAFF_ID_PREFIX || "stf_").toString();
 
 const RESET_TOKEN_TTL_MINUTES = Number(process.env.RESET_TOKEN_TTL_MINUTES || 10);
-const RESET_LOG = String(process.env.RESET_LOG || "true").toLowerCase() === "true";
+const RESET_LOG =
+  String(process.env.RESET_LOG || "true").toLowerCase() === "true";
 
 /* ======================================================
    Helper: ensure staffId (employee only)
@@ -66,10 +67,18 @@ function makeJwtPayload(user) {
 
   const payload = {
     // เดิมของระบบคุณ
-    userId: user.userId,
-    clinicId: user.clinicId,
-    role: user.role,
-    staffId: user.staffId || "",
+    userId: normStr(user?.userId),
+    clinicId: normStr(user?.clinicId),
+    role: normStr(user?.role),
+    staffId: normStr(user?.staffId),
+
+    // ✅ เพิ่มเพื่อให้ service อื่น enrich ได้ทันที (เช่น payroll_service: availability)
+    // ✅ ไม่ต้อง query /me ซ้ำ
+    fullName: normStr(user?.fullName),
+    phone: normStr(user?.phone),
+
+    // ✅ optional แต่มีประโยชน์ในอนาคต
+    email: normStr(user?.email),
   };
 
   // ✅ ใส่ id เฉพาะเมื่อหาได้จริง (กัน payload แปลก)
@@ -138,7 +147,7 @@ async function login(req, res) {
 
     user = await ensureStaffIdIfEmployee(user);
 
-    // ✅ FIX: ใส่ id (ObjectId) ลง token ด้วย
+    // ✅ FIX: ใส่ id (ObjectId) ลง token ด้วย + ✅ fullName/phone/email
     const token = signToken(makeJwtPayload(user));
 
     console.log("✅ login success total ms=", Date.now() - t0);
@@ -215,7 +224,7 @@ async function registerClinicAdmin(req, res) {
       employeeCode: "",
     });
 
-    // ✅ FIX: ใส่ id (ObjectId) ลง token ด้วย
+    // ✅ FIX: ใส่ id (ObjectId) ลง token ด้วย + ✅ fullName/phone/email
     const token = signToken(
       makeJwtPayload(user.toObject ? user.toObject() : user)
     );
@@ -281,12 +290,15 @@ async function registerWithInvite(req, res) {
     inv.usedByUserId = userId;
     await inv.save();
 
-    // ✅ FIX: ใส่ id (ObjectId) ลง token ด้วย
+    // ✅ FIX: ใส่ id (ObjectId) ลง token ด้วย + ✅ fullName/phone/email
     const token = signToken(
       makeJwtPayload(user.toObject ? user.toObject() : user)
     );
 
-    return res.json({ user: safeUser(user.toObject()), token });
+    return res.json({
+      user: safeUser(user.toObject ? user.toObject() : user),
+      token,
+    });
   } catch (e) {
     return res
       .status(500)
