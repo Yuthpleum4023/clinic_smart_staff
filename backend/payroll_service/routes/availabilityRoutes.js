@@ -7,6 +7,7 @@ const {
   listMyAvailabilities,
   cancelAvailability,
   listOpenAvailabilities,
+  bookAvailability, // ✅ NEW
 } = require("../controllers/availabilityController");
 
 // ✅ หมายเหตุ: สมมติว่าท่านมี middleware auth เช่น requireAuth
@@ -18,12 +19,27 @@ try {
   requireAuth = (req, res, next) => next(); // กันพังตอนยังไม่ผูก auth
 }
 
-// clinic admin browse open
+// ======================================================
+// ✅ CLINIC ADMIN
+// ======================================================
+
+// browse ตารางว่างผู้ช่วย
 router.get("/open", requireAuth, listOpenAvailabilities);
 
-// staff/helper my availabilities
+// ✅ NEW — BOOK AVAILABILITY → CREATE SHIFT
+router.post("/:id/book", requireAuth, bookAvailability);
+
+// ======================================================
+// ✅ STAFF / HELPER
+// ======================================================
+
+// my availabilities
 router.get("/me", requireAuth, listMyAvailabilities);
+
+// create mine
 router.post("/", requireAuth, createAvailability);
+
+// cancel mine
 router.patch("/:id/cancel", requireAuth, cancelAvailability);
 
 module.exports = router;

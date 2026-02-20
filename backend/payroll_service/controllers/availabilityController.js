@@ -9,11 +9,17 @@
 // - /open: ไม่กรอง clinicId แน่นอน + role filter แบบ normalize กันส่งค่าคนละภาษา
 // - overlap: กันเวลาซ้อนทับจริง (ไม่ใช่แค่ start/end ตรงกัน)
 //
+// ✅ NEW (BOOKING):
+// - POST /availabilities/:id/book (admin) -> mark availability booked + create Shift
+// - กันจองซ้อนด้วย atomic update: status ต้องเป็น open เท่านั้น
+// - ถ้าสร้าง Shift fail -> rollback availability กลับ open (กันระบบค้าง)
+//
 // Endpoints:
 // - POST   /availabilities              (helper/staff) create mine
 // - GET    /availabilities/me           (helper/staff) list mine
 // - PATCH  /availabilities/:id/cancel   (helper/staff) cancel mine
 // - GET    /availabilities/open         (admin) list open for clinic to browse
+// - POST   /availabilities/:id/book     (admin) book + create Shift
 //
 // Query for /open:
 //   ?date=YYYY-MM-DD
@@ -23,6 +29,7 @@
 
 const mongoose = require("mongoose");
 const Availability = require("../models/Availability");
+const Shift = require("../models/Shift");
 
 // ---------------- helpers ----------------
 function normalizeRoles(r) {
@@ -73,6 +80,11 @@ function getStaffIdStrict(req) {
 // ✅ userId แยก field (optional)
 function getUserId(req) {
   return s(req.user?.userId || req.user?.id || req.user?._id);
+}
+
+// ✅ clinicId (admin token) — ใช้ตอนจองเพื่อสร้าง Shift
+function getClinicIdStrict(req) {
+  return s(req.user?.clinicId);
 }
 
 // ✅ ENRICH CONTACT FROM TOKEN (primary) with fallback from body (secondary)
@@ -128,7 +140,6 @@ function normalizeRoleValue(x) {
     return "ผู้ช่วย";
 
   // ถ้าท่านมี role อื่นในอนาคต ค่อยเติม map ตรงนี้
-  // เช่น "พนักงาน" ฯลฯ
   return s(x); // default: ใช้ตามที่ส่งมา
 }
 
@@ -310,9 +321,122 @@ async function listOpenAvailabilities(req, res) {
   }
 }
 
+// =====================================================
+// ✅ NEW: clinic admin book availability -> create Shift
+// POST /availabilities/:id/book
+// body (optional): { note?, hourlyRate?, clinicLat?, clinicLng?, clinicName?, clinicPhone?, clinicAddress? }
+// =====================================================
+async function bookAvailability(req, res) {
+  try {
+    mustRole(req, ["admin"]);
+
+    const clinicId = getClinicIdStrict(req);
+    if (!clinicId) bad("missing clinicId in token (required)", 400);
+
+    const id = s(req.params.id);
+    if (!id) bad("missing id");
+    if (!mongoose.Types.ObjectId.isValid(id)) bad("invalid id", 400);
+
+    // 1) atomic mark booked (กันจองซ้อน)
+    const bookedAt = new Date();
+
+    const updated = await Availability.findOneAndUpdate(
+      { _id: id, status: "open" },
+      {
+        $set: {
+          status: "booked",
+          bookedByClinicId: clinicId,
+          bookedAt,
+        },
+      },
+      { new: true }
+    );
+
+    if (!updated) {
+      // ถ้าไม่เจอ แปลว่า: ไม่มีรายการ หรือถูกจอง/ยกเลิกไปแล้ว
+      return res.status(409).json({
+        ok: false,
+        message: "availability is not open (maybe already booked/cancelled)",
+      });
+    }
+
+    // 2) create Shift (ปลายทางระบบ)
+    //    - staffId มาจาก availability
+    //    - clinicId มาจาก token admin
+    const body = req.body || {};
+    const shiftNote = s(body.note) || s(updated.note) || "";
+
+    const hourlyRateRaw = body.hourlyRate;
+    const hourlyRate =
+      typeof hourlyRateRaw === "number"
+        ? hourlyRateRaw
+        : parseFloat(String(hourlyRateRaw || "").trim() || "0") || 0;
+
+    const shiftPayload = {
+      clinicId,
+      staffId: s(updated.staffId),
+
+      date: s(updated.date),
+      start: s(updated.start),
+      end: s(updated.end),
+
+      status: "scheduled",
+      minutesLate: 0,
+
+      hourlyRate,
+      note: shiftNote,
+
+      // optional: ถ้าคลินิกอยากส่งพิกัด/ชื่อมา (ไม่ส่งก็ไม่พัง)
+      clinicLat:
+        body.clinicLat === null || body.clinicLat === undefined
+          ? null
+          : Number(body.clinicLat),
+      clinicLng:
+        body.clinicLng === null || body.clinicLng === undefined
+          ? null
+          : Number(body.clinicLng),
+
+      clinicName: s(body.clinicName),
+      clinicPhone: s(body.clinicPhone),
+      clinicAddress: s(body.clinicAddress),
+    };
+
+    // กัน NaN
+    if (Number.isNaN(shiftPayload.clinicLat)) shiftPayload.clinicLat = null;
+    if (Number.isNaN(shiftPayload.clinicLng)) shiftPayload.clinicLng = null;
+
+    let shiftDoc = null;
+    try {
+      shiftDoc = await Shift.create(shiftPayload);
+    } catch (e) {
+      // 3) rollback availability ถ้าสร้าง shift fail (กันระบบค้าง booked)
+      await Availability.updateOne(
+        { _id: id, status: "booked", bookedByClinicId: clinicId },
+        {
+          $set: { status: "open", bookedByClinicId: "", bookedAt: null },
+        }
+      );
+
+      throw e;
+    }
+
+    return res.json({
+      ok: true,
+      availability: updated,
+      shift: shiftDoc,
+    });
+  } catch (e) {
+    return res.status(e.statusCode || 500).json({
+      message: "bookAvailability failed",
+      error: e.message || String(e),
+    });
+  }
+}
+
 module.exports = {
   createAvailability,
   listMyAvailabilities,
   cancelAvailability,
   listOpenAvailabilities,
+  bookAvailability, // ✅ NEW
 };
