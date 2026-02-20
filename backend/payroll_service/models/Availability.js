@@ -34,7 +34,8 @@ const AvailabilitySchema = new mongoose.Schema(
     // =========================================================
     // shiftId = ObjectId ของ Shift ที่สร้างตอนจอง
     // ถ้าไม่สร้าง shift ก็ปล่อยว่างได้ (ไม่กระทบของเดิม)
-    shiftId: { type: String, default: "", index: true },
+    // ✅ IMPORTANT: ไม่ใส่ index:true ตรงนี้ เพื่อกัน duplicate กับ schema.index()
+    shiftId: { type: String, default: "" },
 
     // เผื่อคลินิกใส่ note ตอนจอง (UI ส่งมา)
     bookedNote: { type: String, default: "" },
@@ -49,8 +50,10 @@ const AvailabilitySchema = new mongoose.Schema(
 AvailabilitySchema.index({ status: 1, date: 1, start: 1 });
 AvailabilitySchema.index({ staffId: 1, date: 1 });
 
-// ✅ NEW index ช่วย trace จาก shift กลับไป availability และ query รายการที่ถูกจองแล้ว
+// ✅ query รายการที่ถูกจองแล้ว + เรียงตามวัน/เวลา
 AvailabilitySchema.index({ bookedByClinicId: 1, date: 1, start: 1 });
+
+// ✅ trace จาก shift กลับไป availability (สำคัญตอน debug)
 AvailabilitySchema.index({ shiftId: 1 });
 
 module.exports = mongoose.model("Availability", AvailabilitySchema);
