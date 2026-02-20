@@ -1,8 +1,10 @@
 // controllers/availabilityController.js
 //
-// ✅ Availability (ตารางว่างผู้ช่วย)
-// - staff สร้าง/ดูของตัวเอง
-// - clinic admin ดู open ทั้งระบบ
+// ✅ FINAL FIX (MATCH models/Availability.js)
+// - staffId ต้องมาจาก req.user.staffId เท่านั้น (ห้ามเอา userId มาแทน staffId)
+// - userId เก็บแยก field userId
+// - /open: ไม่กรอง clinicId แน่นอน + role filter แบบ normalize กันส่งค่าคนละภาษา
+// - overlap: กันเวลาซ้อนทับจริง (ไม่ใช่แค่ start/end ตรงกัน)
 //
 // Endpoints:
 // - POST   /availabilities              (helper/staff) create mine
@@ -13,9 +15,10 @@
 // Query for /open:
 //   ?date=YYYY-MM-DD
 //   ?dateFrom=YYYY-MM-DD&dateTo=YYYY-MM-DD
-//   ?role=ผู้ช่วย
+//   ?role=...   (optional; supports ไทย/อังกฤษแบบหลวม ๆ)
 //
 
+const mongoose = require("mongoose");
 const Availability = require("../models/Availability");
 
 // ---------------- helpers ----------------
@@ -26,8 +29,8 @@ function normalizeRoles(r) {
 }
 
 function mustRoleAny(req, roles = []) {
-  const have = normalizeRoles(req.user?.role);
-  const want = (roles || []).map((x) => String(x || "").trim()).filter(Boolean);
+  const have = normalizeRoles(req.user?.role).map((x) => x.toLowerCase());
+  const want = (roles || []).map((x) => String(x || "").trim().toLowerCase()).filter(Boolean);
   const ok = have.some((x) => want.includes(x));
   if (!ok) {
     const err = new Error("forbidden");
@@ -37,24 +40,13 @@ function mustRoleAny(req, roles = []) {
 }
 
 function mustRole(req, roles = []) {
-  const r = req.user?.role;
-  if (!roles.includes(r)) {
+  const r = String(req.user?.role || "").trim().toLowerCase();
+  const want = (roles || []).map((x) => String(x || "").trim().toLowerCase());
+  if (!want.includes(r)) {
     const err = new Error("forbidden");
     err.statusCode = 403;
     throw err;
   }
-}
-
-function getStaffId(req) {
-  return (
-    (req.user?.staffId ||
-      req.user?.userId ||
-      req.user?.id ||
-      req.user?._id ||
-      "")
-      .toString()
-      .trim()
-  );
 }
 
 function s(v) {
@@ -67,24 +59,66 @@ function bad(msg, code = 400) {
   throw err;
 }
 
+// ✅ staffId ต้องมาจาก staffId เท่านั้น (schema required)
+function getStaffIdStrict(req) {
+  return s(req.user?.staffId);
+}
+
+// ✅ userId แยก field (optional)
+function getUserId(req) {
+  return s(req.user?.userId || req.user?.id || req.user?._id);
+}
+
 // time format "HH:mm"
 function isHHmm(x) {
   const t = s(x);
-  if (!t) return false;
-  return /^([01]\d|2[0-3]):[0-5]\d$/.test(t);
+  return !!t && /^([01]\d|2[0-3]):[0-5]\d$/.test(t);
 }
 
 // date "YYYY-MM-DD"
 function isYMD(x) {
   const d = s(x);
-  if (!d) return false;
-  return /^\d{4}-\d{2}-\d{2}$/.test(d);
+  return !!d && /^\d{4}-\d{2}-\d{2}$/.test(d);
 }
 
 function timeToMin(hhmm) {
-  const [h, m] = s(hhmm).split(":").map((x) => parseInt(x, 10));
+  const parts = s(hhmm).split(":");
+  if (parts.length !== 2) return null;
+  const h = parseInt(parts[0], 10);
+  const m = parseInt(parts[1], 10);
   if (Number.isNaN(h) || Number.isNaN(m)) return null;
   return h * 60 + m;
+}
+
+function todayYMD() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+// role normalize: รองรับไทย/อังกฤษหลวม ๆ
+function normalizeRoleValue(x) {
+  const v = s(x).toLowerCase();
+  if (!v) return "";
+
+  // map อังกฤษ -> ไทย default ใน schema
+  if (v === "helper" || v === "assistant" || v === "ผู้ช่วย" || v === "dental assistant") return "ผู้ช่วย";
+
+  // ถ้าท่านมี role อื่นในอนาคต ค่อยเติม map ตรงนี้
+  // เช่น "พนักงาน" ฯลฯ
+  return s(x); // default: ใช้ตามที่ส่งมา
+}
+
+// overlap: ช่วง [start,end) ซ้อนกันไหม
+function overlaps(aStart, aEnd, bStart, bEnd) {
+  const a1 = timeToMin(aStart);
+  const a2 = timeToMin(aEnd);
+  const b1 = timeToMin(bStart);
+  const b2 = timeToMin(bEnd);
+  if ([a1, a2, b1, b2].some((x) => x === null)) return false;
+  return Math.max(a1, b1) < Math.min(a2, b2);
 }
 
 // ---------------- staff: create mine ----------------
@@ -92,8 +126,10 @@ async function createAvailability(req, res) {
   try {
     mustRoleAny(req, ["employee", "helper", "staff"]);
 
-    const staffId = getStaffId(req);
-    if (!staffId) bad("missing staffId in token", 400);
+    const staffId = getStaffIdStrict(req);
+    if (!staffId) bad("missing staffId in token (required)", 400);
+
+    const userId = getUserId(req); // optional
 
     const {
       date,
@@ -113,22 +149,25 @@ async function createAvailability(req, res) {
     if (a === null || b === null) bad("invalid time");
     if (b <= a) bad("end must be after start");
 
-    // กันซ้อน: staffId + date + time overlap แบบง่าย (same start/end)
-    const exists = await Availability.findOne({
+    // ✅ กันซ้อนทับจริง (เฉพาะรายการที่ยังไม่ cancelled)
+    const sameDay = await Availability.find({
       staffId,
       date: s(date),
-      start: s(start),
-      end: s(end),
       status: { $ne: "cancelled" },
     }).lean();
 
-    if (exists) {
-      return res.json({ ok: true, availability: exists, message: "already exists" });
+    const hit = (sameDay || []).find((it) => overlaps(it.start, it.end, start, end));
+    if (hit) {
+      return res.status(409).json({
+        ok: false,
+        message: "time overlap with existing availability",
+        overlap: hit,
+      });
     }
 
     const doc = await Availability.create({
       staffId,
-      userId: s(req.user?.userId || ""),
+      userId: userId || "",
       date: s(date),
       start: s(start),
       end: s(end),
@@ -137,6 +176,8 @@ async function createAvailability(req, res) {
       fullName: s(fullName),
       phone: s(phone),
       status: "open",
+      bookedByClinicId: "",
+      bookedAt: null,
     });
 
     return res.status(201).json({ ok: true, availability: doc });
@@ -153,8 +194,8 @@ async function listMyAvailabilities(req, res) {
   try {
     mustRoleAny(req, ["employee", "helper", "staff"]);
 
-    const staffId = getStaffId(req);
-    if (!staffId) bad("missing staffId in token", 400);
+    const staffId = getStaffIdStrict(req);
+    if (!staffId) bad("missing staffId in token (required)", 400);
 
     const status = s(req.query.status);
     const q = { staffId };
@@ -175,17 +216,21 @@ async function cancelAvailability(req, res) {
   try {
     mustRoleAny(req, ["employee", "helper", "staff"]);
 
-    const staffId = getStaffId(req);
-    if (!staffId) bad("missing staffId in token", 400);
+    const staffId = getStaffIdStrict(req);
+    if (!staffId) bad("missing staffId in token (required)", 400);
 
     const id = s(req.params.id);
     if (!id) bad("missing id");
+    if (!mongoose.Types.ObjectId.isValid(id)) bad("invalid id", 400);
 
     const doc = await Availability.findById(id);
     if (!doc) bad("availability not found", 404);
     if (s(doc.staffId) !== staffId) bad("forbidden", 403);
 
     doc.status = "cancelled";
+    doc.bookedByClinicId = "";
+    doc.bookedAt = null;
+
     await doc.save();
     return res.json({ ok: true });
   } catch (e) {
@@ -207,7 +252,7 @@ async function listOpenAvailabilities(req, res) {
     const date = s(req.query.date);
     const dateFrom = s(req.query.dateFrom);
     const dateTo = s(req.query.dateTo);
-    const role = s(req.query.role);
+    const roleRaw = s(req.query.role);
 
     if (date && isYMD(date)) {
       q.date = date;
@@ -216,9 +261,13 @@ async function listOpenAvailabilities(req, res) {
       if (dateFrom && isYMD(dateFrom)) q.date.$gte = dateFrom;
       if (dateTo && isYMD(dateTo)) q.date.$lte = dateTo;
       if (Object.keys(q.date).length === 0) delete q.date;
+    } else {
+      // default: วันนี้ขึ้นไป กันของเก่าท่วม (ถ้าไม่อยาก default นี้ ลบบรรทัดนี้ได้)
+      q.date = { $gte: todayYMD() };
     }
 
-    if (role) q.role = role;
+    // ✅ role filter แบบ normalize กันส่ง helper/ผู้ช่วย แล้วไม่ match
+    if (roleRaw) q.role = normalizeRoleValue(roleRaw);
 
     const items = await Availability.find(q).sort({ date: 1, start: 1 }).lean();
     return res.json({ ok: true, items });
