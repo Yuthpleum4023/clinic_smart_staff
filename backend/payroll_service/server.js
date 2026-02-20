@@ -48,6 +48,9 @@ app.use("/payroll-close", require("./routes/payrollCloseRoutes"));
 // ✅ NEW: Clinics (location for navigation)
 app.use("/clinics", require("./routes/clinicRoutes"));
 
+// ✅ NEW: Availabilities (ตารางว่างผู้ช่วย -> ให้คลินิกเห็น)
+app.use("/availabilities", require("./routes/availabilityRoutes"));
+
 // -------------------- Start --------------------
 const PORT = Number(process.env.PORT || 3102);
 
