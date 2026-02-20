@@ -14,7 +14,7 @@ const AvailabilitySchema = new mongoose.Schema(
     // ตารางว่าง
     date: { type: String, required: true, index: true }, // "YYYY-MM-DD"
     start: { type: String, required: true }, // "09:00"
-    end: { type: String, required: true },   // "18:00"
+    end: { type: String, required: true }, // "18:00"
     role: { type: String, default: "ผู้ช่วย" },
     note: { type: String, default: "" },
 
@@ -28,6 +28,19 @@ const AvailabilitySchema = new mongoose.Schema(
     // ถ้าอนาคตคลินิกชวน/จอง จะเติมได้
     bookedByClinicId: { type: String, default: "", index: true },
     bookedAt: { type: Date, default: null },
+
+    // =========================================================
+    // ✅ NEW (SAFE) — link to Shift created from booking
+    // =========================================================
+    // shiftId = ObjectId ของ Shift ที่สร้างตอนจอง
+    // ถ้าไม่สร้าง shift ก็ปล่อยว่างได้ (ไม่กระทบของเดิม)
+    shiftId: { type: String, default: "", index: true },
+
+    // เผื่อคลินิกใส่ note ตอนจอง (UI ส่งมา)
+    bookedNote: { type: String, default: "" },
+
+    // เผื่อเก็บเรทตอนจอง (ถ้าท่านอยากให้จองแล้วกำหนด hourlyRate ได้)
+    bookedHourlyRate: { type: Number, default: 0 },
   },
   { timestamps: true }
 );
@@ -35,5 +48,9 @@ const AvailabilitySchema = new mongoose.Schema(
 // Index ช่วย query "คลินิกดูรายการ open"
 AvailabilitySchema.index({ status: 1, date: 1, start: 1 });
 AvailabilitySchema.index({ staffId: 1, date: 1 });
+
+// ✅ NEW index ช่วย trace จาก shift กลับไป availability และ query รายการที่ถูกจองแล้ว
+AvailabilitySchema.index({ bookedByClinicId: 1, date: 1, start: 1 });
+AvailabilitySchema.index({ shiftId: 1 });
 
 module.exports = mongoose.model("Availability", AvailabilitySchema);

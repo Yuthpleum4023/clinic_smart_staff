@@ -13,6 +13,7 @@
 // - POST /availabilities/:id/book (admin) -> mark availability booked + create Shift
 // - กันจองซ้อนด้วย atomic update: status ต้องเป็น open เท่านั้น
 // - ถ้าสร้าง Shift fail -> rollback availability กลับ open (กันระบบค้าง)
+// - ✅ สำคัญ: create Shift สำเร็จ -> เขียน shiftId กลับเข้า Availability (ทำให้ตามหา shift ได้)
 //
 // Endpoints:
 // - POST   /availabilities              (helper/staff) create mine
@@ -220,6 +221,11 @@ async function createAvailability(req, res) {
       status: "open",
       bookedByClinicId: "",
       bookedAt: null,
+
+      // ✅ NEW fields (safe default)
+      shiftId: "",
+      bookedNote: "",
+      bookedHourlyRate: 0,
     });
 
     return res.status(201).json({ ok: true, availability: doc });
@@ -272,6 +278,11 @@ async function cancelAvailability(req, res) {
     doc.status = "cancelled";
     doc.bookedByClinicId = "";
     doc.bookedAt = null;
+
+    // ✅ NEW: clear shift link if any
+    doc.shiftId = "";
+    doc.bookedNote = "";
+    doc.bookedHourlyRate = 0;
 
     await doc.save();
     return res.json({ ok: true });
@@ -337,6 +348,8 @@ async function bookAvailability(req, res) {
     if (!id) bad("missing id");
     if (!mongoose.Types.ObjectId.isValid(id)) bad("invalid id", 400);
 
+    const body = req.body || {};
+
     // 1) atomic mark booked (กันจองซ้อน)
     const bookedAt = new Date();
 
@@ -347,13 +360,21 @@ async function bookAvailability(req, res) {
           status: "booked",
           bookedByClinicId: clinicId,
           bookedAt,
+
+          // ✅ NEW: เก็บ note/rate ที่คลินิกกรอกตอนจอง (optional)
+          bookedNote: s(body.note),
+          bookedHourlyRate: (() => {
+            const v = body.hourlyRate;
+            const n =
+              typeof v === "number" ? v : parseFloat(String(v || "").trim() || "0") || 0;
+            return n;
+          })(),
         },
       },
       { new: true }
     );
 
     if (!updated) {
-      // ถ้าไม่เจอ แปลว่า: ไม่มีรายการ หรือถูกจอง/ยกเลิกไปแล้ว
       return res.status(409).json({
         ok: false,
         message: "availability is not open (maybe already booked/cancelled)",
@@ -361,9 +382,6 @@ async function bookAvailability(req, res) {
     }
 
     // 2) create Shift (ปลายทางระบบ)
-    //    - staffId มาจาก availability
-    //    - clinicId มาจาก token admin
-    const body = req.body || {};
     const shiftNote = s(body.note) || s(updated.note) || "";
 
     const hourlyRateRaw = body.hourlyRate;
@@ -386,7 +404,7 @@ async function bookAvailability(req, res) {
       hourlyRate,
       note: shiftNote,
 
-      // optional: ถ้าคลินิกอยากส่งพิกัด/ชื่อมา (ไม่ส่งก็ไม่พัง)
+      // optional: คลินิกส่งพิกัด/ชื่อมา (ไม่ส่งก็ไม่พัง)
       clinicLat:
         body.clinicLat === null || body.clinicLat === undefined
           ? null
@@ -401,28 +419,44 @@ async function bookAvailability(req, res) {
       clinicAddress: s(body.clinicAddress),
     };
 
-    // กัน NaN
     if (Number.isNaN(shiftPayload.clinicLat)) shiftPayload.clinicLat = null;
     if (Number.isNaN(shiftPayload.clinicLng)) shiftPayload.clinicLng = null;
 
     let shiftDoc = null;
     try {
       shiftDoc = await Shift.create(shiftPayload);
+
+      // ✅ 3) เขียน shiftId กลับเข้า availability (จุดที่ทำให้ “ตามหา shift ของการจอง” ได้)
+      await Availability.updateOne(
+        { _id: id, status: "booked", bookedByClinicId: clinicId },
+        { $set: { shiftId: String(shiftDoc._id) } }
+      );
     } catch (e) {
-      // 3) rollback availability ถ้าสร้าง shift fail (กันระบบค้าง booked)
+      // rollback availability ถ้าสร้าง shift fail (กันระบบค้าง booked)
       await Availability.updateOne(
         { _id: id, status: "booked", bookedByClinicId: clinicId },
         {
-          $set: { status: "open", bookedByClinicId: "", bookedAt: null },
+          $set: {
+            status: "open",
+            bookedByClinicId: "",
+            bookedAt: null,
+
+            // ✅ NEW: clear booking meta too
+            shiftId: "",
+            bookedNote: "",
+            bookedHourlyRate: 0,
+          },
         }
       );
-
       throw e;
     }
 
+    // โหลด availability ล่าสุด (จะได้มี shiftId ติดกลับไป)
+    const latest = await Availability.findById(id).lean();
+
     return res.json({
       ok: true,
-      availability: updated,
+      availability: latest || updated,
       shift: shiftDoc,
     });
   } catch (e) {
@@ -438,5 +472,5 @@ module.exports = {
   listMyAvailabilities,
   cancelAvailability,
   listOpenAvailabilities,
-  bookAvailability, // ✅ NEW
+  bookAvailability,
 };
