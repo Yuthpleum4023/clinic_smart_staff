@@ -1,32 +1,4 @@
 // controllers/availabilityController.js
-//
-// ✅ FINAL FIX (MATCH models/Availability.js) + ENRICH CONTACT FROM TOKEN
-// - staffId ต้องมาจาก req.user.staffId เท่านั้น (ห้ามเอา userId มาแทน staffId)
-// - userId เก็บแยก field userId
-// - ✅ ENRICH: fullName/phone มาจาก token เป็นหลัก (req.user.fullName/req.user.phone)
-//   -> ไม่ต้อง query user ซ้ำ
-//   -> กัน client ปลอมข้อมูล
-// - /open: ไม่กรอง clinicId แน่นอน + role filter แบบ normalize กันส่งค่าคนละภาษา
-// - overlap: กันเวลาซ้อนทับจริง (ไม่ใช่แค่ start/end ตรงกัน)
-//
-// ✅ NEW (BOOKING):
-// - POST /availabilities/:id/book (admin) -> mark availability booked + create Shift
-// - กันจองซ้อนด้วย atomic update: status ต้องเป็น open เท่านั้น
-// - ถ้าสร้าง Shift fail -> rollback availability กลับ open (กันระบบค้าง)
-// - ✅ สำคัญ: create Shift สำเร็จ -> เขียน shiftId กลับเข้า Availability (ทำให้ตามหา shift ได้)
-//
-// Endpoints:
-// - POST   /availabilities              (helper/staff) create mine
-// - GET    /availabilities/me           (helper/staff) list mine
-// - PATCH  /availabilities/:id/cancel   (helper/staff) cancel mine
-// - GET    /availabilities/open         (admin) list open for clinic to browse
-// - POST   /availabilities/:id/book     (admin) book + create Shift
-//
-// Query for /open:
-//   ?date=YYYY-MM-DD
-//   ?dateFrom=YYYY-MM-DD&dateTo=YYYY-MM-DD
-//   ?role=...   (optional; supports ไทย/อังกฤษแบบหลวม ๆ)
-//
 
 const mongoose = require("mongoose");
 const Availability = require("../models/Availability");
@@ -73,22 +45,18 @@ function bad(msg, code = 400) {
   throw err;
 }
 
-// ✅ staffId ต้องมาจาก staffId เท่านั้น (schema required)
 function getStaffIdStrict(req) {
   return s(req.user?.staffId);
 }
 
-// ✅ userId แยก field (optional)
 function getUserId(req) {
   return s(req.user?.userId || req.user?.id || req.user?._id);
 }
 
-// ✅ clinicId (admin token) — ใช้ตอนจองเพื่อสร้าง Shift
 function getClinicIdStrict(req) {
   return s(req.user?.clinicId);
 }
 
-// ✅ ENRICH CONTACT FROM TOKEN (primary) with fallback from body (secondary)
 function getFullName(req, body) {
   return s(req.user?.fullName) || s(body?.fullName);
 }
@@ -97,13 +65,11 @@ function getPhone(req, body) {
   return s(req.user?.phone) || s(body?.phone);
 }
 
-// time format "HH:mm"
 function isHHmm(x) {
   const t = s(x);
   return !!t && /^([01]\d|2[0-3]):[0-5]\d$/.test(t);
 }
 
-// date "YYYY-MM-DD"
 function isYMD(x) {
   const d = s(x);
   return !!d && /^\d{4}-\d{2}-\d{2}$/.test(d);
@@ -126,12 +92,9 @@ function todayYMD() {
   return `${y}-${m}-${day}`;
 }
 
-// role normalize: รองรับไทย/อังกฤษหลวม ๆ
 function normalizeRoleValue(x) {
   const v = s(x).toLowerCase();
   if (!v) return "";
-
-  // map อังกฤษ -> ไทย default ใน schema
   if (
     v === "helper" ||
     v === "assistant" ||
@@ -139,12 +102,9 @@ function normalizeRoleValue(x) {
     v === "dental assistant"
   )
     return "ผู้ช่วย";
-
-  // ถ้าท่านมี role อื่นในอนาคต ค่อยเติม map ตรงนี้
-  return s(x); // default: ใช้ตามที่ส่งมา
+  return s(x);
 }
 
-// overlap: ช่วง [start,end) ซ้อนกันไหม
 function overlaps(aStart, aEnd, bStart, bEnd) {
   const a1 = timeToMin(aStart);
   const a2 = timeToMin(aEnd);
@@ -162,7 +122,7 @@ async function createAvailability(req, res) {
     const staffId = getStaffIdStrict(req);
     if (!staffId) bad("missing staffId in token (required)", 400);
 
-    const userId = getUserId(req); // optional
+    const userId = getUserId(req);
 
     const {
       date,
@@ -170,7 +130,6 @@ async function createAvailability(req, res) {
       end,
       role = "ผู้ช่วย",
       note = "",
-      // ❗ ยังรับไว้เพื่อ backward-compatible แต่จะ enrich จาก token เป็นหลัก
       fullName: _fullNameBody = "",
       phone: _phoneBody = "",
     } = req.body || {};
@@ -183,11 +142,9 @@ async function createAvailability(req, res) {
     if (a === null || b === null) bad("invalid time");
     if (b <= a) bad("end must be after start");
 
-    // ✅ ENRICH contact from token (primary) with fallback from body (secondary)
     const fullName = getFullName(req, req.body);
     const phone = getPhone(req, req.body);
 
-    // ✅ กันซ้อนทับจริง (เฉพาะรายการที่ยังไม่ cancelled)
     const sameDay = await Availability.find({
       staffId,
       date: s(date),
@@ -214,7 +171,6 @@ async function createAvailability(req, res) {
       role: s(role) || "ผู้ช่วย",
       note: s(note),
 
-      // ✅ contact fields for clinic to call
       fullName: s(fullName),
       phone: s(phone),
 
@@ -222,10 +178,12 @@ async function createAvailability(req, res) {
       bookedByClinicId: "",
       bookedAt: null,
 
-      // ✅ NEW fields (safe default)
       shiftId: "",
       bookedNote: "",
       bookedHourlyRate: 0,
+
+      // ✅ new field default
+      clinicClearedAt: null,
     });
 
     return res.status(201).json({ ok: true, availability: doc });
@@ -279,10 +237,12 @@ async function cancelAvailability(req, res) {
     doc.bookedByClinicId = "";
     doc.bookedAt = null;
 
-    // ✅ NEW: clear shift link if any
     doc.shiftId = "";
     doc.bookedNote = "";
     doc.bookedHourlyRate = 0;
+
+    // staff cancel ก็ถือว่าเคลียร์ด้วย
+    doc.clinicClearedAt = null;
 
     await doc.save();
     return res.json({ ok: true });
@@ -301,7 +261,6 @@ async function listOpenAvailabilities(req, res) {
 
     const q = { status: "open" };
 
-    // filters
     const date = s(req.query.date);
     const dateFrom = s(req.query.dateFrom);
     const dateTo = s(req.query.dateTo);
@@ -315,11 +274,9 @@ async function listOpenAvailabilities(req, res) {
       if (dateTo && isYMD(dateTo)) q.date.$lte = dateTo;
       if (Object.keys(q.date).length === 0) delete q.date;
     } else {
-      // default: วันนี้ขึ้นไป กันของเก่าท่วม (ถ้าไม่อยาก default นี้ ลบบรรทัดนี้ได้)
       q.date = { $gte: todayYMD() };
     }
 
-    // ✅ role filter แบบ normalize กันส่ง helper/ผู้ช่วย แล้วไม่ match
     if (roleRaw) q.role = normalizeRoleValue(roleRaw);
 
     const items = await Availability.find(q).sort({ date: 1, start: 1 }).lean();
@@ -333,9 +290,93 @@ async function listOpenAvailabilities(req, res) {
 }
 
 // =====================================================
-// ✅ NEW: clinic admin book availability -> create Shift
-// POST /availabilities/:id/book
-// body (optional): { note?, hourlyRate?, clinicLat?, clinicLng?, clinicName?, clinicPhone?, clinicAddress? }
+// ✅ NEW: clinic admin list booked (for clinic UI "ค้างไว้หลังจอง")
+// GET /availabilities/booked
+// - returns status=booked of this clinic, and NOT cleared yet
+// =====================================================
+async function listBookedAvailabilities(req, res) {
+  try {
+    mustRole(req, ["admin"]);
+
+    const clinicId = getClinicIdStrict(req);
+    if (!clinicId) bad("missing clinicId in token (required)", 400);
+
+    // optional filters (same style as /open)
+    const q = {
+      status: "booked",
+      bookedByClinicId: clinicId,
+      clinicClearedAt: null,
+    };
+
+    const date = s(req.query.date);
+    const dateFrom = s(req.query.dateFrom);
+    const dateTo = s(req.query.dateTo);
+
+    if (date && isYMD(date)) {
+      q.date = date;
+    } else if (dateFrom || dateTo) {
+      q.date = {};
+      if (dateFrom && isYMD(dateFrom)) q.date.$gte = dateFrom;
+      if (dateTo && isYMD(dateTo)) q.date.$lte = dateTo;
+      if (Object.keys(q.date).length === 0) delete q.date;
+    }
+
+    const items = await Availability.find(q).sort({ date: 1, start: 1 }).lean();
+    return res.json({ ok: true, items });
+  } catch (e) {
+    return res.status(e.statusCode || 500).json({
+      message: "listBookedAvailabilities failed",
+      error: e.message || String(e),
+    });
+  }
+}
+
+// =====================================================
+// ✅ NEW: clinic admin clear booked item
+// POST /availabilities/:id/clear
+// - DOES NOT re-open availability (กันกลับไปว่างซ้ำ)
+// - just mark clinicClearedAt so it disappears from /booked list
+// =====================================================
+async function clearBookedAvailability(req, res) {
+  try {
+    mustRole(req, ["admin"]);
+
+    const clinicId = getClinicIdStrict(req);
+    if (!clinicId) bad("missing clinicId in token (required)", 400);
+
+    const id = s(req.params.id);
+    if (!id) bad("missing id");
+    if (!mongoose.Types.ObjectId.isValid(id)) bad("invalid id", 400);
+
+    const doc = await Availability.findOneAndUpdate(
+      {
+        _id: id,
+        status: "booked",
+        bookedByClinicId: clinicId,
+        clinicClearedAt: null,
+      },
+      { $set: { clinicClearedAt: new Date() } },
+      { new: true }
+    ).lean();
+
+    if (!doc) {
+      return res.status(409).json({
+        ok: false,
+        message: "cannot clear (not booked by this clinic or already cleared)",
+      });
+    }
+
+    return res.json({ ok: true, availability: doc });
+  } catch (e) {
+    return res.status(e.statusCode || 500).json({
+      message: "clearBookedAvailability failed",
+      error: e.message || String(e),
+    });
+  }
+}
+
+// =====================================================
+// ✅ booking: unchanged behavior + ensure clinicClearedAt reset
 // =====================================================
 async function bookAvailability(req, res) {
   try {
@@ -349,8 +390,6 @@ async function bookAvailability(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) bad("invalid id", 400);
 
     const body = req.body || {};
-
-    // 1) atomic mark booked (กันจองซ้อน)
     const bookedAt = new Date();
 
     const updated = await Availability.findOneAndUpdate(
@@ -361,14 +400,18 @@ async function bookAvailability(req, res) {
           bookedByClinicId: clinicId,
           bookedAt,
 
-          // ✅ NEW: เก็บ note/rate ที่คลินิกกรอกตอนจอง (optional)
           bookedNote: s(body.note),
           bookedHourlyRate: (() => {
             const v = body.hourlyRate;
             const n =
-              typeof v === "number" ? v : parseFloat(String(v || "").trim() || "0") || 0;
+              typeof v === "number"
+                ? v
+                : parseFloat(String(v || "").trim() || "0") || 0;
             return n;
           })(),
+
+          // ✅ IMPORTANT: ถ้าเคยเคลียร์ไว้ แล้วจองใหม่ -> reset
+          clinicClearedAt: null,
         },
       },
       { new: true }
@@ -381,7 +424,6 @@ async function bookAvailability(req, res) {
       });
     }
 
-    // 2) create Shift (ปลายทางระบบ)
     const shiftNote = s(body.note) || s(updated.note) || "";
 
     const hourlyRateRaw = body.hourlyRate;
@@ -404,7 +446,6 @@ async function bookAvailability(req, res) {
       hourlyRate,
       note: shiftNote,
 
-      // optional: คลินิกส่งพิกัด/ชื่อมา (ไม่ส่งก็ไม่พัง)
       clinicLat:
         body.clinicLat === null || body.clinicLat === undefined
           ? null
@@ -426,13 +467,11 @@ async function bookAvailability(req, res) {
     try {
       shiftDoc = await Shift.create(shiftPayload);
 
-      // ✅ 3) เขียน shiftId กลับเข้า availability (จุดที่ทำให้ “ตามหา shift ของการจอง” ได้)
       await Availability.updateOne(
         { _id: id, status: "booked", bookedByClinicId: clinicId },
         { $set: { shiftId: String(shiftDoc._id) } }
       );
     } catch (e) {
-      // rollback availability ถ้าสร้าง shift fail (กันระบบค้าง booked)
       await Availability.updateOne(
         { _id: id, status: "booked", bookedByClinicId: clinicId },
         {
@@ -441,17 +480,17 @@ async function bookAvailability(req, res) {
             bookedByClinicId: "",
             bookedAt: null,
 
-            // ✅ NEW: clear booking meta too
             shiftId: "",
             bookedNote: "",
             bookedHourlyRate: 0,
+
+            clinicClearedAt: null,
           },
         }
       );
       throw e;
     }
 
-    // โหลด availability ล่าสุด (จะได้มี shiftId ติดกลับไป)
     const latest = await Availability.findById(id).lean();
 
     return res.json({
@@ -472,5 +511,7 @@ module.exports = {
   listMyAvailabilities,
   cancelAvailability,
   listOpenAvailabilities,
+  listBookedAvailabilities, // ✅ NEW
+  clearBookedAvailability, // ✅ NEW
   bookAvailability,
 };

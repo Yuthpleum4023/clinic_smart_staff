@@ -30,18 +30,21 @@ const AvailabilitySchema = new mongoose.Schema(
     bookedAt: { type: Date, default: null },
 
     // =========================================================
-    // ✅ NEW (SAFE) — link to Shift created from booking
+    // ✅ link to Shift created from booking (SAFE)
     // =========================================================
-    // shiftId = ObjectId ของ Shift ที่สร้างตอนจอง
-    // ถ้าไม่สร้าง shift ก็ปล่อยว่างได้ (ไม่กระทบของเดิม)
     // ✅ IMPORTANT: ไม่ใส่ index:true ตรงนี้ เพื่อกัน duplicate กับ schema.index()
     shiftId: { type: String, default: "" },
 
-    // เผื่อคลินิกใส่ note ตอนจอง (UI ส่งมา)
+    // note/rate ตอนคลินิกจอง (optional)
     bookedNote: { type: String, default: "" },
-
-    // เผื่อเก็บเรทตอนจอง (ถ้าท่านอยากให้จองแล้วกำหนด hourlyRate ได้)
     bookedHourlyRate: { type: Number, default: 0 },
+
+    // =========================================================
+    // ✅ NEW: clinic clear (ให้คลินิก “เคลียร์” รายการที่จองแล้วออกจากหน้าคลินิก)
+    // - ไม่ทำให้กลับไป open (กันคนอื่นเห็นซ้ำ)
+    // - แค่ซ่อนออกจาก /availabilities/booked
+    // =========================================================
+    clinicClearedAt: { type: Date, default: null, index: true },
   },
   { timestamps: true }
 );
@@ -50,10 +53,19 @@ const AvailabilitySchema = new mongoose.Schema(
 AvailabilitySchema.index({ status: 1, date: 1, start: 1 });
 AvailabilitySchema.index({ staffId: 1, date: 1 });
 
-// ✅ query รายการที่ถูกจองแล้ว + เรียงตามวัน/เวลา
+// query รายการที่ถูกจองแล้ว + เรียงตามวัน/เวลา
 AvailabilitySchema.index({ bookedByClinicId: 1, date: 1, start: 1 });
 
-// ✅ trace จาก shift กลับไป availability (สำคัญตอน debug)
+// ✅ NEW: query booked ของคลินิกที่ “ยังไม่เคลียร์”
+AvailabilitySchema.index({
+  bookedByClinicId: 1,
+  status: 1,
+  clinicClearedAt: 1,
+  date: 1,
+  start: 1,
+});
+
+// trace จาก shift กลับไป availability
 AvailabilitySchema.index({ shiftId: 1 });
 
 module.exports = mongoose.model("Availability", AvailabilitySchema);
