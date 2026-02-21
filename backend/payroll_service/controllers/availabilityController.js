@@ -3,6 +3,7 @@
 const mongoose = require("mongoose");
 const Availability = require("../models/Availability");
 const Shift = require("../models/Shift");
+const Clinic = require("../models/Clinic"); // ✅ NEW: ดึงข้อมูลคลินิกจาก Mongo
 
 // ---------------- helpers ----------------
 function normalizeRoles(r) {
@@ -114,6 +115,14 @@ function overlaps(aStart, aEnd, bStart, bEnd) {
   return Math.max(a1, b1) < Math.min(a2, b2);
 }
 
+function toNumOrNull(v) {
+  if (v === null || v === undefined) return null;
+  const t = String(v).trim();
+  if (!t) return null;
+  const n = Number(t);
+  return Number.isNaN(n) ? null : n;
+}
+
 // ---------------- staff: create mine ----------------
 async function createAvailability(req, res) {
   try {
@@ -208,7 +217,52 @@ async function listMyAvailabilities(req, res) {
     if (status) q.status = status;
 
     const items = await Availability.find(q).sort({ date: 1, start: 1 }).lean();
-    return res.json({ ok: true, items });
+
+    // =========================================================
+    // ✅ ENRICH (SAFE): ถ้าสถานะ booked -> เติมข้อมูลคลินิกให้ helper โทร/ดูที่อยู่ได้
+    // - ไม่แก้ schema Availability เพิ่ม field (return-only)
+    // - เอาข้อมูลจาก Clinic collection ตาม bookedByClinicId
+    // =========================================================
+    const bookedClinicIds = Array.from(
+      new Set(
+        (items || [])
+          .filter(
+            (it) =>
+              s(it.status).toLowerCase() === "booked" && s(it.bookedByClinicId)
+          )
+          .map((it) => s(it.bookedByClinicId))
+      )
+    );
+
+    let clinicMap = {};
+    if (bookedClinicIds.length > 0) {
+      const clinics = await Clinic.find({
+        clinicId: { $in: bookedClinicIds },
+      }).lean();
+
+      clinicMap = (clinics || []).reduce((acc, c) => {
+        acc[s(c.clinicId)] = c;
+        return acc;
+      }, {});
+    }
+
+    const enriched = (items || []).map((it) => {
+      if (s(it.status).toLowerCase() !== "booked") return it;
+
+      const cid = s(it.bookedByClinicId);
+      const c = clinicMap[cid];
+
+      return {
+        ...it,
+        bookedClinicName: s(c?.name),
+        bookedClinicPhone: s(c?.phone),
+        bookedClinicAddress: s(c?.address),
+        bookedClinicLat: c?.lat ?? null,
+        bookedClinicLng: c?.lng ?? null,
+      };
+    });
+
+    return res.json({ ok: true, items: enriched });
   } catch (e) {
     return res.status(e.statusCode || 500).json({
       message: "listMyAvailabilities failed",
@@ -377,6 +431,7 @@ async function clearBookedAvailability(req, res) {
 
 // =====================================================
 // ✅ booking: unchanged behavior + ensure clinicClearedAt reset
+// + ✅ ENRICH CLINIC CONTACT FROM MONGO (Clinic)
 // =====================================================
 async function bookAvailability(req, res) {
   try {
@@ -424,6 +479,19 @@ async function bookAvailability(req, res) {
       });
     }
 
+    // ✅ NEW: อ่านข้อมูลคลินิกจาก Mongo (DB เป็นหลัก)
+    const clinic = await Clinic.findOne({ clinicId }).lean();
+
+    // DB default + body override ได้
+    const clinicName = s(body.clinicName) || s(clinic?.name);
+    const clinicPhone = s(body.clinicPhone) || s(clinic?.phone);
+    const clinicAddress = s(body.clinicAddress) || s(clinic?.address);
+
+    const clinicLat =
+      body.clinicLat === undefined ? clinic?.lat : toNumOrNull(body.clinicLat);
+    const clinicLng =
+      body.clinicLng === undefined ? clinic?.lng : toNumOrNull(body.clinicLng);
+
     const shiftNote = s(body.note) || s(updated.note) || "";
 
     const hourlyRateRaw = body.hourlyRate;
@@ -446,22 +514,13 @@ async function bookAvailability(req, res) {
       hourlyRate,
       note: shiftNote,
 
-      clinicLat:
-        body.clinicLat === null || body.clinicLat === undefined
-          ? null
-          : Number(body.clinicLat),
-      clinicLng:
-        body.clinicLng === null || body.clinicLng === undefined
-          ? null
-          : Number(body.clinicLng),
-
-      clinicName: s(body.clinicName),
-      clinicPhone: s(body.clinicPhone),
-      clinicAddress: s(body.clinicAddress),
+      // ✅ IMPORTANT: ใส่ meta คลินิกให้ผู้ช่วยโทรกลับได้
+      clinicLat: clinicLat ?? null,
+      clinicLng: clinicLng ?? null,
+      clinicName: clinicName,
+      clinicPhone: clinicPhone,
+      clinicAddress: clinicAddress,
     };
-
-    if (Number.isNaN(shiftPayload.clinicLat)) shiftPayload.clinicLat = null;
-    if (Number.isNaN(shiftPayload.clinicLng)) shiftPayload.clinicLng = null;
 
     let shiftDoc = null;
     try {
