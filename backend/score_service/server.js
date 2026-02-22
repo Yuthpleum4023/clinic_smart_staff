@@ -1,13 +1,14 @@
-// server.js (score_service) — FULL FILE (SAFE + FIXED MOUNT + REQUEST LOG)
+// server.js (score_service) — FULL FILE (SAFE + FIXED BODY PARSER + REQUEST/BODY LOG)
 // -----------------------------------------------------------------------------
-// ✅ Adds:
-// - ✅ Request log middleware (Render Live tail must show every request)
-// - ✅ 404 handler (เห็น path ที่ยิงผิดชัด ๆ)
+// ✅ Adds / Ensures:
+// - ✅ express.json() + express.urlencoded() BEFORE routes (แก้ req.body ว่าง/400)
+// - ✅ Request logger (เห็นทุก request ใน Render Live tail)
+// - ✅ Body preview logger (เฉพาะ method ที่มี body)
+// - ✅ /health
+// - ✅ /events -> routes/eventRoutes
+// - ✅ /score  -> routes/scoreRoutes
+// - ✅ 404 handler (เห็น path ที่ยิงผิด)
 // - ✅ Error handler (กันพังเงียบ)
-// ✅ Keeps:
-// - /health
-// - /events -> routes/eventRoutes
-// - /score  -> routes/scoreRoutes
 // -----------------------------------------------------------------------------
 
 require("dotenv").config();
@@ -17,14 +18,20 @@ const mongoose = require("mongoose");
 
 const app = express();
 
-// CORS / body
+// -----------------------------------------------------------------------------
+// CORS
+// -----------------------------------------------------------------------------
 app.use(cors({ origin: "*", credentials: false }));
+
+// -----------------------------------------------------------------------------
+// ✅ BODY PARSERS (MUST be before routes)
+// - แก้ปัญหา req.body เป็น {} / undefined -> 400 ทันที
+// -----------------------------------------------------------------------------
 app.use(express.json({ limit: "1mb" }));
+app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 
 // -----------------------------------------------------------------------------
 // ✅ REQUEST LOGGER (สำคัญมากสำหรับ Render Live tail)
-// - ต่อให้ route ไม่แมตช์ (404) ก็จะเห็น log
-// - ช่วยจับว่า Flutter ยิงเข้ามาที่ service นี้จริงไหม
 // -----------------------------------------------------------------------------
 app.use((req, res, next) => {
   const start = Date.now();
@@ -34,6 +41,21 @@ app.use((req, res, next) => {
     req.socket.remoteAddress;
 
   console.log(`➡️ ${req.method} ${req.originalUrl}`, { ip });
+
+  // ✅ Log content-type (ช่วย debug body parse)
+  const ct = req.headers["content-type"];
+  if (ct) console.log("   ↳ content-type:", ct);
+
+  // ✅ Log body preview for POST/PUT/PATCH (หลัง express.json แล้ว)
+  if (["POST", "PUT", "PATCH"].includes(req.method)) {
+    // ระวังข้อมูลส่วนตัว: log แบบย่อ + ตัด token ออก
+    const safeBody = { ...(req.body || {}) };
+    if (safeBody.password) safeBody.password = "***";
+    if (safeBody.token) safeBody.token = "***";
+    if (safeBody.jwt) safeBody.jwt = "***";
+
+    console.log("   ↳ body:", safeBody);
+  }
 
   res.on("finish", () => {
     const ms = Date.now() - start;
@@ -56,11 +78,7 @@ app.get("/health", (req, res) => {
 // Events: POST /events/attendance
 app.use("/events", require("./routes/eventRoutes"));
 
-// ✅ Score + TrustScore alias อยู่ใน scoreRoutes
-// - GET  /score/staff/:staffId/score
-// - GET  /score/trustscore?staffId=xxx
-// - GET  /score/trustscore/:staffId
-// - POST /score/events/attendance  (ถ้าคุณยัง mount ไว้แบบนี้ใน scoreRoutes)
+// Score routes (และอาจมี /score/events/attendance ด้วย ขึ้นกับไฟล์ของท่าน)
 app.use("/score", require("./routes/scoreRoutes"));
 
 // ❗ ถ้าโปรเจกต์คุณ “ไม่มีไฟล์” 2 อันนี้ ให้ปิดไว้ก่อน ไม่งั้น service จะล้ม
@@ -91,7 +109,10 @@ app.use((err, req, res, next) => {
   });
 });
 
-const PORT = process.env.PORT || 3103;
+// -----------------------------------------------------------------------------
+// START
+// -----------------------------------------------------------------------------
+const PORT = process.env.PORT || 10000;
 
 async function start() {
   if (!process.env.MONGO_URI) {
