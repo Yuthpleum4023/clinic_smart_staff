@@ -36,19 +36,48 @@ function normalizeIncomingStatus(s) {
   return v;
 }
 
+// ======================================================
+// ✅ NEW: score -> level
+// ======================================================
+function scoreToLevel(score) {
+  const s = Number(score || 0);
+
+  // ปรับ threshold ได้ทีหลังง่ายมาก
+  if (s >= 90) return { level: "excellent", label: "ยอดเยี่ยม" };
+  if (s >= 75) return { level: "good", label: "ดีมาก" };
+  if (s >= 60) return { level: "normal", label: "ปกติ" };
+  return { level: "risk", label: "เสี่ยง" };
+}
+
+function updateLevel(scoreDoc) {
+  const { level, label } = scoreToLevel(scoreDoc.trustScore);
+  scoreDoc.level = level;
+  scoreDoc.levelLabel = label;
+  scoreDoc.levelUpdatedAt = new Date();
+  return scoreDoc;
+}
+
 function ensureScoreDefaults(scoreDoc) {
   scoreDoc.totalShifts = Number(scoreDoc.totalShifts || 0);
   scoreDoc.completed = Number(scoreDoc.completed || 0);
   scoreDoc.late = Number(scoreDoc.late || 0);
   scoreDoc.noShow = Number(scoreDoc.noShow || 0);
 
-  // TrustScore model เดิมใช้ field ชื่อ cancelled
-  scoreDoc.cancelled = Number(scoreDoc.cancelled || 0);
+  // ✅ model ของท่านใช้ cancelledEarly
+  scoreDoc.cancelledEarly = Number(scoreDoc.cancelledEarly || 0);
 
   scoreDoc.flags = Array.isArray(scoreDoc.flags) ? scoreDoc.flags : [];
   scoreDoc.badges = Array.isArray(scoreDoc.badges) ? scoreDoc.badges : [];
 
   if (typeof scoreDoc.trustScore !== "number") scoreDoc.trustScore = BASE_SCORE;
+
+  // ✅ defaults for new fields
+  scoreDoc.level = (scoreDoc.level || "unknown").toString();
+  scoreDoc.levelLabel = (scoreDoc.levelLabel || "ยังไม่มีข้อมูล").toString();
+  scoreDoc.levelUpdatedAt = scoreDoc.levelUpdatedAt || null;
+
+  // ✅ keep level in sync even for old docs
+  updateLevel(scoreDoc);
 
   return scoreDoc;
 }
@@ -67,8 +96,8 @@ function applyRules(scoreDoc, { status, minutesLate, occurredAt }) {
   if (status === "completed") scoreDoc.completed += 1;
   if (status === "late") scoreDoc.late += 1;
 
-  // ✅ cancelled_early -> count into cancelled bucket (backward-compatible)
-  if (status === "cancelled_early") scoreDoc.cancelled += 1;
+  // ✅ cancelled_early -> count into cancelledEarly (ตาม model ใหม่)
+  if (status === "cancelled_early") scoreDoc.cancelledEarly += 1;
 
   if (status === "no_show") {
     scoreDoc.noShow += 1;
@@ -90,6 +119,9 @@ function applyRules(scoreDoc, { status, minutesLate, occurredAt }) {
   else badges.delete("HIGHLY_RELIABLE");
 
   scoreDoc.badges = Array.from(badges);
+
+  // ✅ NEW: update derived level after score change
+  updateLevel(scoreDoc);
 
   return { scoreDoc, delta: finalDelta };
 }
@@ -163,10 +195,13 @@ async function postAttendanceEvent(req, res) {
         completed: 0,
         late: 0,
         noShow: 0,
-        cancelled: 0,
+        cancelledEarly: 0,
         lastNoShowAt: null,
         flags: [],
         badges: [],
+        level: "unknown",
+        levelLabel: "ยังไม่มีข้อมูล",
+        levelUpdatedAt: new Date(),
       });
     }
 
@@ -182,7 +217,7 @@ async function postAttendanceEvent(req, res) {
       ok: true,
       applied: { status: st, delta },
       event,
-      score: scoreDoc,
+      score: scoreDoc, // ✅ now includes level/label
     });
   } catch (e) {
     return res.status(500).json({

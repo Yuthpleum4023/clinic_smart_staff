@@ -3,6 +3,10 @@ const mongoose = require("mongoose");
 const TrustScoreSchema = new mongoose.Schema(
   {
     staffId: { type: String, required: true, unique: true, index: true },
+
+    // =========================
+    // SCORE CORE
+    // =========================
     trustScore: { type: Number, default: 80 }, // 0-100
 
     totalShifts: { type: Number, default: 0 },
@@ -10,10 +14,34 @@ const TrustScoreSchema = new mongoose.Schema(
     late: { type: Number, default: 0 },
     noShow: { type: Number, default: 0 },
 
-    // ✅ rename ให้ชัดว่า cancelled แบบไหน
+    // ✅ cancelled ก่อนเวลา
     cancelledEarly: { type: Number, default: 0 },
 
+    // =========================
+    // ✅ NEW: LEVEL / STATUS
+    // =========================
+    level: {
+      type: String,
+      default: "unknown",
+      index: true,
+      enum: ["excellent", "good", "normal", "risk", "unknown"],
+    },
+
+    levelLabel: {
+      type: String,
+      default: "ยังไม่มีข้อมูล",
+    },
+
+    levelUpdatedAt: {
+      type: Date,
+      default: null,
+    },
+
+    // =========================
+    // META / FLAGS
+    // =========================
     lastNoShowAt: { type: Date, default: null },
+
     flags: { type: [String], default: [] },   // e.g. ["NO_SHOW_30D"]
     badges: { type: [String], default: [] }   // e.g. ["HIGHLY_RELIABLE"]
   },
