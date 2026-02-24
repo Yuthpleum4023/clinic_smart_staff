@@ -3,6 +3,9 @@ const router = require("express").Router();
 const auth = require("../middleware/auth");
 const ctrl = require("../controllers/clinicController");
 
+// ✅ NEW — Brand Controller
+const brand = require("../controllers/clinicBrandController");
+
 // ✅ ดูข้อมูลคลินิก (ต้อง login)
 // GET /clinics/:clinicId
 router.get("/:clinicId", auth, ctrl.getClinic);
@@ -37,5 +40,12 @@ router.patch(
 // ✅ อัปเดตพิกัดคลินิก (admin เท่านั้น) — ของเดิมยังอยู่
 // PATCH /clinics/:clinicId/location
 router.patch("/:clinicId/location", auth, ctrl.patchClinicLocation);
+
+
+// ✅ NEW — SaaS Branding System (Monogram Logo)
+/// PATCH /clinics/brand
+/// body: { clinicId, brandAbbr, brandColor }
+router.patch("/brand", auth, brand.updateClinicBrand);
+
 
 module.exports = router;

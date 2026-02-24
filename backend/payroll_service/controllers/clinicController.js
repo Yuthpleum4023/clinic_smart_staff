@@ -1,12 +1,4 @@
 // payroll_service/controllers/clinicController.js
-//
-// ✅ FULL FILE (DEBUG LOG + FIX mustAdmin + FAST DEFAULT)
-// - ✅ PATCH /clinics/:clinicId/location (admin)
-// - ✅ PATCH /clinics/me/location        (admin)
-// - ✅ FIX: mustAdmin return boolean จริง (กันไหลต่อหลังส่ง 403)
-// - ✅ FIX: backfill default = false (กัน request ค้าง/timeout 30s)
-// - ✅ ADD: logs + timing + mongo result counts
-//
 
 const Clinic = require("../models/Clinic");
 const ShiftNeed = require("../models/ShiftNeed");
@@ -33,7 +25,6 @@ function isValidLatLng(lat, lng) {
   return true;
 }
 
-// ✅✅✅ FIX: ต้องคืน boolean เท่านั้น
 function mustAdmin(req, res) {
   const role = s(req.user?.role).toLowerCase();
   if (role !== "admin") {
@@ -43,7 +34,6 @@ function mustAdmin(req, res) {
   return true;
 }
 
-// ✅ เปลี่ยน defaultVal เป็น false เพื่อกันค้าง/timeout
 function parseBool(v, defaultVal = false) {
   if (v === undefined || v === null) return defaultVal;
   if (typeof v === "boolean") return v;
@@ -66,8 +56,7 @@ function previewToken(authHeader) {
 
 // ---------------- controllers ----------------
 
-// PATCH /clinics/:clinicId/location   (admin)
-// body: { clinicLat, clinicLng, clinicName, clinicPhone, clinicAddress, backfill? }
+// PATCH /clinics/:clinicId/location (admin)
 async function patchClinicLocation(req, res) {
   const _rid = rid();
   const t0 = Date.now();
@@ -91,41 +80,46 @@ async function patchClinicLocation(req, res) {
 
     const clinicId = s(req.params.clinicId || "");
     if (!clinicId) {
-      console.log(`❌ [${_rid}] missing clinicId param`);
-      console.log(`⏱️ [${_rid}] done in ${Date.now() - t0}ms`);
-      console.log("======================================");
+      console.log(`❌ [${_rid}] missing clinicId`);
       return res.status(400).json({ message: "clinicId required" });
     }
 
     const lat = numOrNull(req.body?.clinicLat ?? req.body?.lat);
     const lng = numOrNull(req.body?.clinicLng ?? req.body?.lng);
 
-    console.log(`🧭 [${_rid}] parsed lat/lng:`, { lat, lng });
+    // ✅ NEW LOGIC
+    const hasLatLngInput = lat !== null || lng !== null;
 
-    if (!isValidLatLng(lat, lng)) {
-      console.log(`❌ [${_rid}] invalid lat/lng`);
-      console.log(`⏱️ [${_rid}] done in ${Date.now() - t0}ms`);
-      console.log("======================================");
-      return res.status(400).json({
-        message: "Invalid clinicLat/clinicLng",
-        hint: "lat in [-90..90], lng in [-180..180]",
-        got: { lat, lng },
-      });
+    if (hasLatLngInput) {
+      if (!isValidLatLng(lat, lng)) {
+        console.log(`❌ [${_rid}] invalid lat/lng`);
+        return res.status(400).json({
+          message: "Invalid clinicLat/clinicLng",
+          hint: "lat in [-90..90], lng in [-180..180]",
+          got: { lat, lng },
+        });
+      }
     }
 
     const name = s(req.body?.clinicName ?? req.body?.name);
     const phone = s(req.body?.clinicPhone ?? req.body?.phone);
     const address = s(req.body?.clinicAddress ?? req.body?.address);
 
-    console.log(`🧾 [${_rid}] update clinic:`, { clinicId, name, phone, address });
+    const doBackfill = parseBool(req.body?.backfill, false);
+
+    if (doBackfill && !hasLatLngInput) {
+      console.log(`❌ [${_rid}] backfill without lat/lng`);
+      return res.status(400).json({
+        message: "backfill requires clinicLat/clinicLng",
+      });
+    }
 
     const updated = await Clinic.findOneAndUpdate(
       { clinicId },
       {
         $set: {
           clinicId,
-          lat,
-          lng,
+          ...(hasLatLngInput ? { lat, lng } : {}),
           ...(name ? { name } : {}),
           ...(phone ? { phone } : {}),
           ...(address ? { address } : {}),
@@ -134,31 +128,13 @@ async function patchClinicLocation(req, res) {
       { new: true, upsert: true }
     ).lean();
 
-    console.log(`✅ [${_rid}] clinic updated`, {
-      clinicId,
-      lat: updated?.lat,
-      lng: updated?.lng,
-    });
-
-    // ✅ optional backfill (default=false กันค้าง)
-    const doBackfill = parseBool(req.body?.backfill, false);
-    console.log(`🧩 [${_rid}] backfill?`, doBackfill);
+    console.log(`✅ [${_rid}] clinic updated`);
 
     let backfill = { ok: false, shiftneedsUpdated: 0, shiftsUpdated: 0 };
 
     if (doBackfill) {
-      const bt0 = Date.now();
-
       const needRes = await ShiftNeed.updateMany(
-        {
-          clinicId,
-          $or: [
-            { clinicLat: null },
-            { clinicLng: null },
-            { clinicLat: { $exists: false } },
-            { clinicLng: { $exists: false } },
-          ],
-        },
+        { clinicId },
         {
           $set: {
             clinicLat: lat,
@@ -171,15 +147,7 @@ async function patchClinicLocation(req, res) {
       );
 
       const shiftRes = await Shift.updateMany(
-        {
-          clinicId,
-          $or: [
-            { clinicLat: null },
-            { clinicLng: null },
-            { clinicLat: { $exists: false } },
-            { clinicLng: { $exists: false } },
-          ],
-        },
+        { clinicId },
         {
           $set: {
             clinicLat: lat,
@@ -197,7 +165,7 @@ async function patchClinicLocation(req, res) {
         shiftsUpdated: Number(shiftRes?.modifiedCount || 0),
       };
 
-      console.log(`🧩 [${_rid}] backfill done in ${Date.now() - bt0}ms`, backfill);
+      console.log(`🧩 [${_rid}] backfill done`, backfill);
     }
 
     console.log(`⏱️ [${_rid}] done in ${Date.now() - t0}ms`);
@@ -206,64 +174,23 @@ async function patchClinicLocation(req, res) {
     return res.json({ ok: true, clinic: updated, backfill });
   } catch (e) {
     console.log(`💥 [${_rid}] ERROR`, e);
-    console.log(`⏱️ [${_rid}] failed in ${Date.now() - t0}ms`);
-    console.log("======================================");
-
     return res.status(500).json({
       message: "patchClinicLocation failed",
-      error: e?.message || String(e),
+      error: e.message,
     });
   }
 }
 
-// ✅ NEW: PATCH /clinics/me/location (admin)
-// body: { clinicLat, clinicLng, clinicName, clinicPhone, clinicAddress, backfill? }
+// PATCH /clinics/me/location
 async function patchMyClinicLocation(req, res) {
-  const _rid = rid();
-  const t0 = Date.now();
+  const clinicId = s(req.user?.clinicId);
 
-  try {
-    console.log("======================================");
-    console.log(`📍 [${_rid}] PATCH /clinics/me/location HIT`);
-    console.log("Host:", req.get("host"));
-    console.log("Authorization:", req.get("authorization") ? "YES" : "NO");
-    console.log("Token Preview:", previewToken(req.get("authorization")));
-    console.log("User:", req.user);
-    console.log("Body:", req.body);
-
-    if (!mustAdmin(req, res)) {
-      console.log(`⛔ [${_rid}] forbidden (not admin)`);
-      console.log(`⏱️ [${_rid}] done in ${Date.now() - t0}ms`);
-      console.log("======================================");
-      return;
-    }
-
-    const clinicId = s(req.user?.clinicId);
-    if (!clinicId) {
-      console.log(`❌ [${_rid}] missing clinicId in token`);
-      console.log(`⏱️ [${_rid}] done in ${Date.now() - t0}ms`);
-      console.log("======================================");
-      return res.status(400).json({ message: "missing clinicId in token" });
-    }
-
-    // reuse handler เดิม
-    req.params = req.params || {};
-    req.params.clinicId = clinicId;
-
-    console.log(`➡️ [${_rid}] forward to patchClinicLocation with clinicId=${clinicId}`);
-    console.log("======================================");
-
-    return patchClinicLocation(req, res);
-  } catch (e) {
-    console.log(`💥 [${_rid}] ERROR`, e);
-    console.log(`⏱️ [${_rid}] failed in ${Date.now() - t0}ms`);
-    console.log("======================================");
-
-    return res.status(500).json({
-      message: "patchMyClinicLocation failed",
-      error: e?.message || String(e),
-    });
+  if (!clinicId) {
+    return res.status(400).json({ message: "missing clinicId in token" });
   }
+
+  req.params.clinicId = clinicId;
+  return patchClinicLocation(req, res);
 }
 
 // GET /clinics/:clinicId
@@ -279,7 +206,7 @@ async function getClinic(req, res) {
   } catch (e) {
     return res.status(500).json({
       message: "getClinic failed",
-      error: e.message || String(e),
+      error: e.message,
     });
   }
 }

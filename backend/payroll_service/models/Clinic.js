@@ -12,6 +12,10 @@ const ClinicSchema = new mongoose.Schema(
 
     lat: { type: Number, default: null },
     lng: { type: Number, default: null },
+
+    // ✅ NEW — SaaS Branding (Monogram Logo System)
+    brandAbbr: { type: String, default: "" },      // เช่น MC
+    brandColor: { type: String, default: "" },     // เช่น #6D28D9
   },
   { timestamps: true }
 );
