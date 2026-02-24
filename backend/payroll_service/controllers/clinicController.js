@@ -1,4 +1,15 @@
 // payroll_service/controllers/clinicController.js
+//
+// ✅ FULL FILE (ADD: patchMyClinicProfile)
+// - ✅ PATCH /clinics/:clinicId/location (admin) : เดิมของท่าน (รองรับอัปเดตชื่อ/โทร/ที่อยู่ โดยไม่บังคับ lat/lng)
+// - ✅ PATCH /clinics/me/location        (admin) : เดิมของท่าน
+// - ✅ NEW: PATCH /clinics/me/profile    (admin) : เปลี่ยนชื่อ/โทร/ที่อยู่ แบบไม่ยุ่ง location
+// - ✅ GET /clinics/:clinicId            (auth)
+//
+// Notes:
+// - profile route ใช้ clinicId จาก token เท่านั้น (กันแก้ข้ามคลินิก)
+// - อัปเดตเฉพาะ field ที่ส่งมา และไม่รับ lat/lng ใน endpoint นี้
+//
 
 const Clinic = require("../models/Clinic");
 const ShiftNeed = require("../models/ShiftNeed");
@@ -54,9 +65,16 @@ function previewToken(authHeader) {
   return t.slice(0, 24);
 }
 
+function isValidThaiPhoneDigits(phone) {
+  // ของท่านใช้ 9-10 digits เป็นมาตรฐาน
+  if (!phone) return false;
+  return /^\d{9,10}$/.test(phone);
+}
+
 // ---------------- controllers ----------------
 
 // PATCH /clinics/:clinicId/location (admin)
+// body: { clinicLat?, clinicLng?, clinicName?, clinicPhone?, clinicAddress?, backfill? }
 async function patchClinicLocation(req, res) {
   const _rid = rid();
   const t0 = Date.now();
@@ -104,6 +122,15 @@ async function patchClinicLocation(req, res) {
     const name = s(req.body?.clinicName ?? req.body?.name);
     const phone = s(req.body?.clinicPhone ?? req.body?.phone);
     const address = s(req.body?.clinicAddress ?? req.body?.address);
+
+    // (optional) phone validate: ถ้าส่งมาและไม่ว่าง ค่อย validate
+    if (phone && !isValidThaiPhoneDigits(phone)) {
+      return res.status(400).json({
+        message: "Invalid clinicPhone",
+        hint: "phone must be 9-10 digits",
+        got: phone,
+      });
+    }
 
     const doBackfill = parseBool(req.body?.backfill, false);
 
@@ -176,12 +203,12 @@ async function patchClinicLocation(req, res) {
     console.log(`💥 [${_rid}] ERROR`, e);
     return res.status(500).json({
       message: "patchClinicLocation failed",
-      error: e.message,
+      error: e?.message || String(e),
     });
   }
 }
 
-// PATCH /clinics/me/location
+// PATCH /clinics/me/location (admin)
 async function patchMyClinicLocation(req, res) {
   const clinicId = s(req.user?.clinicId);
 
@@ -193,7 +220,86 @@ async function patchMyClinicLocation(req, res) {
   return patchClinicLocation(req, res);
 }
 
-// GET /clinics/:clinicId
+// ✅ NEW: PATCH /clinics/me/profile (admin)
+// body: { clinicName?, clinicPhone?, clinicAddress? }
+async function patchMyClinicProfile(req, res) {
+  const _rid = rid();
+  const t0 = Date.now();
+
+  try {
+    console.log("======================================");
+    console.log(`🧾 [${_rid}] PATCH /clinics/me/profile HIT`);
+    console.log("Host:", req.get("host"));
+    console.log("Authorization:", req.get("authorization") ? "YES" : "NO");
+    console.log("Token Preview:", previewToken(req.get("authorization")));
+    console.log("User:", req.user);
+    console.log("Body:", req.body);
+
+    if (!mustAdmin(req, res)) {
+      console.log(`⛔ [${_rid}] forbidden (not admin)`);
+      console.log(`⏱️ [${_rid}] done in ${Date.now() - t0}ms`);
+      console.log("======================================");
+      return;
+    }
+
+    const clinicId = s(req.user?.clinicId);
+    if (!clinicId) {
+      console.log(`❌ [${_rid}] missing clinicId in token`);
+      return res.status(400).json({ message: "missing clinicId in token" });
+    }
+
+    const name = s(req.body?.clinicName ?? req.body?.name);
+    const phone = s(req.body?.clinicPhone ?? req.body?.phone);
+    const address = s(req.body?.clinicAddress ?? req.body?.address);
+
+    // ถ้าไม่ส่งอะไรมาเลย
+    if (!name && !phone && !address) {
+      return res.status(400).json({
+        message: "No fields to update",
+        hint: "Send at least one of clinicName / clinicPhone / clinicAddress",
+      });
+    }
+
+    if (phone && !isValidThaiPhoneDigits(phone)) {
+      return res.status(400).json({
+        message: "Invalid clinicPhone",
+        hint: "phone must be 9-10 digits",
+        got: phone,
+      });
+    }
+
+    const $set = {
+      ...(name ? { name } : {}),
+      ...(phone ? { phone } : {}),
+      ...(address ? { address } : {}),
+    };
+
+    const updated = await Clinic.findOneAndUpdate(
+      { clinicId },
+      { $set },
+      { new: true, upsert: true }
+    ).lean();
+
+    console.log(`✅ [${_rid}] profile updated`, {
+      clinicId,
+      name: updated?.name,
+      phone: updated?.phone,
+    });
+
+    console.log(`⏱️ [${_rid}] done in ${Date.now() - t0}ms`);
+    console.log("======================================");
+
+    return res.json({ ok: true, clinic: updated });
+  } catch (e) {
+    console.log(`💥 [${_rid}] ERROR`, e);
+    return res.status(500).json({
+      message: "patchMyClinicProfile failed",
+      error: e?.message || String(e),
+    });
+  }
+}
+
+// GET /clinics/:clinicId (auth)
 async function getClinic(req, res) {
   try {
     const clinicId = s(req.params.clinicId || "");
@@ -206,7 +312,7 @@ async function getClinic(req, res) {
   } catch (e) {
     return res.status(500).json({
       message: "getClinic failed",
-      error: e.message,
+      error: e?.message || String(e),
     });
   }
 }
@@ -214,5 +320,6 @@ async function getClinic(req, res) {
 module.exports = {
   patchClinicLocation,
   patchMyClinicLocation,
+  patchMyClinicProfile, // ✅ NEW
   getClinic,
 };
