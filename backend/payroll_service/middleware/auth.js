@@ -192,22 +192,35 @@ function requireRole(roles = []) {
 
 /**
  * ✅ Ensure staff self-access (employee can only act on their own staffId)
- * - employee role: staffId in req (param/body) must match req.user.staffId
- * - clinic role: allow
+ * - employee role: staffId in req (param/body/query) must match req.user.staffId
+ * - clinic role: allow (if allowClinic=true)
  *
- * You can use this in attendance routes.
+ * ✅ IMPORTANT FIX (สำหรับเคสของท่าน):
+ * - ถ้า client ไม่ส่ง staffId/clinicId มา -> เติมจาก token ให้ (กัน controller 400)
+ * - ถ้า allowClinic=false -> บังคับให้ role ต้องเป็น employee เท่านั้น
  */
 function requireSelfStaff({ allowClinic = true } = {}) {
   return (req, res, next) => {
     const role = canonicalRole(req.user?.role);
     if (!role) return res.status(401).json({ message: "Unauthorized" });
 
+    // ✅ clinic bypass (ถ้าอนุญาต)
     if (allowClinic && role === "clinic") return next();
 
-    // for employee/helper: enforce staffId match (if route uses staffId)
-    const tokenStaffId = normStr(req.user?.staffId);
+    // ✅ ถ้าไม่อนุญาต clinic -> ต้องเป็น employee เท่านั้น
+    // (กัน helper มาเรียก attendance)
+    if (!allowClinic && role !== "employee") {
+      return res.status(403).json({ message: "Forbidden" });
+    }
 
-    // try read staffId from: params, body, query
+    const tokenStaffId = normStr(req.user?.staffId);
+    const tokenClinicId = normStr(req.user?.clinicId);
+
+    if (!tokenStaffId) {
+      return res.status(403).json({ message: "Forbidden (missing staffId)" });
+    }
+
+    // try read staffId from: params, body, query (รองรับหลายชื่อ)
     const reqStaffId =
       normStr(req.params?.staffId) ||
       normStr(req.params?.employeeId) ||
@@ -216,14 +229,32 @@ function requireSelfStaff({ allowClinic = true } = {}) {
       normStr(req.query?.staffId) ||
       normStr(req.query?.employeeId);
 
-    if (!tokenStaffId) {
-      return res.status(403).json({ message: "Forbidden (missing staffId)" });
-    }
-
+    // ✅ ถ้าส่งมาแล้วไม่ตรง token -> โดนทันที
     if (reqStaffId && reqStaffId !== tokenStaffId) {
       return res.status(403).json({
         message: "Forbidden (staff mismatch)",
       });
+    }
+
+    // ✅ FIX: ถ้าไม่ส่ง staffId มาเลย -> เติมจาก token ให้ (กัน controller 400)
+    if (!req.body) req.body = {};
+    if (!normStr(req.body.staffId) && !normStr(req.body.employeeId)) {
+      req.body.staffId = tokenStaffId;
+    }
+
+    // ✅ FIX: clinicId ก็เติมให้ด้วย (ถ้า token มี) และถ้าส่งมาแล้วต้องตรง
+    const reqClinicId =
+      normStr(req.body?.clinicId) ||
+      normStr(req.body?.clinic_id) ||
+      normStr(req.query?.clinicId) ||
+      normStr(req.query?.clinic_id);
+
+    if (reqClinicId && tokenClinicId && reqClinicId !== tokenClinicId) {
+      return res.status(403).json({ message: "Forbidden (clinic mismatch)" });
+    }
+
+    if (!normStr(req.body.clinicId) && tokenClinicId) {
+      req.body.clinicId = tokenClinicId;
     }
 
     return next();
