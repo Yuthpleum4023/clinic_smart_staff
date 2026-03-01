@@ -1,0 +1,8 @@
+
+# secrets / keystore backups
+../../android/app/upload-keystore.jks*
+*.jks
+*.keystore
+
+# local backup folders
+../../backup/

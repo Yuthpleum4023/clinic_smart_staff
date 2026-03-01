@@ -2,45 +2,40 @@
 const express = require("express");
 const router = express.Router();
 
+const { auth } = require("../middleware/auth");
+
 const {
   createAvailability,
   listMyAvailabilities,
   cancelAvailability,
   listOpenAvailabilities,
   listBookedAvailabilities, // ✅ NEW
-  clearBookedAvailability, // ✅ NEW
+  clearBookedAvailability,  // ✅ NEW
   bookAvailability,
 } = require("../controllers/availabilityController");
 
-let requireAuth = null;
-try {
-  requireAuth = require("../middleware/auth");
-} catch (_) {
-  requireAuth = (req, res, next) => next();
-}
-
 // ======================================================
-// ✅ CLINIC ADMIN
+// ✅ CLINIC ADMIN / STAFF (ต้อง login)
 // ======================================================
 
 // browse ตารางว่างผู้ช่วย
-router.get("/open", requireAuth, listOpenAvailabilities);
+router.get("/open", auth, listOpenAvailabilities);
 
 // ✅ NEW: list booked (ค้างไว้หลังจอง)
-router.get("/booked", requireAuth, listBookedAvailabilities);
+router.get("/booked", auth, listBookedAvailabilities);
 
 // ✅ NEW — clear booked item (ทำให้หายจากหน้า booked)
-router.post("/:id/clear", requireAuth, clearBookedAvailability);
+router.post("/:id/clear", auth, clearBookedAvailability);
 
 // ✅ BOOK AVAILABILITY → CREATE SHIFT
-router.post("/:id/book", requireAuth, bookAvailability);
+router.post("/:id/book", auth, bookAvailability);
 
 // ======================================================
 // ✅ STAFF / HELPER
 // ======================================================
 
-router.get("/me", requireAuth, listMyAvailabilities);
-router.post("/", requireAuth, createAvailability);
-router.patch("/:id/cancel", requireAuth, cancelAvailability);
+router.get("/me", auth, listMyAvailabilities);
+router.post("/", auth, createAvailability);
+router.patch("/:id/cancel", auth, cancelAvailability);
 
 module.exports = router;

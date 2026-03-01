@@ -1,6 +1,6 @@
 // payroll_service/routes/clinicRoutes.js
 const router = require("express").Router();
-const auth = require("../middleware/auth");
+const { auth, requireRole } = require("../middleware/auth");
 const ctrl = require("../controllers/clinicController");
 
 // ✅ NEW — Brand Controller
@@ -16,15 +16,8 @@ router.get("/:clinicId", auth, ctrl.getClinic);
 // ✅ เปลี่ยนชื่อ/โปรไฟล์ "คลินิกตัวเอง" (admin เท่านั้น)
 // PATCH /clinics/me/profile
 // body: { clinicName?, clinicPhone?, clinicAddress? }
-// ---------------------------------------------------------
-// หมายเหตุ: ผูกกับ controller ใหม่ชื่อ patchMyClinicProfile
-// ถ้ายังไม่มี เดี๋ยวผมทำ FULL FILE ให้ได้ครับ
 // =========================================================
-router.patch(
-  "/me/profile",
-  auth,
-  ctrl.patchMyClinicProfile
-);
+router.patch("/me/profile", auth, requireRole(["admin"]), ctrl.patchMyClinicProfile);
 
 // =========================================================
 // ✅ อัปเดตพิกัด "คลินิกตัวเอง" (admin เท่านั้น)
@@ -34,6 +27,7 @@ router.patch(
 router.patch(
   "/me/location",
   auth,
+  requireRole(["admin"]),
 
   // ✅✅✅ LOG MIDDLEWARE (สำคัญมาก)
   (req, res, next) => {
@@ -55,13 +49,13 @@ router.patch(
 // ✅ อัปเดตพิกัดคลินิก (admin เท่านั้น) — ของเดิมยังอยู่
 // PATCH /clinics/:clinicId/location
 // =========================================================
-router.patch("/:clinicId/location", auth, ctrl.patchClinicLocation);
+router.patch("/:clinicId/location", auth, requireRole(["admin"]), ctrl.patchClinicLocation);
 
 // =========================================================
-// ✅ NEW — SaaS Branding System (Monogram Logo)
+// ✅ NEW — SaaS Branding System (Monogram Logo) (admin เท่านั้น)
 // PATCH /clinics/brand
 // body: { clinicId, brandAbbr, brandColor }
 // =========================================================
-router.patch("/brand", auth, brand.updateClinicBrand);
+router.patch("/brand", auth, requireRole(["admin"]), brand.updateClinicBrand);
 
 module.exports = router;

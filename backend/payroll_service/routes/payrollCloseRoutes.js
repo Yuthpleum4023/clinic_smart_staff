@@ -1,13 +1,20 @@
+// payroll_service/routes/payrollCloseRoutes.js
 const express = require("express");
 const router = express.Router();
 
-const auth = require("../middleware/auth");   // ✅ ใส่อันนี้
+const { auth, requireRole } = require("../middleware/auth");
 const ctrl = require("../controllers/payrollCloseController");
 
-// ✅ ต้องผ่าน JWT ก่อน
-router.post("/close-month", auth, ctrl.closeMonth);
+// ======================================================
+// ✅ ปิดงวด (admin เท่านั้น)
+// POST /payroll-close/close-month
+// ======================================================
+router.post("/close-month", auth, requireRole(["admin"]), ctrl.closeMonth);
 
-// ✅ ดูงวดที่ปิดแล้ว (ต้อง auth เช่นกัน)
+// ======================================================
+// ✅ ดูงวดที่ปิดแล้ว
+// GET /payroll-close/close-months/:employeeId
+// ======================================================
 router.get("/close-months/:employeeId", auth, ctrl.getClosedMonthsByEmployee);
 
 module.exports = router;

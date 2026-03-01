@@ -1,3 +1,4 @@
+// backend/payroll_service/middleware/auth.js
 const jwt = require("jsonwebtoken");
 
 const AUTH_LOG =
@@ -85,10 +86,9 @@ function auth(req, res, next) {
       id: normStr(payload.id),
     };
 
-    next();
+    return next();
   } catch (err) {
-    if (AUTH_LOG)
-      console.log("❌ JWT ERROR:", err.name, err.message);
+    if (AUTH_LOG) console.log("❌ JWT ERROR:", err.name, err.message);
 
     return res.status(401).json({
       message: "Invalid token",
@@ -97,4 +97,14 @@ function auth(req, res, next) {
   }
 }
 
-module.exports = auth;
+// ✅ NEW: role guard ใช้ล็อก endpoint admin-only
+function requireRole(roles = []) {
+  return (req, res, next) => {
+    const role = normStr(req.user?.role);
+    if (!role) return res.status(401).json({ message: "Unauthorized" });
+    if (!roles.includes(role)) return res.status(403).json({ message: "Forbidden" });
+    return next();
+  };
+}
+
+module.exports = { auth, requireRole };
