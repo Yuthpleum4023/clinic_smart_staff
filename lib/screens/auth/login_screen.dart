@@ -1,9 +1,10 @@
 // lib/screens/auth/login_screen.dart
 //
-// ✅ FULL FILE (FIX "no token" after Signup)
-// - เพิ่ม SharedPreferences และบันทึก token หลาย key ให้ทุกหน้าที่ดึง token ได้ตรงกัน
-// - Login ใช้ AuthApi.login() (AuthApi เซฟ token เองแล้ว) แต่เรายัง "sync" key เพิ่มให้ชัวร์
-// - Signup (Invite / Clinic Admin) ได้ token กลับมา -> เซฟครบทุก key แล้วไป AuthGate ได้เลย
+// ✅ FULL FILE (FIX "no token" after Signup + FIX sheet overflow / yellow bar)
+// - ✅ เพิ่ม SharedPreferences และบันทึก token หลาย key ให้ทุกหน้าที่ดึง token ได้ตรงกัน
+// - ✅ Login ใช้ AuthApi.login() (AuthApi เซฟ token เองแล้ว) แต่เรายัง "sync" key เพิ่มให้ชัวร์
+// - ✅ Signup (Invite / Clinic Admin) ได้ token กลับมา -> ✅ snack สำเร็จชัดเจน + เซฟครบทุก key แล้วไป AuthGate
+// - ✅ FIX แผ่นเหลือง/overflow ตอนคีย์บอร์ดเด้ง: useSafeArea + SafeArea + keyboardDismissBehavior
 //
 
 import 'dart:convert';
@@ -103,7 +104,7 @@ class _LoginScreenState extends State<LoginScreen> {
       // ✅ ทดสอบ me ทันที เพื่อฟันธงว่ามีสิทธิ์/role และไม่ค้าง
       await AuthApi.me();
 
-      // ✅ ไป gate ให้มันพาเข้าหน้าตาม role
+      _snack('เข้าสู่ระบบสำเร็จ ✅');
       await _goGate();
     } catch (e) {
       _snack('Login ไม่สำเร็จ: $e');
@@ -119,6 +120,7 @@ class _LoginScreenState extends State<LoginScreen> {
     final result = await showModalBottomSheet<_ForgotResult>(
       context: context,
       isScrollControlled: true,
+      useSafeArea: true, // ✅ FIX overflow
       showDragHandle: true,
       builder: (_) => _ForgotPasswordSheet(
         initialId: _idCtrl.text.trim(),
@@ -136,19 +138,23 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
-  // ===================== SIGN UP: INVITE (EMPLOYEE) =====================
+  // ===================== SIGN UP: INVITE (HELPER/EMPLOYEE via INVITE) =====================
   Future<void> _openSignupInvite() async {
     if (_loading) return;
 
     final token = await showModalBottomSheet<String>(
       context: context,
       isScrollControlled: true,
+      useSafeArea: true, // ✅ FIX overflow
       showDragHandle: true,
       builder: (_) => const _SignupInviteSheet(),
     );
 
     if (!mounted) return;
     if (token == null || token.isEmpty) return;
+
+    // ✅ FIX: ให้เด้ง feedback ที่หน้า Login ชัด ๆ
+    _snack('สมัครสำเร็จ ✅ กำลังเข้าสู่ระบบ...');
 
     await _saveToken(token);
     await _goGate();
@@ -161,6 +167,7 @@ class _LoginScreenState extends State<LoginScreen> {
     final token = await showModalBottomSheet<String>(
       context: context,
       isScrollControlled: true,
+      useSafeArea: true, // ✅ FIX overflow
       showDragHandle: true,
       builder: (_) => const _SignupClinicAdminSheet(),
     );
@@ -168,24 +175,21 @@ class _LoginScreenState extends State<LoginScreen> {
     if (!mounted) return;
     if (token == null || token.isEmpty) return;
 
+    // ✅ FIX: ให้เด้ง feedback ที่หน้า Login ชัด ๆ
+    _snack('สมัครคลินิกสำเร็จ ✅ กำลังเข้าสู่ระบบ...');
+
     await _saveToken(token);
     await _goGate();
   }
 
   @override
   Widget build(BuildContext context) {
-    final authUrl = ApiConfig.authBaseUrl;
-
     return Scaffold(
       appBar: AppBar(title: const Text('เข้าสู่ระบบ')),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: ListView(
           children: [
-            Text(
-              'Auth: $authUrl',
-              style: TextStyle(color: Colors.grey.shade700),
-            ),
             const SizedBox(height: 12),
             TextField(
               controller: _idCtrl,
@@ -332,39 +336,42 @@ class _ForgotPasswordSheetState extends State<_ForgotPasswordSheet> {
   @override
   Widget build(BuildContext context) {
     final bottom = MediaQuery.of(context).viewInsets.bottom;
-    return Padding(
-      padding: EdgeInsets.fromLTRB(16, 8, 16, 16 + bottom),
-      child: ListView(
-        shrinkWrap: true,
-        children: [
-          const Text(
-            'ลืมรหัสผ่าน',
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
-          ),
-          const SizedBox(height: 10),
-          TextField(
-            controller: _idCtrl,
-            decoration: const InputDecoration(
-              labelText: 'Email หรือ Phone',
-              border: OutlineInputBorder(),
+    return SafeArea(
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(16, 8, 16, 16 + bottom),
+        child: ListView(
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+          shrinkWrap: true,
+          children: [
+            const Text(
+              'ลืมรหัสผ่าน',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
             ),
-          ),
-          const SizedBox(height: 12),
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton.icon(
-              onPressed: _loading ? null : _send,
-              icon: _loading
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.sms),
-              label: const Text('ขอรหัส OTP'),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _idCtrl,
+              decoration: const InputDecoration(
+                labelText: 'Email หรือ Phone',
+                border: OutlineInputBorder(),
+              ),
             ),
-          ),
-        ],
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: _loading ? null : _send,
+                icon: _loading
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.sms),
+                label: const Text('ขอรหัส OTP'),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -466,73 +473,77 @@ class _SignupInviteSheetState extends State<_SignupInviteSheet> {
   @override
   Widget build(BuildContext context) {
     final bottom = MediaQuery.of(context).viewInsets.bottom;
-    return Padding(
-      padding: EdgeInsets.fromLTRB(16, 8, 16, 16 + bottom),
-      child: ListView(
-        shrinkWrap: true,
-        children: [
-          const Text(
-            'ผู้ช่วย: สมัครด้วย Invite',
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
-          ),
-          const SizedBox(height: 10),
-          TextField(
-            controller: _codeCtrl,
-            textCapitalization: TextCapitalization.characters,
-            decoration: const InputDecoration(
-              labelText: 'Invite Code',
-              border: OutlineInputBorder(),
+    return SafeArea(
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(16, 8, 16, 16 + bottom),
+        child: ListView(
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+          shrinkWrap: true,
+          children: [
+            const Text(
+              'ผู้ช่วย: สมัครด้วย Invite',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
             ),
-          ),
-          const SizedBox(height: 10),
-          TextField(
-            controller: _nameCtrl,
-            decoration: const InputDecoration(
-              labelText: 'ชื่อ-นามสกุล (optional)',
-              border: OutlineInputBorder(),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _codeCtrl,
+              textCapitalization: TextCapitalization.characters,
+              decoration: const InputDecoration(
+                labelText: 'Invite Code',
+                border: OutlineInputBorder(),
+              ),
             ),
-          ),
-          const SizedBox(height: 10),
-          TextField(
-            controller: _emailCtrl,
-            decoration: const InputDecoration(
-              labelText: 'Email (optional)',
-              border: OutlineInputBorder(),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _nameCtrl,
+              decoration: const InputDecoration(
+                labelText: 'ชื่อ-นามสกุล (optional)',
+                border: OutlineInputBorder(),
+              ),
             ),
-          ),
-          const SizedBox(height: 10),
-          TextField(
-            controller: _phoneCtrl,
-            decoration: const InputDecoration(
-              labelText: 'Phone (optional)',
-              border: OutlineInputBorder(),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _emailCtrl,
+              decoration: const InputDecoration(
+                labelText: 'Email (optional)',
+                border: OutlineInputBorder(),
+              ),
             ),
-          ),
-          const SizedBox(height: 10),
-          TextField(
-            controller: _pwCtrl,
-            obscureText: true,
-            decoration: const InputDecoration(
-              labelText: 'Password',
-              border: OutlineInputBorder(),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _phoneCtrl,
+              keyboardType: TextInputType.phone,
+              decoration: const InputDecoration(
+                labelText: 'Phone (optional)',
+                border: OutlineInputBorder(),
+              ),
             ),
-          ),
-          const SizedBox(height: 12),
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton.icon(
-              onPressed: _loading ? null : _submit,
-              icon: _loading
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.check),
-              label: const Text('สมัคร'),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _pwCtrl,
+              obscureText: true,
+              decoration: const InputDecoration(
+                labelText: 'Password',
+                border: OutlineInputBorder(),
+              ),
             ),
-          ),
-        ],
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: _loading ? null : _submit,
+                icon: _loading
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.check),
+                label: const Text('สมัคร'),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -629,72 +640,76 @@ class _SignupClinicAdminSheetState extends State<_SignupClinicAdminSheet> {
   @override
   Widget build(BuildContext context) {
     final bottom = MediaQuery.of(context).viewInsets.bottom;
-    return Padding(
-      padding: EdgeInsets.fromLTRB(16, 8, 16, 16 + bottom),
-      child: ListView(
-        shrinkWrap: true,
-        children: [
-          const Text(
-            'คลินิก: สมัครเป็น Admin',
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
-          ),
-          const SizedBox(height: 10),
-          TextField(
-            controller: _clinicNameCtrl,
-            decoration: const InputDecoration(
-              labelText: 'ชื่อคลินิก',
-              border: OutlineInputBorder(),
+    return SafeArea(
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(16, 8, 16, 16 + bottom),
+        child: ListView(
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+          shrinkWrap: true,
+          children: [
+            const Text(
+              'คลินิก: สมัครเป็น Admin',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
             ),
-          ),
-          const SizedBox(height: 10),
-          TextField(
-            controller: _adminFullNameCtrl,
-            decoration: const InputDecoration(
-              labelText: 'ชื่อผู้ดูแล (optional)',
-              border: OutlineInputBorder(),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _clinicNameCtrl,
+              decoration: const InputDecoration(
+                labelText: 'ชื่อคลินิก',
+                border: OutlineInputBorder(),
+              ),
             ),
-          ),
-          const SizedBox(height: 10),
-          TextField(
-            controller: _adminEmailCtrl,
-            decoration: const InputDecoration(
-              labelText: 'Email (optional)',
-              border: OutlineInputBorder(),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _adminFullNameCtrl,
+              decoration: const InputDecoration(
+                labelText: 'ชื่อผู้ดูแล (optional)',
+                border: OutlineInputBorder(),
+              ),
             ),
-          ),
-          const SizedBox(height: 10),
-          TextField(
-            controller: _adminPhoneCtrl,
-            decoration: const InputDecoration(
-              labelText: 'Phone (optional)',
-              border: OutlineInputBorder(),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _adminEmailCtrl,
+              decoration: const InputDecoration(
+                labelText: 'Email (optional)',
+                border: OutlineInputBorder(),
+              ),
             ),
-          ),
-          const SizedBox(height: 10),
-          TextField(
-            controller: _adminPasswordCtrl,
-            obscureText: true,
-            decoration: const InputDecoration(
-              labelText: 'Password',
-              border: OutlineInputBorder(),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _adminPhoneCtrl,
+              keyboardType: TextInputType.phone,
+              decoration: const InputDecoration(
+                labelText: 'Phone (optional)',
+                border: OutlineInputBorder(),
+              ),
             ),
-          ),
-          const SizedBox(height: 12),
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton.icon(
-              onPressed: _loading ? null : _submit,
-              icon: _loading
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.check),
-              label: const Text('สมัครคลินิก'),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _adminPasswordCtrl,
+              obscureText: true,
+              decoration: const InputDecoration(
+                labelText: 'Password',
+                border: OutlineInputBorder(),
+              ),
             ),
-          ),
-        ],
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: _loading ? null : _submit,
+                icon: _loading
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.check),
+                label: const Text('สมัครคลินิก'),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
