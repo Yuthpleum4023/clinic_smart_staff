@@ -35,7 +35,67 @@ function canMutateStatus(ot) {
 }
 
 // ======================================================
-// GET /overtime
+// ✅ HELPERS (for payroll close / payslip)
+// ======================================================
+async function sumApprovedMinutesForMonth({ clinicId, staffId, monthKey }) {
+  const q = { clinicId: s(clinicId), staffId: s(staffId), monthKey: s(monthKey), status: "approved" };
+  const rows = await Overtime.find(q).select({ minutes: 1 }).lean();
+  return rows.reduce((a, x) => a + clampMinutes(x.minutes), 0);
+}
+
+async function sumApprovedMinutesForDay({ clinicId, staffId, workDate }) {
+  const q = { clinicId: s(clinicId), staffId: s(staffId), workDate: s(workDate), status: "approved" };
+  const rows = await Overtime.find(q).select({ minutes: 1 }).lean();
+  return rows.reduce((a, x) => a + clampMinutes(x.minutes), 0);
+}
+
+// ======================================================
+// ✅ STAFF (READ-ONLY)
+// GET /overtime/my
+// query: month=yyyy-MM (required)
+//        status=pending|approved|rejected|locked (optional)
+// ======================================================
+async function listMy(req, res) {
+  try {
+    const clinicId = s(req.user?.clinicId);
+    const role = s(req.user?.role);
+    const staffIdFromToken = s(req.user?.staffId);
+
+    if (!clinicId) return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
+    if (!staffIdFromToken) return res.status(400).json({ ok: false, message: "Missing staffId in token" });
+    if (role && role !== "staff") return res.status(403).json({ ok: false, message: "Forbidden (staff only)" });
+
+    const monthKey = parseMonthOrThrow(req.query?.month);
+    if (!monthKey) return res.status(400).json({ ok: false, message: "month required (yyyy-MM)" });
+
+    const status = s(req.query?.status);
+
+    const q = { clinicId, staffId: staffIdFromToken, monthKey };
+    if (status) q.status = status;
+
+    const items = await Overtime.find(q).sort({ workDate: 1, createdAt: 1 }).lean();
+
+    const sum = (st) => items.filter((x) => x.status === st).reduce((a, x) => a + clampMinutes(x.minutes), 0);
+
+    return res.json({
+      ok: true,
+      month: monthKey,
+      staffId: staffIdFromToken,
+      summary: {
+        pendingMinutes: sum("pending"),
+        approvedMinutes: sum("approved"),
+        rejectedMinutes: sum("rejected"),
+        lockedMinutes: sum("locked"),
+      },
+      items,
+    });
+  } catch (e) {
+    return res.status(500).json({ ok: false, message: "list my overtime failed", error: e.message });
+  }
+}
+
+// ======================================================
+// GET /overtime   (admin)
 // query: month=yyyy-MM (required)
 //        staffId=... (required)
 //        status=pending|approved|rejected|locked (optional)
@@ -81,7 +141,7 @@ async function listForStaff(req, res) {
 }
 
 // ======================================================
-// POST /overtime/manual
+// POST /overtime/manual  (admin)
 // body: { staffId, userId?, workDate(yyyy-MM-dd), minutes, multiplier?, note? }
 // ======================================================
 async function createManual(req, res) {
@@ -133,8 +193,8 @@ async function createManual(req, res) {
 }
 
 // ======================================================
-// PATCH /overtime/:id
-// body: { minutes?, multiplier?, note? }  (admin)
+// PATCH /overtime/:id  (admin)
+// body: { minutes?, multiplier?, note? }
 // - only if not locked
 // ======================================================
 async function updateOne(req, res) {
@@ -161,7 +221,8 @@ async function updateOne(req, res) {
 
     if (req.body?.multiplier !== undefined) {
       const x = Number(req.body.multiplier);
-      if (!(Number.isFinite(x) && x > 0)) return res.status(400).json({ ok: false, message: "multiplier must be > 0" });
+      if (!(Number.isFinite(x) && x > 0))
+        return res.status(400).json({ ok: false, message: "multiplier must be > 0" });
       ot.multiplier = x;
     }
 
@@ -196,7 +257,7 @@ async function approveOne(req, res) {
 
     if (!canMutateStatus(ot)) return res.status(409).json({ ok: false, message: "Locked overtime cannot be approved" });
 
-    // approve only pending/rejected -> approved (your call; I allow pending/rejected)
+    // approve only pending/rejected -> approved
     ot.status = "approved";
     ot.approvedBy = adminUserId;
     ot.approvedAt = new Date();
@@ -275,11 +336,24 @@ async function bulkApproveMonth(req, res) {
     const r = await Overtime.updateMany(
       { clinicId, staffId, monthKey, status: "pending" },
       {
-        $set: { status: "approved", approvedBy: adminUserId, approvedAt: now, rejectedBy: "", rejectedAt: null, rejectReason: "" },
+        $set: {
+          status: "approved",
+          approvedBy: adminUserId,
+          approvedAt: now,
+          rejectedBy: "",
+          rejectedAt: null,
+          rejectReason: "",
+        },
       }
     );
 
-    return res.json({ ok: true, staffId, month: monthKey, matched: r.matchedCount ?? r.n, modified: r.modifiedCount ?? r.nModified });
+    return res.json({
+      ok: true,
+      staffId,
+      month: monthKey,
+      matched: r.matchedCount ?? r.n,
+      modified: r.modifiedCount ?? r.nModified,
+    });
   } catch (e) {
     return res.status(500).json({ ok: false, message: "bulk approve month failed", error: e.message });
   }
@@ -311,11 +385,24 @@ async function bulkApproveDay(req, res) {
     const r = await Overtime.updateMany(
       { clinicId, staffId, monthKey, workDate, status: "pending" },
       {
-        $set: { status: "approved", approvedBy: adminUserId, approvedAt: now, rejectedBy: "", rejectedAt: null, rejectReason: "" },
+        $set: {
+          status: "approved",
+          approvedBy: adminUserId,
+          approvedAt: now,
+          rejectedBy: "",
+          rejectedAt: null,
+          rejectReason: "",
+        },
       }
     );
 
-    return res.json({ ok: true, staffId, workDate, matched: r.matchedCount ?? r.n, modified: r.modifiedCount ?? r.nModified });
+    return res.json({
+      ok: true,
+      staffId,
+      workDate,
+      matched: r.matchedCount ?? r.n,
+      modified: r.modifiedCount ?? r.nModified,
+    });
   } catch (e) {
     return res.status(500).json({ ok: false, message: "bulk approve day failed", error: e.message });
   }
@@ -350,6 +437,10 @@ async function removeOne(req, res) {
 }
 
 module.exports = {
+  // ✅ staff
+  listMy,
+
+  // ✅ admin
   listForStaff,
   createManual,
   updateOne,
@@ -358,4 +449,8 @@ module.exports = {
   bulkApproveMonth,
   bulkApproveDay,
   removeOne,
+
+  // ✅ helpers (optional export for payrollClose/payroll preview)
+  sumApprovedMinutesForMonth,
+  sumApprovedMinutesForDay,
 };

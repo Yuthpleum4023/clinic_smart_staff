@@ -3,6 +3,10 @@ const router = require("express").Router();
 
 const { auth, requireRole } = require("../middleware/auth");
 const {
+  // ✅ Staff (read-only)
+  listMy,
+
+  // ✅ Admin
   listForStaff,
   createManual,
   updateOne,
@@ -13,7 +17,16 @@ const {
   removeOne,
 } = require("../controllers/overtimeController");
 
-// ✅ Admin only (ตามที่เราออกแบบ)
+// ======================================================
+// ✅ STAFF (READ-ONLY)
+// - พนักงานดู OT ของตัวเองได้ (โปร่งใส + ช่วยขาย Premium)
+// - GET /overtime/my?month=yyyy-MM&status=pending|approved|rejected|locked(optional)
+// ======================================================
+router.get("/my", auth, requireRole(["staff"]), listMy);
+
+// ======================================================
+// ✅ ADMIN ONLY (ตามที่เราออกแบบ)
+// ======================================================
 
 // LIST
 // GET /overtime?month=yyyy-MM&staffId=...&status=pending|approved|rejected|locked(optional)

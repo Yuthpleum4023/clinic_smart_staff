@@ -116,7 +116,11 @@ async function loadShiftForSession({ clinicId, staffId, workDate, shiftId }) {
   }
 
   // fallback: find shift by clinicId+staffId+date
-  const sh = await Shift.findOne({ clinicId: s(clinicId), staffId: s(staffId), date: s(workDate) })
+  const sh = await Shift.findOne({
+    clinicId: s(clinicId),
+    staffId: s(staffId),
+    date: s(workDate),
+  })
     .sort({ createdAt: -1 })
     .lean();
 
@@ -148,7 +152,9 @@ function computeOtMinutes(policy, shift, checkInAt, checkOutAt) {
   if (rule === "AFTER_SHIFT_END") {
     if (!shift || !isYmd(shift.date) || !isHHmm(shift.end)) return 0;
 
-    const startLocal = isHHmm(shift.start) ? makeLocalDateTime(shift.date, shift.start) : null;
+    const startLocal = isHHmm(shift.start)
+      ? makeLocalDateTime(shift.date, shift.start)
+      : null;
     let endLocal = makeLocalDateTime(shift.date, shift.end);
 
     // handle cross-midnight: end earlier than start => next day
@@ -156,7 +162,9 @@ function computeOtMinutes(policy, shift, checkInAt, checkOutAt) {
       endLocal = new Date(endLocal.getTime() + 24 * 60 * 60000);
     }
 
-    const otStartAt = new Date(endLocal.getTime() + clampMinutes(policy.otStartAfterMinutes) * 60000);
+    const otStartAt = new Date(
+      endLocal.getTime() + clampMinutes(policy.otStartAfterMinutes) * 60000
+    );
 
     const raw = Math.max(0, minutesDiff(otStartAt, checkOutAt));
     return roundOtMinutes(raw, policy.otRounding);
@@ -172,7 +180,9 @@ function computeOtMinutes(policy, shift, checkInAt, checkOutAt) {
 
     const clock = isHHmm(policy.otClockTime) ? policy.otClockTime : "18:00";
     const clockAt = makeLocalDateTime(baseDate, clock);
-    const otStartAt = new Date(clockAt.getTime() + clampMinutes(policy.otStartAfterMinutes) * 60000);
+    const otStartAt = new Date(
+      clockAt.getTime() + clampMinutes(policy.otStartAfterMinutes) * 60000
+    );
 
     const raw = Math.max(0, minutesDiff(otStartAt, checkOutAt));
     return roundOtMinutes(raw, policy.otRounding);
@@ -189,17 +199,31 @@ function computeOtMinutes(policy, shift, checkInAt, checkOutAt) {
   return 0;
 }
 
+// helper: normalize employmentType from staff_service (robust)
+function normalizeEmploymentType(v) {
+  const t = s(v).toLowerCase();
+  if (!t) return "";
+  if (t === "fulltime" || t === "full_time" || t === "full-time" || t === "ft")
+    return "fullTime";
+  if (t === "parttime" || t === "part_time" || t === "part-time" || t === "pt")
+    return "partTime";
+  // if already in camel
+  if (t === "fulltime") return "fullTime";
+  if (t === "parttime") return "partTime";
+  return s(v);
+}
+
 // helper: select OT clock time by employee type (fullTime/partTime)
-function pickOtClockByType(policy, empType) {
-  const type = s(empType);
+function pickOtClockByType(policy, empTypeRaw) {
+  const empType = normalizeEmploymentType(empTypeRaw);
   const legacy = isHHmm(policy?.otClockTime) ? policy.otClockTime : "18:00";
 
-  if (type === "fullTime") {
+  if (empType === "fullTime") {
     const v = s(policy?.fullTimeOtClockTime);
     return isHHmm(v) ? v : legacy;
   }
 
-  if (type === "partTime") {
+  if (empType === "partTime") {
     const v = s(policy?.partTimeOtClockTime);
     return isHHmm(v) ? v : legacy;
   }
@@ -217,8 +241,10 @@ async function checkIn(req, res) {
     const staffId = s(req.user?.staffId);
     const userId = s(req.user?.userId);
 
-    if (!clinicId) return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
-    if (!staffId) return res.status(400).json({ ok: false, message: "Missing staffId in token" });
+    if (!clinicId)
+      return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
+    if (!staffId)
+      return res.status(400).json({ ok: false, message: "Missing staffId in token" });
 
     const workDate = s(req.body?.workDate);
     const shiftId = req.body?.shiftId || null;
@@ -273,7 +299,11 @@ async function checkIn(req, res) {
     });
 
     if (existing) {
-      return res.status(409).json({ ok: false, message: "Already checked-in (open session exists)", session: existing });
+      return res.status(409).json({
+        ok: false,
+        message: "Already checked-in (open session exists)",
+        session: existing,
+      });
     }
 
     // compute late if we have shift
@@ -305,7 +335,9 @@ async function checkIn(req, res) {
 }
 
 // ======================================================
-// POST /attendance/:id/check-out
+// POST /attendance/check-out   (NEW recommended)
+// POST /attendance/:id/check-out (backward compatible)
+//
 // body: { method?, biometricVerified?, deviceId?, lat?, lng?, note? }
 // ======================================================
 async function checkOut(req, res) {
@@ -314,19 +346,49 @@ async function checkOut(req, res) {
     const staffId = s(req.user?.staffId);
     const userId = s(req.user?.userId);
 
-    if (!clinicId) return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
-    if (!staffId) return res.status(400).json({ ok: false, message: "Missing staffId in token" });
+    if (!clinicId)
+      return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
+    if (!staffId)
+      return res.status(400).json({ ok: false, message: "Missing staffId in token" });
 
-    const id = s(req.params.id);
-    if (!id) return res.status(400).json({ ok: false, message: "id required" });
-
-    const session = await AttendanceSession.findById(id);
-    if (!session) return res.status(404).json({ ok: false, message: "Session not found" });
-
-    // allow staff to close only their session; admin can close any in clinic
+    // ✅ Premium rule: staff self checkout only
+    // routes layer already enforces requireRole(["staff"]), but we keep server-side safety:
     const role = s(req.user?.role);
-    if (role !== "admin" && s(session.staffId) !== staffId) {
-      return res.status(403).json({ ok: false, message: "Forbidden" });
+    if (role && role !== "staff") {
+      return res.status(403).json({ ok: false, message: "Forbidden (staff only)" });
+    }
+
+    const id = s(req.params?.id);
+
+    // ✅ If no :id provided -> find active open session of this staff in this clinic
+    let session = null;
+
+    if (id) {
+      session = await AttendanceSession.findById(id);
+      if (!session) return res.status(404).json({ ok: false, message: "Session not found" });
+    } else {
+      session = await AttendanceSession.findOne({
+        clinicId,
+        staffId,
+        status: "open",
+      }).sort({ checkInAt: -1 });
+
+      if (!session) {
+        return res.status(404).json({
+          ok: false,
+          message: "No open session to check-out",
+        });
+      }
+    }
+
+    // ✅ Must be same clinic (anti-abuse)
+    if (s(session.clinicId) !== clinicId) {
+      return res.status(403).json({ ok: false, message: "Forbidden (cross-clinic session)" });
+    }
+
+    // ✅ Must be owner staff (anti-abuse)
+    if (s(session.staffId) !== staffId) {
+      return res.status(403).json({ ok: false, message: "Forbidden (not your session)" });
     }
 
     if (session.status !== "open") {
@@ -388,7 +450,7 @@ async function checkOut(req, res) {
       }
     }
 
-    const empType = s(emp?.employmentType); // "fullTime" | "partTime"
+    const empType = normalizeEmploymentType(emp?.employmentType); // "fullTime" | "partTime"
     const selectedClock = pickOtClockByType(policy, empType);
 
     // create a derived policy snapshot with otClockTime selected by type
@@ -404,6 +466,8 @@ async function checkOut(req, res) {
     session.status = "closed";
     session.checkOutMethod = method === "manual" ? "manual" : "biometric";
     session.biometricVerifiedOut = biometricVerified;
+
+    // update deviceId only if provided
     if (s(req.body?.deviceId)) session.deviceId = s(req.body?.deviceId);
 
     session.outLat = Number.isFinite(lat) ? lat : session.outLat;
@@ -429,7 +493,9 @@ async function checkOut(req, res) {
       const monthKey = monthKeyFromYmd(workDate);
 
       // choose multiplier snapshot (employee override > clinic policy)
-      const otMul = Number(emp?.otMultiplierNormal || policyForOt.otMultiplier || policy.otMultiplier || 1.5);
+      const otMul = Number(
+        emp?.otMultiplierNormal || policyForOt.otMultiplier || policy.otMultiplier || 1.5
+      );
       const mul = Number.isFinite(otMul) && otMul > 0 ? otMul : 1.5;
 
       if (clampMinutes(otMinutes) > 0 && monthKey) {
@@ -580,7 +646,7 @@ async function myDayPreview(req, res) {
     // pay (MVP):
     // - partTime: hourlyRate from employee.hourlyRate
     // - fullTime: derive hourly from monthlySalary / (workingDaysPerMonth * hoursPerDay)
-    const type = s(emp?.employmentType); // "fullTime" | "partTime"
+    const type = normalizeEmploymentType(emp?.employmentType); // "fullTime" | "partTime"
     const hoursPerDay = Number(emp?.hoursPerDay || 8);
     const daysPerMonth = Number(emp?.workingDaysPerMonth || 26);
 
