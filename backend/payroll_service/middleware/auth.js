@@ -8,6 +8,44 @@ function normStr(v) {
   return String(v || "").trim();
 }
 
+function normLower(v) {
+  return normStr(v).toLowerCase();
+}
+
+/**
+ * Map role aliases -> canonical role
+ * - clinic group: admin/clinic/clinic_admin
+ * - employee group: employee/staff/emp
+ * - helper group: helper
+ */
+function canonicalRole(roleRaw) {
+  const r = normLower(roleRaw);
+
+  // clinic/admin aliases
+  if (
+    r === "admin" ||
+    r === "clinic" ||
+    r === "clinic_admin" ||
+    r === "clinicadmin" ||
+    r === "owner"
+  ) {
+    return "clinic";
+  }
+
+  // employee/staff aliases
+  if (r === "employee" || r === "staff" || r === "emp") {
+    return "employee";
+  }
+
+  // helper
+  if (r === "helper") {
+    return "helper";
+  }
+
+  // unknown -> keep normalized (so requireRole can still match if caller passes exact)
+  return r;
+}
+
 function extractToken(req) {
   const raw = normStr(req.headers.authorization);
   if (!raw) return "";
@@ -68,23 +106,51 @@ function auth(req, res, next) {
     const payload = jwt.verify(token, process.env.JWT_SECRET);
 
     if (AUTH_LOG) {
-      console.log("✅ JWT OK:", payload);
+      console.log("✅ JWT OK payload:", payload);
     }
+
+    // ✅ staffId fallback (กัน payload คนละชื่อ field)
+    const staffId =
+      normStr(payload.staffId) ||
+      normStr(payload.employeeId) ||
+      normStr(payload.empId) ||
+      normStr(payload.staff_id) ||
+      normStr(payload.employee_id) ||
+      normStr(payload.id);
+
+    // ✅ clinicId fallback
+    const clinicId =
+      normStr(payload.clinicId) ||
+      normStr(payload.clinic_id) ||
+      normStr(payload.cid);
+
+    // ✅ userId fallback
+    const userId =
+      normStr(payload.userId) ||
+      normStr(payload.user_id) ||
+      normStr(payload.uid);
+
+    const roleCanonical = canonicalRole(payload.role);
 
     // ✅ SAFE NORMALIZATION (แก้ ghost bug ว่าง)
     req.user = {
-      userId: normStr(payload.userId),
-      clinicId: normStr(payload.clinicId),
-      role: normStr(payload.role),
-      staffId: normStr(payload.staffId),
+      userId,
+      clinicId,
+      role: roleCanonical,
+      staffId,
 
-      // ✅ FIX สำคัญที่สุด
+      // meta
       fullName: normStr(payload.fullName),
       phone: normStr(payload.phone),
       email: normStr(payload.email),
 
+      // keep original id too
       id: normStr(payload.id),
     };
+
+    if (AUTH_LOG) {
+      console.log("✅ req.user:", req.user);
+    }
 
     return next();
   } catch (err) {
@@ -97,14 +163,71 @@ function auth(req, res, next) {
   }
 }
 
-// ✅ NEW: role guard ใช้ล็อก endpoint admin-only
+/**
+ * ✅ Role guard (case-insensitive + canonical)
+ * Usage:
+ *   requireRole(['clinic'])        // clinic/admin
+ *   requireRole(['employee'])      // employee/staff
+ *   requireRole(['clinic','employee'])
+ */
 function requireRole(roles = []) {
+  const allowed = (Array.isArray(roles) ? roles : [roles])
+    .map((r) => canonicalRole(r))
+    .filter(Boolean);
+
   return (req, res, next) => {
-    const role = normStr(req.user?.role);
+    const role = canonicalRole(req.user?.role);
     if (!role) return res.status(401).json({ message: "Unauthorized" });
-    if (!roles.includes(role)) return res.status(403).json({ message: "Forbidden" });
+
+    if (!allowed.includes(role)) {
+      return res.status(403).json({
+        message: "Forbidden",
+        role,
+        allowed,
+      });
+    }
     return next();
   };
 }
 
-module.exports = { auth, requireRole };
+/**
+ * ✅ Ensure staff self-access (employee can only act on their own staffId)
+ * - employee role: staffId in req (param/body) must match req.user.staffId
+ * - clinic role: allow
+ *
+ * You can use this in attendance routes.
+ */
+function requireSelfStaff({ allowClinic = true } = {}) {
+  return (req, res, next) => {
+    const role = canonicalRole(req.user?.role);
+    if (!role) return res.status(401).json({ message: "Unauthorized" });
+
+    if (allowClinic && role === "clinic") return next();
+
+    // for employee/helper: enforce staffId match (if route uses staffId)
+    const tokenStaffId = normStr(req.user?.staffId);
+
+    // try read staffId from: params, body, query
+    const reqStaffId =
+      normStr(req.params?.staffId) ||
+      normStr(req.params?.employeeId) ||
+      normStr(req.body?.staffId) ||
+      normStr(req.body?.employeeId) ||
+      normStr(req.query?.staffId) ||
+      normStr(req.query?.employeeId);
+
+    if (!tokenStaffId) {
+      return res.status(403).json({ message: "Forbidden (missing staffId)" });
+    }
+
+    if (reqStaffId && reqStaffId !== tokenStaffId) {
+      return res.status(403).json({
+        message: "Forbidden (staff mismatch)",
+      });
+    }
+
+    return next();
+  };
+}
+
+module.exports = { auth, requireRole, requireSelfStaff };
