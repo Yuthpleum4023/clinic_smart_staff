@@ -36,9 +36,7 @@ function normalizeRole(v) {
 
 function normalizeRoles(arr) {
   const roles = Array.isArray(arr) ? arr : [];
-  const set = new Set(
-    roles.map((x) => normalizeRole(x)).filter((x) => !!x)
-  );
+  const set = new Set(roles.map((x) => normalizeRole(x)).filter((x) => !!x));
   return Array.from(set);
 }
 
@@ -52,7 +50,7 @@ function ensureRolesAndActive(userLike, desiredActiveRole) {
   const dbRoles = normalizeRoles(userLike?.roles);
 
   // base roles
-  let roles = dbRoles.length ? dbRoles : (legacy ? [legacy] : []);
+  let roles = dbRoles.length ? dbRoles : legacy ? [legacy] : [];
 
   // activeRole candidate
   const want = normalizeRole(desiredActiveRole);
@@ -119,8 +117,7 @@ function safeUser(u) {
 
 // ✅ NEW: รวม payload token ให้เหมือนกันทุก endpoint (multi-role ready)
 function makeJwtPayload(user) {
-  const mongoId =
-    user?._id?.toString?.() || (user?._id ? String(user._id) : "");
+  const mongoId = user?._id?.toString?.() || (user?._id ? String(user._id) : "");
 
   // ✅ IMPORTANT: role in token = activeRole เสมอ + roles ต้องไม่ว่าง
   const fixed = ensureRolesAndActive(user, user?.activeRole || user?.role);
@@ -175,10 +172,7 @@ async function ensureStaffIdIfEmployee(userDocOrLean) {
 
     const newStaffId = makeId(STAFF_PREFIX, 10);
 
-    await User.updateOne(
-      { userId: userDocOrLean.userId },
-      { $set: { staffId: newStaffId } }
-    );
+    await User.updateOne({ userId: userDocOrLean.userId }, { $set: { staffId: newStaffId } });
 
     return { ...userDocOrLean, staffId: newStaffId };
   } catch {
@@ -208,9 +202,7 @@ async function login(req, res) {
     });
 
     if (!emailOrPhone || !password) {
-      return res
-        .status(400)
-        .json({ message: "emailOrPhone and password required" });
+      return res.status(400).json({ message: "emailOrPhone and password required" });
     }
 
     console.log("🔎 finding user...");
@@ -392,9 +384,7 @@ async function registerClinicAdmin(req, res) {
     const adminPhone = normStr(req.body?.adminPhone);
 
     if (!clinicName || !adminPassword) {
-      return res
-        .status(400)
-        .json({ message: "clinicName and adminPassword required" });
+      return res.status(400).json({ message: "clinicName and adminPassword required" });
     }
 
     const clinicId = makeId(CLINIC_PREFIX, 10);
@@ -429,9 +419,7 @@ async function registerClinicAdmin(req, res) {
       employeeCode: "",
     });
 
-    const token = signToken(
-      makeJwtPayload(user.toObject ? user.toObject() : user)
-    );
+    const token = signToken(makeJwtPayload(user.toObject ? user.toObject() : user));
 
     return res.json({
       clinic: { clinicId: clinic.clinicId, name: clinic.name },
@@ -439,15 +427,16 @@ async function registerClinicAdmin(req, res) {
       token,
     });
   } catch (e) {
-    return res
-      .status(500)
-      .json({ message: "registerClinicAdmin failed", error: e.message });
+    return res.status(500).json({ message: "registerClinicAdmin failed", error: e.message });
   }
 }
 
 /* ======================================================
-   REGISTER WITH INVITE (EMPLOYEE)
+   REGISTER WITH INVITE (EMPLOYEE / HELPER)
    POST /register-with-invite
+   ✅ FIX: สร้าง user ตาม inv.role
+   - employee: มี staffId + employeeCode
+   - helper: ไม่ต้องมี staffId/employeeCode (ปล่อยว่างได้)
 ====================================================== */
 async function registerWithInvite(req, res) {
   try {
@@ -459,9 +448,7 @@ async function registerWithInvite(req, res) {
     const phone = normStr(req.body?.phone);
 
     if (!inviteCode || !password) {
-      return res
-        .status(400)
-        .json({ message: "inviteCode and password required" });
+      return res.status(400).json({ message: "inviteCode and password required" });
     }
 
     const inv = await Invite.findOne({ inviteCode });
@@ -472,25 +459,44 @@ async function registerWithInvite(req, res) {
       return res.status(403).json({ message: "Invite expired" });
     }
 
+    // ✅ ใช้ role จาก invite (fallback employee เพื่อความปลอดภัย)
+    const invRole = normalizeRole(inv.role) || "employee";
+
+    const finalEmail = email || normStr(inv.email).toLowerCase() || "";
+    const finalPhone = phone || normStr(inv.phone) || "";
+
+    // ✅ กันสมัครซ้ำ (ช่วยลดปัญหา role/feature ไม่ขึ้นจาก user ซ้ำ)
+    if (finalPhone) {
+      const existed = await User.findOne({ phone: finalPhone }).lean();
+      if (existed) return res.status(409).json({ message: "Phone already registered" });
+    }
+    if (finalEmail) {
+      const existed = await User.findOne({ email: finalEmail }).lean();
+      if (existed) return res.status(409).json({ message: "Email already registered" });
+    }
+
     const userId = makeId(USER_PREFIX, 10);
-    const employeeCode = makeId(EMP_PREFIX, 10);
-    const staffId = makeId(STAFF_PREFIX, 10);
+
+    // employee เท่านั้นที่สร้างรหัสเหล่านี้
+    const employeeCode = invRole === "employee" ? makeId(EMP_PREFIX, 10) : "";
+    const staffId = invRole === "employee" ? makeId(STAFF_PREFIX, 10) : "";
+
     const passwordHash = await bcrypt.hash(password, 10);
 
     const user = await User.create({
       userId,
       clinicId: inv.clinicId,
 
-      // ✅ multi-role defaults
-      roles: ["employee"],
-      activeRole: "employee",
+      // ✅ multi-role defaults (ตาม invite)
+      roles: [invRole],
+      activeRole: invRole,
 
       // ✅ legacy
-      role: "employee",
+      role: invRole,
 
       staffId,
-      email: email || inv.email || "",
-      phone: phone || inv.phone || "",
+      email: finalEmail,
+      phone: finalPhone,
       fullName: fullName || inv.fullName || "",
       employeeCode,
       passwordHash,
@@ -501,18 +507,14 @@ async function registerWithInvite(req, res) {
     inv.usedByUserId = userId;
     await inv.save();
 
-    const token = signToken(
-      makeJwtPayload(user.toObject ? user.toObject() : user)
-    );
+    const token = signToken(makeJwtPayload(user.toObject ? user.toObject() : user));
 
     return res.json({
       user: safeUser(user.toObject ? user.toObject() : user),
       token,
     });
   } catch (e) {
-    return res
-      .status(500)
-      .json({ message: "registerWithInvite failed", error: e.message });
+    return res.status(500).json({ message: "registerWithInvite failed", error: e.message });
   }
 }
 
@@ -552,9 +554,7 @@ async function forgotPassword(req, res) {
 
     return res.json({ ok: true });
   } catch (e) {
-    return res
-      .status(500)
-      .json({ message: "forgotPassword failed", error: e.message });
+    return res.status(500).json({ message: "forgotPassword failed", error: e.message });
   }
 }
 
@@ -600,9 +600,7 @@ async function resetPassword(req, res) {
 
     return res.json({ ok: true });
   } catch (e) {
-    return res
-      .status(500)
-      .json({ message: "resetPassword failed", error: e.message });
+    return res.status(500).json({ message: "resetPassword failed", error: e.message });
   }
 }
 

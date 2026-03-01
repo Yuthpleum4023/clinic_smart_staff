@@ -1,3 +1,4 @@
+// backend/auth_user_service/models/Invite.js
 const mongoose = require("mongoose");
 
 const InviteSchema = new mongoose.Schema(
@@ -6,7 +7,8 @@ const InviteSchema = new mongoose.Schema(
     clinicId: { type: String, required: true, index: true },
     createdByUserId: { type: String, required: true, index: true },
 
-    role: { type: String, enum: ["employee"], default: "employee" },
+    // ✅ FIX: ให้รองรับ helper ได้
+    role: { type: String, enum: ["employee", "helper"], default: "employee" },
 
     // optional: prefill
     fullName: { type: String, default: "" },

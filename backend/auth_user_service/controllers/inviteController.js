@@ -1,13 +1,29 @@
+// backend/auth_user_service/controllers/inviteController.js
 const Invite = require("../models/Invite");
 const { makeInviteCode } = require("../utils/id");
+
+function normStr(v) {
+  return String(v || "").trim();
+}
+
+function normalizeInviteRole(v) {
+  const r = normStr(v).toLowerCase();
+  return r === "helper" || r === "employee" ? r : "";
+}
 
 async function createInvite(req, res) {
   try {
     const { clinicId, userId } = req.user || {};
     const len = parseInt(process.env.INVITE_CODE_LEN || "8", 10);
-    const expiresHours = parseInt(process.env.INVITE_DEFAULT_EXPIRES_HOURS || "72", 10);
+    const expiresHours = parseInt(
+      process.env.INVITE_DEFAULT_EXPIRES_HOURS || "72",
+      10
+    );
 
-    const { fullName = "", email = "", phone = "" } = req.body || {};
+    const { fullName = "", email = "", phone = "", role } = req.body || {};
+
+    // ✅ NEW: เลือก role ได้
+    const inviteRole = normalizeInviteRole(role) || "employee";
 
     // generate unique code (retry a few times)
     let code = "";
@@ -19,7 +35,8 @@ async function createInvite(req, res) {
         break;
       }
     }
-    if (!code) return res.status(500).json({ message: "Failed to generate invite code" });
+    if (!code)
+      return res.status(500).json({ message: "Failed to generate invite code" });
 
     const expiresAt = new Date(Date.now() + expiresHours * 60 * 60 * 1000);
 
@@ -27,7 +44,10 @@ async function createInvite(req, res) {
       inviteCode: code,
       clinicId,
       createdByUserId: userId,
-      role: "employee",
+
+      // ✅ FIX: เดิมบังคับ employee -> ตอนนี้ใช้ role จาก body
+      role: inviteRole,
+
       fullName,
       email,
       phone,
@@ -39,13 +59,17 @@ async function createInvite(req, res) {
 
     return res.json({ invite: inv });
   } catch (e) {
-    return res.status(500).json({ message: "createInvite failed", error: e.message || String(e) });
+    return res
+      .status(500)
+      .json({ message: "createInvite failed", error: e.message || String(e) });
   }
 }
 
 async function listInvites(req, res) {
   const { clinicId } = req.user || {};
-  const invites = await Invite.find({ clinicId }).sort({ createdAt: -1 }).lean();
+  const invites = await Invite.find({ clinicId })
+    .sort({ createdAt: -1 })
+    .lean();
   return res.json({ invites });
 }
 
@@ -53,7 +77,10 @@ async function revokeInvite(req, res) {
   const { clinicId } = req.user || {};
   const { code } = req.params;
 
-  const inv = await Invite.findOne({ clinicId, inviteCode: code.toUpperCase() });
+  const inv = await Invite.findOne({
+    clinicId,
+    inviteCode: code.toUpperCase(),
+  });
   if (!inv) return res.status(404).json({ message: "Invite not found" });
 
   inv.isRevoked = true;
