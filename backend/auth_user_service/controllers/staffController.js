@@ -1,3 +1,4 @@
+// controllers/staffController.js
 const User = require("../models/User");
 
 // ---------------- helpers ----------------
@@ -23,10 +24,19 @@ function mustLogin(req) {
   }
 }
 
-function mustAdmin(req) {
-  // ✅ ปลอดภัย: ถ้าไม่ใช่ admin ให้ block (รวมถึง role ว่าง/ไม่มี)
+/**
+ * ✅ Align with your canonicalRole() in middleware/auth.js
+ * - You already normalize: admin/clinic/clinic_admin -> "clinic"
+ * - But to be safe with old tokens, we accept both "clinic" and "admin"
+ */
+function mustClinicOrAdmin(req) {
   const role = norm(req.user?.role).toLowerCase();
-  if (role !== "admin") {
+
+  // canonical now: clinic
+  // allow old tokens: admin
+  const ok = role === "clinic" || role === "admin";
+
+  if (!ok) {
     const err = new Error("forbidden");
     err.statusCode = 403;
     throw err;
@@ -42,7 +52,7 @@ function mustAdmin(req) {
 async function searchStaff(req, res) {
   try {
     mustLogin(req);
-    mustAdmin(req); // ✅ ถ้าไม่อยากจำกัด admin ให้ลบบรรทัดนี้
+    mustClinicOrAdmin(req); // ✅ แทน mustAdmin เดิม (รองรับ clinic + admin)
 
     const clinicId = getClinicId(req);
     if (!clinicId) {
@@ -53,7 +63,10 @@ async function searchStaff(req, res) {
     if (!q) return res.json({ items: [] });
 
     const limitRaw = parseInt(req.query.limit || "20", 10);
-    const limit = Math.min(Math.max(Number.isFinite(limitRaw) ? limitRaw : 20, 1), 50);
+    const limit = Math.min(
+      Math.max(Number.isFinite(limitRaw) ? limitRaw : 20, 1),
+      50
+    );
 
     const isDigits = /^\d+$/.test(q);
     const safe = escapeRegex(q);
@@ -65,12 +78,11 @@ async function searchStaff(req, res) {
     const mongoQuery = {
       clinicId,
       isActive: true,
+
+      // ✅ keep: score_service needs staffId
       staffId: { $exists: true, $ne: "" },
-      $or: [
-        { fullName: rx },
-        { staffId: rx },
-        { phone: phoneRx },
-      ],
+
+      $or: [{ fullName: rx }, { staffId: rx }, { phone: phoneRx }],
     };
 
     const docs = await User.find(mongoQuery)
@@ -104,7 +116,7 @@ async function searchStaff(req, res) {
 async function getByStaffId(req, res) {
   try {
     mustLogin(req);
-    mustAdmin(req); // ✅ ถ้าไม่อยากจำกัด admin ให้ลบบรรทัดนี้
+    mustClinicOrAdmin(req); // ✅ แทน mustAdmin เดิม (รองรับ clinic + admin)
 
     const clinicId = getClinicId(req);
     if (!clinicId) {

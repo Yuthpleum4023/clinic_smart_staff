@@ -1,4 +1,4 @@
-// controllers/authController.js
+// backend/auth_user_service/controllers/authController.js
 const bcrypt = require("bcryptjs");
 const Clinic = require("../models/Clinic");
 const User = require("../models/User");
@@ -16,13 +16,159 @@ const RESET_TOKEN_TTL_MINUTES = Number(process.env.RESET_TOKEN_TTL_MINUTES || 10
 const RESET_LOG =
   String(process.env.RESET_LOG || "true").toLowerCase() === "true";
 
+const ROLE_ENUM = ["admin", "employee", "helper"];
+
+/* ======================================================
+   Helpers
+====================================================== */
+function normStr(v) {
+  return String(v || "").trim();
+}
+
+function normLower(v) {
+  return normStr(v).toLowerCase();
+}
+
+function normalizeRole(v) {
+  const r = normLower(v);
+  return ROLE_ENUM.includes(r) ? r : "";
+}
+
+function normalizeRoles(arr) {
+  const roles = Array.isArray(arr) ? arr : [];
+  const set = new Set(
+    roles.map((x) => normalizeRole(x)).filter((x) => !!x)
+  );
+  return Array.from(set);
+}
+
+/**
+ * ✅ Ensure roles[] contains (legacy role + activeRole) and is unique
+ * - Backward compatible: ถ้า roles ว่าง ให้เริ่มจาก legacy role
+ * - บังคับให้ activeRole อยู่ใน roles เสมอ
+ */
+function ensureRolesAndActive(userLike, desiredActiveRole) {
+  const legacy = normalizeRole(userLike?.role);
+  const dbRoles = normalizeRoles(userLike?.roles);
+
+  // base roles
+  let roles = dbRoles.length ? dbRoles : (legacy ? [legacy] : []);
+
+  // activeRole candidate
+  const want = normalizeRole(desiredActiveRole);
+  const active =
+    want ||
+    normalizeRole(userLike?.activeRole) ||
+    legacy ||
+    (roles.length ? roles[0] : "") ||
+    "employee";
+
+  // ensure active in roles
+  if (!roles.includes(active)) roles = [...roles, active];
+
+  // safety: roles must be valid enum only
+  roles = normalizeRoles(roles);
+
+  return { roles, activeRole: active, legacyRole: active };
+}
+
+function pickActiveRole(user, requested) {
+  const roles = normalizeRoles(user?.roles);
+  const legacy = normalizeRole(user?.role);
+  const active = normalizeRole(user?.activeRole);
+
+  const req = normalizeRole(requested);
+
+  // ✅ If client requests role, it must be in roles (or matches legacy)
+  if (req) {
+    if (roles.includes(req)) return req;
+    if (legacy && legacy === req) return req; // backward case: roles not backfilled yet
+    return ""; // invalid request
+  }
+
+  // no request -> use activeRole first, else legacy, else first role, else employee
+  if (active) return active;
+  if (legacy) return legacy;
+  if (roles.length > 0) return roles[0];
+  return "employee";
+}
+
+function safeUser(u) {
+  if (!u) return null;
+
+  // ✅ กัน roles ว่าง (ของเก่า) ให้คืน roles ที่ถูกต้องเสมอ
+  const fixed = ensureRolesAndActive(u, u?.activeRole || u?.role);
+
+  return {
+    userId: u.userId,
+    clinicId: u.clinicId,
+
+    // ✅ legacy + active
+    role: fixed.legacyRole,
+    activeRole: fixed.activeRole,
+    roles: fixed.roles,
+
+    staffId: u.staffId || "",
+    email: u.email || "",
+    phone: u.phone || "",
+    fullName: u.fullName || "",
+    employeeCode: u.employeeCode || "",
+    isActive: u.isActive,
+  };
+}
+
+// ✅ NEW: รวม payload token ให้เหมือนกันทุก endpoint (multi-role ready)
+function makeJwtPayload(user) {
+  const mongoId =
+    user?._id?.toString?.() || (user?._id ? String(user._id) : "");
+
+  // ✅ IMPORTANT: role in token = activeRole เสมอ + roles ต้องไม่ว่าง
+  const fixed = ensureRolesAndActive(user, user?.activeRole || user?.role);
+
+  const payload = {
+    userId: normStr(user?.userId),
+    clinicId: normStr(user?.clinicId),
+
+    // ✅ token role ใช้ activeRole เสมอ
+    role: fixed.activeRole,
+
+    // ✅ ส่งเพิ่มเพื่ออนาคต (แอปเลือก role ได้)
+    activeRole: fixed.activeRole,
+    roles: fixed.roles,
+
+    staffId: normStr(user?.staffId),
+
+    fullName: normStr(user?.fullName),
+    phone: normStr(user?.phone),
+    email: normStr(user?.email),
+  };
+
+  if (mongoId && mongoId !== "undefined" && mongoId !== "null") {
+    payload.id = mongoId;
+  }
+
+  return payload;
+}
+
 /* ======================================================
    Helper: ensure staffId (employee only)
+   ✅ Multi-role safe:
+   - ถ้ามี employee อยู่ใน roles หรือ activeRole/role เป็น employee -> ต้องมี staffId
 ====================================================== */
 async function ensureStaffIdIfEmployee(userDocOrLean) {
   try {
     if (!userDocOrLean) return userDocOrLean;
-    if (userDocOrLean.role !== "employee") return userDocOrLean;
+
+    const legacyRole = normalizeRole(userDocOrLean.role);
+    const activeRole = normalizeRole(userDocOrLean.activeRole);
+    const roles = normalizeRoles(userDocOrLean.roles);
+
+    const hasEmployee =
+      legacyRole === "employee" ||
+      activeRole === "employee" ||
+      roles.includes("employee");
+
+    if (!hasEmployee) return userDocOrLean;
 
     const staffId = String(userDocOrLean.staffId || "").trim();
     if (staffId.length > 0) return userDocOrLean;
@@ -40,70 +186,25 @@ async function ensureStaffIdIfEmployee(userDocOrLean) {
   }
 }
 
-function normStr(v) {
-  return String(v || "").trim();
-}
-
-function safeUser(u) {
-  if (!u) return null;
-  return {
-    userId: u.userId,
-    clinicId: u.clinicId,
-    role: u.role,
-    staffId: u.staffId || "",
-    email: u.email || "",
-    phone: u.phone || "",
-    fullName: u.fullName || "",
-    employeeCode: u.employeeCode || "",
-    isActive: u.isActive,
-  };
-}
-
-// ✅ NEW: รวม payload token ให้เหมือนกันทุก endpoint
-function makeJwtPayload(user) {
-  // ต้องมี _id (ObjectId) เพื่อให้ service อื่นใช้ findById ได้
-  const mongoId =
-    user?._id?.toString?.() || (user?._id ? String(user._id) : "");
-
-  const payload = {
-    // เดิมของระบบคุณ
-    userId: normStr(user?.userId),
-    clinicId: normStr(user?.clinicId),
-    role: normStr(user?.role),
-    staffId: normStr(user?.staffId),
-
-    // ✅ เพิ่มเพื่อให้ service อื่น enrich ได้ทันที (เช่น payroll_service: availability)
-    // ✅ ไม่ต้อง query /me ซ้ำ
-    fullName: normStr(user?.fullName),
-    phone: normStr(user?.phone),
-
-    // ✅ optional แต่มีประโยชน์ในอนาคต
-    email: normStr(user?.email),
-  };
-
-  // ✅ ใส่ id เฉพาะเมื่อหาได้จริง (กัน payload แปลก)
-  if (mongoId && mongoId !== "undefined" && mongoId !== "null") {
-    payload.id = mongoId; // ✅ Mongo ObjectId string 24 chars
-  }
-
-  return payload;
-}
-
 /* ======================================================
    LOGIN
    POST /login
+   body: { emailOrPhone, password, activeRole? }
    ✅ FIX: กันค้าง + log pinpoint + maxTimeMS
+   ✅ NEW: รองรับเลือก activeRole (employee/helper/admin)
 ====================================================== */
 async function login(req, res) {
   const t0 = Date.now();
   try {
     const emailOrPhone = normStr(req.body?.emailOrPhone);
     const password = normStr(req.body?.password);
+    const requestedRole = req.body?.activeRole; // optional
 
     console.log("🔐 /login hit", {
       ip: req.ip,
       emailOrPhone,
       hasPw: !!password,
+      activeRole: requestedRole ? String(requestedRole) : "",
     });
 
     if (!emailOrPhone || !password) {
@@ -145,9 +246,43 @@ async function login(req, res) {
 
     if (!ok) return res.status(401).json({ message: "Invalid credentials" });
 
+    // ✅ ensure staffId if user has employee role in any form
     user = await ensureStaffIdIfEmployee(user);
 
-    // ✅ FIX: ใส่ id (ObjectId) ลง token ด้วย + ✅ fullName/phone/email
+    // ✅ determine activeRole to use
+    const activeRole = pickActiveRole(user, requestedRole);
+    if (!activeRole) {
+      return res.status(403).json({
+        message: "Requested role not allowed for this user",
+        requestedRole: normalizeRole(requestedRole),
+        roles: normalizeRoles(user?.roles),
+        legacyRole: normalizeRole(user?.role),
+      });
+    }
+
+    // ✅ Ensure roles[] contains activeRole + backfill legacy role
+    const fixed = ensureRolesAndActive(user, activeRole);
+
+    // ✅ persist: activeRole + legacy role + roles[]
+    await User.updateOne(
+      { userId: user.userId },
+      {
+        $set: {
+          activeRole: fixed.activeRole,
+          role: fixed.legacyRole, // sync legacy
+          roles: fixed.roles,
+        },
+      }
+    );
+
+    // refresh local user object fields for response/token payload
+    user = {
+      ...user,
+      activeRole: fixed.activeRole,
+      role: fixed.legacyRole,
+      roles: fixed.roles,
+    };
+
     const token = signToken(makeJwtPayload(user));
 
     console.log("✅ login success total ms=", Date.now() - t0);
@@ -177,6 +312,69 @@ async function me(req, res) {
     return res.json({ user: safeUser(user) });
   } catch (e) {
     return res.status(500).json({ message: "me failed", error: e.message });
+  }
+}
+
+/* ======================================================
+   ✅ NEW: SWITCH ROLE (หลัง login)
+   POST /switch-role
+   body: { activeRole }
+   - ต้อง auth ก่อน (req.user.userId มี)
+   - ตรวจว่า activeRole อยู่ใน user.roles
+   - ออก token ใหม่ role=activeRole
+====================================================== */
+async function switchRole(req, res) {
+  try {
+    const userId = req.user?.userId;
+    if (!userId) {
+      return res.status(401).json({ message: "Missing token payload" });
+    }
+
+    const requestedRole = req.body?.activeRole;
+    const want = normalizeRole(requestedRole);
+    if (!want) {
+      return res.status(400).json({ message: "activeRole is required" });
+    }
+
+    let user = await User.findOne({ userId }).select("-passwordHash").lean();
+    if (!user) return res.status(404).json({ message: "User not found" });
+    if (!user.isActive) return res.status(403).json({ message: "User disabled" });
+
+    user = await ensureStaffIdIfEmployee(user);
+
+    const roles = normalizeRoles(user?.roles);
+    const legacy = normalizeRole(user?.role);
+
+    // allow if roles include it OR legacy matches it (for old docs)
+    const allowed = roles.includes(want) || (legacy && legacy === want);
+    if (!allowed) {
+      return res.status(403).json({
+        message: "Role not allowed for this user",
+        requestedRole: want,
+        roles,
+        legacyRole: legacy,
+      });
+    }
+
+    // ✅ Ensure roles[] contains want
+    const fixed = ensureRolesAndActive(user, want);
+
+    await User.updateOne(
+      { userId },
+      { $set: { activeRole: fixed.activeRole, role: fixed.legacyRole, roles: fixed.roles } }
+    );
+
+    user = {
+      ...user,
+      activeRole: fixed.activeRole,
+      role: fixed.legacyRole,
+      roles: fixed.roles,
+    };
+
+    const token = signToken(makeJwtPayload(user));
+    return res.json({ user: safeUser(user), token });
+  } catch (e) {
+    return res.status(500).json({ message: "switchRole failed", error: e.message });
   }
 }
 
@@ -214,7 +412,14 @@ async function registerClinicAdmin(req, res) {
     const user = await User.create({
       userId,
       clinicId,
+
+      // ✅ multi-role defaults
+      roles: ["admin"],
+      activeRole: "admin",
+
+      // ✅ legacy
       role: "admin",
+
       staffId: "",
       email: adminEmail || "",
       phone: adminPhone || "",
@@ -224,7 +429,6 @@ async function registerClinicAdmin(req, res) {
       employeeCode: "",
     });
 
-    // ✅ FIX: ใส่ id (ObjectId) ลง token ด้วย + ✅ fullName/phone/email
     const token = signToken(
       makeJwtPayload(user.toObject ? user.toObject() : user)
     );
@@ -276,7 +480,14 @@ async function registerWithInvite(req, res) {
     const user = await User.create({
       userId,
       clinicId: inv.clinicId,
+
+      // ✅ multi-role defaults
+      roles: ["employee"],
+      activeRole: "employee",
+
+      // ✅ legacy
       role: "employee",
+
       staffId,
       email: email || inv.email || "",
       phone: phone || inv.phone || "",
@@ -290,7 +501,6 @@ async function registerWithInvite(req, res) {
     inv.usedByUserId = userId;
     await inv.save();
 
-    // ✅ FIX: ใส่ id (ObjectId) ลง token ด้วย + ✅ fullName/phone/email
     const token = signToken(
       makeJwtPayload(user.toObject ? user.toObject() : user)
     );
@@ -399,6 +609,7 @@ async function resetPassword(req, res) {
 module.exports = {
   login,
   me,
+  switchRole, // ✅ NEW
   registerClinicAdmin,
   registerWithInvite,
   forgotPassword,

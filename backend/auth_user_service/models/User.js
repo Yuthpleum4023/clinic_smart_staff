@@ -1,3 +1,4 @@
+// backend/auth_user_service/models/User.js
 const mongoose = require("mongoose");
 
 /**
@@ -45,6 +46,19 @@ const TaxProfileSchema = new mongoose.Schema(
   { _id: false }
 );
 
+/**
+ * ================================
+ * ✅ Multi-role (ระยะยาว)
+ * - roles: ["employee","helper","admin"]  (หลายบทบาท)
+ * - activeRole: บทบาทที่กำลังใช้งาน (token ต้องใส่ตามนี้)
+ *
+ * ✅ Backward compatible
+ * - role (เดิม) ยังเก็บไว้ เพื่อ service เก่าอ่านได้
+ * - เราจะ sync role = activeRole ใน hook
+ * ================================
+ */
+const ROLE_ENUM = ["admin", "employee", "helper"];
+
 const UserSchema = new mongoose.Schema(
   {
     userId: { type: String, required: true, unique: true, index: true }, // USR_xxx
@@ -52,14 +66,50 @@ const UserSchema = new mongoose.Schema(
     // ✅ clinic tenancy (MVP: employee อยู่คลินิกเดียวก่อน)
     clinicId: { type: String, required: true, index: true }, // CLN_xxx
 
+    /**
+     * ✅ NEW: roles[] (multi-role)
+     * - เก็บบทบาททั้งหมดที่ user นี้มี
+     * - ค่าเริ่มต้น: ถ้ายังใช้ระบบเดิม -> จะถูก backfill จาก role (เดิม) ใน hook
+     */
+    roles: {
+      type: [String],
+      enum: ROLE_ENUM,
+      default: [],
+      index: true,
+    },
+
+    /**
+     * ✅ NEW: activeRole
+     * - role ที่ “กำลังใช้งาน” ตอนนี้
+     * - token ควรใส่ role = activeRole เท่านั้น
+     */
+    activeRole: {
+      type: String,
+      enum: ROLE_ENUM,
+      default: "employee",
+      index: true,
+    },
+
+    /**
+     * ⚠️ Legacy field: role (เดิม)
+     * - คงไว้กันระบบเก่าพัง
+     * - hook จะ sync ให้ role = activeRole อัตโนมัติ
+     */
     role: {
       type: String,
-      enum: ["admin", "employee"],
+      enum: ROLE_ENUM, // ขยายให้รองรับ helper ด้วย
+      default: "employee",
       required: true,
       index: true,
     },
 
-    // ✅ staffId = ตัวตน "ผู้ช่วย/พนักงาน" ข้ามคลินิก
+    /**
+     * ✅ staffId = ตัวตน "พนักงาน/ผู้ช่วย" ข้ามคลินิก
+     * - ถ้า activeRole = employee -> จำเป็นต้องมี staffId
+     * - ถ้า activeRole = helper -> อาจมีหรือไม่มีก็ได้ (ตาม design ของท่าน)
+     *
+     * หมายเหตุ: การ enforce แบบ “ห้ามว่าง” จะทำใน login/token/guard จะปลอดภัยกว่า
+     */
     staffId: { type: String, default: "" }, // STF_xxx
 
     // login
@@ -96,5 +146,50 @@ UserSchema.index({ clinicId: 1, phone: 1 }, { unique: false });
 
 // ✅ helpful index for cross-service lookups
 UserSchema.index({ staffId: 1 }, { unique: false });
+
+// ✅ NEW helpful indexes
+UserSchema.index({ clinicId: 1, activeRole: 1 }, { unique: false });
+UserSchema.index({ clinicId: 1, roles: 1 }, { unique: false });
+
+/**
+ * ================================
+ * ✅ Hooks: Backfill + Sync
+ * - ทำให้เอกสารเก่า (ที่มี role อย่างเดียว) ยังทำงานได้
+ * - และป้องกัน “ฟีเจอร์หาย” เพราะ activeRole/roles ไม่สัมพันธ์กัน
+ * ================================
+ */
+UserSchema.pre("validate", function (next) {
+  try {
+    // 1) ถ้า roles ว่าง แต่มี role เดิม -> backfill
+    if ((!this.roles || this.roles.length === 0) && this.role) {
+      const r = String(this.role).trim();
+      if (r) this.roles = [r];
+    }
+
+    // 2) ถ้า activeRole ว่าง -> ใช้ role เดิม หรือค่าแรกใน roles
+    if (!this.activeRole) {
+      const legacy = String(this.role || "").trim();
+      const first = Array.isArray(this.roles) && this.roles.length > 0 ? this.roles[0] : "";
+      this.activeRole = legacy || first || "employee";
+    }
+
+    // 3) ทำให้แน่ใจว่า activeRole อยู่ใน roles เสมอ
+    if (this.activeRole) {
+      const ar = String(this.activeRole).trim();
+      const set = new Set((this.roles || []).map((x) => String(x).trim()).filter(Boolean));
+      if (ar) set.add(ar);
+      this.roles = Array.from(set);
+    }
+
+    // 4) Sync legacy role = activeRole (สำคัญ: service อื่น/โค้ดเก่าอ่าน role)
+    if (this.activeRole) {
+      this.role = this.activeRole;
+    }
+
+    return next();
+  } catch (e) {
+    return next(e);
+  }
+});
 
 module.exports = mongoose.model("User", UserSchema);
