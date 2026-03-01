@@ -5,7 +5,8 @@
 // - ✅ Pull approved OT summary by (clinicId + monthKey + staffId)
 // - ✅ If client sends baseHourly (optional) and otPay=0 => compute otPay from approvedWeightedHours
 // - ✅ Still calls AUTH internal by userId (ถูกต้อง เพราะภาษีผูก userId)
-// - ✅ Keep old fields + add OT snapshot fields to PayrollClose
+// - ✅ SECURITY: staff ดูได้เฉพาะของตัวเอง, admin ดูได้ทั้งคลินิก
+// - ✅ SECURITY: ทุก query ผูก clinicId จาก token กันข้อมูลข้ามคลินิก
 //
 
 const axios = require("axios");
@@ -55,6 +56,35 @@ async function postJson(url, body, headers) {
   });
 }
 
+// ================= ACCESS GUARD =================
+// staff/employee: ดูได้เฉพาะของตัวเอง (employeeId ต้องเท่ากับ req.user.staffId)
+// admin: ดูได้ทุกคนในคลินิก
+function guardPayslipAccess(req, res, next) {
+  const role = safeStr(req.user?.role);
+  const staffIdInToken = safeStr(req.user?.staffId);
+  const employeeId = safeStr(req.params.employeeId || req.body?.employeeId);
+
+  if (!role) return res.status(401).json({ message: "Unauthorized" });
+
+  // admin ok
+  if (role === "admin") return next();
+
+  // employee/staff ok only if matches
+  // NOTE: จาก authController ของท่าน role employee คือ "employee"
+  if (role === "employee") {
+    if (!employeeId || !staffIdInToken) {
+      return res.status(400).json({ message: "Missing employeeId/staffId" });
+    }
+    if (employeeId !== staffIdInToken) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+    return next();
+  }
+
+  // other roles (helper etc) -> forbidden by default
+  return res.status(403).json({ message: "Forbidden" });
+}
+
 // ================= OT helpers =================
 // ✅ sum APPROVED OT of month (employeeId = staffId)
 async function getApprovedOtSummaryForMonth({ clinicId, monthKey, employeeId }) {
@@ -66,6 +96,7 @@ async function getApprovedOtSummaryForMonth({ clinicId, monthKey, employeeId }) 
     return { monthKey: mKey, approvedMinutes: 0, approvedWeightedHours: 0, records: [], count: 0 };
   }
 
+  // ✅ ผูก clinicId + staffId ชัด ๆ
   const q = { clinicId: cId, monthKey: mKey, status: "approved", staffId };
 
   const rows = await Overtime.find(q)
@@ -158,15 +189,22 @@ async function closeMonth(req, res) {
       return res.status(400).json({ message: "month must be yyyy-MM" });
     }
 
-    // ✅ tax calc uses userId
+    // ✅ ผูก clinicId จาก token เพื่อกันคนส่ง clinicId ปลอม
+    const clinicIdFromToken = safeStr(req.user?.clinicId);
+    if (!clinicIdFromToken) return res.status(401).json({ message: "Missing clinicId in token" });
+    if (safeStr(clinicId) !== clinicIdFromToken) {
+      return res.status(403).json({ message: "Forbidden (clinic mismatch)" });
+    }
+
+    // ✅ tax calc uses userId (ของคนที่เป็น admin ที่ปิดงวด)
     const userId = safeStr(req.user?.userId);
     if (!userId) return res.status(401).json({ message: "Missing userId in token" });
 
-    const existed = await PayrollClose.findOne({ employeeId, month }).lean();
+    const existed = await PayrollClose.findOne({ clinicId: clinicIdFromToken, employeeId, month }).lean();
     if (existed) return res.status(409).json({ message: "Month already closed" });
 
     const otSummary = await getApprovedOtSummaryForMonth({
-      clinicId,
+      clinicId: clinicIdFromToken,
       monthKey: safeStr(month),
       employeeId: safeStr(employeeId),
     });
@@ -190,6 +228,7 @@ async function closeMonth(req, res) {
     const ssoM = clamp(clampMin0(ssoEmployeeMonthly), 0, 750);
     const pvdM = clampMin0(pvdEmployeeMonthly);
 
+    // NOTE: TaxYTD ผูกด้วย employeeId (staffId) ตามระบบท่าน
     let ytd = await TaxYTD.findOne({ employeeId, taxYear });
     if (!ytd) {
       ytd = await TaxYTD.create({
@@ -219,7 +258,7 @@ async function closeMonth(req, res) {
     const netPay = Math.max(0, grossMonthly - withheldTaxMonthly - ssoM - pvdM);
 
     const payrollClose = await PayrollClose.create({
-      clinicId,
+      clinicId: clinicIdFromToken,
       employeeId,
       month,
 
@@ -272,10 +311,13 @@ async function closeMonth(req, res) {
 // ✅ GET /payroll-close/close-months/:employeeId
 async function getClosedMonthsByEmployee(req, res) {
   try {
+    const clinicId = safeStr(req.user?.clinicId);
+    if (!clinicId) return res.status(401).json({ message: "Missing clinicId in token" });
+
     const employeeId = safeStr(req.params.employeeId);
     if (!employeeId) return res.status(400).json({ message: "employeeId required" });
 
-    const rows = await PayrollClose.find({ employeeId })
+    const rows = await PayrollClose.find({ clinicId, employeeId })
       .sort({ month: -1 })
       .lean();
 
@@ -288,13 +330,16 @@ async function getClosedMonthsByEmployee(req, res) {
 // ✅ GET /payroll-close/close-month/:employeeId/:month
 async function getClosedMonthByEmployeeAndMonth(req, res) {
   try {
+    const clinicId = safeStr(req.user?.clinicId);
+    if (!clinicId) return res.status(401).json({ message: "Missing clinicId in token" });
+
     const employeeId = safeStr(req.params.employeeId);
     const month = safeStr(req.params.month);
 
     if (!employeeId) return res.status(400).json({ message: "employeeId required" });
     if (!isYm(month)) return res.status(400).json({ message: "month must be yyyy-MM" });
 
-    const row = await PayrollClose.findOne({ employeeId, month }).lean();
+    const row = await PayrollClose.findOne({ clinicId, employeeId, month }).lean();
     if (!row) return res.status(404).json({ message: "Not found" });
 
     return res.json({ ok: true, row });
@@ -304,6 +349,10 @@ async function getClosedMonthByEmployeeAndMonth(req, res) {
 }
 
 module.exports = {
+  // middleware
+  guardPayslipAccess,
+
+  // endpoints
   closeMonth,
   getClosedMonthsByEmployee,
   getClosedMonthByEmployeeAndMonth,

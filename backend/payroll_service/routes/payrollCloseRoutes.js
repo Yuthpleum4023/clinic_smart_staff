@@ -14,17 +14,25 @@ router.post("/close-month", auth, requireRole(["admin"]), ctrl.closeMonth);
 // ======================================================
 // ✅ ดูงวดที่ปิดแล้ว (ทั้งหมดของ employeeId)
 // GET /payroll-close/close-months/:employeeId
+// - admin: ดูได้ทุกคน (แต่ controller ควรผูก clinicId กันข้ามคลินิก)
+// - employee: ดูได้เฉพาะของตัวเอง (employeeId ต้อง == req.user.staffId)
 // ======================================================
-router.get("/close-months/:employeeId", auth, ctrl.getClosedMonthsByEmployee);
+router.get(
+  "/close-months/:employeeId",
+  auth,
+  ctrl.guardPayslipAccess, // ✅ NEW (ต้องมีใน controller)
+  ctrl.getClosedMonthsByEmployee
+);
 
 // ======================================================
 // ✅ NEW: ดึงงวดที่ปิดแล้ว "รายเดือน" สำหรับหน้า payslip
 // GET /payroll-close/close-month/:employeeId/:month
-// ตัวอย่าง: /payroll-close/close-month/EMP001/2026-03
+// ตัวอย่าง: /payroll-close/close-month/stf_xxx/2026-03
 // ======================================================
 router.get(
   "/close-month/:employeeId/:month",
   auth,
+  ctrl.guardPayslipAccess, // ✅ NEW (ต้องมีใน controller)
   ctrl.getClosedMonthByEmployeeAndMonth
 );
 
