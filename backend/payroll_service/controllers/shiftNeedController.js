@@ -5,6 +5,7 @@
 // - listOpenNeeds: ALWAYS prefer clinics collection meta (backfill & override) for old needs
 // - listClinicNeeds: ALSO backfill & override (admin list หน้าคลินิกจะไม่ติด Leena House)
 // - applyNeed: ✅ helper สมัครได้แม้ staffId ว่าง (ใช้ userId เป็นหลัก) + phone digits 9-10
+//   ✅ FIX 500: ApplicantSchema.staffId required=true -> helper จะใช้ userId เป็น staffId แทน (stable)
 // - approveApplicant: ✅ อนุมัติได้ทั้งแบบ staffId หรือ userId และสร้าง Shift แบบยั่งยืน:
 //     - Shift.helperUserId = applicant.userId (สำคัญสุด)
 //     - Shift.staffId = applicant.staffId || applicant.userId (เพื่อผ่าน schema required)
@@ -506,11 +507,20 @@ async function applyNeed(req, res) {
       bad("phone required (9-10 digits)", 400);
     }
 
+    // ✅ FIX 500 (Mongoose required staffId in ApplicantSchema):
+    // helper: ใช้ userId เป็น staffId แทน (stable/unique)
+    const staffIdForApplicant =
+      staffId || (role === "helper" ? userId : "");
+
+    if (!staffIdForApplicant) {
+      bad("missing applicant identity", 400);
+    }
+
     // ✅ DURABLE applicant schema:
-    // - helper: userId เป็นหลัก, staffId อาจว่าง
+    // - helper: userId เป็นหลัก, staffId ใช้ userId เพื่อผ่าน schema
     // - employee: staffId เป็นหลัก, userId เก็บไว้ด้วยได้
     applicants.push({
-      staffId: staffId || "", // helper อาจว่าง
+      staffId: staffIdForApplicant,
       userId: userId || "",
       phone: phoneDigits,
       status: "pending",
