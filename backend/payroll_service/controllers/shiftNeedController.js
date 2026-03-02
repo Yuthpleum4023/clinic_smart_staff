@@ -10,6 +10,10 @@
 //     - Shift.staffId = applicant.staffId || applicant.userId (เพื่อผ่าน schema required)
 // - no breaking change: employee/admin flow เดิมยังใช้ staffId ได้ตามปกติ
 //
+// ✅ EXTRA DURABLE FIX:
+// - ป้องกัน 500 กรณี need.applicants ไม่มี field / ไม่ใช่ array (legacy docs)
+// - ทำให้ .some() และ .push() ปลอดภัยทุกเคส
+//
 // หมายเหตุ: ถ้าไม่มี models/Clinic.js ก็ยังทำงานได้ (จะไม่ enrich)
 
 const ShiftNeed = require("../models/ShiftNeed");
@@ -109,6 +113,17 @@ function isValidLatLng(lat, lng) {
   if (lat < -90 || lat > 90) return false;
   if (lng < -180 || lng > 180) return false;
   return true;
+}
+
+// ✅ NEW: legacy-safe applicants array
+function ensureApplicantsArray(doc) {
+  // รองรับทั้ง mongoose doc และ plain object (เผื่ออนาคต)
+  if (!doc) return [];
+  if (Array.isArray(doc.applicants)) return doc.applicants;
+
+  // ถ้า applicants เป็น null/undefined/ชนิดอื่น → ทำให้เป็น array
+  doc.applicants = [];
+  return doc.applicants;
 }
 
 function pickClinicMetaFromNeed(needDoc) {
@@ -412,7 +427,10 @@ async function listOpenNeeds(req, res) {
     }
 
     const enriched = (items || []).map((n) => {
-      const applied = (n.applicants || []).some((a) =>
+      // ✅ legacy-safe: applicants may be missing/not array
+      const applicants = Array.isArray(n.applicants) ? n.applicants : [];
+
+      const applied = applicants.some((a) =>
         applicantMatches(a, { staffId, userId })
       );
 
@@ -475,7 +493,10 @@ async function applyNeed(req, res) {
     if (!need) bad("need not found", 404);
     if (need.status !== "open") bad("need is not open", 400);
 
-    const already = (need.applicants || []).some((a) =>
+    // ✅ FIX 500: ensure applicants is array for legacy docs
+    const applicants = ensureApplicantsArray(need);
+
+    const already = applicants.some((a) =>
       applicantMatches(a, { staffId, userId })
     );
     if (already) return res.json({ ok: true, message: "already applied" });
@@ -488,7 +509,7 @@ async function applyNeed(req, res) {
     // ✅ DURABLE applicant schema:
     // - helper: userId เป็นหลัก, staffId อาจว่าง
     // - employee: staffId เป็นหลัก, userId เก็บไว้ด้วยได้
-    need.applicants.push({
+    applicants.push({
       staffId: staffId || "", // helper อาจว่าง
       userId: userId || "",
       phone: phoneDigits,
@@ -518,8 +539,11 @@ async function listApplicants(req, res) {
     if (!need) bad("need not found", 404);
     if (need.clinicId !== clinicId) bad("forbidden", 403);
 
+    // ✅ legacy-safe (ถ้า doc เก่าไม่มี applicants)
+    const applicants = Array.isArray(need.applicants) ? need.applicants : [];
+
     // ✅ return as-is (มีทั้ง staffId/userId)
-    return res.json({ applicants: need.applicants || [] });
+    return res.json({ applicants });
   } catch (e) {
     return res.status(e.statusCode || 500).json({
       message: "listApplicants failed",
@@ -548,7 +572,10 @@ async function approveApplicant(req, res) {
     if (need.clinicId !== clinicId) bad("forbidden", 403);
     if (need.status !== "open") bad("need is not open", 400);
 
-    const a = (need.applicants || []).find((x) =>
+    // ✅ FIX 500: ensure applicants is array for legacy docs
+    const applicants = ensureApplicantsArray(need);
+
+    const a = applicants.find((x) =>
       applicantMatches(x, { staffId: staff, userId: uid })
     );
     if (!a) bad("applicant not found", 404);
@@ -556,7 +583,7 @@ async function approveApplicant(req, res) {
     const key = pickApplicantKey(a);
 
     // ✅ mark statuses (approved vs rejected)
-    need.applicants = (need.applicants || []).map((x) => {
+    need.applicants = applicants.map((x) => {
       const xo = x?.toObject ? x.toObject() : x;
       const k2 = pickApplicantKey(xo);
 
