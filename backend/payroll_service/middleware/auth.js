@@ -7,29 +7,37 @@ const AUTH_LOG =
 function normStr(v) {
   return String(v || "").trim();
 }
-
 function normLower(v) {
   return normStr(v).toLowerCase();
 }
 
+function pickFirstNonEmpty(...vals) {
+  for (const v of vals) {
+    const s = normStr(v);
+    if (s) return s;
+  }
+  return "";
+}
+
 /**
- * Map role aliases -> canonical role
- * - clinic group: admin/clinic/clinic_admin
- * - employee group: employee/staff/emp
- * - helper group: helper
+ * ✅ Canonical roles (ตรงกับ controller ทั้งระบบ)
+ * - admin    : คลินิก admin/owner/manager ฯลฯ
+ * - employee : ลูกจ้างประจำคลินิกทุกตำแหน่ง
+ * - helper   : ผู้ช่วย part-time ที่วิ่งรับงาน (marketplace)
  */
 function canonicalRole(roleRaw) {
   const r = normLower(roleRaw);
 
-  // clinic/admin aliases
+  // admin aliases
   if (
     r === "admin" ||
     r === "clinic" ||
     r === "clinic_admin" ||
     r === "clinicadmin" ||
-    r === "owner"
+    r === "owner" ||
+    r === "manager"
   ) {
-    return "clinic";
+    return "admin";
   }
 
   // employee/staff aliases
@@ -37,22 +45,37 @@ function canonicalRole(roleRaw) {
     return "employee";
   }
 
-  // helper
-  if (r === "helper") {
+  // helper aliases
+  if (
+    r === "helper" ||
+    r === "assistant" ||
+    r === "dental_assistant" ||
+    r === "dental assistant"
+  ) {
     return "helper";
   }
 
-  // unknown -> keep normalized (so requireRole can still match if caller passes exact)
-  return r;
+  return r; // unknown -> keep
+}
+
+function canonicalRolesList(v) {
+  if (Array.isArray(v)) {
+    return v
+      .map((x) => canonicalRole(x))
+      .map((x) => normStr(x))
+      .filter(Boolean);
+  }
+  const one = canonicalRole(v);
+  return one ? [one] : [];
 }
 
 function extractToken(req) {
   const raw = normStr(req.headers.authorization);
   if (!raw) return "";
 
-  // ตัด quote ครอบทั้งก้อน เช่น "aaa.bbb.ccc"
   let cleaned = raw;
 
+  // ตัด quote ครอบทั้งก้อน เช่น "aaa.bbb.ccc"
   if (
     (cleaned.startsWith('"') && cleaned.endsWith('"')) ||
     (cleaned.startsWith("'") && cleaned.endsWith("'"))
@@ -71,6 +94,39 @@ function extractToken(req) {
   return cleaned;
 }
 
+function extractClinicIdFromPayload(payload) {
+  // 1) direct fields
+  let clinicId = pickFirstNonEmpty(payload.clinicId, payload.clinic_id, payload.cid);
+  if (clinicId) return clinicId;
+
+  // 2) payload.clinic (string/object)
+  const clinic = payload.clinic;
+  if (typeof clinic === "string") {
+    clinicId = normStr(clinic);
+    if (clinicId) return clinicId;
+  }
+  if (clinic && typeof clinic === "object") {
+    clinicId = pickFirstNonEmpty(clinic.clinicId, clinic.id, clinic._id);
+    if (clinicId) return clinicId;
+  }
+
+  // 3) payload.clinics (array)
+  const clinics = payload.clinics;
+  if (Array.isArray(clinics) && clinics.length > 0) {
+    const first = clinics[0];
+    if (typeof first === "string") {
+      clinicId = normStr(first);
+      if (clinicId) return clinicId;
+    }
+    if (first && typeof first === "object") {
+      clinicId = pickFirstNonEmpty(first.clinicId, first.id, first._id);
+      if (clinicId) return clinicId;
+    }
+  }
+
+  return "";
+}
+
 function auth(req, res, next) {
   try {
     const token = extractToken(req);
@@ -78,15 +134,9 @@ function auth(req, res, next) {
     if (AUTH_LOG) {
       console.log("======================================");
       console.log("🔐 AUTH CHECK");
-      console.log(
-        "🔐 Authorization:",
-        req.headers.authorization ? "YES" : "NO"
-      );
+      console.log("🔐 Authorization:", req.headers.authorization ? "YES" : "NO");
       console.log("🔐 Token Preview:", String(token).slice(0, 30));
-      console.log(
-        "🔐 Token Dots:",
-        (String(token).match(/\./g) || []).length
-      );
+      console.log("🔐 Token Dots:", (String(token).match(/\./g) || []).length);
     }
 
     if (!token) {
@@ -98,9 +148,7 @@ function auth(req, res, next) {
     const dotCount = (String(token).match(/\./g) || []).length;
     if (dotCount < 2) {
       if (AUTH_LOG) console.log("❌ JWT malformed (structure)");
-      return res.status(401).json({
-        message: "Invalid token (malformed)",
-      });
+      return res.status(401).json({ message: "Invalid token (malformed)" });
     }
 
     const payload = jwt.verify(token, process.env.JWT_SECRET);
@@ -110,42 +158,63 @@ function auth(req, res, next) {
     }
 
     // ✅ staffId fallback (กัน payload คนละชื่อ field)
-    const staffId =
-      normStr(payload.staffId) ||
-      normStr(payload.employeeId) ||
-      normStr(payload.empId) ||
-      normStr(payload.staff_id) ||
-      normStr(payload.employee_id) ||
-      normStr(payload.id);
+    const staffId = pickFirstNonEmpty(
+      payload.staffId,
+      payload.employeeId,
+      payload.empId,
+      payload.staff_id,
+      payload.employee_id
+    );
 
-    // ✅ clinicId fallback
-    const clinicId =
-      normStr(payload.clinicId) ||
-      normStr(payload.clinic_id) ||
-      normStr(payload.cid);
+    // ✅ userId fallback (รองรับ id/_id ด้วย)
+    const userId = pickFirstNonEmpty(
+      payload.userId,
+      payload.user_id,
+      payload.uid,
+      payload.id,
+      payload._id
+    );
 
-    // ✅ userId fallback
-    const userId =
-      normStr(payload.userId) ||
-      normStr(payload.user_id) ||
-      normStr(payload.uid);
+    // ✅ clinicId fallback (รองรับ clinic/clinics)
+    const clinicId = extractClinicIdFromPayload(payload);
 
-    const roleCanonical = canonicalRole(payload.role);
+    // ✅ roles: activeRole > role > roles[]
+    const activeRoleRaw = pickFirstNonEmpty(payload.activeRole, payload.active_role);
+    const roleRaw = pickFirstNonEmpty(payload.role, payload.userRole);
 
-    // ✅ SAFE NORMALIZATION (แก้ ghost bug ว่าง)
+    const activeRole = canonicalRole(activeRoleRaw);
+    const roleCanonical = canonicalRole(roleRaw);
+
+    const rolesAllSet = new Set([
+      ...canonicalRolesList(payload.roles),
+      ...(roleCanonical ? [roleCanonical] : []),
+      ...(activeRole ? [activeRole] : []),
+    ]);
+
+    const roles = Array.from(rolesAllSet).filter(Boolean);
+
+    // ✅ effective role priority: activeRole > role > roles[0]
+    const effectiveRole = activeRole || roleCanonical || roles[0] || "";
+
     req.user = {
       userId,
       clinicId,
-      role: roleCanonical,
+
+      // ✅ important
+      role: effectiveRole,
+      roles,
+      activeRole: activeRole || "",
+
       staffId,
 
       // meta
-      fullName: normStr(payload.fullName),
+      fullName: normStr(payload.fullName || payload.name),
       phone: normStr(payload.phone),
       email: normStr(payload.email),
 
-      // keep original id too
+      // keep original ids too
       id: normStr(payload.id),
+      _id: normStr(payload._id),
     };
 
     if (AUTH_LOG) {
@@ -155,7 +224,6 @@ function auth(req, res, next) {
     return next();
   } catch (err) {
     if (AUTH_LOG) console.log("❌ JWT ERROR:", err.name, err.message);
-
     return res.status(401).json({
       message: "Invalid token",
       error: err.message,
@@ -164,11 +232,11 @@ function auth(req, res, next) {
 }
 
 /**
- * ✅ Role guard (case-insensitive + canonical)
+ * ✅ Role guard (canonical + รองรับ roles array)
  * Usage:
- *   requireRole(['clinic'])        // clinic/admin
- *   requireRole(['employee'])      // employee/staff
- *   requireRole(['clinic','employee'])
+ *   requireRole(['admin'])
+ *   requireRole(['employee'])
+ *   requireRole(['admin','employee'])
  */
 function requireRole(roles = []) {
   const allowed = (Array.isArray(roles) ? roles : [roles])
@@ -176,13 +244,21 @@ function requireRole(roles = []) {
     .filter(Boolean);
 
   return (req, res, next) => {
-    const role = canonicalRole(req.user?.role);
-    if (!role) return res.status(401).json({ message: "Unauthorized" });
+    const effective = canonicalRole(req.user?.role);
+    const roleList = Array.isArray(req.user?.roles)
+      ? req.user.roles.map(canonicalRole)
+      : [];
 
-    if (!allowed.includes(role)) {
+    const have = new Set([effective, ...roleList].filter(Boolean));
+
+    if (have.size === 0) return res.status(401).json({ message: "Unauthorized" });
+
+    const ok = allowed.some((r) => have.has(r));
+    if (!ok) {
       return res.status(403).json({
         message: "Forbidden",
-        role,
+        role: effective,
+        roles: Array.from(have),
         allowed,
       });
     }
@@ -193,22 +269,20 @@ function requireRole(roles = []) {
 /**
  * ✅ Ensure staff self-access (employee can only act on their own staffId)
  * - employee role: staffId in req (param/body/query) must match req.user.staffId
- * - clinic role: allow (if allowClinic=true)
+ * - admin role: allow (if allowClinic=true)
  *
- * ✅ IMPORTANT FIX (สำหรับเคสของท่าน):
+ * ✅ IMPORTANT FIX:
  * - ถ้า client ไม่ส่ง staffId/clinicId มา -> เติมจาก token ให้ (กัน controller 400)
- * - ถ้า allowClinic=false -> บังคับให้ role ต้องเป็น employee เท่านั้น
  */
 function requireSelfStaff({ allowClinic = true } = {}) {
   return (req, res, next) => {
     const role = canonicalRole(req.user?.role);
     if (!role) return res.status(401).json({ message: "Unauthorized" });
 
-    // ✅ clinic bypass (ถ้าอนุญาต)
-    if (allowClinic && role === "clinic") return next();
+    // ✅ admin bypass (ถ้าอนุญาต)
+    if (allowClinic && role === "admin") return next();
 
     // ✅ ถ้าไม่อนุญาต clinic -> ต้องเป็น employee เท่านั้น
-    // (กัน helper มาเรียก attendance)
     if (!allowClinic && role !== "employee") {
       return res.status(403).json({ message: "Forbidden" });
     }
@@ -220,7 +294,6 @@ function requireSelfStaff({ allowClinic = true } = {}) {
       return res.status(403).json({ message: "Forbidden (missing staffId)" });
     }
 
-    // try read staffId from: params, body, query (รองรับหลายชื่อ)
     const reqStaffId =
       normStr(req.params?.staffId) ||
       normStr(req.params?.employeeId) ||
@@ -229,20 +302,17 @@ function requireSelfStaff({ allowClinic = true } = {}) {
       normStr(req.query?.staffId) ||
       normStr(req.query?.employeeId);
 
-    // ✅ ถ้าส่งมาแล้วไม่ตรง token -> โดนทันที
     if (reqStaffId && reqStaffId !== tokenStaffId) {
-      return res.status(403).json({
-        message: "Forbidden (staff mismatch)",
-      });
+      return res.status(403).json({ message: "Forbidden (staff mismatch)" });
     }
 
-    // ✅ FIX: ถ้าไม่ส่ง staffId มาเลย -> เติมจาก token ให้ (กัน controller 400)
+    // ✅ เติม staffId ให้ body ถ้าไม่มี
     if (!req.body) req.body = {};
     if (!normStr(req.body.staffId) && !normStr(req.body.employeeId)) {
       req.body.staffId = tokenStaffId;
     }
 
-    // ✅ FIX: clinicId ก็เติมให้ด้วย (ถ้า token มี) และถ้าส่งมาแล้วต้องตรง
+    // ✅ clinicId เติมให้ด้วย (ถ้ามี) และถ้าส่งมาแล้วต้องตรง
     const reqClinicId =
       normStr(req.body?.clinicId) ||
       normStr(req.body?.clinic_id) ||
