@@ -46,6 +46,7 @@ function bad(msg, code = 400) {
   throw err;
 }
 
+// ✅ เดิม: ต้องมี staffId เท่านั้น
 function getStaffIdStrict(req) {
   return s(req.user?.staffId);
 }
@@ -56,6 +57,18 @@ function getUserId(req) {
 
 function getClinicIdStrict(req) {
   return s(req.user?.clinicId);
+}
+
+// ✅ NEW: ระยะยาว — helper token บางแบบไม่มี staffId
+// ใช้ staffId ถ้ามี ไม่งั้น fallback เป็น userId
+function getActorId(req) {
+  const staffId = getStaffIdStrict(req);
+  if (staffId) return staffId;
+
+  const userId = getUserId(req);
+  if (userId) return userId;
+
+  return "";
 }
 
 function getFullName(req, body) {
@@ -123,13 +136,14 @@ function toNumOrNull(v) {
   return Number.isNaN(n) ? null : n;
 }
 
-// ---------------- staff: create mine ----------------
+// ---------------- staff/helper: create mine ----------------
 async function createAvailability(req, res) {
   try {
     mustRoleAny(req, ["employee", "helper", "staff"]);
 
-    const staffId = getStaffIdStrict(req);
-    if (!staffId) bad("missing staffId in token (required)", 400);
+    // ✅ FIX: ใช้ actorId (staffId ถ้ามี / userId ถ้าไม่มี)
+    const actorId = getActorId(req);
+    if (!actorId) bad("missing identity in token (staffId/userId required)", 400);
 
     const userId = getUserId(req);
 
@@ -155,7 +169,8 @@ async function createAvailability(req, res) {
     const phone = getPhone(req, req.body);
 
     const sameDay = await Availability.find({
-      staffId,
+      // ✅ FIX: query ด้วย actorId
+      staffId: actorId,
       date: s(date),
       status: { $ne: "cancelled" },
     }).lean();
@@ -172,7 +187,9 @@ async function createAvailability(req, res) {
     }
 
     const doc = await Availability.create({
-      staffId,
+      // ✅ FIX: เก็บ staffId เป็น actorId (fallback userId ได้)
+      staffId: actorId,
+
       userId: userId || "",
       date: s(date),
       start: s(start),
@@ -191,7 +208,6 @@ async function createAvailability(req, res) {
       bookedNote: "",
       bookedHourlyRate: 0,
 
-      // ✅ new field default
       clinicClearedAt: null,
     });
 
@@ -204,25 +220,22 @@ async function createAvailability(req, res) {
   }
 }
 
-// ---------------- staff: list mine ----------------
+// ---------------- staff/helper: list mine ----------------
 async function listMyAvailabilities(req, res) {
   try {
     mustRoleAny(req, ["employee", "helper", "staff"]);
 
-    const staffId = getStaffIdStrict(req);
-    if (!staffId) bad("missing staffId in token (required)", 400);
+    // ✅ FIX: ใช้ actorId (staffId ถ้ามี / userId ถ้าไม่มี)
+    const actorId = getActorId(req);
+    if (!actorId) bad("missing identity in token (staffId/userId required)", 400);
 
     const status = s(req.query.status);
-    const q = { staffId };
+    const q = { staffId: actorId };
     if (status) q.status = status;
 
     const items = await Availability.find(q).sort({ date: 1, start: 1 }).lean();
 
-    // =========================================================
-    // ✅ ENRICH (SAFE): ถ้าสถานะ booked -> เติมข้อมูลคลินิกให้ helper โทร/ดูที่อยู่ได้
-    // - ไม่แก้ schema Availability เพิ่ม field (return-only)
-    // - เอาข้อมูลจาก Clinic collection ตาม bookedByClinicId
-    // =========================================================
+    // ✅ ENRICH booked clinic meta (เหมือนเดิม)
     const bookedClinicIds = Array.from(
       new Set(
         (items || [])
@@ -271,13 +284,14 @@ async function listMyAvailabilities(req, res) {
   }
 }
 
-// ---------------- staff: cancel mine ----------------
+// ---------------- staff/helper: cancel mine ----------------
 async function cancelAvailability(req, res) {
   try {
     mustRoleAny(req, ["employee", "helper", "staff"]);
 
-    const staffId = getStaffIdStrict(req);
-    if (!staffId) bad("missing staffId in token (required)", 400);
+    // ✅ FIX: ใช้ actorId (staffId ถ้ามี / userId ถ้าไม่มี)
+    const actorId = getActorId(req);
+    if (!actorId) bad("missing identity in token (staffId/userId required)", 400);
 
     const id = s(req.params.id);
     if (!id) bad("missing id");
@@ -285,7 +299,9 @@ async function cancelAvailability(req, res) {
 
     const doc = await Availability.findById(id);
     if (!doc) bad("availability not found", 404);
-    if (s(doc.staffId) !== staffId) bad("forbidden", 403);
+
+    // ✅ FIX: ownership เทียบ actorId
+    if (s(doc.staffId) !== actorId) bad("forbidden", 403);
 
     doc.status = "cancelled";
     doc.bookedByClinicId = "";
@@ -295,7 +311,6 @@ async function cancelAvailability(req, res) {
     doc.bookedNote = "";
     doc.bookedHourlyRate = 0;
 
-    // staff cancel ก็ถือว่าเคลียร์ด้วย
     doc.clinicClearedAt = null;
 
     await doc.save();
@@ -344,9 +359,7 @@ async function listOpenAvailabilities(req, res) {
 }
 
 // =====================================================
-// ✅ NEW: clinic admin list booked (for clinic UI "ค้างไว้หลังจอง")
-// GET /availabilities/booked
-// - returns status=booked of this clinic, and NOT cleared yet
+// ✅ clinic admin list booked
 // =====================================================
 async function listBookedAvailabilities(req, res) {
   try {
@@ -355,7 +368,6 @@ async function listBookedAvailabilities(req, res) {
     const clinicId = getClinicIdStrict(req);
     if (!clinicId) bad("missing clinicId in token (required)", 400);
 
-    // optional filters (same style as /open)
     const q = {
       status: "booked",
       bookedByClinicId: clinicId,
@@ -386,10 +398,7 @@ async function listBookedAvailabilities(req, res) {
 }
 
 // =====================================================
-// ✅ NEW: clinic admin clear booked item
-// POST /availabilities/:id/clear
-// - DOES NOT re-open availability (กันกลับไปว่างซ้ำ)
-// - just mark clinicClearedAt so it disappears from /booked list
+// ✅ clinic admin clear booked item
 // =====================================================
 async function clearBookedAvailability(req, res) {
   try {
@@ -430,8 +439,7 @@ async function clearBookedAvailability(req, res) {
 }
 
 // =====================================================
-// ✅ booking: unchanged behavior + ensure clinicClearedAt reset
-// + ✅ ENRICH CLINIC CONTACT FROM MONGO (Clinic)
+// ✅ booking (เหมือนเดิม)
 // =====================================================
 async function bookAvailability(req, res) {
   try {
@@ -465,7 +473,6 @@ async function bookAvailability(req, res) {
             return n;
           })(),
 
-          // ✅ IMPORTANT: ถ้าเคยเคลียร์ไว้ แล้วจองใหม่ -> reset
           clinicClearedAt: null,
         },
       },
@@ -479,10 +486,8 @@ async function bookAvailability(req, res) {
       });
     }
 
-    // ✅ NEW: อ่านข้อมูลคลินิกจาก Mongo (DB เป็นหลัก)
     const clinic = await Clinic.findOne({ clinicId }).lean();
 
-    // DB default + body override ได้
     const clinicName = s(body.clinicName) || s(clinic?.name);
     const clinicPhone = s(body.clinicPhone) || s(clinic?.phone);
     const clinicAddress = s(body.clinicAddress) || s(clinic?.address);
@@ -514,7 +519,6 @@ async function bookAvailability(req, res) {
       hourlyRate,
       note: shiftNote,
 
-      // ✅ IMPORTANT: ใส่ meta คลินิกให้ผู้ช่วยโทรกลับได้
       clinicLat: clinicLat ?? null,
       clinicLng: clinicLng ?? null,
       clinicName: clinicName,
@@ -570,7 +574,7 @@ module.exports = {
   listMyAvailabilities,
   cancelAvailability,
   listOpenAvailabilities,
-  listBookedAvailabilities, // ✅ NEW
-  clearBookedAvailability, // ✅ NEW
+  listBookedAvailabilities,
+  clearBookedAvailability,
   bookAvailability,
 };
