@@ -96,7 +96,11 @@ function extractToken(req) {
 
 function extractClinicIdFromPayload(payload) {
   // 1) direct fields
-  let clinicId = pickFirstNonEmpty(payload.clinicId, payload.clinic_id, payload.cid);
+  let clinicId = pickFirstNonEmpty(
+    payload.clinicId,
+    payload.clinic_id,
+    payload.cid
+  );
   if (clinicId) return clinicId;
 
   // 2) payload.clinic (string/object)
@@ -127,6 +131,13 @@ function extractClinicIdFromPayload(payload) {
   return "";
 }
 
+/**
+ * ✅ AUTH middleware
+ * - verify JWT
+ * - normalize user ctx
+ * - IMPORTANT: helper อาจไม่มี staffId => "ไม่ทำให้เป็น 403 ที่นี่"
+ *   แต่จะติด flag req.user.staffIdMissing = true
+ */
 function auth(req, res, next) {
   try {
     const token = extractToken(req);
@@ -179,7 +190,10 @@ function auth(req, res, next) {
     const clinicId = extractClinicIdFromPayload(payload);
 
     // ✅ roles: activeRole > role > roles[]
-    const activeRoleRaw = pickFirstNonEmpty(payload.activeRole, payload.active_role);
+    const activeRoleRaw = pickFirstNonEmpty(
+      payload.activeRole,
+      payload.active_role
+    );
     const roleRaw = pickFirstNonEmpty(payload.role, payload.userRole);
 
     const activeRole = canonicalRole(activeRoleRaw);
@@ -196,6 +210,12 @@ function auth(req, res, next) {
     // ✅ effective role priority: activeRole > role > roles[0]
     const effectiveRole = activeRole || roleCanonical || roles[0] || "";
 
+    // ✅ IMPORTANT (durable contract):
+    // principalId = staffId ถ้ามี, ถ้าไม่มีให้ fallback = userId
+    // (ใช้ในอนาคตเวลาอยากทำ endpoint รองรับ helper แบบไม่ต้อง staffId)
+    const principalId = staffId || userId;
+    const principalType = staffId ? "staff" : "user";
+
     req.user = {
       userId,
       clinicId,
@@ -205,7 +225,13 @@ function auth(req, res, next) {
       roles,
       activeRole: activeRole || "",
 
+      // staffId อาจว่างได้ (โดยเฉพาะ helper)
       staffId,
+
+      // ✅ durable flags
+      staffIdMissing: !normStr(staffId),
+      principalId,
+      principalType,
 
       // meta
       fullName: normStr(payload.fullName || payload.name),
@@ -267,12 +293,32 @@ function requireRole(roles = []) {
 }
 
 /**
+ * ✅ NEW: Require staffId
+ * - ใช้เฉพาะ endpoint ที่ "ต้อง" อ้างอิง staffId จริง ๆ (เช่น /shifts แบบเดิม)
+ *
+ * ตัวอย่าง:
+ *   router.get('/shifts', auth, requireRole(['helper','employee']), requireStaffId(), ctrl.listMyShifts)
+ */
+function requireStaffId() {
+  return (req, res, next) => {
+    const staffId = normStr(req.user?.staffId);
+    if (staffId) return next();
+
+    // ✅ คง message ให้ตรงกับที่ Flutter log เจอ เพื่อดีบัก/สื่อสารชัด
+    return res.status(403).json({ message: "staffId missing in token" });
+  };
+}
+
+/**
  * ✅ Ensure staff self-access (employee can only act on their own staffId)
  * - employee role: staffId in req (param/body/query) must match req.user.staffId
  * - admin role: allow (if allowClinic=true)
  *
- * ✅ IMPORTANT FIX:
+ * ✅ IMPORTANT:
  * - ถ้า client ไม่ส่ง staffId/clinicId มา -> เติมจาก token ให้ (กัน controller 400)
+ *
+ * NOTE:
+ * - helper ไม่ควรใช้ middleware นี้ (เพราะ helper อาจไม่มี staffId)
  */
 function requireSelfStaff({ allowClinic = true } = {}) {
   return (req, res, next) => {
@@ -331,4 +377,4 @@ function requireSelfStaff({ allowClinic = true } = {}) {
   };
 }
 
-module.exports = { auth, requireRole, requireSelfStaff };
+module.exports = { auth, requireRole, requireStaffId, requireSelfStaff };

@@ -1,3 +1,4 @@
+// payroll_service/controllers/shiftController.js
 const mongoose = require("mongoose");
 const Shift = require("../models/Shift");
 
@@ -88,7 +89,6 @@ async function loadClinicMapByIds(ids = []) {
   const clean = [...new Set(ids.map((x) => s(x)).filter(Boolean))];
   if (!clean.length) return new Map();
 
-  // ✅ กัน CastError: _id ต้องเป็น ObjectId เท่านั้น
   const oidList = clean.filter(isObjectIdString);
   const strList = clean.filter((x) => !isObjectIdString(x));
 
@@ -128,6 +128,7 @@ async function createShift(req, res) {
     const {
       clinicId,
       staffId,
+      helperUserId, // ✅ NEW (optional)
       date,
       start,
       end,
@@ -155,6 +156,10 @@ async function createShift(req, res) {
     const created = await Shift.create({
       clinicId: cid,
       staffId: sid,
+
+      // ✅ NEW: บันทึก helperUserId ถ้ามี (ไม่บังคับ)
+      helperUserId: s(helperUserId),
+
       date,
       start,
       end,
@@ -181,8 +186,9 @@ async function createShift(req, res) {
 // GET /shifts
 async function listShifts(req, res) {
   try {
-    const role = req.user?.role;
-    const userStaffId = req.user?.staffId;
+    const role = s(req.user?.role);
+    const tokenStaffId = s(req.user?.staffId);
+    const tokenUserId = s(req.user?.userId);
 
     const { clinicId = "", staffId = "" } = req.query || {};
     const q = {};
@@ -190,12 +196,29 @@ async function listShifts(req, res) {
     if (clinicId) q.clinicId = s(clinicId);
 
     if (role === "admin") {
+      // admin: ดูได้ทั้งหมด หรือกรอง staffId ได้
       if (staffId) q.staffId = s(staffId);
-    } else {
-      if (!userStaffId) {
+    } else if (role === "employee") {
+      // employee: ต้องมี staffId เสมอ
+      if (!tokenStaffId) {
         return res.status(403).json({ message: "staffId missing in token" });
       }
-      q.staffId = s(userStaffId);
+      q.staffId = tokenStaffId;
+    } else if (role === "helper") {
+      // ✅ DURABLE FIX:
+      // helper อาจไม่มี staffId -> ใช้ helperUserId แทน
+      if (tokenStaffId) {
+        q.staffId = tokenStaffId; // รองรับกรณีเก่า
+      } else {
+        if (!tokenUserId) {
+          // แทบไม่ควรเกิด แต่กันไว้
+          return res.json({ ok: true, items: [] });
+        }
+        q.helperUserId = tokenUserId;
+      }
+    } else {
+      // role อื่น ๆ: ปลอดภัยไว้ก่อน
+      return res.status(403).json({ message: "Forbidden" });
     }
 
     const rows = await Shift.find(q).lean();
@@ -209,8 +232,6 @@ async function listShifts(req, res) {
     const items = rows.map((r) => {
       const out = {
         ...r,
-
-        // ✅ บังคับ key สำหรับ Flutter
         clinicLat: r.clinicLat ?? null,
         clinicLng: r.clinicLng ?? null,
         clinicName: s(r.clinicName) || "",

@@ -1,11 +1,14 @@
 // controllers/shiftNeedController.js
 //
-// ✅ FULL FILE (LONG-TERM FIX):
+// ✅ FULL FILE (LONG-TERM FIX + DURABLE HELPER WITHOUT staffId):
 // - createNeed: auto-copy clinic meta from clinics by clinicId (token) + allow override
 // - listOpenNeeds: ALWAYS prefer clinics collection meta (backfill & override) for old needs
 // - listClinicNeeds: ALSO backfill & override (admin list หน้าคลินิกจะไม่ติด Leena House)
-// - approveApplicant: if need meta missing/old -> prefer clinics meta before create Shift
-// - applyNeed: require phone digits 9-10
+// - applyNeed: ✅ helper สมัครได้แม้ staffId ว่าง (ใช้ userId เป็นหลัก) + phone digits 9-10
+// - approveApplicant: ✅ อนุมัติได้ทั้งแบบ staffId หรือ userId และสร้าง Shift แบบยั่งยืน:
+//     - Shift.helperUserId = applicant.userId (สำคัญสุด)
+//     - Shift.staffId = applicant.staffId || applicant.userId (เพื่อผ่าน schema required)
+// - no breaking change: employee/admin flow เดิมยังใช้ staffId ได้ตามปกติ
 //
 // หมายเหตุ: ถ้าไม่มี models/Clinic.js ก็ยังทำงานได้ (จะไม่ enrich)
 
@@ -53,15 +56,17 @@ function getClinicId(req) {
   return (req.user?.clinicId || "").toString().trim();
 }
 
-function getStaffId(req) {
+// ✅ IMPORTANT (DURABLE):
+// - staffId ใช้เฉพาะ employee/admin flow ที่มี staffId จริง
+// - ห้าม fallback เป็น userId อีกแล้ว (มันทำให้ data ปน role และทำให้ approve/apply ตรรกะเพี้ยน)
+function getStaffIdStrict(req) {
+  return (req.user?.staffId || "").toString().trim();
+}
+
+// ✅ helper identity ต้องใช้ userId เป็นหลัก (มีแน่นอนจาก /me และ token)
+function getUserId(req) {
   return (
-    (req.user?.staffId ||
-      req.user?.userId ||
-      req.user?.id ||
-      req.user?._id ||
-      "")
-      .toString()
-      .trim()
+    (req.user?.userId || req.user?.id || req.user?._id || "").toString().trim()
   );
 }
 
@@ -242,6 +247,29 @@ function mergeClinicMeta({ needMeta, clinicMeta }) {
   return out;
 }
 
+// ✅ applicant identity helpers (DURABLE)
+function applicantMatches(app, { staffId, userId }) {
+  const aStaff = s(app?.staffId);
+  const aUser = s(app?.userId);
+
+  // helper: match by userId
+  if (userId && aUser && aUser === userId) return true;
+
+  // employee: match by staffId
+  if (staffId && aStaff && aStaff === staffId) return true;
+
+  return false;
+}
+
+function pickApplicantKey(app) {
+  // ใช้ userId เป็นหลัก (ยั่งยืน) ถ้าไม่มีค่อย fallback staffId
+  const uid = s(app?.userId);
+  if (uid) return { kind: "userId", value: uid };
+  const sid = s(app?.staffId);
+  if (sid) return { kind: "staffId", value: sid };
+  return { kind: "none", value: "" };
+}
+
 // ---------------- admin: create need ----------------
 async function createNeed(req, res) {
   try {
@@ -349,7 +377,10 @@ async function listClinicNeeds(req, res) {
           name: merged.clinicName || "",
           phone: merged.clinicPhone || "",
           address: merged.clinicAddress || "",
-          location: { lat: merged.clinicLat ?? null, lng: merged.clinicLng ?? null },
+          location: {
+            lat: merged.clinicLat ?? null,
+            lng: merged.clinicLng ?? null,
+          },
         },
       };
     });
@@ -366,7 +397,9 @@ async function listClinicNeeds(req, res) {
 // ---------------- public (auth): list open needs ----------------
 async function listOpenNeeds(req, res) {
   try {
-    const staffId = getStaffId(req);
+    // ✅ staffId อาจว่างได้ใน helper
+    const staffId = getStaffIdStrict(req);
+    const userId = getUserId(req);
 
     const q = { status: "open" };
     const items = await ShiftNeed.find(q).sort({ date: 1, start: 1 }).lean();
@@ -379,9 +412,9 @@ async function listOpenNeeds(req, res) {
     }
 
     const enriched = (items || []).map((n) => {
-      const applied =
-        staffId &&
-        (n.applicants || []).some((a) => String(a.staffId) === String(staffId));
+      const applied = (n.applicants || []).some((a) =>
+        applicantMatches(a, { staffId, userId })
+      );
 
       const needMeta = pickClinicMetaFromNeed(n);
       const clinicMeta = clinicMap.get(s(n.clinicId)) || null;
@@ -425,17 +458,25 @@ async function applyNeed(req, res) {
   try {
     mustRoleAny(req, ["employee", "helper", "staff"]);
 
-    const staffId = getStaffId(req);
-    if (!staffId)
-      bad("missing staffId in token (please add staffId to JWT)", 400);
+    const role = s(req.user?.role);
+    const staffId = getStaffIdStrict(req); // อาจว่างใน helper
+    const userId = getUserId(req); // ต้องมี (โดยเฉพาะ helper)
+
+    if (role === "helper" && !userId) {
+      bad("missing userId in token", 400);
+    }
+    if (role !== "helper" && !staffId) {
+      // employee/staff ต้องมี staffId
+      bad("missing staffId in token", 400);
+    }
 
     const id = (req.params.id || "").toString();
     const need = await ShiftNeed.findById(id);
     if (!need) bad("need not found", 404);
     if (need.status !== "open") bad("need is not open", 400);
 
-    const already = (need.applicants || []).some(
-      (a) => String(a.staffId) === String(staffId)
+    const already = (need.applicants || []).some((a) =>
+      applicantMatches(a, { staffId, userId })
     );
     if (already) return res.json({ ok: true, message: "already applied" });
 
@@ -444,9 +485,12 @@ async function applyNeed(req, res) {
       bad("phone required (9-10 digits)", 400);
     }
 
+    // ✅ DURABLE applicant schema:
+    // - helper: userId เป็นหลัก, staffId อาจว่าง
+    // - employee: staffId เป็นหลัก, userId เก็บไว้ด้วยได้
     need.applicants.push({
-      staffId,
-      userId: req.user?.userId || "",
+      staffId: staffId || "", // helper อาจว่าง
+      userId: userId || "",
       phone: phoneDigits,
       status: "pending",
       appliedAt: new Date(),
@@ -474,6 +518,7 @@ async function listApplicants(req, res) {
     if (!need) bad("need not found", 404);
     if (need.clinicId !== clinicId) bad("forbidden", 403);
 
+    // ✅ return as-is (มีทั้ง staffId/userId)
     return res.json({ applicants: need.applicants || [] });
   } catch (e) {
     return res.status(e.statusCode || 500).json({
@@ -491,34 +536,60 @@ async function approveApplicant(req, res) {
     if (!clinicId) bad("missing clinicId in token", 400);
 
     const id = (req.params.id || "").toString();
-    const { staffId } = req.body || {};
-    const staff = (staffId || "").toString().trim();
-    if (!staff) bad("staffId required");
+
+    // ✅ DURABLE: รองรับ approve ได้ทั้ง staffId หรือ userId
+    const staff = s(req.body?.staffId);
+    const uid = s(req.body?.userId);
+
+    if (!staff && !uid) bad("staffId or userId required");
 
     const need = await ShiftNeed.findById(id);
     if (!need) bad("need not found", 404);
     if (need.clinicId !== clinicId) bad("forbidden", 403);
     if (need.status !== "open") bad("need is not open", 400);
 
-    const a = (need.applicants || []).find(
-      (x) => String(x.staffId) === String(staff)
+    const a = (need.applicants || []).find((x) =>
+      applicantMatches(x, { staffId: staff, userId: uid })
     );
     if (!a) bad("applicant not found", 404);
 
-    need.applicants = (need.applicants || []).map((x) => ({
-      ...x.toObject(),
-      status: String(x.staffId) === String(staff) ? "approved" : "rejected",
-    }));
+    const key = pickApplicantKey(a);
+
+    // ✅ mark statuses (approved vs rejected)
+    need.applicants = (need.applicants || []).map((x) => {
+      const xo = x?.toObject ? x.toObject() : x;
+      const k2 = pickApplicantKey(xo);
+
+      const approved =
+        k2.kind !== "none" &&
+        key.kind === k2.kind &&
+        String(key.value) === String(k2.value);
+
+      return {
+        ...xo,
+        status: approved ? "approved" : "rejected",
+      };
+    });
 
     const needMeta = pickClinicMetaFromNeed(need);
-    const clinicMeta = Clinic ? await loadClinicMetaByClinicId(need.clinicId) : null;
+    const clinicMeta = Clinic
+      ? await loadClinicMetaByClinicId(need.clinicId)
+      : null;
 
     // ✅ IMPORTANT: merged prefers clinic meta for name/phone/address
     const merged = mergeClinicMeta({ needMeta, clinicMeta });
 
+    // ✅ DURABLE SHIFT CREATE:
+    // - helperUserId = applicant.userId (หัวใจของความยั่งยืน)
+    // - staffId required by schema -> ใช้ applicant.staffId ถ้ามี ไม่งั้นใช้ applicant.userId (unique)
+    const applicantUserId = s(a.userId);
+    const applicantStaffId = s(a.staffId);
+
     const shift = await Shift.create({
       clinicId: need.clinicId,
-      staffId: staff,
+      staffId: applicantStaffId || applicantUserId || staff || uid, // ✅ must not be empty
+      helperUserId: applicantUserId || "",
+
       date: need.date,
       start: need.start,
       end: need.end,
