@@ -3,7 +3,7 @@ const mongoose = require("mongoose");
 const AttendanceSession = require("../models/AttendanceSession");
 const Shift = require("../models/Shift");
 const ClinicPolicy = require("../models/ClinicPolicy");
-const Overtime = require("../models/Overtime"); // ✅ NEW
+const Overtime = require("../models/Overtime");
 const { getEmployeeByUserId } = require("../utils/staffClient");
 
 function s(v) {
@@ -57,12 +57,10 @@ function roundOtMinutes(minutes, rounding) {
   if (r === "15MIN") return floorToStepMinutes(m, 15);
   if (r === "30MIN") return floorToStepMinutes(m, 30);
   if (r === "HOUR") return floorToStepMinutes(m, 60);
-  // default
   return floorToStepMinutes(m, 15);
 }
 
 function haversineMeters(lat1, lon1, lat2, lon2) {
-  // minimal distance check for geoRadius
   const toRad = (d) => (d * Math.PI) / 180;
   const R = 6371000;
   const dLat = toRad(lat2 - lat1);
@@ -74,11 +72,30 @@ function haversineMeters(lat1, lon1, lat2, lon2) {
   return R * c;
 }
 
+/**
+ * ✅ PRINCIPAL (รองรับ helper ไม่มี staffId)
+ * - ถ้ามี staffId => principalId = staffId, principalType="staff"
+ * - ถ้าไม่มี staffId => principalId = userId, principalType="user"
+ *
+ * ✅ IMPORTANT:
+ * - AttendanceSession.staffId = เก็บ "staffId จริง" เท่านั้น (อาจเป็น "")
+ * - ไม่เอา usr_ ไปยัดใน staffId แล้ว
+ */
+function getPrincipal(req) {
+  const clinicId = s(req.user?.clinicId);
+  const role = s(req.user?.role);
+  const userId = s(req.user?.userId);
+  const staffId = s(req.user?.staffId);
+
+  const principalId = staffId || userId;
+  const principalType = staffId ? "staff" : "user";
+
+  return { clinicId, role, userId, staffId, principalId, principalType };
+}
+
 async function getOrCreatePolicy(clinicId, userId) {
   let p = await ClinicPolicy.findOne({ clinicId });
   if (!p) {
-    // ✅ Default aligned with new requirement: OT starts after clock time
-    // ✅ Include separated clock times for full/part (fallback to legacy otClockTime)
     p = await ClinicPolicy.create({
       clinicId,
       timezone: "Asia/Bangkok",
@@ -87,11 +104,9 @@ async function getOrCreatePolicy(clinicId, userId) {
       geoRadiusMeters: 200,
       graceLateMinutes: 10,
 
-      // ✅ changed default
       otRule: "AFTER_CLOCK_TIME",
       regularHoursPerDay: 8,
 
-      // legacy + new fields
       otClockTime: "18:00",
       fullTimeOtClockTime: "18:00",
       partTimeOtClockTime: "18:00",
@@ -108,23 +123,39 @@ async function getOrCreatePolicy(clinicId, userId) {
   return p;
 }
 
-async function loadShiftForSession({ clinicId, staffId, workDate, shiftId }) {
-  // priority: shiftId
+/**
+ * ✅ Load shift for session (รองรับ helperUserId)
+ * priority:
+ *  1) shiftId (ObjectId) -> findById
+ *  2) if staffId exists -> findOne clinicId + staffId + date
+ *  3) else -> findOne clinicId + helperUserId(userId) + date
+ */
+async function loadShiftForSession({ clinicId, staffId, userId, workDate, shiftId }) {
   if (shiftId && mongoose.Types.ObjectId.isValid(String(shiftId))) {
     const sh = await Shift.findById(shiftId).lean();
     return sh || null;
   }
 
-  // fallback: find shift by clinicId+staffId+date
-  const sh = await Shift.findOne({
-    clinicId: s(clinicId),
-    staffId: s(staffId),
-    date: s(workDate),
-  })
-    .sort({ createdAt: -1 })
-    .lean();
+  const cid = s(clinicId);
+  const date = s(workDate);
+  const sid = s(staffId);
+  const uid = s(userId);
 
-  return sh || null;
+  if (sid) {
+    const sh = await Shift.findOne({ clinicId: cid, staffId: sid, date })
+      .sort({ createdAt: -1 })
+      .lean();
+    return sh || null;
+  }
+
+  if (uid) {
+    const sh = await Shift.findOne({ clinicId: cid, helperUserId: uid, date })
+      .sort({ createdAt: -1 })
+      .lean();
+    return sh || null;
+  }
+
+  return null;
 }
 
 function computeLateMinutes(policy, shift, checkInAt) {
@@ -132,7 +163,7 @@ function computeLateMinutes(policy, shift, checkInAt) {
   if (!isYmd(shift.date) || !isHHmm(shift.start)) return 0;
 
   const shiftStart = makeLocalDateTime(shift.date, shift.start);
-  const diff = minutesDiff(shiftStart, checkInAt); // checkIn - shiftStart
+  const diff = minutesDiff(shiftStart, checkInAt);
   const late = Math.max(0, diff - clampMinutes(policy.graceLateMinutes));
   return clampMinutes(late);
 }
@@ -148,16 +179,12 @@ function computeOtMinutes(policy, shift, checkInAt, checkOutAt) {
 
   const rule = s(policy.otRule);
 
-  // 1) AFTER_SHIFT_END: OT after shift end (+ otStartAfterMinutes)
   if (rule === "AFTER_SHIFT_END") {
     if (!shift || !isYmd(shift.date) || !isHHmm(shift.end)) return 0;
 
-    const startLocal = isHHmm(shift.start)
-      ? makeLocalDateTime(shift.date, shift.start)
-      : null;
+    const startLocal = isHHmm(shift.start) ? makeLocalDateTime(shift.date, shift.start) : null;
     let endLocal = makeLocalDateTime(shift.date, shift.end);
 
-    // handle cross-midnight: end earlier than start => next day
     if (startLocal && endLocal.getTime() <= startLocal.getTime()) {
       endLocal = new Date(endLocal.getTime() + 24 * 60 * 60000);
     }
@@ -170,12 +197,9 @@ function computeOtMinutes(policy, shift, checkInAt, checkOutAt) {
     return roundOtMinutes(raw, policy.otRounding);
   }
 
-  // 2) AFTER_CLOCK_TIME: OT after a clock time (workDate + otClockTime) (+ otStartAfterMinutes)
   if (rule === "AFTER_CLOCK_TIME") {
     const ymd = shift?.date && isYmd(shift.date) ? shift.date : null;
     const baseDate = ymd || null;
-
-    // if no shift, require workDate (MVP)
     if (!baseDate) return 0;
 
     const clock = isHHmm(policy.otClockTime) ? policy.otClockTime : "18:00";
@@ -188,7 +212,6 @@ function computeOtMinutes(policy, shift, checkInAt, checkOutAt) {
     return roundOtMinutes(raw, policy.otRounding);
   }
 
-  // 3) AFTER_DAILY_HOURS: OT after hoursPerDay (MVP uses policy.regularHoursPerDay)
   if (rule === "AFTER_DAILY_HOURS") {
     const worked = computeWorkedMinutes(checkInAt, checkOutAt);
     const regular = clampMinutes(Number(policy.regularHoursPerDay || 8) * 60);
@@ -203,10 +226,8 @@ function computeOtMinutes(policy, shift, checkInAt, checkOutAt) {
 function normalizeEmploymentType(v) {
   const t = s(v).toLowerCase();
   if (!t) return "";
-  if (t === "fulltime" || t === "full_time" || t === "full-time" || t === "ft")
-    return "fullTime";
-  if (t === "parttime" || t === "part_time" || t === "part-time" || t === "pt")
-    return "partTime";
+  if (t === "fulltime" || t === "full_time" || t === "full-time" || t === "ft") return "fullTime";
+  if (t === "parttime" || t === "part_time" || t === "part-time" || t === "pt") return "partTime";
   return s(v);
 }
 
@@ -219,29 +240,28 @@ function pickOtClockByType(policy, empTypeRaw) {
     const v = s(policy?.fullTimeOtClockTime);
     return isHHmm(v) ? v : legacy;
   }
-
   if (empType === "partTime") {
     const v = s(policy?.partTimeOtClockTime);
     return isHHmm(v) ? v : legacy;
   }
-
   return legacy;
 }
 
 // ======================================================
 // POST /attendance/check-in
 // body: { workDate, shiftId?, method?, biometricVerified?, deviceId?, lat?, lng?, note? }
+// ✅ รองรับ employee + helper (helper ไม่มี staffId ก็ได้)
 // ======================================================
 async function checkIn(req, res) {
   try {
-    const clinicId = s(req.user?.clinicId);
-    const staffId = s(req.user?.staffId);
-    const userId = s(req.user?.userId);
+    const { clinicId, userId, staffId, principalId, principalType } = getPrincipal(req);
 
-    if (!clinicId)
+    if (!clinicId) {
       return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
-    if (!staffId)
-      return res.status(400).json({ ok: false, message: "Missing staffId in token" });
+    }
+    if (!principalId) {
+      return res.status(401).json({ ok: false, message: "Missing userId/staffId in token" });
+    }
 
     const workDate = s(req.body?.workDate);
     const shiftId = req.body?.shiftId || null;
@@ -250,22 +270,26 @@ async function checkIn(req, res) {
       return res.status(400).json({ ok: false, message: "workDate required (yyyy-MM-dd)" });
     }
 
-    const policy = await getOrCreatePolicy(clinicId, userId);
+    const policy = await getOrCreatePolicy(clinicId, userId || principalId);
 
-    // policy: biometric required
     const method = s(req.body?.method) || "biometric";
     const biometricVerified = !!req.body?.biometricVerified;
-
     if (policy.requireBiometric && !biometricVerified) {
       return res.status(400).json({ ok: false, message: "Biometric required" });
     }
 
-    // policy: location required (MVP: compare with shift clinicLat/lng if exists)
     const lat = n(req.body?.lat, null);
     const lng = n(req.body?.lng, null);
 
-    let shift = await loadShiftForSession({ clinicId, staffId, workDate, shiftId });
+    const shift = await loadShiftForSession({
+      clinicId,
+      staffId, // may be ""
+      userId, // helperUserId fallback
+      workDate,
+      shiftId,
+    });
 
+    // ✅ Distance rule: ใช้ policy.geoRadiusMeters (หน่วยเมตร) เมื่อ requireLocation=true
     if (policy.requireLocation) {
       if (!(Number.isFinite(lat) && Number.isFinite(lng))) {
         return res.status(400).json({ ok: false, message: "Location required" });
@@ -276,21 +300,22 @@ async function checkIn(req, res) {
 
       if (Number.isFinite(refLat) && Number.isFinite(refLng)) {
         const dist = haversineMeters(refLat, refLng, lat, lng);
-        if (dist > Number(policy.geoRadiusMeters || 200)) {
+        const radius = Number(policy.geoRadiusMeters || 200);
+        if (dist > radius) {
           return res.status(400).json({
             ok: false,
             message: "Outside allowed radius",
             distanceMeters: Math.round(dist),
-            radiusMeters: Number(policy.geoRadiusMeters || 200),
+            radiusMeters: radius,
           });
         }
       }
     }
 
-    // prevent duplicate open session
+    // ✅ prevent duplicate open session (by principalId)
     const existing = await AttendanceSession.findOne({
       clinicId,
-      staffId,
+      principalId,
       workDate,
       status: "open",
     });
@@ -303,14 +328,22 @@ async function checkIn(req, res) {
       });
     }
 
-    // compute late if we have shift
     const checkInAt = new Date();
     const lateMinutes = computeLateMinutes(policy, shift, checkInAt);
 
     const created = await AttendanceSession.create({
       clinicId,
-      staffId,
-      userId,
+
+      // ✅ identity fields
+      principalId,
+      principalType,
+
+      // ✅ staffId แยกจริง (เก็บเฉพาะ stf_... ถ้าไม่มีให้ว่าง)
+      staffId: staffId || "",
+
+      // ✅ userId เก็บเสมอ (usr_...) ถ้า token ไม่มี (rare) ให้เป็น ""
+      userId: userId || "",
+
       shiftId: shift ? shift._id : null,
       workDate,
       checkInAt,
@@ -332,59 +365,46 @@ async function checkIn(req, res) {
 }
 
 // ======================================================
-// POST /attendance/check-out   (NEW recommended)
+// POST /attendance/check-out (recommended)
 // POST /attendance/:id/check-out (backward compatible)
-//
-// body: { method?, biometricVerified?, deviceId?, lat?, lng?, note? }
+// ✅ รองรับ employee + helper (helper ไม่มี staffId ก็ได้)
 // ======================================================
 async function checkOut(req, res) {
   try {
-    const clinicId = s(req.user?.clinicId);
-    const staffId = s(req.user?.staffId);
-    const userId = s(req.user?.userId);
+    const { clinicId, userId, staffId, principalId, principalType } = getPrincipal(req);
 
-    if (!clinicId)
+    if (!clinicId) {
       return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
-    if (!staffId)
-      return res.status(400).json({ ok: false, message: "Missing staffId in token" });
-
-    // ✅ Premium rule: employee self checkout only (canonical role)
-    // routes layer already enforces requireRole(["employee"]), but keep server-side safety:
-    const role = s(req.user?.role);
-    if (role && role !== "employee") {
-      return res.status(403).json({ ok: false, message: "Forbidden (employee only)" });
+    }
+    if (!principalId) {
+      return res.status(401).json({ ok: false, message: "Missing userId/staffId in token" });
     }
 
     const id = s(req.params?.id);
 
-    // ✅ If no :id provided -> find active open session of this staff in this clinic
     let session = null;
-
     if (id) {
       session = await AttendanceSession.findById(id);
       if (!session) return res.status(404).json({ ok: false, message: "Session not found" });
     } else {
       session = await AttendanceSession.findOne({
         clinicId,
-        staffId,
+        principalId,
         status: "open",
       }).sort({ checkInAt: -1 });
 
       if (!session) {
-        return res.status(404).json({
-          ok: false,
-          message: "No open session to check-out",
-        });
+        return res.status(404).json({ ok: false, message: "No open session to check-out" });
       }
     }
 
-    // ✅ Must be same clinic (anti-abuse)
+    // ✅ Must be same clinic
     if (s(session.clinicId) !== clinicId) {
       return res.status(403).json({ ok: false, message: "Forbidden (cross-clinic session)" });
     }
 
-    // ✅ Must be owner staff (anti-abuse)
-    if (s(session.staffId) !== staffId) {
+    // ✅ Must be owner principal
+    if (s(session.principalId) !== principalId) {
       return res.status(403).json({ ok: false, message: "Forbidden (not your session)" });
     }
 
@@ -392,11 +412,10 @@ async function checkOut(req, res) {
       return res.status(409).json({ ok: false, message: "Session is not open" });
     }
 
-    const policy = await getOrCreatePolicy(s(session.clinicId), userId);
+    const policy = await getOrCreatePolicy(s(session.clinicId), userId || principalId);
 
     const method = s(req.body?.method) || "biometric";
     const biometricVerified = !!req.body?.biometricVerified;
-
     if (policy.requireBiometric && !biometricVerified) {
       return res.status(400).json({ ok: false, message: "Biometric required" });
     }
@@ -404,10 +423,10 @@ async function checkOut(req, res) {
     const lat = n(req.body?.lat, null);
     const lng = n(req.body?.lng, null);
 
-    // load shift (if any)
     const shift = await loadShiftForSession({
       clinicId: s(session.clinicId),
-      staffId: s(session.staffId),
+      staffId: s(session.staffId) || staffId, // best effort
+      userId: s(session.userId) || userId || "",
       workDate: s(session.workDate),
       shiftId: session.shiftId,
     });
@@ -422,12 +441,13 @@ async function checkOut(req, res) {
 
       if (Number.isFinite(refLat) && Number.isFinite(refLng)) {
         const dist = haversineMeters(refLat, refLng, lat, lng);
-        if (dist > Number(policy.geoRadiusMeters || 200)) {
+        const radius = Number(policy.geoRadiusMeters || 200);
+        if (dist > radius) {
           return res.status(400).json({
             ok: false,
             message: "Outside allowed radius",
             distanceMeters: Math.round(dist),
-            radiusMeters: Number(policy.geoRadiusMeters || 200),
+            radiusMeters: radius,
           });
         }
       }
@@ -435,10 +455,9 @@ async function checkOut(req, res) {
 
     const checkOutAt = new Date();
 
-    // ✅ IMPORTANT:
-    // pick OT clock time by employee type (use session.userId, not req.user.userId)
+    // ✅ employee master (อาจ null สำหรับ helper marketplace)
     let emp = null;
-    const ownerUserId = s(session.userId);
+    const ownerUserId = s(session.userId) || userId || "";
     if (ownerUserId) {
       try {
         emp = await getEmployeeByUserId(ownerUserId);
@@ -447,10 +466,9 @@ async function checkOut(req, res) {
       }
     }
 
-    const empType = normalizeEmploymentType(emp?.employmentType); // "fullTime" | "partTime"
+    const empType = normalizeEmploymentType(emp?.employmentType);
     const selectedClock = pickOtClockByType(policy, empType);
 
-    // create a derived policy snapshot with otClockTime selected by type
     const policyForOt = {
       ...(policy.toObject?.() ?? policy),
       otClockTime: selectedClock,
@@ -464,7 +482,6 @@ async function checkOut(req, res) {
     session.checkOutMethod = method === "manual" ? "manual" : "biometric";
     session.biometricVerifiedOut = biometricVerified;
 
-    // update deviceId only if provided
     if (s(req.body?.deviceId)) session.deviceId = s(req.body?.deviceId);
 
     session.outLat = Number.isFinite(lat) ? lat : session.outLat;
@@ -479,21 +496,23 @@ async function checkOut(req, res) {
     await session.save();
 
     // ======================================================
-    // ✅ HOOK: create/update Overtime record (pending) from attendance
-    // - one OT per attendance session (unique by attendanceSessionId)
-    // - status starts as "pending" (admin approves later)
+    // ✅ HOOK: create/update Overtime record (pending)
+    // - ใช้ principalId เป็น key หลักเสมอ (employee/helper ใช้ได้เหมือนกัน)
+    // - staffId เก็บเฉพาะ stf_ (ถ้าไม่มีให้ "")
     // ======================================================
     try {
       const clinicIdOfSession = s(session.clinicId);
-      const staffIdOfSession = s(session.staffId);
       const workDate = s(session.workDate);
       const monthKey = monthKeyFromYmd(workDate);
 
-      // choose multiplier snapshot (employee override > clinic policy)
       const otMul = Number(
         emp?.otMultiplierNormal || policyForOt.otMultiplier || policy.otMultiplier || 1.5
       );
       const mul = Number.isFinite(otMul) && otMul > 0 ? otMul : 1.5;
+
+      const principalIdForOt = s(session.principalId) || principalId;
+      const principalTypeForOt = s(session.principalType) || principalType || (s(session.staffId) ? "staff" : "user");
+      const staffIdForOt = s(session.staffId); // stf_... or ""
 
       if (clampMinutes(otMinutes) > 0 && monthKey) {
         await Overtime.updateOne(
@@ -501,8 +520,15 @@ async function checkOut(req, res) {
           {
             $set: {
               clinicId: clinicIdOfSession,
-              staffId: staffIdOfSession,
-              userId: ownerUserId, // may be ""
+
+              // ✅ NEW
+              principalId: principalIdForOt,
+              principalType: principalTypeForOt,
+
+              // ✅ optional
+              staffId: staffIdForOt,
+              userId: ownerUserId || "",
+
               workDate,
               monthKey,
               minutes: clampMinutes(otMinutes),
@@ -549,19 +575,20 @@ async function checkOut(req, res) {
 
 // ======================================================
 // GET /attendance/me?dateFrom=yyyy-MM-dd&dateTo=yyyy-MM-dd
+// ✅ รองรับ helper ไม่มี staffId (ใช้ principalId)
 // ======================================================
 async function listMySessions(req, res) {
   try {
-    const clinicId = s(req.user?.clinicId);
-    const staffId = s(req.user?.staffId);
+    const { clinicId, principalId } = getPrincipal(req);
 
     if (!clinicId) return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
-    if (!staffId) return res.status(400).json({ ok: false, message: "Missing staffId in token" });
+    if (!principalId)
+      return res.status(401).json({ ok: false, message: "Missing userId/staffId in token" });
 
     const dateFrom = s(req.query?.dateFrom);
     const dateTo = s(req.query?.dateTo);
 
-    const q = { clinicId, staffId };
+    const q = { clinicId, principalId };
     if (isYmd(dateFrom) && isYmd(dateTo)) q.workDate = { $gte: dateFrom, $lte: dateTo };
 
     const items = await AttendanceSession.find(q).sort({ checkInAt: -1 }).lean();
@@ -574,27 +601,29 @@ async function listMySessions(req, res) {
 // ======================================================
 // ✅ Admin-only report
 // GET /attendance/clinic?workDate=yyyy-MM-dd&staffId=...
+// NOTE:
+// - staffId param นี้: รองรับทั้ง staffId จริง และ principalId เพื่อ backward compatible
 // ======================================================
 async function listClinicSessions(req, res) {
   try {
     const clinicId = s(req.user?.clinicId);
     const role = s(req.user?.role);
 
-    if (!clinicId) {
-      return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
-    }
+    if (!clinicId) return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
 
-    // ✅ admin-only (ตรงกับ routes)
     if (role !== "admin") {
       return res.status(403).json({ ok: false, message: "Forbidden (admin only)" });
     }
 
     const workDate = s(req.query?.workDate);
-    const staffId = s(req.query?.staffId);
+    const staffIdOrPrincipal = s(req.query?.staffId);
 
     const q = { clinicId };
     if (isYmd(workDate)) q.workDate = workDate;
-    if (staffId) q.staffId = staffId;
+
+    if (staffIdOrPrincipal) {
+      q.$or = [{ staffId: staffIdOrPrincipal }, { principalId: staffIdOrPrincipal }];
+    }
 
     const items = await AttendanceSession.find(q).sort({ checkInAt: -1 }).lean();
     return res.json({ ok: true, items });
@@ -604,51 +633,57 @@ async function listClinicSessions(req, res) {
 }
 
 // ======================================================
-// (Optional) GET /attendance/me-preview?workDate=yyyy-MM-dd (MVP preview)
-// ✅ NEW: เอา OT จาก Overtime.status="approved" เท่านั้น
+// GET /attendance/me-preview?workDate=yyyy-MM-dd
+// ✅ รองรับ helper (ไม่มี staffId ก็ได้)
+// - OT count: approved only
 // ======================================================
 async function myDayPreview(req, res) {
   try {
-    const clinicId = s(req.user?.clinicId);
-    const staffId = s(req.user?.staffId);
-    const userId = s(req.user?.userId);
+    const { clinicId, principalId, userId } = getPrincipal(req);
 
     if (!clinicId) return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
-    if (!staffId) return res.status(400).json({ ok: false, message: "Missing staffId in token" });
-    if (!userId) return res.status(400).json({ ok: false, message: "Missing userId in token" });
+    if (!principalId)
+      return res.status(401).json({ ok: false, message: "Missing userId/staffId in token" });
 
     const workDate = s(req.query?.workDate);
     if (!isYmd(workDate)) {
       return res.status(400).json({ ok: false, message: "workDate required (yyyy-MM-dd)" });
     }
 
-    const policy = await getOrCreatePolicy(clinicId, userId);
+    const policy = await getOrCreatePolicy(clinicId, userId || principalId);
 
     const sessions = await AttendanceSession.find({
       clinicId,
-      staffId,
+      principalId,
       workDate,
       status: "closed",
     }).lean();
 
     const workedMinutes = sessions.reduce((sum, x) => sum + clampMinutes(x.workedMinutes), 0);
-
-    // DEBUG ONLY (raw OT from sessions; not used for pay)
     const otMinutesRawFromSessions = sessions.reduce((sum, x) => sum + clampMinutes(x.otMinutes), 0);
 
-    // ✅ NEW: OT must be APPROVED to count in pay preview
+    // ✅ NEW: query by principalId
     const approvedOt = await Overtime.find({
       clinicId,
-      staffId,
+      principalId,
       workDate,
       status: "approved",
     }).lean();
 
     const otMinutesApproved = approvedOt.reduce((sum, x) => sum + clampMinutes(x.minutes), 0);
 
-    const emp = await getEmployeeByUserId(userId);
+    // employee master (may be null for helper marketplace)
+    let emp = null;
+    const ownerUserId = userId || "";
+    if (ownerUserId) {
+      try {
+        emp = await getEmployeeByUserId(ownerUserId);
+      } catch (_) {
+        emp = null;
+      }
+    }
 
-    const type = normalizeEmploymentType(emp?.employmentType); // "fullTime" | "partTime"
+    const type = normalizeEmploymentType(emp?.employmentType);
     const hoursPerDay = Number(emp?.hoursPerDay || 8);
     const daysPerMonth = Number(emp?.workingDaysPerMonth || 26);
 
@@ -669,6 +704,11 @@ async function myDayPreview(req, res) {
       ok: true,
       workDate,
       employee: emp || null,
+      principal: {
+        principalId,
+        staffId: s(req.user?.staffId),
+        userId: s(req.user?.userId),
+      },
       policy: {
         otRule: policy.otRule,
         otRounding: policy.otRounding,
@@ -676,7 +716,7 @@ async function myDayPreview(req, res) {
         version: policy.version,
         fullTimeOtClockTime: policy.fullTimeOtClockTime,
         partTimeOtClockTime: policy.partTimeOtClockTime,
-        otClockTime: policy.otClockTime, // legacy
+        otClockTime: policy.otClockTime,
       },
       summary: {
         workedMinutes,

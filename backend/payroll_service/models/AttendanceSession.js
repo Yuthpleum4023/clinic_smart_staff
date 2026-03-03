@@ -1,14 +1,37 @@
 // backend/payroll_service/models/AttendanceSession.js
 const mongoose = require("mongoose");
 
+/**
+ * ✅ Durable Attendance Identity
+ * - staffId      : ใช้เมื่อเป็น employee (มี stf_...)
+ * - userId       : เก็บ userId เสมอ (usr_...)
+ * - principalId  : ตัวตนหลักสำหรับ attendance (staffId ถ้ามี ไม่งั้นใช้ userId)
+ * - principalType: "staff" | "user"
+ *
+ * ✅ ทำให้ helper (ไม่มี staffId) ลงเวลาได้ โดยไม่ต้องยัด usr_ ไปใน staffId
+ */
+
 const AttendanceSessionSchema = new mongoose.Schema(
   {
     clinicId: { type: String, required: true, index: true },
-    staffId: { type: String, required: true, index: true },
+
+    // ✅ NEW: identity ที่ใช้ query หลักสำหรับ attendance
+    principalId: { type: String, required: true, index: true }, // staffId || userId
+    principalType: { type: String, enum: ["staff", "user"], default: "staff", index: true },
+
+    // ✅ Keep: staffId แยกออกมา (อาจว่างได้สำหรับ helper marketplace)
+    staffId: { type: String, default: "", index: true },
+
+    // ✅ Keep: userId (usr_...)
     userId: { type: String, default: "", index: true },
 
     // optional link to shift
-    shiftId: { type: mongoose.Schema.Types.ObjectId, ref: "Shift", default: null, index: true },
+    shiftId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Shift",
+      default: null,
+      index: true,
+    },
 
     // local business date (yyyy-MM-dd) for reporting
     workDate: { type: String, required: true, index: true },
@@ -17,11 +40,24 @@ const AttendanceSessionSchema = new mongoose.Schema(
     checkInAt: { type: Date, required: true },
     checkOutAt: { type: Date, default: null },
 
-    status: { type: String, enum: ["open", "closed", "cancelled"], default: "open", index: true },
+    status: {
+      type: String,
+      enum: ["open", "closed", "cancelled"],
+      default: "open",
+      index: true,
+    },
 
     // method/meta
-    checkInMethod: { type: String, enum: ["biometric", "manual"], default: "biometric" },
-    checkOutMethod: { type: String, enum: ["biometric", "manual"], default: "biometric" },
+    checkInMethod: {
+      type: String,
+      enum: ["biometric", "manual"],
+      default: "biometric",
+    },
+    checkOutMethod: {
+      type: String,
+      enum: ["biometric", "manual"],
+      default: "biometric",
+    },
 
     biometricVerifiedIn: { type: Boolean, default: false },
     biometricVerifiedOut: { type: Boolean, default: false },
@@ -47,13 +83,24 @@ const AttendanceSessionSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// prevent duplicate open sessions per staff per day
+// ======================================================
+// Indexes
+// ======================================================
+
+// ✅ NEW: prevent duplicate open sessions per principal per day
 AttendanceSessionSchema.index(
-  { clinicId: 1, staffId: 1, workDate: 1, status: 1 },
+  { clinicId: 1, principalId: 1, workDate: 1, status: 1 },
   { partialFilterExpression: { status: "open" } }
 );
 
+// ✅ Keep: staffId based queries (employee reports / legacy screens)
+AttendanceSessionSchema.index({ clinicId: 1, staffId: 1, workDate: 1, status: 1 });
 AttendanceSessionSchema.index({ staffId: 1, checkInAt: -1 });
+
+// ✅ New: principal timeline queries
+AttendanceSessionSchema.index({ principalId: 1, checkInAt: -1 });
+
+// clinic/day
 AttendanceSessionSchema.index({ clinicId: 1, workDate: -1 });
 
 module.exports = mongoose.model("AttendanceSession", AttendanceSessionSchema);

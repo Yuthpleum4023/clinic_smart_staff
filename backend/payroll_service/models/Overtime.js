@@ -3,6 +3,7 @@ const mongoose = require("mongoose");
 
 const OT_STATUS = ["pending", "approved", "rejected", "locked"];
 const OT_SOURCE = ["attendance", "manual"];
+const PRINCIPAL_TYPE = ["staff", "user"];
 
 function isYmd(v) {
   return /^\d{4}-\d{2}-\d{2}$/.test(String(v || "").trim());
@@ -17,8 +18,16 @@ const OvertimeSchema = new mongoose.Schema(
   {
     clinicId: { type: String, required: true, index: true },
 
-    // ✅ primary employee reference in payroll_service
-    staffId: { type: String, required: true, index: true },
+    // ✅ NEW: identity (รองรับ helper ไม่มี staffId)
+    // - employee: principalId=staffId, principalType="staff"
+    // - helper  : principalId=userId,  principalType="user"
+    principalId: { type: String, required: true, index: true },
+    principalType: { type: String, enum: PRINCIPAL_TYPE, default: "staff", index: true },
+
+    // ✅ staffId เก็บ "stf_..." จริงเท่านั้น (optional)
+    // - employee มักมี
+    // - helper อาจไม่มี
+    staffId: { type: String, default: "", index: true },
 
     // optional (for fetching employee master / audit)
     userId: { type: String, default: "", index: true },
@@ -42,7 +51,12 @@ const OvertimeSchema = new mongoose.Schema(
     source: { type: String, enum: OT_SOURCE, default: "attendance", index: true },
 
     // link back to attendance session (only when source=attendance)
-    attendanceSessionId: { type: mongoose.Schema.Types.ObjectId, ref: "AttendanceSession", default: null },
+    attendanceSessionId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "AttendanceSession",
+      default: null,
+      index: true,
+    },
 
     // admin actions
     approvedBy: { type: String, default: "" }, // admin userId
@@ -63,16 +77,38 @@ const OvertimeSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// helpful compound indexes
-OvertimeSchema.index({ clinicId: 1, staffId: 1, monthKey: 1, status: 1 });
+// -------------------- Indexes --------------------
+
+// ✅ payroll main query (recommended) by principalId
+OvertimeSchema.index({ clinicId: 1, principalId: 1, monthKey: 1, status: 1 });
+
+// ✅ report query by month/status
 OvertimeSchema.index({ clinicId: 1, monthKey: 1, status: 1 });
+
+// ✅ optional: if clinic ยัง query ด้วย staffId เดิม (employee list)
+OvertimeSchema.index({ clinicId: 1, staffId: 1, monthKey: 1, status: 1 });
 
 // ✅ prevent duplicate auto OT per attendance session (sparse allows many nulls)
 OvertimeSchema.index({ attendanceSessionId: 1 }, { unique: true, sparse: true });
 
+// -------------------- Hooks --------------------
+
 // keep monthKey consistent
 OvertimeSchema.pre("validate", function (next) {
   if (!this.monthKey) this.monthKey = toMonthKey(this.workDate);
+  next();
+});
+
+// ✅ Backward compatibility guard:
+// ถ้าเอกสารถูกสร้างจากของเก่า (มี staffId แต่ไม่มี principalId) -> เติม principalId ให้เอง
+OvertimeSchema.pre("validate", function (next) {
+  if (!this.principalId) {
+    const sid = String(this.staffId || "").trim();
+    const uid = String(this.userId || "").trim();
+    // priority: staffId > userId
+    this.principalId = sid || uid || this.principalId;
+    this.principalType = sid ? "staff" : "user";
+  }
   next();
 });
 
