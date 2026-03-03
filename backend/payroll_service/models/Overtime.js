@@ -22,11 +22,14 @@ const OvertimeSchema = new mongoose.Schema(
     // - employee: principalId=staffId, principalType="staff"
     // - helper  : principalId=userId,  principalType="user"
     principalId: { type: String, required: true, index: true },
-    principalType: { type: String, enum: PRINCIPAL_TYPE, default: "staff", index: true },
+    principalType: {
+      type: String,
+      enum: PRINCIPAL_TYPE,
+      default: "staff",
+      index: true,
+    },
 
     // ✅ staffId เก็บ "stf_..." จริงเท่านั้น (optional)
-    // - employee มักมี
-    // - helper อาจไม่มี
     staffId: { type: String, default: "", index: true },
 
     // optional (for fetching employee master / audit)
@@ -51,11 +54,11 @@ const OvertimeSchema = new mongoose.Schema(
     source: { type: String, enum: OT_SOURCE, default: "attendance", index: true },
 
     // link back to attendance session (only when source=attendance)
+    // ✅ IMPORTANT: อย่าใส่ index:true ที่ field นี้ เพราะเรามี unique+sparse index ด้านล่างอยู่แล้ว
     attendanceSessionId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "AttendanceSession",
       default: null,
-      index: true,
     },
 
     // admin actions
@@ -93,15 +96,13 @@ OvertimeSchema.index({ attendanceSessionId: 1 }, { unique: true, sparse: true })
 
 // -------------------- Hooks --------------------
 
-// keep monthKey consistent
+// keep monthKey consistent + backward compatibility guard (รวมเป็น hook เดียวกัน)
 OvertimeSchema.pre("validate", function (next) {
+  // monthKey
   if (!this.monthKey) this.monthKey = toMonthKey(this.workDate);
-  next();
-});
 
-// ✅ Backward compatibility guard:
-// ถ้าเอกสารถูกสร้างจากของเก่า (มี staffId แต่ไม่มี principalId) -> เติม principalId ให้เอง
-OvertimeSchema.pre("validate", function (next) {
+  // backward compatibility:
+  // ถ้าเอกสารถูกสร้างจากของเก่า (มี staffId แต่ไม่มี principalId) -> เติม principalId ให้เอง
   if (!this.principalId) {
     const sid = String(this.staffId || "").trim();
     const uid = String(this.userId || "").trim();
@@ -109,6 +110,7 @@ OvertimeSchema.pre("validate", function (next) {
     this.principalId = sid || uid || this.principalId;
     this.principalType = sid ? "staff" : "user";
   }
+
   next();
 });
 
