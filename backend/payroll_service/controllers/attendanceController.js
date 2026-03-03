@@ -207,9 +207,6 @@ function normalizeEmploymentType(v) {
     return "fullTime";
   if (t === "parttime" || t === "part_time" || t === "part-time" || t === "pt")
     return "partTime";
-  // if already in camel
-  if (t === "fulltime") return "fullTime";
-  if (t === "parttime") return "partTime";
   return s(v);
 }
 
@@ -515,7 +512,6 @@ async function checkOut(req, res) {
               attendanceSessionId: session._id,
               note: s(session.note),
             },
-            // do NOT auto-approve
             $setOnInsert: {
               approvedBy: "",
               approvedAt: null,
@@ -530,18 +526,15 @@ async function checkOut(req, res) {
           { upsert: true }
         );
       } else {
-        // if OT becomes 0 (policy changed / test), remove leftover OT record for this session
         await Overtime.deleteOne({ clinicId: clinicIdOfSession, attendanceSessionId: session._id });
       }
     } catch (e) {
       console.log("❌ Overtime hook failed:", e.message);
-      // do not fail check-out; attendance is still saved
     }
 
     return res.json({
       ok: true,
       session,
-      // helpful debug for admin/testing (remove later if you want)
       otMeta: {
         employmentType: empType || null,
         selectedClock,
@@ -579,15 +572,22 @@ async function listMySessions(req, res) {
 }
 
 // ======================================================
-// GET /attendance/clinic?workDate=yyyy-MM-dd&staffId=... (admin)
+// ✅ Admin-only report
+// GET /attendance/clinic?workDate=yyyy-MM-dd&staffId=...
 // ======================================================
 async function listClinicSessions(req, res) {
   try {
     const clinicId = s(req.user?.clinicId);
     const role = s(req.user?.role);
 
-    if (!clinicId) return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
-    if (role !== "admin") return res.status(403).json({ ok: false, message: "Forbidden (admin only)" });
+    if (!clinicId) {
+      return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
+    }
+
+    // ✅ admin-only (ตรงกับ routes)
+    if (role !== "admin") {
+      return res.status(403).json({ ok: false, message: "Forbidden (admin only)" });
+    }
 
     const workDate = s(req.query?.workDate);
     const staffId = s(req.query?.staffId);
@@ -604,7 +604,7 @@ async function listClinicSessions(req, res) {
 }
 
 // ======================================================
-// (Optional) GET /attendance/me-with-pay?workDate=yyyy-MM-dd (MVP preview)
+// (Optional) GET /attendance/me-preview?workDate=yyyy-MM-dd (MVP preview)
 // ✅ NEW: เอา OT จาก Overtime.status="approved" เท่านั้น
 // ======================================================
 async function myDayPreview(req, res) {
@@ -618,16 +618,22 @@ async function myDayPreview(req, res) {
     if (!userId) return res.status(400).json({ ok: false, message: "Missing userId in token" });
 
     const workDate = s(req.query?.workDate);
-    if (!isYmd(workDate)) return res.status(400).json({ ok: false, message: "workDate required (yyyy-MM-dd)" });
+    if (!isYmd(workDate)) {
+      return res.status(400).json({ ok: false, message: "workDate required (yyyy-MM-dd)" });
+    }
 
     const policy = await getOrCreatePolicy(clinicId, userId);
 
-    const sessions = await AttendanceSession.find({ clinicId, staffId, workDate, status: "closed" }).lean();
+    const sessions = await AttendanceSession.find({
+      clinicId,
+      staffId,
+      workDate,
+      status: "closed",
+    }).lean();
 
-    // sum minutes
     const workedMinutes = sessions.reduce((sum, x) => sum + clampMinutes(x.workedMinutes), 0);
 
-    // ✅ DEBUG ONLY (raw OT from sessions; not used for pay)
+    // DEBUG ONLY (raw OT from sessions; not used for pay)
     const otMinutesRawFromSessions = sessions.reduce((sum, x) => sum + clampMinutes(x.otMinutes), 0);
 
     // ✅ NEW: OT must be APPROVED to count in pay preview
@@ -640,12 +646,8 @@ async function myDayPreview(req, res) {
 
     const otMinutesApproved = approvedOt.reduce((sum, x) => sum + clampMinutes(x.minutes), 0);
 
-    // fetch employee master (fullTime/partTime + rates)
     const emp = await getEmployeeByUserId(userId);
 
-    // pay (MVP):
-    // - partTime: hourlyRate from employee.hourlyRate
-    // - fullTime: derive hourly from monthlySalary / (workingDaysPerMonth * hoursPerDay)
     const type = normalizeEmploymentType(emp?.employmentType); // "fullTime" | "partTime"
     const hoursPerDay = Number(emp?.hoursPerDay || 8);
     const daysPerMonth = Number(emp?.workingDaysPerMonth || 26);
@@ -657,11 +659,9 @@ async function myDayPreview(req, res) {
       baseHourly = monthly > 0 ? monthly / denom : 0;
     }
 
-    // ✅ ใช้ approved OT เท่านั้น
     const normalMinutes = Math.max(0, workedMinutes - otMinutesApproved);
     const normalPay = (normalMinutes / 60) * baseHourly;
 
-    // multiplier priority: employee override > clinic policy
     const otMul = Number(emp?.otMultiplierNormal || policy.otMultiplier || 1.5);
     const otPay = (otMinutesApproved / 60) * baseHourly * otMul;
 
@@ -680,15 +680,15 @@ async function myDayPreview(req, res) {
       },
       summary: {
         workedMinutes,
-        otMinutesApproved, // ✅ ใช้ตัวนี้คำนวณเงิน
-        otMinutesRawFromSessions, // ✅ เอาไว้เทียบว่าทำไมยังไม่เข้า payslip (ยัง pending)
+        otMinutesApproved,
+        otMinutesRawFromSessions,
         baseHourly,
         normalPay,
         otPay,
         totalPay: normalPay + otPay,
       },
       sessions,
-      approvedOtRecords: approvedOt, // ✅ debug/admin view
+      approvedOtRecords: approvedOt,
     });
   } catch (e) {
     return res.status(500).json({ ok: false, message: "preview failed", error: e.message });
