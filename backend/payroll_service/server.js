@@ -31,7 +31,12 @@ app.use((req, res, next) => {
     return res.status(200).json(payload);
   };
 
-  res.fail = (status = 400, message = "BAD_REQUEST", code = "BAD_REQUEST", extra = undefined) => {
+  res.fail = (
+    status = 400,
+    message = "BAD_REQUEST",
+    code = "BAD_REQUEST",
+    extra = undefined
+  ) => {
     const payload = { ok: false, code, message };
     if (extra !== undefined) payload.extra = extra;
     return res.status(status).json(payload);
@@ -55,12 +60,21 @@ app.use((req, res, next) => {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
     // ปรับให้ tolerant: ชื่อ field อาจต่างกัน
-    const userId =
-      (decoded.userId || decoded.id || decoded._id || decoded.sub || "").toString().trim();
-    const clinicId =
-      (decoded.clinicId || decoded.clinic || decoded.cid || "").toString().trim();
-    const role =
-      (decoded.activeRole || decoded.role || "").toString().trim();
+    const userId = (
+      decoded.userId ||
+      decoded.id ||
+      decoded._id ||
+      decoded.sub ||
+      ""
+    )
+      .toString()
+      .trim();
+
+    const clinicId = (decoded.clinicId || decoded.clinic || decoded.cid || "")
+      .toString()
+      .trim();
+
+    const role = (decoded.activeRole || decoded.role || "").toString().trim();
 
     req.userCtx = {
       userId,
@@ -130,6 +144,11 @@ app.get("/health", (req, res) => {
   return res.ok({ service: "payroll_service" });
 });
 
+// ✅ Root route (กัน 404 เวลาเปิด URL ตรง ๆ / ช่วย monitoring)
+app.get("/", (req, res) => {
+  return res.ok({ service: "payroll_service", status: "running" });
+});
+
 // -------------------- INTERNAL (Bootstrap for Long-term Stability) --------------------
 // ✅ auth_user_service จะยิงมาสร้าง/เตรียม profile mapping ให้ payroll_service
 // ✅ ใช้ secret กันคนภายนอกเรียก
@@ -156,36 +175,31 @@ function _normRole(v) {
   return r;
 }
 
+// ✅ IMPORTANT: ประกาศ model/schema ครั้งเดียว (กัน index ซ้ำ/เตือนซ้ำ)
+const BootstrapSchema =
+  mongoose.models.UserBootstrap?.schema ||
+  new mongoose.Schema(
+    {
+      userId: { type: String, required: true, index: true },
+      clinicId: { type: String, default: "" },
+      role: { type: String, default: "" },
+      fullName: { type: String, default: "" },
+      email: { type: String, default: "" },
+      phone: { type: String, default: "" },
+      updatedAt: { type: Date, default: Date.now },
+      createdAt: { type: Date, default: Date.now },
+    },
+    { collection: "user_bootstraps" }
+  );
+
+// unique index (ทำครั้งเดียวพอ)
+BootstrapSchema.index({ userId: 1 }, { unique: true });
+
+const UserBootstrap =
+  mongoose.models.UserBootstrap || mongoose.model("UserBootstrap", BootstrapSchema);
+
 // ✅ ตรงนี้เป็น “hook ระยะยาว”
-// ตอนนี้ server.js จะ “รับ bootstrap” และตอบ ok ไว้ก่อน
-// ในขั้นต่อไป เราจะไปผูกกับ models จริงใน payroll_service (ผมทำ FULL FILE ให้ได้เมื่อท่านส่ง routes/model)
 async function ensureBootstrapRecord(payload) {
-  // ถ้าอยากให้ทำจริงทันทีใน payroll_service: ให้สร้าง model/collection สำหรับ mapping userId->role->clinicId
-  // เพื่อให้ routes อื่นอ่านได้แน่นอนแม้ profile ยังไม่ถูกสร้าง
-  // ทำแบบ inline model (ปลอดภัย ไม่กระทบของเดิม) ✅
-
-  const BootstrapSchema =
-    mongoose.models.UserBootstrap?.schema ||
-    new mongoose.Schema(
-      {
-        userId: { type: String, required: true, index: true },
-        clinicId: { type: String, default: "" },
-        role: { type: String, default: "" },
-        fullName: { type: String, default: "" },
-        email: { type: String, default: "" },
-        phone: { type: String, default: "" },
-        updatedAt: { type: Date, default: Date.now },
-        createdAt: { type: Date, default: Date.now },
-      },
-      { collection: "user_bootstraps" }
-    );
-
-  // unique compound
-  BootstrapSchema.index({ userId: 1 }, { unique: true });
-
-  const UserBootstrap =
-    mongoose.models.UserBootstrap || mongoose.model("UserBootstrap", BootstrapSchema);
-
   const now = new Date();
   const update = {
     clinicId: payload.clinicId || "",
