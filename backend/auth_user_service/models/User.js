@@ -59,12 +59,22 @@ const TaxProfileSchema = new mongoose.Schema(
  */
 const ROLE_ENUM = ["admin", "employee", "helper"];
 
+/**
+ * ================================
+ * ✅ Subscription / Plan (Premium 299/เดือน)
+ * - plan: free | premium
+ * - premiumUntil: วันหมดอายุ (ถ้า null/อดีต => ถือว่า free)
+ * - NOTE: enforcement ทำใน service ที่ใช้ feature (เช่น payroll_service)
+ * ================================
+ */
+const PLAN_ENUM = ["free", "premium"];
+
 const UserSchema = new mongoose.Schema(
   {
-    userId: { type: String, required: true, unique: true, index: true }, // USR_xxx
+    userId: { type: String, required: true, unique: true, index: true }, // usr_xxx
 
-    // ✅ clinic tenancy (MVP: employee อยู่คลินิกเดียวก่อน)
-    clinicId: { type: String, required: true, index: true }, // CLN_xxx
+    // ✅ clinic tenancy (MVP: user อยู่คลินิกเดียวก่อน)
+    clinicId: { type: String, required: true, index: true }, // cln_xxx
 
     /**
      * ✅ NEW: roles[] (multi-role)
@@ -97,20 +107,18 @@ const UserSchema = new mongoose.Schema(
      */
     role: {
       type: String,
-      enum: ROLE_ENUM, // ขยายให้รองรับ helper ด้วย
+      enum: ROLE_ENUM,
       default: "employee",
       required: true,
       index: true,
     },
 
     /**
-     * ✅ staffId = ตัวตน "พนักงาน/ผู้ช่วย" ข้ามคลินิก
-     * - ถ้า activeRole = employee -> จำเป็นต้องมี staffId
-     * - ถ้า activeRole = helper -> อาจมีหรือไม่มีก็ได้ (ตาม design ของท่าน)
-     *
-     * หมายเหตุ: การ enforce แบบ “ห้ามว่าง” จะทำใน login/token/guard จะปลอดภัยกว่า
+     * ✅ staffId = ตัวตน "พนักงาน/ผู้ช่วย"
+     * - employee: ต้องมี staffId (enforce ใน controller/token/guard)
+     * - helper: อาจมีหรือไม่มีก็ได้ (ตาม design ของท่าน)
      */
-    staffId: { type: String, default: "" }, // STF_xxx
+    staffId: { type: String, default: "" }, // stf_xxx
 
     // login
     email: { type: String, default: "", index: true },
@@ -119,9 +127,23 @@ const UserSchema = new mongoose.Schema(
 
     // employee profile (optional)
     fullName: { type: String, default: "" },
-    employeeCode: { type: String, default: "" }, // EMP_xxx (optional)
+    employeeCode: { type: String, default: "" }, // emp_xxx (optional)
 
     isActive: { type: Boolean, default: true },
+
+    /**
+     * ================================
+     * ✅ Premium Plan fields
+     * ================================
+     */
+    plan: {
+      type: String,
+      enum: PLAN_ENUM,
+      default: "free",
+      index: true,
+    },
+    premiumUntil: { type: Date, default: null, index: true },
+    planUpdatedAt: { type: Date, default: null },
 
     /**
      * ================================
@@ -140,22 +162,26 @@ const UserSchema = new mongoose.Schema(
 
 // -------------------- Indexes --------------------
 
-// unique per clinic (optional - helps prevent duplicates)
+// per clinic helpful indexes
 UserSchema.index({ clinicId: 1, email: 1 }, { unique: false });
 UserSchema.index({ clinicId: 1, phone: 1 }, { unique: false });
 
-// ✅ helpful index for cross-service lookups
+// cross-service lookups
 UserSchema.index({ staffId: 1 }, { unique: false });
 
-// ✅ NEW helpful indexes
+// multi-role helpers
 UserSchema.index({ clinicId: 1, activeRole: 1 }, { unique: false });
 UserSchema.index({ clinicId: 1, roles: 1 }, { unique: false });
+
+// premium query helpers
+UserSchema.index({ plan: 1, premiumUntil: 1 }, { unique: false });
 
 /**
  * ================================
  * ✅ Hooks: Backfill + Sync
  * - ทำให้เอกสารเก่า (ที่มี role อย่างเดียว) ยังทำงานได้
- * - และป้องกัน “ฟีเจอร์หาย” เพราะ activeRole/roles ไม่สัมพันธ์กัน
+ * - ป้องกัน “ฟีเจอร์หาย” เพราะ activeRole/roles ไม่สัมพันธ์กัน
+ * - normalize plan/premiumUntil
  * ================================
  */
 UserSchema.pre("validate", function (next) {
@@ -169,21 +195,33 @@ UserSchema.pre("validate", function (next) {
     // 2) ถ้า activeRole ว่าง -> ใช้ role เดิม หรือค่าแรกใน roles
     if (!this.activeRole) {
       const legacy = String(this.role || "").trim();
-      const first = Array.isArray(this.roles) && this.roles.length > 0 ? this.roles[0] : "";
+      const first =
+        Array.isArray(this.roles) && this.roles.length > 0 ? this.roles[0] : "";
       this.activeRole = legacy || first || "employee";
     }
 
-    // 3) ทำให้แน่ใจว่า activeRole อยู่ใน roles เสมอ
+    // 3) activeRole ต้องอยู่ใน roles เสมอ
     if (this.activeRole) {
       const ar = String(this.activeRole).trim();
-      const set = new Set((this.roles || []).map((x) => String(x).trim()).filter(Boolean));
+      const set = new Set(
+        (this.roles || []).map((x) => String(x).trim()).filter(Boolean)
+      );
       if (ar) set.add(ar);
       this.roles = Array.from(set);
     }
 
-    // 4) Sync legacy role = activeRole (สำคัญ: service อื่น/โค้ดเก่าอ่าน role)
+    // 4) Sync legacy role = activeRole
     if (this.activeRole) {
       this.role = this.activeRole;
+    }
+
+    // 5) Normalize plan (free|premium)
+    const p = String(this.plan || "free").trim().toLowerCase();
+    this.plan = PLAN_ENUM.includes(p) ? p : "free";
+
+    // 6) ถ้าไม่ใช่ premium -> premiumUntil = null (กันสับสน)
+    if (this.plan !== "premium") {
+      this.premiumUntil = null;
     }
 
     return next();

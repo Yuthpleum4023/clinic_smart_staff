@@ -13,10 +13,12 @@ const EMP_PREFIX = (process.env.EMPLOYEE_ID_PREFIX || "emp_").toString();
 const STAFF_PREFIX = (process.env.STAFF_ID_PREFIX || "stf_").toString();
 
 const RESET_TOKEN_TTL_MINUTES = Number(process.env.RESET_TOKEN_TTL_MINUTES || 10);
-const RESET_LOG =
-  String(process.env.RESET_LOG || "true").toLowerCase() === "true";
+const RESET_LOG = String(process.env.RESET_LOG || "true").toLowerCase() === "true";
 
 const ROLE_ENUM = ["admin", "employee", "helper"];
+
+// ✅ Premium plan enums (must match User model)
+const PLAN_ENUM = ["free", "premium"];
 
 /* ======================================================
    Helpers
@@ -38,6 +40,27 @@ function normalizeRoles(arr) {
   const roles = Array.isArray(arr) ? arr : [];
   const set = new Set(roles.map((x) => normalizeRole(x)).filter((x) => !!x));
   return Array.from(set);
+}
+
+function normalizePlan(v) {
+  const p = normLower(v);
+  return PLAN_ENUM.includes(p) ? p : "free";
+}
+
+function toDateOrNull(v) {
+  if (!v) return null;
+  const d = v instanceof Date ? v : new Date(v);
+  return Number.isFinite(d.getTime()) ? d : null;
+}
+
+function isPremiumActive(userLike) {
+  const plan = normalizePlan(userLike?.plan);
+  if (plan !== "premium") return false;
+
+  const until = toDateOrNull(userLike?.premiumUntil);
+  if (!until) return false;
+
+  return until.getTime() > Date.now();
 }
 
 /**
@@ -97,6 +120,10 @@ function safeUser(u) {
   // ✅ กัน roles ว่าง (ของเก่า) ให้คืน roles ที่ถูกต้องเสมอ
   const fixed = ensureRolesAndActive(u, u?.activeRole || u?.role);
 
+  const plan = normalizePlan(u?.plan);
+  const premiumUntil = toDateOrNull(u?.premiumUntil);
+  const premium = isPremiumActive({ plan, premiumUntil });
+
   return {
     userId: u.userId,
     clinicId: u.clinicId,
@@ -112,15 +139,24 @@ function safeUser(u) {
     fullName: u.fullName || "",
     employeeCode: u.employeeCode || "",
     isActive: u.isActive,
+
+    // ✅ plan fields (สำหรับ UI/feature gating)
+    plan,
+    premiumUntil: premiumUntil ? premiumUntil.toISOString() : null,
+    isPremium: premium,
   };
 }
 
-// ✅ NEW: รวม payload token ให้เหมือนกันทุก endpoint (multi-role ready)
+// ✅ NEW: รวม payload token ให้เหมือนกันทุก endpoint (multi-role ready + plan)
 function makeJwtPayload(user) {
   const mongoId = user?._id?.toString?.() || (user?._id ? String(user._id) : "");
 
   // ✅ IMPORTANT: role in token = activeRole เสมอ + roles ต้องไม่ว่าง
   const fixed = ensureRolesAndActive(user, user?.activeRole || user?.role);
+
+  const plan = normalizePlan(user?.plan);
+  const premiumUntil = toDateOrNull(user?.premiumUntil);
+  const premium = isPremiumActive({ plan, premiumUntil });
 
   const payload = {
     userId: normStr(user?.userId),
@@ -138,6 +174,11 @@ function makeJwtPayload(user) {
     fullName: normStr(user?.fullName),
     phone: normStr(user?.phone),
     email: normStr(user?.email),
+
+    // ✅ plan gating (payroll_service ใช้ตัดสิน feature ได้)
+    plan,
+    premiumUntil: premiumUntil ? premiumUntil.toISOString() : null,
+    isPremium: premium,
   };
 
   if (mongoId && mongoId !== "undefined" && mongoId !== "null") {
@@ -161,9 +202,7 @@ async function ensureStaffIdIfEmployee(userDocOrLean) {
     const roles = normalizeRoles(userDocOrLean.roles);
 
     const hasEmployee =
-      legacyRole === "employee" ||
-      activeRole === "employee" ||
-      roles.includes("employee");
+      legacyRole === "employee" || activeRole === "employee" || roles.includes("employee");
 
     if (!hasEmployee) return userDocOrLean;
 
@@ -417,6 +456,11 @@ async function registerClinicAdmin(req, res) {
       passwordHash,
       isActive: true,
       employeeCode: "",
+
+      // ✅ plan defaults
+      plan: "free",
+      premiumUntil: null,
+      planUpdatedAt: null,
     });
 
     const token = signToken(makeJwtPayload(user.toObject ? user.toObject() : user));
@@ -501,6 +545,11 @@ async function registerWithInvite(req, res) {
       employeeCode,
       passwordHash,
       isActive: true,
+
+      // ✅ plan defaults
+      plan: "free",
+      premiumUntil: null,
+      planUpdatedAt: null,
     });
 
     inv.usedAt = new Date();
