@@ -66,6 +66,35 @@ function buildPrincipalQueryFromInput({ staffId, principalId }) {
 }
 
 // ======================================================
+// ✅ NEW helpers: time parsing (HH:mm) -> minutes
+// ======================================================
+function parseHHmmToMinutes(v) {
+  const t = s(v);
+  const parts = t.split(":");
+  if (parts.length !== 2) return null;
+  const hh = Number(parts[0]);
+  const mm = Number(parts[1]);
+  if (!Number.isFinite(hh) || !Number.isFinite(mm)) return null;
+  if (hh < 0 || hh > 23) return null;
+  if (mm < 0 || mm > 59) return null;
+  return hh * 60 + mm;
+}
+
+function computeMinutesFromStartEnd(startHHmm, endHHmm) {
+  const a = parseHHmmToMinutes(startHHmm);
+  const b = parseHHmmToMinutes(endHHmm);
+  if (a == null || b == null) return null;
+
+  // รองรับข้ามวัน: 20:00 -> 02:00
+  let end = b;
+  if (end < a) end += 24 * 60;
+
+  const diff = end - a;
+  if (diff <= 0) return 0;
+  return diff;
+}
+
+// ======================================================
 // ✅ HELPERS (for payroll close / payslip)
 // NOTE: ใช้ principalId เป็นแกนหลัก (รองรับ helper)
 // ======================================================
@@ -139,6 +168,84 @@ async function listMy(req, res) {
     });
   } catch (e) {
     return res.status(500).json({ ok: false, message: "list my overtime failed", error: e.message });
+  }
+}
+
+// ======================================================
+// ✅ NEW: STANDARD USER ส่ง OT เอง (PENDING)
+// POST /overtime/request
+// body: { workDate(yyyy-MM-dd), start(HH:mm), end(HH:mm), multiplier?, note? }
+// - ผูก clinicId/principalId จาก token (กันปลอม)
+// - status="pending", source="manual_user"
+// ======================================================
+async function requestOt(req, res) {
+  try {
+    const { clinicId, role, userId, staffId, principalId, principalType } = getPrincipal(req);
+
+    if (!clinicId) return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
+    if (!principalId) return res.status(401).json({ ok: false, message: "Missing userId/staffId in token" });
+
+    const allowed = ["employee", "helper", "staff"];
+    if (role && !allowed.includes(role)) {
+      return res.status(403).json({ ok: false, message: "Forbidden" });
+    }
+
+    const workDate = s(req.body?.workDate);
+    const start = s(req.body?.start);
+    const end = s(req.body?.end);
+
+    if (!isYmd(workDate)) {
+      return res.status(400).json({ ok: false, message: "workDate required (yyyy-MM-dd)" });
+    }
+
+    const computed = computeMinutesFromStartEnd(start, end);
+    if (computed == null) {
+      return res.status(400).json({ ok: false, message: "start/end required (HH:mm)" });
+    }
+    if (computed <= 0) {
+      return res.status(400).json({ ok: false, message: "OT minutes must be > 0" });
+    }
+
+    const multiplier = Number(req.body?.multiplier);
+    const mul = Number.isFinite(multiplier) && multiplier > 0 ? multiplier : 1.5;
+
+    const created = await Overtime.create({
+      clinicId,
+
+      // ✅ required by model
+      principalId,
+      principalType,
+
+      // ✅ keep legacy fields for payrollCloseController compatibility
+      staffId: staffId || "",
+      userId: userId || "",
+
+      workDate,
+      monthKey: toMonthKey(workDate),
+      minutes: computed,
+      multiplier: mul,
+
+      status: "pending",
+      source: "manual_user",
+      note: s(req.body?.note),
+
+      approvedBy: "",
+      approvedAt: null,
+      rejectedBy: "",
+      rejectedAt: null,
+      rejectReason: "",
+      lockedBy: "",
+      lockedAt: null,
+      lockedMonth: "",
+    });
+
+    return res.status(201).json({
+      ok: true,
+      overtime: created.toObject(),
+      submittedBy: { principalId, principalType },
+    });
+  } catch (e) {
+    return res.status(500).json({ ok: false, message: "request overtime failed", error: e.message });
   }
 }
 
@@ -506,6 +613,9 @@ async function removeOne(req, res) {
 module.exports = {
   // ✅ staff/employee/helper
   listMy,
+
+  // ✅ NEW
+  requestOt,
 
   // ✅ admin
   listForStaff,
