@@ -1,10 +1,14 @@
 // payroll_service/controllers/payrollCloseController.js
 //
-// ✅ FULL FILE — Payroll Close Controller (OT Approved included)
-// - ✅ employeeId in this system = staffId (ฟันธงให้ชัด)
+// ✅ FULL FILE — Payroll Close Controller (OT Approved included + TAX userId fix)
+// - ✅ employeeId in this system = staffId (ชัด)
 // - ✅ Pull approved OT summary by (clinicId + monthKey + staffId)
 // - ✅ If client sends baseHourly (optional) and otPay=0 => compute otPay from approvedWeightedHours
-// - ✅ Still calls AUTH internal by userId (ถูกต้อง เพราะภาษีผูก userId)
+// - ✅ FIX: tax calc must use EMPLOYEE userId (not admin userId)
+//   - resolve employee userId priority:
+//     1) req.body.employeeUserId (recommended for admin UI)
+//     2) find from Overtime records (staffId+monthKey, userId not empty)
+//     3) fallback to admin userId (last resort) + return warning
 // - ✅ SECURITY: staff ดูได้เฉพาะของตัวเอง, admin ดูได้ทั้งคลินิก
 // - ✅ SECURITY: ทุก query ผูก clinicId จาก token กันข้อมูลข้ามคลินิก
 //
@@ -70,7 +74,7 @@ function guardPayslipAccess(req, res, next) {
   if (role === "admin") return next();
 
   // employee/staff ok only if matches
-  // NOTE: จาก authController ของท่าน role employee คือ "employee"
+  // NOTE: role employee คือ "employee"
   if (role === "employee") {
     if (!employeeId || !staffIdInToken) {
       return res.status(400).json({ message: "Missing employeeId/staffId" });
@@ -100,7 +104,7 @@ async function getApprovedOtSummaryForMonth({ clinicId, monthKey, employeeId }) 
   const q = { clinicId: cId, monthKey: mKey, status: "approved", staffId };
 
   const rows = await Overtime.find(q)
-    .select({ workDate: 1, minutes: 1, multiplier: 1, status: 1, source: 1, note: 1 })
+    .select({ workDate: 1, minutes: 1, multiplier: 1, status: 1, source: 1, note: 1, userId: 1 })
     .lean();
 
   const approvedMinutes = rows.reduce(
@@ -122,6 +126,40 @@ async function getApprovedOtSummaryForMonth({ clinicId, monthKey, employeeId }) 
     count: rows.length,
     records: rows,
   };
+}
+
+// ================= EMPLOYEE userId resolver =================
+// ✅ ภาษีต้องผูก userId ของพนักงานคนนั้น
+// priority:
+// 1) req.body.employeeUserId
+// 2) lookup from Overtime (staffId+monthKey) where userId not empty
+// 3) fallback to admin userId (last resort)
+async function resolveEmployeeUserId({ clinicId, monthKey, staffId, bodyEmployeeUserId, adminUserId }) {
+  const fromBody = safeStr(bodyEmployeeUserId);
+  if (fromBody) {
+    return { employeeUserId: fromBody, source: "body" };
+  }
+
+  // try to infer from any OT record in that month (approved/pending/etc)
+  // เพราะ OT hook จาก attendance จะใส่ userId ไว้แล้ว
+  const row = await Overtime.findOne({
+    clinicId: safeStr(clinicId),
+    monthKey: safeStr(monthKey),
+    staffId: safeStr(staffId),
+    userId: { $nin: ["", null] },
+  })
+    .select({ userId: 1 })
+    .sort({ createdAt: -1 })
+    .lean();
+
+  const inferred = safeStr(row?.userId);
+  if (inferred) {
+    return { employeeUserId: inferred, source: "overtime" };
+  }
+
+  // last resort
+  const fallback = safeStr(adminUserId);
+  return { employeeUserId: fallback, source: "admin_fallback" };
 }
 
 // ================= auth internal call =================
@@ -180,6 +218,10 @@ async function closeMonth(req, res) {
       ssoEmployeeMonthly = 0,
       pvdEmployeeMonthly = 0,
       baseHourly = null,
+
+      // ✅ NEW: admin UI แนะนำส่งมาด้วย เพื่อให้ภาษีถูก 100%
+      // (แต่ถ้าไม่ส่ง ระบบจะพยายามดึงจาก Overtime.userId ให้เอง)
+      employeeUserId: employeeUserIdFromBody,
     } = req.body || {};
 
     if (!clinicId || !employeeId || !month) {
@@ -196,13 +238,18 @@ async function closeMonth(req, res) {
       return res.status(403).json({ message: "Forbidden (clinic mismatch)" });
     }
 
-    // ✅ tax calc uses userId (ของคนที่เป็น admin ที่ปิดงวด)
-    const userId = safeStr(req.user?.userId);
-    if (!userId) return res.status(401).json({ message: "Missing userId in token" });
+    // admin userId (คนปิดงวด)
+    const adminUserId = safeStr(req.user?.userId);
+    if (!adminUserId) return res.status(401).json({ message: "Missing userId in token" });
 
-    const existed = await PayrollClose.findOne({ clinicId: clinicIdFromToken, employeeId, month }).lean();
+    const existed = await PayrollClose.findOne({
+      clinicId: clinicIdFromToken,
+      employeeId: safeStr(employeeId),
+      month: safeStr(month),
+    }).lean();
     if (existed) return res.status(409).json({ message: "Month already closed" });
 
+    // ✅ OT summary (approved only) by staffId
     const otSummary = await getApprovedOtSummaryForMonth({
       clinicId: clinicIdFromToken,
       monthKey: safeStr(month),
@@ -229,10 +276,10 @@ async function closeMonth(req, res) {
     const pvdM = clampMin0(pvdEmployeeMonthly);
 
     // NOTE: TaxYTD ผูกด้วย employeeId (staffId) ตามระบบท่าน
-    let ytd = await TaxYTD.findOne({ employeeId, taxYear });
+    let ytd = await TaxYTD.findOne({ employeeId: safeStr(employeeId), taxYear });
     if (!ytd) {
       ytd = await TaxYTD.create({
-        employeeId,
+        employeeId: safeStr(employeeId),
         taxYear,
         incomeYTD: 0,
         ssoYTD: 0,
@@ -245,8 +292,17 @@ async function closeMonth(req, res) {
     const ssoYTD_after = clampMin0(ytd.ssoYTD) + ssoM;
     const pvdYTD_after = clampMin0(ytd.pvdYTD) + pvdM;
 
+    // ✅ FIX: use EMPLOYEE userId for tax calc
+    const resolved = await resolveEmployeeUserId({
+      clinicId: clinicIdFromToken,
+      monthKey: safeStr(month),
+      staffId: safeStr(employeeId),
+      bodyEmployeeUserId: employeeUserIdFromBody,
+      adminUserId,
+    });
+
     const taxCalc = await calcWithheldByYTDFromAuth({
-      userId,
+      userId: resolved.employeeUserId,
       taxYear,
       incomeYTD: incomeYTD_after,
       ssoYTD: ssoYTD_after,
@@ -259,8 +315,8 @@ async function closeMonth(req, res) {
 
     const payrollClose = await PayrollClose.create({
       clinicId: clinicIdFromToken,
-      employeeId,
-      month,
+      employeeId: safeStr(employeeId),
+      month: safeStr(month),
 
       grossMonthly,
       withheldTaxMonthly,
@@ -280,7 +336,7 @@ async function closeMonth(req, res) {
       otApprovedCount: Math.max(0, Math.floor(Number(otSummary.count || 0))),
 
       locked: true,
-      closedBy: userId,
+      closedBy: adminUserId, // คนปิดงวด
     });
 
     ytd.incomeYTD = incomeYTD_after;
@@ -289,11 +345,19 @@ async function closeMonth(req, res) {
     ytd.taxPaidYTD += withheldTaxMonthly;
     await ytd.save();
 
+    const warning =
+      resolved.source === "admin_fallback"
+        ? "employeeUserId not found (body/overtime). Tax calc fell back to admin userId. Please send employeeUserId from client for accuracy."
+        : null;
+
     return res.json({
       ok: true,
       payrollClose,
       ytd,
       taxCalc,
+      taxUserId: resolved.employeeUserId,
+      taxUserIdSource: resolved.source,
+      warning,
       otSummary: {
         monthKey: otSummary.monthKey,
         approvedMinutes: otSummary.approvedMinutes,

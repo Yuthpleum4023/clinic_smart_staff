@@ -24,7 +24,7 @@ function toMonthKey(workDate) {
   return isYmd(workDate) ? String(workDate).slice(0, 7) : "";
 }
 
-function parseMonthOrThrow(month) {
+function parseMonthOrNull(month) {
   const m = s(month);
   if (!isYm(m)) return null;
   return m;
@@ -34,53 +34,101 @@ function canMutateStatus(ot) {
   return s(ot.status) !== "locked";
 }
 
+/**
+ * ✅ PRINCIPAL (รองรับ helper ไม่มี staffId)
+ * - ถ้ามี staffId => principalId = staffId, principalType="staff"
+ * - ถ้าไม่มี staffId => principalId = userId, principalType="user"
+ */
+function getPrincipal(req) {
+  const clinicId = s(req.user?.clinicId);
+  const role = s(req.user?.role);
+  const userId = s(req.user?.userId);
+  const staffId = s(req.user?.staffId);
+
+  const principalId = staffId || userId;
+  const principalType = staffId ? "staff" : "user";
+
+  return { clinicId, role, userId, staffId, principalId, principalType };
+}
+
+// helper: accept either staffId (legacy) or principalId
+function buildPrincipalQueryFromInput({ staffId, principalId }) {
+  const sid = s(staffId);
+  const pid = s(principalId);
+
+  // if caller provides principalId, prefer it
+  if (pid) return { principalId: pid };
+
+  // legacy: if staffId provided, map to principalId as well
+  if (sid) return { principalId: sid, staffId: sid };
+
+  return null;
+}
+
 // ======================================================
 // ✅ HELPERS (for payroll close / payslip)
+// NOTE: ใช้ principalId เป็นแกนหลัก (รองรับ helper)
 // ======================================================
-async function sumApprovedMinutesForMonth({ clinicId, staffId, monthKey }) {
-  const q = { clinicId: s(clinicId), staffId: s(staffId), monthKey: s(monthKey), status: "approved" };
+async function sumApprovedMinutesForMonth({ clinicId, principalId, monthKey }) {
+  const q = {
+    clinicId: s(clinicId),
+    principalId: s(principalId),
+    monthKey: s(monthKey),
+    status: "approved",
+  };
   const rows = await Overtime.find(q).select({ minutes: 1 }).lean();
   return rows.reduce((a, x) => a + clampMinutes(x.minutes), 0);
 }
 
-async function sumApprovedMinutesForDay({ clinicId, staffId, workDate }) {
-  const q = { clinicId: s(clinicId), staffId: s(staffId), workDate: s(workDate), status: "approved" };
+async function sumApprovedMinutesForDay({ clinicId, principalId, workDate }) {
+  const q = {
+    clinicId: s(clinicId),
+    principalId: s(principalId),
+    workDate: s(workDate),
+    status: "approved",
+  };
   const rows = await Overtime.find(q).select({ minutes: 1 }).lean();
   return rows.reduce((a, x) => a + clampMinutes(x.minutes), 0);
 }
 
 // ======================================================
-// ✅ STAFF (READ-ONLY)
+// ✅ STAFF/EMPLOYEE/HELPER (READ-ONLY)
 // GET /overtime/my
 // query: month=yyyy-MM (required)
 //        status=pending|approved|rejected|locked (optional)
 // ======================================================
 async function listMy(req, res) {
   try {
-    const clinicId = s(req.user?.clinicId);
-    const role = s(req.user?.role);
-    const staffIdFromToken = s(req.user?.staffId);
+    const { clinicId, role, staffId, userId, principalId, principalType } = getPrincipal(req);
 
     if (!clinicId) return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
-    if (!staffIdFromToken) return res.status(400).json({ ok: false, message: "Missing staffId in token" });
-    if (role && role !== "staff") return res.status(403).json({ ok: false, message: "Forbidden (staff only)" });
+    if (!principalId) return res.status(401).json({ ok: false, message: "Missing userId/staffId in token" });
 
-    const monthKey = parseMonthOrThrow(req.query?.month);
+    // ✅ allow employee + helper (and optionally staff if some service uses that string)
+    const allowed = ["employee", "helper", "staff"];
+    if (role && !allowed.includes(role)) {
+      return res.status(403).json({ ok: false, message: "Forbidden" });
+    }
+
+    const monthKey = parseMonthOrNull(req.query?.month);
     if (!monthKey) return res.status(400).json({ ok: false, message: "month required (yyyy-MM)" });
 
     const status = s(req.query?.status);
 
-    const q = { clinicId, staffId: staffIdFromToken, monthKey };
+    const q = { clinicId, principalId, monthKey };
     if (status) q.status = status;
 
     const items = await Overtime.find(q).sort({ workDate: 1, createdAt: 1 }).lean();
 
-    const sum = (st) => items.filter((x) => x.status === st).reduce((a, x) => a + clampMinutes(x.minutes), 0);
+    const sum = (st) =>
+      items
+        .filter((x) => s(x.status) === st)
+        .reduce((a, x) => a + clampMinutes(x.minutes), 0);
 
     return res.json({
       ok: true,
       month: monthKey,
-      staffId: staffIdFromToken,
+      principal: { principalId, principalType, staffId, userId },
       summary: {
         pendingMinutes: sum("pending"),
         approvedMinutes: sum("approved"),
@@ -95,38 +143,46 @@ async function listMy(req, res) {
 }
 
 // ======================================================
+// ✅ ADMIN LIST
 // GET /overtime   (admin)
 // query: month=yyyy-MM (required)
-//        staffId=... (required)
+//        principalId=... (recommended) OR staffId=... (legacy)
 //        status=pending|approved|rejected|locked (optional)
 // ======================================================
 async function listForStaff(req, res) {
   try {
-    const clinicId = s(req.user?.clinicId);
-    const role = s(req.user?.role);
+    const { clinicId, role } = getPrincipal(req);
 
     if (!clinicId) return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
     if (role !== "admin") return res.status(403).json({ ok: false, message: "Forbidden (admin only)" });
 
-    const monthKey = parseMonthOrThrow(req.query?.month);
+    const monthKey = parseMonthOrNull(req.query?.month);
     if (!monthKey) return res.status(400).json({ ok: false, message: "month required (yyyy-MM)" });
 
-    const staffId = s(req.query?.staffId);
-    if (!staffId) return res.status(400).json({ ok: false, message: "staffId required" });
-
     const status = s(req.query?.status);
-    const q = { clinicId, staffId, monthKey };
+
+    const principalId = s(req.query?.principalId);
+    const staffId = s(req.query?.staffId);
+
+    const principalQ = buildPrincipalQueryFromInput({ staffId, principalId });
+    if (!principalQ) {
+      return res.status(400).json({ ok: false, message: "principalId or staffId required" });
+    }
+
+    const q = { clinicId, monthKey, ...principalQ };
     if (status) q.status = status;
 
     const items = await Overtime.find(q).sort({ workDate: 1, createdAt: 1 }).lean();
 
-    // summary
-    const sum = (st) => items.filter((x) => x.status === st).reduce((a, x) => a + clampMinutes(x.minutes), 0);
+    const sum = (st) =>
+      items
+        .filter((x) => s(x.status) === st)
+        .reduce((a, x) => a + clampMinutes(x.minutes), 0);
 
     return res.json({
       ok: true,
       month: monthKey,
-      staffId,
+      requested: { principalId: principalId || null, staffId: staffId || null },
       summary: {
         pendingMinutes: sum("pending"),
         approvedMinutes: sum("approved"),
@@ -141,25 +197,35 @@ async function listForStaff(req, res) {
 }
 
 // ======================================================
+// ✅ ADMIN CREATE MANUAL OT
 // POST /overtime/manual  (admin)
-// body: { staffId, userId?, workDate(yyyy-MM-dd), minutes, multiplier?, note? }
+// body: {
+//   staffId? (employee), userId? (helper), workDate(yyyy-MM-dd), minutes,
+//   multiplier?, note?
+// }
+// - principalId = staffId || userId (required by model)
 // ======================================================
 async function createManual(req, res) {
   try {
-    const clinicId = s(req.user?.clinicId);
-    const role = s(req.user?.role);
-    const adminUserId = s(req.user?.userId);
+    const { clinicId, role, userId: adminUserId } = getPrincipal(req);
 
     if (!clinicId) return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
     if (role !== "admin") return res.status(403).json({ ok: false, message: "Forbidden (admin only)" });
 
     const staffId = s(req.body?.staffId);
+    const targetUserId = s(req.body?.userId); // helper can be usr_...
     const workDate = s(req.body?.workDate);
     const minutes = clampMinutes(req.body?.minutes);
 
-    if (!staffId) return res.status(400).json({ ok: false, message: "staffId required" });
     if (!isYmd(workDate)) return res.status(400).json({ ok: false, message: "workDate required (yyyy-MM-dd)" });
     if (minutes <= 0) return res.status(400).json({ ok: false, message: "minutes must be > 0" });
+
+    const principalId = staffId || targetUserId;
+    const principalType = staffId ? "staff" : "user";
+
+    if (!principalId) {
+      return res.status(400).json({ ok: false, message: "staffId or userId required" });
+    }
 
     const monthKey = toMonthKey(workDate);
     const multiplier = Number(req.body?.multiplier);
@@ -167,8 +233,15 @@ async function createManual(req, res) {
 
     const created = await Overtime.create({
       clinicId,
-      staffId,
-      userId: s(req.body?.userId),
+
+      // ✅ required by model
+      principalId,
+      principalType,
+
+      // optional legacy/audit fields
+      staffId: staffId || "",
+      userId: targetUserId || "",
+
       workDate,
       monthKey,
       minutes,
@@ -176,6 +249,7 @@ async function createManual(req, res) {
       status: "pending",
       source: "manual",
       note: s(req.body?.note),
+
       approvedBy: "",
       approvedAt: null,
       rejectedBy: "",
@@ -199,8 +273,7 @@ async function createManual(req, res) {
 // ======================================================
 async function updateOne(req, res) {
   try {
-    const clinicId = s(req.user?.clinicId);
-    const role = s(req.user?.role);
+    const { clinicId, role } = getPrincipal(req);
 
     if (!clinicId) return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
     if (role !== "admin") return res.status(403).json({ ok: false, message: "Forbidden (admin only)" });
@@ -242,9 +315,7 @@ async function updateOne(req, res) {
 // ======================================================
 async function approveOne(req, res) {
   try {
-    const clinicId = s(req.user?.clinicId);
-    const role = s(req.user?.role);
-    const adminUserId = s(req.user?.userId);
+    const { clinicId, role, userId: adminUserId } = getPrincipal(req);
 
     if (!clinicId) return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
     if (role !== "admin") return res.status(403).json({ ok: false, message: "Forbidden (admin only)" });
@@ -257,12 +328,10 @@ async function approveOne(req, res) {
 
     if (!canMutateStatus(ot)) return res.status(409).json({ ok: false, message: "Locked overtime cannot be approved" });
 
-    // approve only pending/rejected -> approved
     ot.status = "approved";
     ot.approvedBy = adminUserId;
     ot.approvedAt = new Date();
 
-    // clear reject
     ot.rejectedBy = "";
     ot.rejectedAt = null;
     ot.rejectReason = "";
@@ -280,9 +349,7 @@ async function approveOne(req, res) {
 // ======================================================
 async function rejectOne(req, res) {
   try {
-    const clinicId = s(req.user?.clinicId);
-    const role = s(req.user?.role);
-    const adminUserId = s(req.user?.userId);
+    const { clinicId, role, userId: adminUserId } = getPrincipal(req);
 
     if (!clinicId) return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
     if (role !== "admin") return res.status(403).json({ ok: false, message: "Forbidden (admin only)" });
@@ -300,7 +367,6 @@ async function rejectOne(req, res) {
     ot.rejectedAt = new Date();
     ot.rejectReason = s(req.body?.reason);
 
-    // clear approve
     ot.approvedBy = "";
     ot.approvedAt = null;
 
@@ -313,28 +379,29 @@ async function rejectOne(req, res) {
 
 // ======================================================
 // PATCH /overtime/bulk-approve/month  (admin)
-// body: { staffId, month(yyyy-MM) }
-// - approve all pending for that staff+month
+// body: { principalId? , staffId? , month(yyyy-MM) }
+// - approve all pending for that principal+month
 // ======================================================
 async function bulkApproveMonth(req, res) {
   try {
-    const clinicId = s(req.user?.clinicId);
-    const role = s(req.user?.role);
-    const adminUserId = s(req.user?.userId);
+    const { clinicId, role, userId: adminUserId } = getPrincipal(req);
 
     if (!clinicId) return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
     if (role !== "admin") return res.status(403).json({ ok: false, message: "Forbidden (admin only)" });
 
+    const principalId = s(req.body?.principalId);
     const staffId = s(req.body?.staffId);
-    const monthKey = parseMonthOrThrow(req.body?.month);
+    const monthKey = parseMonthOrNull(req.body?.month);
 
-    if (!staffId) return res.status(400).json({ ok: false, message: "staffId required" });
     if (!monthKey) return res.status(400).json({ ok: false, message: "month required (yyyy-MM)" });
+
+    const principalQ = buildPrincipalQueryFromInput({ staffId, principalId });
+    if (!principalQ) return res.status(400).json({ ok: false, message: "principalId or staffId required" });
 
     const now = new Date();
 
     const r = await Overtime.updateMany(
-      { clinicId, staffId, monthKey, status: "pending" },
+      { clinicId, monthKey, status: "pending", principalId: principalQ.principalId },
       {
         $set: {
           status: "approved",
@@ -349,8 +416,8 @@ async function bulkApproveMonth(req, res) {
 
     return res.json({
       ok: true,
-      staffId,
       month: monthKey,
+      principalId: principalQ.principalId,
       matched: r.matchedCount ?? r.n,
       modified: r.modifiedCount ?? r.nModified,
     });
@@ -361,29 +428,30 @@ async function bulkApproveMonth(req, res) {
 
 // ======================================================
 // PATCH /overtime/bulk-approve/day  (admin)
-// body: { staffId, workDate(yyyy-MM-dd) }
-// - approve all pending for that staff+day
+// body: { principalId? , staffId? , workDate(yyyy-MM-dd) }
+// - approve all pending for that principal+day
 // ======================================================
 async function bulkApproveDay(req, res) {
   try {
-    const clinicId = s(req.user?.clinicId);
-    const role = s(req.user?.role);
-    const adminUserId = s(req.user?.userId);
+    const { clinicId, role, userId: adminUserId } = getPrincipal(req);
 
     if (!clinicId) return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
     if (role !== "admin") return res.status(403).json({ ok: false, message: "Forbidden (admin only)" });
 
+    const principalId = s(req.body?.principalId);
     const staffId = s(req.body?.staffId);
     const workDate = s(req.body?.workDate);
 
-    if (!staffId) return res.status(400).json({ ok: false, message: "staffId required" });
     if (!isYmd(workDate)) return res.status(400).json({ ok: false, message: "workDate required (yyyy-MM-dd)" });
+
+    const principalQ = buildPrincipalQueryFromInput({ staffId, principalId });
+    if (!principalQ) return res.status(400).json({ ok: false, message: "principalId or staffId required" });
 
     const monthKey = toMonthKey(workDate);
     const now = new Date();
 
     const r = await Overtime.updateMany(
-      { clinicId, staffId, monthKey, workDate, status: "pending" },
+      { clinicId, monthKey, workDate, status: "pending", principalId: principalQ.principalId },
       {
         $set: {
           status: "approved",
@@ -398,8 +466,8 @@ async function bulkApproveDay(req, res) {
 
     return res.json({
       ok: true,
-      staffId,
       workDate,
+      principalId: principalQ.principalId,
       matched: r.matchedCount ?? r.n,
       modified: r.modifiedCount ?? r.nModified,
     });
@@ -414,8 +482,7 @@ async function bulkApproveDay(req, res) {
 // ======================================================
 async function removeOne(req, res) {
   try {
-    const clinicId = s(req.user?.clinicId);
-    const role = s(req.user?.role);
+    const { clinicId, role } = getPrincipal(req);
 
     if (!clinicId) return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
     if (role !== "admin") return res.status(403).json({ ok: false, message: "Forbidden (admin only)" });
@@ -437,7 +504,7 @@ async function removeOne(req, res) {
 }
 
 module.exports = {
-  // ✅ staff
+  // ✅ staff/employee/helper
   listMy,
 
   // ✅ admin
