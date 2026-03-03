@@ -1,66 +1,68 @@
 // backend/payroll_service/routes/attendanceRoutes.js
 const router = require("express").Router();
 const { auth, requireRole, requireSelfStaff } = require("../middleware/auth");
-
 const ctrl = require("../controllers/attendanceController");
 
 // ======================================
-// ✅ Premium Anti-fraud: Staff self-attendance only
-// - clinic/admin ไม่ควรลงเวลาแทนพนักงานได้
-// - ดังนั้น check-in / check-out / my sessions ให้เป็น "employee" เท่านั้น
-// - และต้องเป็น staffId ของตัวเอง (กันปลอม staffId ใน body)
+// ✅ Premium Anti-fraud: Self-attendance only
+// - ไม่ให้ admin/clinic ลงเวลาแทน
+// - อนุญาต employee + helper (ถ้า helper มี staffId)
+// - requireSelfStaff({allowClinic:false}) จะ:
+//    - เติม staffId/clinicId จาก token ให้
+//    - และกันไม่ให้ spoof staffId
 // ======================================
 
-// ✅ MUST be employee/staff (canonical => employee)
-// ✅ MUST be self only (allowClinic:false)
+const SELF_ROLES = ["employee", "helper"];
+
+// check-in
 router.post(
   "/check-in",
   auth,
-  requireRole(["employee"]), // รองรับ staff/emp ผ่าน canonical
+  requireRole(SELF_ROLES),
   requireSelfStaff({ allowClinic: false }),
   ctrl.checkIn
 );
 
-// ✅ NEW (recommended): check-out แบบไม่ต้องส่ง session id
+// check-out (recommended)
 router.post(
   "/check-out",
   auth,
-  requireRole(["employee"]),
+  requireRole(SELF_ROLES),
   requireSelfStaff({ allowClinic: false }),
   ctrl.checkOut
 );
 
-// ✅ Backward compatible: ถ้า client เก่ามีการส่ง session id มา
-// IMPORTANT: controller ต้อง verify ว่า session นี้เป็นของ user คนนี้จริง
+// backward compatible (with session id)
 router.post(
   "/:id/check-out",
   auth,
-  requireRole(["employee"]),
+  requireRole(SELF_ROLES),
   requireSelfStaff({ allowClinic: false }),
   ctrl.checkOut
 );
 
+// my sessions
 router.get(
   "/me",
   auth,
-  requireRole(["employee"]),
+  requireRole(SELF_ROLES),
   requireSelfStaff({ allowClinic: false }),
   ctrl.listMySessions
 );
 
-// ✅ optional: วันเดียว + ค่าจ้าง/OT preview (ดึง staff_service)
+// optional preview
 router.get(
   "/me-preview",
   auth,
-  requireRole(["employee"]),
+  requireRole(SELF_ROLES),
   requireSelfStaff({ allowClinic: false }),
   ctrl.myDayPreview
 );
 
 // ======================================
-// admin/clinic view (reports) — ถ้าจะเปิดให้คลินิกดูรายงาน
-// NOTE: ถ้าท่าน "ไม่อยากให้คลินิกดู" ก็ลบ route นี้ได้เลย
+// admin reports
+// NOTE: ถ้าจะให้คลินิกดูรายงาน เปิดไว้ได้
 // ======================================
-router.get("/clinic", auth, requireRole(["clinic"]), ctrl.listClinicSessions);
+router.get("/clinic", auth, requireRole(["admin"]), ctrl.listClinicSessions);
 
 module.exports = router;

@@ -351,11 +351,11 @@ async function checkOut(req, res) {
     if (!staffId)
       return res.status(400).json({ ok: false, message: "Missing staffId in token" });
 
-    // ✅ Premium rule: staff self checkout only
-    // routes layer already enforces requireRole(["staff"]), but we keep server-side safety:
+    // ✅ Premium rule: employee self checkout only (canonical role)
+    // routes layer already enforces requireRole(["employee"]), but keep server-side safety:
     const role = s(req.user?.role);
-    if (role && role !== "staff") {
-      return res.status(403).json({ ok: false, message: "Forbidden (staff only)" });
+    if (role && role !== "employee") {
+      return res.status(403).json({ ok: false, message: "Forbidden (employee only)" });
     }
 
     const id = s(req.params?.id);
