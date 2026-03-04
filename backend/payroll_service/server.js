@@ -255,32 +255,59 @@ app.post("/internal/bootstrap", async (req, res) => {
 });
 
 // -------------------- Routes --------------------
-app.use("/shifts", require("./routes/shiftRoutes"));
-app.use("/payroll", require("./routes/payrollRoutes"));
+// ✅ NOTE: เพื่อให้ Flutter เรียกได้ทั้ง /xxx และ /api/xxx (compatibility)
+// เราจะ mount ทั้ง 2 prefix ให้ทุก route หลัก (NO BREAK)
+
+const shiftRoutes = require("./routes/shiftRoutes");
+const payrollRoutes = require("./routes/payrollRoutes");
+const shiftNeedRoutes = require("./routes/shiftNeedRoutes");
+const payrollCloseRoutes = require("./routes/payrollCloseRoutes");
+const clinicRoutes = require("./routes/clinicRoutes");
+const clinicPolicyRoutes = require("./routes/clinicPolicyRoutes");
+const attendanceRoutes = require("./routes/attendanceRoutes");
+const availabilityRoutes = require("./routes/availabilityRoutes");
+const overtimeRoutes = require("./routes/overtimeRoutes");
+const staffRoutes = require("./routes/staffRoutes");
+
+// Shifts
+app.use("/shifts", shiftRoutes);
+app.use("/api/shifts", shiftRoutes);
+
+// Payroll
+app.use("/payroll", payrollRoutes);
+app.use("/api/payroll", payrollRoutes);
 
 // ✅ ShiftNeed (ประกาศงานว่าง / รับงาน / approve -> สร้าง Shift)
-app.use("/shift-needs", require("./routes/shiftNeedRoutes"));
+app.use("/shift-needs", shiftNeedRoutes);
+app.use("/api/shift-needs", shiftNeedRoutes);
 
 // ✅ Payroll Close (ปิดงวดจริง + YTD)
-app.use("/payroll-close", require("./routes/payrollCloseRoutes"));
+app.use("/payroll-close", payrollCloseRoutes);
+app.use("/api/payroll-close", payrollCloseRoutes);
 
 // ✅ Clinics (location for navigation)
-app.use("/clinics", require("./routes/clinicRoutes"));
+app.use("/clinics", clinicRoutes);
+app.use("/api/clinics", clinicRoutes);
 
 // ✅ Clinic Policy (OT / Attendance Policy per clinic)
-app.use("/clinic-policy", require("./routes/clinicPolicyRoutes"));
+app.use("/clinic-policy", clinicPolicyRoutes);
+app.use("/api/clinic-policy", clinicPolicyRoutes);
 
 // ✅ Attendance (check-in/out)
-app.use("/attendance", require("./routes/attendanceRoutes"));
+app.use("/attendance", attendanceRoutes);
+app.use("/api/attendance", attendanceRoutes);
 
 // ✅ Availabilities (ตารางว่างผู้ช่วย -> ให้คลินิกเห็น)
-app.use("/availabilities", require("./routes/availabilityRoutes"));
+app.use("/availabilities", availabilityRoutes);
+app.use("/api/availabilities", availabilityRoutes);
 
 // ✅ Overtime (pending/approved/rejected/locked)
-app.use("/overtime", require("./routes/overtimeRoutes"));
+app.use("/overtime", overtimeRoutes);
+app.use("/api/overtime", overtimeRoutes);
 
 // ✅ Staff Proxy (dropdown จาก staff_service ผ่าน payroll_service)
-app.use("/staff", require("./routes/staffRoutes"));
+app.use("/staff", staffRoutes);
+app.use("/api/staff", staffRoutes);
 
 // -------------------- 404 handler --------------------
 app.use((req, res) => {
