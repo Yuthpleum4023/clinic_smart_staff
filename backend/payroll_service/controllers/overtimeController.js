@@ -59,8 +59,18 @@ function buildPrincipalQueryFromInput({ staffId, principalId }) {
   const sid = s(staffId);
   const pid = s(principalId);
 
-  if (pid) return { principalId: pid };
-  if (sid) return { principalId: sid, staffId: sid };
+  // ✅ FIX: ทำให้ tolerant มากขึ้น
+  // - ถ้าส่ง principalId มา ให้ match ได้ทั้ง principalId / staffId (ของเก่าบาง record)
+  // - ถ้าส่ง staffId มา ให้ match ได้ทั้ง principalId/staffId
+  if (pid && sid) {
+    return { $or: [{ principalId: pid }, { staffId: sid }, { principalId: sid }] };
+  }
+  if (pid) {
+    return { $or: [{ principalId: pid }, { staffId: pid }] };
+  }
+  if (sid) {
+    return { $or: [{ principalId: sid }, { staffId: sid }] };
+  }
 
   return null;
 }
@@ -98,11 +108,12 @@ function computeMinutesFromStartEnd(startHHmm, endHHmm) {
 // ===================== SUMMARY HELPERS =====================
 
 async function sumApprovedMinutesForMonth({ clinicId, principalId, monthKey }) {
+  const pid = s(principalId);
   const rows = await Overtime.find({
     clinicId,
-    principalId,
     monthKey,
     status: "approved",
+    ...(pid ? { $or: [{ principalId: pid }, { staffId: pid }] } : {}),
   })
     .select({ minutes: 1 })
     .lean();
@@ -111,11 +122,12 @@ async function sumApprovedMinutesForMonth({ clinicId, principalId, monthKey }) {
 }
 
 async function sumApprovedMinutesForDay({ clinicId, principalId, workDate }) {
+  const pid = s(principalId);
   const rows = await Overtime.find({
     clinicId,
-    principalId,
     workDate,
     status: "approved",
+    ...(pid ? { $or: [{ principalId: pid }, { staffId: pid }] } : {}),
   })
     .select({ minutes: 1 })
     .lean();
@@ -505,20 +517,33 @@ async function bulkApproveMonth(req, res) {
     if (!monthKey)
       return res.status(400).json({ ok: false, message: "month required (yyyy-MM)" });
 
-    const staffId = s(req.body?.staffId || req.body?.employeeId || req.query?.staffId || req.query?.employeeId);
+    const staffId = s(
+      req.body?.staffId ||
+        req.body?.employeeId ||
+        req.query?.staffId ||
+        req.query?.employeeId
+    );
     const principalId = s(req.body?.principalId || req.query?.principalId) || staffId;
 
     if (!principalId)
       return res.status(400).json({ ok: false, message: "staffId/principalId required" });
 
+    // ✅ FIX: match ได้ทั้ง principalId และ staffId (กัน record เก่าที่เก็บไม่ตรง)
+    const principalMatch = buildPrincipalQueryFromInput({
+      staffId: staffId || principalId,
+      principalId,
+    });
+
+    if (!principalMatch)
+      return res.status(400).json({ ok: false, message: "staffId/principalId required" });
+
     const q = {
       clinicId,
-      principalId,
       monthKey,
       status: "pending",
+      ...principalMatch,
     };
 
-    // อย่าไปแตะ locked (แต่ pending ไม่ใช่ locked อยู่แล้ว)
     const r = await Overtime.updateMany(q, {
       $set: { status: "approved", approvedAt: new Date() },
     });
@@ -547,17 +572,31 @@ async function bulkApproveDay(req, res) {
     if (!isYmd(workDate))
       return res.status(400).json({ ok: false, message: "workDate required (yyyy-MM-dd)" });
 
-    const staffId = s(req.body?.staffId || req.body?.employeeId || req.query?.staffId || req.query?.employeeId);
+    const staffId = s(
+      req.body?.staffId ||
+        req.body?.employeeId ||
+        req.query?.staffId ||
+        req.query?.employeeId
+    );
     const principalId = s(req.body?.principalId || req.query?.principalId) || staffId;
 
     if (!principalId)
       return res.status(400).json({ ok: false, message: "staffId/principalId required" });
 
+    // ✅ FIX: match ได้ทั้ง principalId และ staffId
+    const principalMatch = buildPrincipalQueryFromInput({
+      staffId: staffId || principalId,
+      principalId,
+    });
+
+    if (!principalMatch)
+      return res.status(400).json({ ok: false, message: "staffId/principalId required" });
+
     const q = {
       clinicId,
-      principalId,
       workDate,
       status: "pending",
+      ...principalMatch,
     };
 
     const r = await Overtime.updateMany(q, {
@@ -601,9 +640,7 @@ async function removeOne(req, res) {
 
     const src = s(ot.source);
     if (!["manual", "manual_user"].includes(src))
-      return res
-        .status(409)
-        .json({ ok: false, message: "Cannot delete auto OT" });
+      return res.status(409).json({ ok: false, message: "Cannot delete auto OT" });
 
     await Overtime.deleteOne({ _id: ot._id });
 
