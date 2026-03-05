@@ -1,14 +1,15 @@
 // payroll_service/controllers/payrollCloseController.js
 //
-// ✅ FULL FILE — Payroll Close Controller (OT Approved included + TAX userId fix)
+// ✅ FULL FILE — Payroll Close Controller (OT Approved included + TAX userId fix + staff_service lookup)
 // - ✅ employeeId in this system = staffId (ชัด)
 // - ✅ Pull approved OT summary by (clinicId + monthKey + staffId)
 // - ✅ If client sends baseHourly (optional) and otPay=0 => compute otPay from approvedWeightedHours
 // - ✅ FIX: tax calc must use EMPLOYEE userId (not admin userId)
 //   - resolve employee userId priority:
 //     1) req.body.employeeUserId (recommended for admin UI)
-//     2) find from Overtime records (staffId+monthKey, userId not empty)
-//     3) fallback to admin userId (last resort) + return warning
+//     2) fetch from staff_service by staffId (BEST)
+//     3) find from Overtime records (staffId+monthKey, userId not empty)
+//     4) fallback to admin userId (last resort) + return warning
 // - ✅ SECURITY: staff/employee ดูได้เฉพาะของตัวเอง, admin ดูได้ทั้งคลินิก
 // - ✅ SECURITY: ทุก query ผูก clinicId จาก token กันข้อมูลข้ามคลินิก
 // - ✅ ROBUST: รองรับทั้ง req.user และ req.userCtx (ตาม server.js ของท่าน)
@@ -18,6 +19,9 @@ const axios = require("axios");
 const PayrollClose = require("../models/PayrollClose");
 const TaxYTD = require("../models/TaxYTD");
 const Overtime = require("../models/Overtime");
+
+// ✅ NEW: pull employee userId from staff_service
+const { getEmployeeByStaffId } = require("../utils/staffClient");
 
 // ================= helpers =================
 function toNumber(v) {
@@ -76,7 +80,9 @@ function pickAuth(req) {
 
   const role = safeStr(u.role || u.activeRole || uc.role || uc.activeRole);
   const clinicId = safeStr(u.clinicId || uc.clinicId);
-  const userId = safeStr(u.userId || u.id || u._id || uc.userId || uc.id || uc._id);
+  const userId = safeStr(
+    u.userId || u.id || u._id || uc.userId || uc.id || uc._id
+  );
 
   // employeeId ในระบบนี้ = staffId
   const staffId = safeStr(u.staffId || u.employeeId || uc.staffId || uc.employeeId);
@@ -142,6 +148,7 @@ async function getApprovedOtSummaryForMonth({ clinicId, monthKey, employeeId }) 
       source: 1,
       note: 1,
       userId: 1,
+      createdAt: 1,
     })
     .lean();
 
@@ -170,20 +177,33 @@ async function getApprovedOtSummaryForMonth({ clinicId, monthKey, employeeId }) 
 // ✅ ภาษีต้องผูก userId ของพนักงานคนนั้น
 // priority:
 // 1) req.body.employeeUserId
-// 2) lookup from Overtime (staffId+monthKey) where userId not empty
-// 3) fallback to admin userId (last resort)
+// 2) staff_service by staffId (BEST)
+// 3) lookup from Overtime (staffId+monthKey) where userId not empty
+// 4) fallback to admin userId (last resort)
 async function resolveEmployeeUserId({
   clinicId,
   monthKey,
   staffId,
   bodyEmployeeUserId,
   adminUserId,
+  token,
 }) {
   const fromBody = safeStr(bodyEmployeeUserId);
   if (fromBody) {
     return { employeeUserId: fromBody, source: "body" };
   }
 
+  // ✅ BEST: ask staff_service by staffId (Employee _id)
+  try {
+    const emp = await getEmployeeByStaffId(staffId, token);
+    const u = safeStr(emp?.userId);
+    if (u) return { employeeUserId: u, source: "staff_service" };
+  } catch (e) {
+    // ไม่ล้ม flow — แค่ fallback ไปทางอื่น
+    console.log("⚠️ staff_service lookup failed:", e.message);
+  }
+
+  // fallback: infer from OT records (if userId was stored)
   const row = await Overtime.findOne({
     clinicId: safeStr(clinicId),
     monthKey: safeStr(monthKey),
@@ -287,7 +307,7 @@ async function closeMonth(req, res) {
     }
 
     // ✅ ผูก clinicId จาก token เพื่อกันคนส่ง clinicId ปลอม
-    const { clinicId: clinicIdFromToken, userId: adminUserId } = pickAuth(req);
+    const { clinicId: clinicIdFromToken, userId: adminUserId, role } = pickAuth(req);
 
     if (!clinicIdFromToken)
       return res.status(401).json({ message: "Missing clinicId in token" });
@@ -298,6 +318,11 @@ async function closeMonth(req, res) {
 
     if (!adminUserId)
       return res.status(401).json({ message: "Missing userId in token" });
+
+    // ✅ only admin can close month
+    if (role !== "admin") {
+      return res.status(403).json({ message: "Forbidden (admin only)" });
+    }
 
     const existed = await PayrollClose.findOne({
       clinicId: clinicIdFromToken,
@@ -356,6 +381,7 @@ async function closeMonth(req, res) {
       staffId: safeStr(employeeId),
       bodyEmployeeUserId: employeeUserIdFromBody,
       adminUserId,
+      token: req.headers.authorization, // ✅ pass through bearer token
     });
 
     const taxCalc = await calcWithheldByYTDFromAuth({
@@ -407,7 +433,7 @@ async function closeMonth(req, res) {
 
     const warning =
       resolved.source === "admin_fallback"
-        ? "employeeUserId not found (body/overtime). Tax calc fell back to admin userId. Please send employeeUserId from client for accuracy."
+        ? "employeeUserId not found (body/staff_service/overtime). Tax calc fell back to admin userId. Please send employeeUserId from client for accuracy."
         : null;
 
     return res.json({
