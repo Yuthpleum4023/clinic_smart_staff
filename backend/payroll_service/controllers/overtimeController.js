@@ -59,7 +59,7 @@ function buildPrincipalQueryFromInput({ staffId, principalId }) {
   const sid = s(staffId);
   const pid = s(principalId);
 
-  // ✅ FIX: ทำให้ tolerant มากขึ้น
+  // ✅ FIX: tolerant มากขึ้น
   // - ถ้าส่ง principalId มา ให้ match ได้ทั้ง principalId / staffId (ของเก่าบาง record)
   // - ถ้าส่ง staffId มา ให้ match ได้ทั้ง principalId/staffId
   if (pid && sid) {
@@ -136,7 +136,12 @@ async function sumApprovedMinutesForDay({ clinicId, principalId, workDate }) {
 }
 
 // ======================================================
-// ✅ LIST MY (employee/helper)
+// ✅ LIST MY (employee/helper/staff/admin)
+// PATCH ✅: admin เข้าได้ (แก้ 403 ที่ log ท่านเจอ)
+// - employee/helper/staff: เหมือนเดิม (ดูของตัวเอง)
+// - admin:
+//    - ถ้าส่ง ?staffId=... หรือ ?principalId=... => ดูของคนนั้นได้ (ในคลินิกเดียวกัน)
+//    - ถ้าไม่ส่งอะไร => จะดูตาม principalId ของ admin เอง (ส่วนใหญ่จะว่าง) แต่ไม่ 403 แล้ว
 // ======================================================
 async function listMy(req, res) {
   try {
@@ -149,7 +154,8 @@ async function listMy(req, res) {
     if (!principalId)
       return res.status(401).json({ ok: false, message: "Missing principalId" });
 
-    const allowed = ["employee", "helper", "staff"];
+    // ✅ PATCH: เพิ่ม admin เข้า allowed เพื่อไม่ให้ 403
+    const allowed = ["employee", "helper", "staff", "admin"];
     if (role && !allowed.includes(role))
       return res.status(403).json({ ok: false, message: "Forbidden" });
 
@@ -159,8 +165,42 @@ async function listMy(req, res) {
 
     const status = s(req.query?.status);
 
-    const q = { clinicId, principalId, monthKey };
+    // ✅ PATCH: admin สามารถระบุเป้าหมายผ่าน query ได้
+    // - staffId / employeeId / principalId
+    const targetStaffId =
+      s(req.query?.staffId) ||
+      s(req.query?.employeeId) ||
+      s(req.body?.staffId) ||
+      s(req.body?.employeeId);
+
+    const targetPrincipalId = s(req.query?.principalId) || s(req.body?.principalId);
+
+    let q = { clinicId, monthKey };
     if (status) q.status = status;
+
+    // ถ้า admin ส่ง target -> ใช้ tolerant principal match
+    if (role === "admin" && (targetStaffId || targetPrincipalId)) {
+      const pQuery = buildPrincipalQueryFromInput({
+        staffId: targetStaffId,
+        principalId: targetPrincipalId,
+      });
+
+      if (!pQuery) {
+        return res.status(400).json({
+          ok: false,
+          message: "staffId/principalId required",
+        });
+      }
+      q = { ...q, ...pQuery };
+    } else {
+      // เดิม: self-view ใช้ principalId ตรง ๆ
+      // (สำหรับ record เก่าที่อาจเก็บ staffId แทน principalId บางครั้ง -> tolerant ให้ด้วย)
+      const selfPid = s(principalId);
+      q = {
+        ...q,
+        $or: [{ principalId: selfPid }, { staffId: selfPid }],
+      };
+    }
 
     const items = await Overtime.find(q)
       .sort({ workDate: 1, createdAt: 1 })
@@ -175,6 +215,11 @@ async function listMy(req, res) {
       ok: true,
       month: monthKey,
       principal: { principalId, principalType, staffId, userId },
+      // ✅ เพิ่ม hint ให้ admin เวลาใช้ endpoint นี้
+      hint:
+        role === "admin"
+          ? "Admin can pass ?staffId=... or ?principalId=... to view specific staff OT."
+          : undefined,
       summary: {
         pendingMinutes: sum("pending"),
         approvedMinutes: sum("approved"),
@@ -189,9 +234,9 @@ async function listMy(req, res) {
 }
 
 // ======================================================
-// ✅ LIST FOR STAFF (admin view)  <<< สำคัญ: กันพัง Render
+// ✅ LIST FOR STAFF (admin view)
 // - รองรับ: /overtime/staff/:staffId?month=yyyy-MM&status=...
-// - หรือส่ง staffId/principalId ผ่าน query
+// - หรือส่ง staffId/principalId ผ่าน query/body
 // ======================================================
 async function listForStaff(req, res) {
   try {
@@ -242,7 +287,7 @@ async function listForStaff(req, res) {
 }
 
 // ======================================================
-// ✅ STANDARD USER REQUEST (PENDING) - employee/helper
+// ✅ STANDARD USER REQUEST (PENDING) - employee/helper/staff
 // ======================================================
 async function requestOt(req, res) {
   try {
