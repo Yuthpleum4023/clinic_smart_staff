@@ -3,6 +3,7 @@
 // PURPOSE: Employee CRUD (Staff service)
 // + ✅ Admin dropdown list (scoped by clinicId if schema supports)
 // + ✅ Safe getters: by-user / by-staff
+// + ✅ HARD FIX: always return staffId = String(_id) in employee payload
 // ==================================================
 
 const mongoose = require("mongoose");
@@ -18,6 +19,18 @@ function isObjectId(v) {
 
 function isAdmin(req) {
   return s(req.user?.role) === "admin";
+}
+
+/**
+ * ✅ Attach staffId to payload (Flutter expects this)
+ * staffId in system = Employee._id (string)
+ */
+function withStaffId(emp) {
+  if (!emp) return emp;
+  // emp could be mongoose doc or lean object
+  const obj = typeof emp.toObject === "function" ? emp.toObject() : emp;
+  const id = s(obj._id);
+  return { ...obj, staffId: id || s(obj.staffId) };
 }
 
 /**
@@ -49,7 +62,7 @@ exports.createEmployee = async (req, res) => {
     }
 
     const emp = await Employee.create(req.body);
-    return res.status(201).json({ ok: true, employee: emp });
+    return res.status(201).json({ ok: true, employee: withStaffId(emp) });
   } catch (err) {
     return res.status(400).json({ ok: false, error: err.message });
   }
@@ -87,7 +100,7 @@ exports.getEmployeeById = async (req, res) => {
       }
     }
 
-    return res.json({ ok: true, employee: emp });
+    return res.json({ ok: true, employee: withStaffId(emp) });
   } catch (err) {
     return res.status(500).json({ ok: false, error: err.message });
   }
@@ -100,13 +113,15 @@ exports.listEmployees = async (req, res) => {
     const q = { active: true, ...clinicScopeQuery(req) };
 
     if (!hasClinicIdField()) {
-      console.log("⚠️ Employee schema has NO clinicId -> listEmployees is NOT clinic-scoped (MVP only)");
+      console.log(
+        "⚠️ Employee schema has NO clinicId -> listEmployees is NOT clinic-scoped (MVP only)"
+      );
     } else if (!s(req.user?.clinicId)) {
       return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
     }
 
     const list = await Employee.find(q).sort({ createdAt: -1 }).lean();
-    return res.json({ ok: true, items: list });
+    return res.json({ ok: true, items: list.map(withStaffId) });
   } catch (err) {
     return res.status(500).json({ ok: false, error: err.message });
   }
@@ -183,7 +198,8 @@ exports.getEmployeeByUserId = async (req, res) => {
     const emp = await Employee.findOne(q).lean();
     if (!emp) return res.status(404).json({ ok: false, message: "Employee not found" });
 
-    return res.json({ ok: true, employee: emp });
+    // ✅ HARD FIX: attach staffId for Flutter / payroll_service
+    return res.json({ ok: true, employee: withStaffId(emp) });
   } catch (err) {
     return res.status(500).json({ ok: false, error: err.message });
   }
@@ -219,7 +235,7 @@ exports.getEmployeeByStaffId = async (req, res) => {
       }
     }
 
-    return res.json({ ok: true, employee: emp });
+    return res.json({ ok: true, employee: withStaffId(emp) });
   } catch (err) {
     return res.status(500).json({ ok: false, error: err.message });
   }
@@ -249,7 +265,7 @@ exports.updateEmployee = async (req, res) => {
       }
     }
 
-    return res.json({ ok: true, employee: emp });
+    return res.json({ ok: true, employee: withStaffId(emp) });
   } catch (err) {
     return res.status(400).json({ ok: false, error: err.message });
   }
@@ -275,7 +291,7 @@ exports.deactivateEmployee = async (req, res) => {
       }
     }
 
-    return res.json({ ok: true, employee: emp });
+    return res.json({ ok: true, employee: withStaffId(emp) });
   } catch (err) {
     return res.status(500).json({ ok: false, error: err.message });
   }
