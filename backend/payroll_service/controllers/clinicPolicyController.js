@@ -157,6 +157,179 @@ function defaultPolicy(clinicId, updatedByUserId = "") {
   };
 }
 
+function mergeFeatures(currentFeatures = {}, incomingFeatures = {}) {
+  return sanitizeFeatures(incomingFeatures, {
+    manualAttendance: true,
+    fingerprintAttendance: true,
+    autoOtCalculation: true,
+    otApprovalWorkflow: true,
+    attendanceApproval: true,
+    payrollLock: true,
+    policyHumanReadable: true,
+    ...(currentFeatures || {}),
+  });
+}
+
+function normalizePolicyShape(raw, clinicId, updatedByUserId = "") {
+  const defaults = defaultPolicy(clinicId, updatedByUserId);
+  const src = raw && typeof raw === "object" ? raw : {};
+
+  return {
+    ...defaults,
+    ...src,
+
+    clinicId: normStr(src.clinicId || clinicId),
+    timezone: normStr(src.timezone || defaults.timezone) || "Asia/Bangkok",
+
+    requireBiometric:
+      src.requireBiometric === undefined
+        ? defaults.requireBiometric
+        : !!src.requireBiometric,
+
+    requireLocation:
+      src.requireLocation === undefined
+        ? defaults.requireLocation
+        : !!src.requireLocation,
+
+    geoRadiusMeters: toNum(src.geoRadiusMeters, defaults.geoRadiusMeters),
+    graceLateMinutes: toNum(src.graceLateMinutes, defaults.graceLateMinutes),
+
+    otRule: normalizeOtRule(src.otRule || defaults.otRule),
+    regularHoursPerDay: toNum(
+      src.regularHoursPerDay,
+      defaults.regularHoursPerDay
+    ),
+
+    otClockTime: normStr(src.otClockTime || defaults.otClockTime) || "18:00",
+
+    fullTimeOtClockTime:
+      normStr(
+        src.fullTimeOtClockTime ||
+          src.otClockTime ||
+          defaults.fullTimeOtClockTime
+      ) || "18:00",
+
+    partTimeOtClockTime:
+      normStr(
+        src.partTimeOtClockTime ||
+          src.otClockTime ||
+          defaults.partTimeOtClockTime
+      ) || "18:00",
+
+    otWindowStart:
+      normStr(src.otWindowStart || defaults.otWindowStart) || "18:00",
+
+    otWindowEnd:
+      normStr(src.otWindowEnd || defaults.otWindowEnd) || "21:00",
+
+    otStartAfterMinutes: toNum(
+      src.otStartAfterMinutes,
+      defaults.otStartAfterMinutes
+    ),
+
+    otRounding: normalizeOtRounding(src.otRounding || defaults.otRounding),
+    otMultiplier: toNum(src.otMultiplier, defaults.otMultiplier),
+    holidayMultiplier: toNum(src.holidayMultiplier, defaults.holidayMultiplier),
+
+    weekendAllDayOT:
+      src.weekendAllDayOT === undefined
+        ? defaults.weekendAllDayOT
+        : !!src.weekendAllDayOT,
+
+    employeeOnlyOt:
+      src.employeeOnlyOt === undefined
+        ? defaults.employeeOnlyOt
+        : !!src.employeeOnlyOt,
+
+    requireOtApproval:
+      src.requireOtApproval === undefined
+        ? defaults.requireOtApproval
+        : !!src.requireOtApproval,
+
+    realTimeAttendanceOnly:
+      src.realTimeAttendanceOnly === undefined
+        ? defaults.realTimeAttendanceOnly
+        : !!src.realTimeAttendanceOnly,
+
+    manualAttendanceRequireApproval:
+      src.manualAttendanceRequireApproval === undefined
+        ? defaults.manualAttendanceRequireApproval
+        : !!src.manualAttendanceRequireApproval,
+
+    manualReasonRequired:
+      src.manualReasonRequired === undefined
+        ? defaults.manualReasonRequired
+        : !!src.manualReasonRequired,
+
+    lockAfterPayrollClose:
+      src.lockAfterPayrollClose === undefined
+        ? defaults.lockAfterPayrollClose
+        : !!src.lockAfterPayrollClose,
+
+    attendanceApprovalRoles: normalizeApprovalRoles(
+      src.attendanceApprovalRoles,
+      defaults.attendanceApprovalRoles
+    ),
+
+    otApprovalRoles: normalizeApprovalRoles(
+      src.otApprovalRoles,
+      defaults.otApprovalRoles
+    ),
+
+    features: sanitizeFeatures(src.features, defaults.features),
+
+    version: Math.max(1, toNum(src.version, defaults.version)),
+    updatedBy: normStr(src.updatedBy || updatedByUserId || ""),
+  };
+}
+
+function applyPolicyToDoc(doc, normalized, updatedByUserId = "") {
+  doc.clinicId = normStr(normalized.clinicId);
+  doc.timezone = normStr(normalized.timezone) || "Asia/Bangkok";
+
+  doc.requireBiometric = !!normalized.requireBiometric;
+  doc.requireLocation = !!normalized.requireLocation;
+  doc.geoRadiusMeters = Number(normalized.geoRadiusMeters);
+
+  doc.graceLateMinutes = Number(normalized.graceLateMinutes);
+
+  doc.otRule = normalizeOtRule(normalized.otRule);
+  doc.regularHoursPerDay = Number(normalized.regularHoursPerDay);
+
+  doc.otClockTime = normStr(normalized.otClockTime);
+  doc.fullTimeOtClockTime = normStr(normalized.fullTimeOtClockTime);
+  doc.partTimeOtClockTime = normStr(normalized.partTimeOtClockTime);
+
+  doc.otWindowStart = normStr(normalized.otWindowStart);
+  doc.otWindowEnd = normStr(normalized.otWindowEnd);
+
+  doc.otStartAfterMinutes = Number(normalized.otStartAfterMinutes);
+
+  doc.otRounding = normalizeOtRounding(normalized.otRounding);
+  doc.otMultiplier = Number(normalized.otMultiplier);
+  doc.holidayMultiplier = Number(normalized.holidayMultiplier);
+  doc.weekendAllDayOT = !!normalized.weekendAllDayOT;
+
+  doc.employeeOnlyOt = !!normalized.employeeOnlyOt;
+  doc.requireOtApproval = !!normalized.requireOtApproval;
+  doc.realTimeAttendanceOnly = !!normalized.realTimeAttendanceOnly;
+  doc.manualAttendanceRequireApproval = !!normalized.manualAttendanceRequireApproval;
+  doc.manualReasonRequired = !!normalized.manualReasonRequired;
+  doc.lockAfterPayrollClose = !!normalized.lockAfterPayrollClose;
+
+  doc.attendanceApprovalRoles = normalizeApprovalRoles(
+    normalized.attendanceApprovalRoles,
+    ["clinic_admin"]
+  );
+  doc.otApprovalRoles = normalizeApprovalRoles(
+    normalized.otApprovalRoles,
+    ["clinic_admin"]
+  );
+
+  doc.features = sanitizeFeatures(normalized.features, doc.features || {});
+  doc.updatedBy = normStr(updatedByUserId || normalized.updatedBy || "");
+}
+
 function validatePolicy(p) {
   const otRule = normalizeOtRule(p.otRule);
 
@@ -215,7 +388,6 @@ function validatePolicy(p) {
     }
   }
 
-  // ✅ NEW: validate OT window
   if (p.otWindowStart && !isHHmm(p.otWindowStart)) {
     return "otWindowStart must be HH:mm";
   }
@@ -256,55 +428,37 @@ function validatePolicy(p) {
   return null;
 }
 
-function mergeFeatures(currentFeatures = {}, incomingFeatures = {}) {
-  return sanitizeFeatures(incomingFeatures, {
-    manualAttendance: true,
-    fingerprintAttendance: true,
-    autoOtCalculation: true,
-    otApprovalWorkflow: true,
-    attendanceApproval: true,
-    payrollLock: true,
-    policyHumanReadable: true,
-    ...(currentFeatures || {}),
-  });
-}
-
 // GET /clinic-policy/me
 async function getMyClinicPolicy(req, res) {
   try {
     const clinicId = normStr(req.user?.clinicId);
+    const userId = normStr(req.user?.userId);
+
     if (!clinicId) {
       return res.status(401).json({ message: "Missing clinicId in token" });
     }
 
-    let policy = await ClinicPolicy.findOne({ clinicId }).lean();
+    let policyDoc = await ClinicPolicy.findOne({ clinicId });
 
-    if (!policy) {
-      const created = await ClinicPolicy.create(
-        defaultPolicy(clinicId, normStr(req.user?.userId))
-      );
-      policy = created.toObject();
+    if (!policyDoc) {
+      policyDoc = await ClinicPolicy.create(defaultPolicy(clinicId, userId));
+    } else {
+      const normalized = normalizePolicyShape(policyDoc.toObject(), clinicId, userId);
+      const err = validatePolicy(normalized);
+
+      if (!err) {
+        applyPolicyToDoc(policyDoc, normalized, userId);
+        await policyDoc.save();
+      }
     }
 
-    const defaults = defaultPolicy(clinicId, normStr(req.user?.userId));
+    const normalizedPolicy = normalizePolicyShape(
+      policyDoc.toObject(),
+      clinicId,
+      userId
+    );
 
-    policy = {
-      ...defaults,
-      ...policy,
-      otRule: normalizeOtRule(policy.otRule ?? defaults.otRule),
-      otRounding: normalizeOtRounding(policy.otRounding ?? defaults.otRounding),
-      features: mergeFeatures(defaults.features, policy.features || {}),
-      attendanceApprovalRoles: normalizeApprovalRoles(
-        policy.attendanceApprovalRoles,
-        ["clinic_admin"]
-      ),
-      otApprovalRoles: normalizeApprovalRoles(
-        policy.otApprovalRoles,
-        ["clinic_admin"]
-      ),
-    };
-
-    return res.json({ ok: true, policy });
+    return res.json({ ok: true, policy: normalizedPolicy });
   } catch (e) {
     return res.status(500).json({
       message: "get policy failed",
@@ -317,177 +471,50 @@ async function getMyClinicPolicy(req, res) {
 async function updateMyClinicPolicy(req, res) {
   try {
     const clinicId = normStr(req.user?.clinicId);
+    const userId = normStr(req.user?.userId);
+
     if (!clinicId) {
       return res.status(401).json({ message: "Missing clinicId in token" });
     }
 
-    let policy = await ClinicPolicy.findOne({ clinicId });
-    if (!policy) {
-      policy = await ClinicPolicy.create(
-        defaultPolicy(clinicId, normStr(req.user?.userId))
-      );
+    let policyDoc = await ClinicPolicy.findOne({ clinicId });
+    if (!policyDoc) {
+      policyDoc = await ClinicPolicy.create(defaultPolicy(clinicId, userId));
     }
 
-    const defaults = defaultPolicy(clinicId, normStr(req.user?.userId));
+    const base = normalizePolicyShape(policyDoc.toObject(), clinicId, userId);
     const body = req.body || {};
 
-    const next = {
-      timezone: body.timezone ?? policy.timezone ?? defaults.timezone,
-
-      requireBiometric:
-        body.requireBiometric ?? policy.requireBiometric ?? defaults.requireBiometric,
-      requireLocation:
-        body.requireLocation ?? policy.requireLocation ?? defaults.requireLocation,
-      geoRadiusMeters:
-        body.geoRadiusMeters ?? policy.geoRadiusMeters ?? defaults.geoRadiusMeters,
-
-      graceLateMinutes:
-        body.graceLateMinutes ?? policy.graceLateMinutes ?? defaults.graceLateMinutes,
-
-      otRule: normalizeOtRule(body.otRule ?? policy.otRule ?? defaults.otRule),
-      regularHoursPerDay:
-        body.regularHoursPerDay ??
-        policy.regularHoursPerDay ??
-        defaults.regularHoursPerDay,
-
-      // legacy
-      otClockTime: body.otClockTime ?? policy.otClockTime ?? defaults.otClockTime,
-
-      // separated clock time
-      fullTimeOtClockTime:
-        body.fullTimeOtClockTime ??
-        policy.fullTimeOtClockTime ??
-        policy.otClockTime ??
-        defaults.fullTimeOtClockTime,
-
-      partTimeOtClockTime:
-        body.partTimeOtClockTime ??
-        policy.partTimeOtClockTime ??
-        policy.otClockTime ??
-        defaults.partTimeOtClockTime,
-
-      // ✅ NEW: OT window
-      otWindowStart:
-        body.otWindowStart ?? policy.otWindowStart ?? defaults.otWindowStart,
-      otWindowEnd:
-        body.otWindowEnd ?? policy.otWindowEnd ?? defaults.otWindowEnd,
-
-      otStartAfterMinutes:
-        body.otStartAfterMinutes ??
-        policy.otStartAfterMinutes ??
-        defaults.otStartAfterMinutes,
-
-      otRounding: normalizeOtRounding(
-        body.otRounding ?? policy.otRounding ?? defaults.otRounding
-      ),
-      otMultiplier: body.otMultiplier ?? policy.otMultiplier ?? defaults.otMultiplier,
-      holidayMultiplier:
-        body.holidayMultiplier ??
-        policy.holidayMultiplier ??
-        defaults.holidayMultiplier,
-      weekendAllDayOT:
-        body.weekendAllDayOT ?? policy.weekendAllDayOT ?? defaults.weekendAllDayOT,
-
-      // ✅ NEW: core policy
-      employeeOnlyOt:
-        body.employeeOnlyOt ?? policy.employeeOnlyOt ?? defaults.employeeOnlyOt,
-      requireOtApproval:
-        body.requireOtApproval ??
-        policy.requireOtApproval ??
-        defaults.requireOtApproval,
-      realTimeAttendanceOnly:
-        body.realTimeAttendanceOnly ??
-        policy.realTimeAttendanceOnly ??
-        defaults.realTimeAttendanceOnly,
-      manualAttendanceRequireApproval:
-        body.manualAttendanceRequireApproval ??
-        policy.manualAttendanceRequireApproval ??
-        defaults.manualAttendanceRequireApproval,
-      manualReasonRequired:
-        body.manualReasonRequired ??
-        policy.manualReasonRequired ??
-        defaults.manualReasonRequired,
-      lockAfterPayrollClose:
-        body.lockAfterPayrollClose ??
-        policy.lockAfterPayrollClose ??
-        defaults.lockAfterPayrollClose,
-
-      // ✅ NEW: approval roles
-      attendanceApprovalRoles: normalizeApprovalRoles(
-        body.attendanceApprovalRoles ||
-          policy.attendanceApprovalRoles ||
-          defaults.attendanceApprovalRoles,
-        ["clinic_admin"]
-      ),
-
-      otApprovalRoles: normalizeApprovalRoles(
-        body.otApprovalRoles ||
-          policy.otApprovalRoles ||
-          defaults.otApprovalRoles,
-        ["clinic_admin"]
-      ),
-
-      // ✅ NEW: feature flags
-      features: mergeFeatures(policy.features || defaults.features, body.features || {}),
-    };
+    const next = normalizePolicyShape(
+      {
+        ...base,
+        ...body,
+        features: sanitizeFeatures(body.features, base.features),
+        attendanceApprovalRoles:
+          body.attendanceApprovalRoles ?? base.attendanceApprovalRoles,
+        otApprovalRoles: body.otApprovalRoles ?? base.otApprovalRoles,
+      },
+      clinicId,
+      userId
+    );
 
     const err = validatePolicy(next);
     if (err) {
       return res.status(400).json({ message: err });
     }
 
-    policy.timezone = normStr(next.timezone) || "Asia/Bangkok";
+    applyPolicyToDoc(policyDoc, next, userId);
+    policyDoc.version = Number(policyDoc.version || 1) + 1;
 
-    policy.requireBiometric = !!next.requireBiometric;
-    policy.requireLocation = !!next.requireLocation;
-    policy.geoRadiusMeters = Number(next.geoRadiusMeters);
+    await policyDoc.save();
 
-    policy.graceLateMinutes = Number(next.graceLateMinutes);
-
-    policy.otRule = normalizeOtRule(next.otRule);
-    policy.regularHoursPerDay = Number(next.regularHoursPerDay);
-
-    policy.otClockTime = normStr(next.otClockTime);
-    policy.fullTimeOtClockTime = normStr(next.fullTimeOtClockTime);
-    policy.partTimeOtClockTime = normStr(next.partTimeOtClockTime);
-
-    policy.otWindowStart = normStr(next.otWindowStart);
-    policy.otWindowEnd = normStr(next.otWindowEnd);
-
-    policy.otStartAfterMinutes = Number(next.otStartAfterMinutes);
-
-    policy.otRounding = normalizeOtRounding(next.otRounding);
-    policy.otMultiplier = Number(next.otMultiplier);
-    policy.holidayMultiplier = Number(next.holidayMultiplier);
-    policy.weekendAllDayOT = !!next.weekendAllDayOT;
-
-    // ✅ NEW: core policy
-    policy.employeeOnlyOt = !!next.employeeOnlyOt;
-    policy.requireOtApproval = !!next.requireOtApproval;
-    policy.realTimeAttendanceOnly = !!next.realTimeAttendanceOnly;
-    policy.manualAttendanceRequireApproval = !!next.manualAttendanceRequireApproval;
-    policy.manualReasonRequired = !!next.manualReasonRequired;
-    policy.lockAfterPayrollClose = !!next.lockAfterPayrollClose;
-
-    // ✅ NEW: approval roles
-    policy.attendanceApprovalRoles = normalizeApprovalRoles(
-      next.attendanceApprovalRoles,
-      ["clinic_admin"]
-    );
-    policy.otApprovalRoles = normalizeApprovalRoles(
-      next.otApprovalRoles,
-      ["clinic_admin"]
+    const normalizedPolicy = normalizePolicyShape(
+      policyDoc.toObject(),
+      clinicId,
+      userId
     );
 
-    // ✅ NEW: features
-    policy.features = mergeFeatures(policy.features || {}, next.features || {});
-
-    policy.version = Number(policy.version || 1) + 1;
-    policy.updatedBy = normStr(req.user?.userId);
-
-    await policy.save();
-
-    return res.json({ ok: true, policy: policy.toObject() });
+    return res.json({ ok: true, policy: normalizedPolicy });
   } catch (e) {
     return res.status(500).json({
       message: "update policy failed",
