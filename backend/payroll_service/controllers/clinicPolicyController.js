@@ -14,6 +14,19 @@ function isHHmm(v) {
   return /^([01]\d|2[0-3]):([0-5]\d)$/.test(String(v || "").trim());
 }
 
+function normalizeStringArray(value, fallback = []) {
+  if (Array.isArray(value)) {
+    return value
+      .map((x) => normStr(x))
+      .filter(Boolean);
+  }
+  if (typeof value === "string") {
+    const one = normStr(value);
+    return one ? [one] : fallback;
+  }
+  return fallback;
+}
+
 function defaultPolicy(clinicId, updatedByUserId = "") {
   return {
     clinicId,
@@ -32,9 +45,13 @@ function defaultPolicy(clinicId, updatedByUserId = "") {
     // legacy fallback
     otClockTime: "18:00",
 
-    // ✅ NEW: separate clock time
+    // ✅ separated employee/helper clock time (legacy support)
     fullTimeOtClockTime: "18:00",
     partTimeOtClockTime: "18:00",
+
+    // ✅ NEW: OT window (ใช้กับ employee เท่านั้น)
+    otWindowStart: "18:00",
+    otWindowEnd: "21:00",
 
     otStartAfterMinutes: 0,
 
@@ -42,6 +59,29 @@ function defaultPolicy(clinicId, updatedByUserId = "") {
     otMultiplier: 1.5,
     holidayMultiplier: 2.0,
     weekendAllDayOT: false,
+
+    // ✅ NEW: core policy
+    employeeOnlyOt: true,
+    requireOtApproval: true,
+    realTimeAttendanceOnly: true,
+    manualAttendanceRequireApproval: true,
+    manualReasonRequired: true,
+    lockAfterPayrollClose: true,
+
+    // ✅ NEW: approval roles
+    attendanceApprovalRoles: ["clinic_admin"],
+    otApprovalRoles: ["clinic_admin"],
+
+    // ✅ NEW: feature flags
+    features: {
+      manualAttendance: true,
+      fingerprintAttendance: true,
+      autoOtCalculation: true,
+      otApprovalWorkflow: true,
+      attendanceApproval: true,
+      payrollLock: true,
+      policyHumanReadable: true,
+    },
 
     version: 1,
     updatedBy: updatedByUserId || "",
@@ -80,14 +120,12 @@ function validatePolicy(p) {
   const holM = toNum(p.holidayMultiplier, NaN);
   if (!Number.isFinite(holM) || holM <= 0) return "holidayMultiplier must be > 0";
 
-  // rule-specific
   if (otRule === "AFTER_DAILY_HOURS") {
     const h = toNum(p.regularHoursPerDay, NaN);
     if (!Number.isFinite(h) || h <= 0 || h > 24) return "regularHoursPerDay must be 1..24";
   }
 
   if (otRule === "AFTER_CLOCK_TIME") {
-    // validate new separated clocks
     if (p.fullTimeOtClockTime && !isHHmm(p.fullTimeOtClockTime)) {
       return "fullTimeOtClockTime must be HH:mm";
     }
@@ -96,13 +134,72 @@ function validatePolicy(p) {
       return "partTimeOtClockTime must be HH:mm";
     }
 
-    // fallback legacy (ถ้ายังไม่มี full/part)
     if (!p.fullTimeOtClockTime && !p.partTimeOtClockTime) {
       if (!isHHmm(p.otClockTime)) return "otClockTime must be HH:mm";
     }
   }
 
+  // ✅ NEW: validate OT window
+  if (p.otWindowStart && !isHHmm(p.otWindowStart)) {
+    return "otWindowStart must be HH:mm";
+  }
+
+  if (p.otWindowEnd && !isHHmm(p.otWindowEnd)) {
+    return "otWindowEnd must be HH:mm";
+  }
+
+  const attendanceRoles = normalizeStringArray(p.attendanceApprovalRoles, []);
+  const otRoles = normalizeStringArray(p.otApprovalRoles, []);
+
+  if (!attendanceRoles.length) {
+    return "attendanceApprovalRoles must contain at least 1 role";
+  }
+
+  if (!otRoles.length) {
+    return "otApprovalRoles must contain at least 1 role";
+  }
+
+  const featureKeys = [
+    "manualAttendance",
+    "fingerprintAttendance",
+    "autoOtCalculation",
+    "otApprovalWorkflow",
+    "attendanceApproval",
+    "payrollLock",
+    "policyHumanReadable",
+  ];
+
+  if (p.features && typeof p.features !== "object") {
+    return "features must be an object";
+  }
+
+  if (p.features && typeof p.features === "object") {
+    for (const key of Object.keys(p.features)) {
+      if (!featureKeys.includes(key)) {
+        return `Invalid feature key: ${key}`;
+      }
+    }
+  }
+
   return null;
+}
+
+function mergeFeatures(currentFeatures = {}, incomingFeatures = {}) {
+  const base = {
+    manualAttendance: true,
+    fingerprintAttendance: true,
+    autoOtCalculation: true,
+    otApprovalWorkflow: true,
+    attendanceApproval: true,
+    payrollLock: true,
+    policyHumanReadable: true,
+  };
+
+  return {
+    ...base,
+    ...(currentFeatures || {}),
+    ...(incomingFeatures || {}),
+  };
 }
 
 // GET /clinic-policy/me
@@ -118,6 +215,21 @@ async function getMyClinicPolicy(req, res) {
       );
       policy = created.toObject();
     }
+
+    // ✅ ensure defaults exist even for old records
+    policy = {
+      ...defaultPolicy(clinicId, normStr(req.user?.userId)),
+      ...policy,
+      features: mergeFeatures(
+        defaultPolicy(clinicId, normStr(req.user?.userId)).features,
+        policy.features || {}
+      ),
+      attendanceApprovalRoles: normalizeStringArray(
+        policy.attendanceApprovalRoles,
+        ["clinic_admin"]
+      ),
+      otApprovalRoles: normalizeStringArray(policy.otApprovalRoles, ["clinic_admin"]),
+    };
 
     return res.json({ ok: true, policy });
   } catch (e) {
@@ -155,11 +267,15 @@ async function updateMyClinicPolicy(req, res) {
       // legacy
       otClockTime: body.otClockTime ?? policy.otClockTime,
 
-      // ✅ NEW
+      // separated clock time
       fullTimeOtClockTime:
         body.fullTimeOtClockTime ?? policy.fullTimeOtClockTime ?? policy.otClockTime,
       partTimeOtClockTime:
         body.partTimeOtClockTime ?? policy.partTimeOtClockTime ?? policy.otClockTime,
+
+      // ✅ NEW: OT window
+      otWindowStart: body.otWindowStart ?? policy.otWindowStart ?? "18:00",
+      otWindowEnd: body.otWindowEnd ?? policy.otWindowEnd ?? "21:00",
 
       otStartAfterMinutes: body.otStartAfterMinutes ?? policy.otStartAfterMinutes,
 
@@ -167,6 +283,33 @@ async function updateMyClinicPolicy(req, res) {
       otMultiplier: body.otMultiplier ?? policy.otMultiplier,
       holidayMultiplier: body.holidayMultiplier ?? policy.holidayMultiplier,
       weekendAllDayOT: body.weekendAllDayOT ?? policy.weekendAllDayOT,
+
+      // ✅ NEW: core policy
+      employeeOnlyOt: body.employeeOnlyOt ?? policy.employeeOnlyOt ?? true,
+      requireOtApproval: body.requireOtApproval ?? policy.requireOtApproval ?? true,
+      realTimeAttendanceOnly:
+        body.realTimeAttendanceOnly ?? policy.realTimeAttendanceOnly ?? true,
+      manualAttendanceRequireApproval:
+        body.manualAttendanceRequireApproval ??
+        policy.manualAttendanceRequireApproval ??
+        true,
+      manualReasonRequired:
+        body.manualReasonRequired ?? policy.manualReasonRequired ?? true,
+      lockAfterPayrollClose:
+        body.lockAfterPayrollClose ?? policy.lockAfterPayrollClose ?? true,
+
+      // ✅ NEW: approval roles
+      attendanceApprovalRoles: normalizeStringArray(
+        body.attendanceApprovalRoles ?? policy.attendanceApprovalRoles,
+        ["clinic_admin"]
+      ),
+      otApprovalRoles: normalizeStringArray(
+        body.otApprovalRoles ?? policy.otApprovalRoles,
+        ["clinic_admin"]
+      ),
+
+      // ✅ NEW: feature flags
+      features: mergeFeatures(policy.features || {}, body.features || {}),
     };
 
     const err = validatePolicy(next);
@@ -187,12 +330,33 @@ async function updateMyClinicPolicy(req, res) {
     policy.fullTimeOtClockTime = normStr(next.fullTimeOtClockTime);
     policy.partTimeOtClockTime = normStr(next.partTimeOtClockTime);
 
+    policy.otWindowStart = normStr(next.otWindowStart);
+    policy.otWindowEnd = normStr(next.otWindowEnd);
+
     policy.otStartAfterMinutes = Number(next.otStartAfterMinutes);
 
     policy.otRounding = normStr(next.otRounding);
     policy.otMultiplier = Number(next.otMultiplier);
     policy.holidayMultiplier = Number(next.holidayMultiplier);
     policy.weekendAllDayOT = !!next.weekendAllDayOT;
+
+    // ✅ NEW: core policy
+    policy.employeeOnlyOt = !!next.employeeOnlyOt;
+    policy.requireOtApproval = !!next.requireOtApproval;
+    policy.realTimeAttendanceOnly = !!next.realTimeAttendanceOnly;
+    policy.manualAttendanceRequireApproval = !!next.manualAttendanceRequireApproval;
+    policy.manualReasonRequired = !!next.manualReasonRequired;
+    policy.lockAfterPayrollClose = !!next.lockAfterPayrollClose;
+
+    // ✅ NEW: approval roles
+    policy.attendanceApprovalRoles = normalizeStringArray(
+      next.attendanceApprovalRoles,
+      ["clinic_admin"]
+    );
+    policy.otApprovalRoles = normalizeStringArray(next.otApprovalRoles, ["clinic_admin"]);
+
+    // ✅ NEW: features
+    policy.features = mergeFeatures(policy.features || {}, next.features || {});
 
     policy.version = Number(policy.version || 1) + 1;
     policy.updatedBy = normStr(req.user?.userId);

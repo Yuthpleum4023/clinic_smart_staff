@@ -35,12 +35,10 @@ function monthKeyFromYmd(workDate) {
 
 // Thailand fixed offset; shift date/start/end are local
 function makeLocalDateTime(dateYmd, timeHHmm) {
-  // returns Date in UTC based on +07:00 offset
   return new Date(`${dateYmd}T${timeHHmm}:00+07:00`);
 }
 
 function minutesDiff(a, b) {
-  // b - a in minutes
   return Math.floor((b.getTime() - a.getTime()) / 60000);
 }
 
@@ -70,6 +68,97 @@ function haversineMeters(lat1, lon1, lat2, lon2) {
     Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return R * c;
+}
+
+function normalizeStringArray(value, fallback = []) {
+  if (Array.isArray(value)) {
+    return value.map((x) => s(x)).filter(Boolean);
+  }
+  if (typeof value === "string") {
+    const one = s(value);
+    return one ? [one] : fallback;
+  }
+  return fallback;
+}
+
+function withFeatureDefaults(features) {
+  return {
+    manualAttendance: true,
+    fingerprintAttendance: true,
+    autoOtCalculation: true,
+    otApprovalWorkflow: true,
+    attendanceApproval: true,
+    payrollLock: true,
+    policyHumanReadable: true,
+    ...(features || {}),
+  };
+}
+
+function buildHumanReadablePolicy(policy) {
+  const lines = [];
+
+  if (policy?.realTimeAttendanceOnly) {
+    lines.push("การลงเวลางานต้องเป็นแบบเรียลไทม์");
+  }
+
+  if (policy?.manualAttendanceRequireApproval) {
+    lines.push("หากลืมลงเวลา ต้องส่งคำขอแก้ไขเวลาและรอผู้ดูแลอนุมัติ");
+  }
+
+  if (policy?.manualReasonRequired) {
+    lines.push("การแก้ไขเวลาทำงานต้องระบุเหตุผล");
+  }
+
+  if (policy?.employeeOnlyOt) {
+    lines.push("ระบบ OT ใช้กับพนักงานประจำเท่านั้น");
+  }
+
+  if (isHHmm(policy?.otWindowStart) && isHHmm(policy?.otWindowEnd)) {
+    lines.push(`OT จะคิดเฉพาะช่วง ${policy.otWindowStart} - ${policy.otWindowEnd}`);
+    lines.push("เวลานอกช่วงดังกล่าวจะไม่ถูกนำมาคิดเป็น OT");
+  }
+
+  if (policy?.requireOtApproval) {
+    lines.push("OT ต้องได้รับการอนุมัติก่อนจึงจะถูกนำไปคิดเงิน");
+  }
+
+  if (policy?.lockAfterPayrollClose) {
+    lines.push("เมื่อปิดงวดเงินเดือนแล้ว จะไม่สามารถแก้ไขเวลาทำงานย้อนหลังได้");
+  }
+
+  return lines;
+}
+
+function buildPublicPolicy(policy) {
+  const features = withFeatureDefaults(policy?.features || {});
+  return {
+    otRule: s(policy?.otRule),
+    otRounding: s(policy?.otRounding),
+    otMultiplier: Number(policy?.otMultiplier || 1.5),
+    version: Number(policy?.version || 1),
+
+    fullTimeOtClockTime: s(policy?.fullTimeOtClockTime),
+    partTimeOtClockTime: s(policy?.partTimeOtClockTime),
+    otClockTime: s(policy?.otClockTime),
+
+    otWindowStart: s(policy?.otWindowStart),
+    otWindowEnd: s(policy?.otWindowEnd),
+
+    employeeOnlyOt: !!policy?.employeeOnlyOt,
+    requireOtApproval: !!policy?.requireOtApproval,
+    realTimeAttendanceOnly: !!policy?.realTimeAttendanceOnly,
+    manualAttendanceRequireApproval: !!policy?.manualAttendanceRequireApproval,
+    manualReasonRequired: !!policy?.manualReasonRequired,
+    lockAfterPayrollClose: !!policy?.lockAfterPayrollClose,
+
+    attendanceApprovalRoles: normalizeStringArray(policy?.attendanceApprovalRoles, [
+      "clinic_admin",
+    ]),
+    otApprovalRoles: normalizeStringArray(policy?.otApprovalRoles, ["clinic_admin"]),
+
+    features,
+    humanReadable: features.policyHumanReadable ? buildHumanReadablePolicy(policy) : [],
+  };
 }
 
 /**
@@ -111,11 +200,35 @@ async function getOrCreatePolicy(clinicId, userId) {
       fullTimeOtClockTime: "18:00",
       partTimeOtClockTime: "18:00",
 
+      otWindowStart: "18:00",
+      otWindowEnd: "21:00",
+
       otStartAfterMinutes: 0,
       otRounding: "15MIN",
       otMultiplier: 1.5,
       holidayMultiplier: 2.0,
       weekendAllDayOT: false,
+
+      employeeOnlyOt: true,
+      requireOtApproval: true,
+      realTimeAttendanceOnly: true,
+      manualAttendanceRequireApproval: true,
+      manualReasonRequired: true,
+      lockAfterPayrollClose: true,
+
+      attendanceApprovalRoles: ["clinic_admin"],
+      otApprovalRoles: ["clinic_admin"],
+
+      features: {
+        manualAttendance: true,
+        fingerprintAttendance: true,
+        autoOtCalculation: true,
+        otApprovalWorkflow: true,
+        attendanceApproval: true,
+        payrollLock: true,
+        policyHumanReadable: true,
+      },
+
       version: 1,
       updatedBy: s(userId),
     });
@@ -174,6 +287,16 @@ function computeWorkedMinutes(checkInAt, checkOutAt) {
   return clampMinutes(m);
 }
 
+function computeWindowOverlapMinutes(windowStartAt, windowEndAt, actualStartAt, actualEndAt) {
+  if (!windowStartAt || !windowEndAt || !actualStartAt || !actualEndAt) return 0;
+
+  const startAt = new Date(Math.max(windowStartAt.getTime(), actualStartAt.getTime()));
+  const endAt = new Date(Math.min(windowEndAt.getTime(), actualEndAt.getTime()));
+
+  if (endAt.getTime() <= startAt.getTime()) return 0;
+  return clampMinutes(minutesDiff(startAt, endAt));
+}
+
 function computeOtMinutes(policy, shift, checkInAt, checkOutAt) {
   if (!checkInAt || !checkOutAt) return 0;
 
@@ -201,6 +324,25 @@ function computeOtMinutes(policy, shift, checkInAt, checkOutAt) {
     const ymd = shift?.date && isYmd(shift.date) ? shift.date : null;
     const baseDate = ymd || null;
     if (!baseDate) return 0;
+
+    const hasWindow = isHHmm(policy.otWindowStart) && isHHmm(policy.otWindowEnd);
+
+    if (hasWindow) {
+      let windowStartAt = makeLocalDateTime(baseDate, policy.otWindowStart);
+      let windowEndAt = makeLocalDateTime(baseDate, policy.otWindowEnd);
+
+      if (windowEndAt.getTime() <= windowStartAt.getTime()) {
+        windowEndAt = new Date(windowEndAt.getTime() + 24 * 60 * 60000);
+      }
+
+      const raw = computeWindowOverlapMinutes(
+        windowStartAt,
+        windowEndAt,
+        checkInAt,
+        checkOutAt
+      );
+      return roundOtMinutes(raw, policy.otRounding);
+    }
 
     const clock = isHHmm(policy.otClockTime) ? policy.otClockTime : "18:00";
     const clockAt = makeLocalDateTime(baseDate, clock);
@@ -247,6 +389,46 @@ function pickOtClockByType(policy, empTypeRaw) {
   return legacy;
 }
 
+function resolveAttendanceMethod(reqMethod, biometricVerified) {
+  const raw = s(reqMethod).toLowerCase();
+  if (raw === "manual") return "manual";
+  if (raw === "biometric") return "biometric";
+  return biometricVerified ? "biometric" : "manual";
+}
+
+function ensureAttendanceMethodAllowed(policy, method) {
+  const features = withFeatureDefaults(policy?.features || {});
+
+  if (method === "biometric" && !features.fingerprintAttendance) {
+    return "Fingerprint attendance is not enabled";
+  }
+
+  if (method === "manual" && !features.manualAttendance) {
+    return "Manual attendance is not enabled";
+  }
+
+  if (policy?.realTimeAttendanceOnly && method !== "biometric") {
+    return "Real-time attendance only";
+  }
+
+  return "";
+}
+
+function requireManualReasonIfNeeded(policy, method, note) {
+  if (method !== "manual") return "";
+  if (policy?.manualReasonRequired && !s(note)) {
+    return "Manual attendance reason is required";
+  }
+  return "";
+}
+
+function isEmployeeEligibleForOt(role, empType, policy) {
+  if (!policy?.employeeOnlyOt) return true;
+  if (s(role) === "helper") return false;
+  if (normalizeEmploymentType(empType) === "partTime") return false;
+  return true;
+}
+
 // ======================================================
 // POST /attendance/check-in
 // body: { workDate, shiftId?, method?, biometricVerified?, deviceId?, lat?, lng?, note? }
@@ -272,9 +454,19 @@ async function checkIn(req, res) {
 
     const policy = await getOrCreatePolicy(clinicId, userId || principalId);
 
-    const method = s(req.body?.method) || "biometric";
     const biometricVerified = !!req.body?.biometricVerified;
-    if (policy.requireBiometric && !biometricVerified) {
+    const method = resolveAttendanceMethod(req.body?.method, biometricVerified);
+    const methodErr = ensureAttendanceMethodAllowed(policy, method);
+    if (methodErr) {
+      return res.status(400).json({ ok: false, message: methodErr });
+    }
+
+    const manualReasonErr = requireManualReasonIfNeeded(policy, method, req.body?.note);
+    if (manualReasonErr) {
+      return res.status(400).json({ ok: false, message: manualReasonErr });
+    }
+
+    if (method === "biometric" && policy.requireBiometric && !biometricVerified) {
       return res.status(400).json({ ok: false, message: "Biometric required" });
     }
 
@@ -283,13 +475,12 @@ async function checkIn(req, res) {
 
     const shift = await loadShiftForSession({
       clinicId,
-      staffId, // may be ""
-      userId, // helperUserId fallback
+      staffId,
+      userId,
       workDate,
       shiftId,
     });
 
-    // ✅ Distance rule: ใช้ policy.geoRadiusMeters (หน่วยเมตร) เมื่อ requireLocation=true
     if (policy.requireLocation) {
       if (!(Number.isFinite(lat) && Number.isFinite(lng))) {
         return res.status(400).json({ ok: false, message: "Location required" });
@@ -312,7 +503,6 @@ async function checkIn(req, res) {
       }
     }
 
-    // ✅ prevent duplicate open session (by principalId)
     const existing = await AttendanceSession.findOne({
       clinicId,
       principalId,
@@ -334,21 +524,17 @@ async function checkIn(req, res) {
     const created = await AttendanceSession.create({
       clinicId,
 
-      // ✅ identity fields
       principalId,
       principalType,
 
-      // ✅ staffId แยกจริง (เก็บเฉพาะ stf_... ถ้าไม่มีให้ว่าง)
       staffId: staffId || "",
-
-      // ✅ userId เก็บเสมอ (usr_...) ถ้า token ไม่มี (rare) ให้เป็น ""
       userId: userId || "",
 
       shiftId: shift ? shift._id : null,
       workDate,
       checkInAt,
-      checkInMethod: method === "manual" ? "manual" : "biometric",
-      biometricVerifiedIn: biometricVerified,
+      checkInMethod: method,
+      biometricVerifiedIn: method === "biometric" ? biometricVerified : false,
       deviceId: s(req.body?.deviceId),
       inLat: Number.isFinite(lat) ? lat : null,
       inLng: Number.isFinite(lng) ? lng : null,
@@ -358,7 +544,11 @@ async function checkIn(req, res) {
       policyVersion: Number(policy.version || 0),
     });
 
-    return res.status(201).json({ ok: true, session: created });
+    return res.status(201).json({
+      ok: true,
+      session: created,
+      policy: buildPublicPolicy(policy),
+    });
   } catch (e) {
     return res.status(500).json({ ok: false, message: "check-in failed", error: e.message });
   }
@@ -371,7 +561,7 @@ async function checkIn(req, res) {
 // ======================================================
 async function checkOut(req, res) {
   try {
-    const { clinicId, userId, staffId, principalId, principalType } = getPrincipal(req);
+    const { clinicId, userId, staffId, principalId, principalType, role } = getPrincipal(req);
 
     if (!clinicId) {
       return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
@@ -398,12 +588,10 @@ async function checkOut(req, res) {
       }
     }
 
-    // ✅ Must be same clinic
     if (s(session.clinicId) !== clinicId) {
       return res.status(403).json({ ok: false, message: "Forbidden (cross-clinic session)" });
     }
 
-    // ✅ Must be owner principal
     if (s(session.principalId) !== principalId) {
       return res.status(403).json({ ok: false, message: "Forbidden (not your session)" });
     }
@@ -414,9 +602,19 @@ async function checkOut(req, res) {
 
     const policy = await getOrCreatePolicy(s(session.clinicId), userId || principalId);
 
-    const method = s(req.body?.method) || "biometric";
     const biometricVerified = !!req.body?.biometricVerified;
-    if (policy.requireBiometric && !biometricVerified) {
+    const method = resolveAttendanceMethod(req.body?.method, biometricVerified);
+    const methodErr = ensureAttendanceMethodAllowed(policy, method);
+    if (methodErr) {
+      return res.status(400).json({ ok: false, message: methodErr });
+    }
+
+    const manualReasonErr = requireManualReasonIfNeeded(policy, method, req.body?.note);
+    if (manualReasonErr) {
+      return res.status(400).json({ ok: false, message: manualReasonErr });
+    }
+
+    if (method === "biometric" && policy.requireBiometric && !biometricVerified) {
       return res.status(400).json({ ok: false, message: "Biometric required" });
     }
 
@@ -425,7 +623,7 @@ async function checkOut(req, res) {
 
     const shift = await loadShiftForSession({
       clinicId: s(session.clinicId),
-      staffId: s(session.staffId) || staffId, // best effort
+      staffId: s(session.staffId) || staffId,
       userId: s(session.userId) || userId || "",
       workDate: s(session.workDate),
       shiftId: session.shiftId,
@@ -455,7 +653,6 @@ async function checkOut(req, res) {
 
     const checkOutAt = new Date();
 
-    // ✅ employee master (อาจ null สำหรับ helper marketplace)
     let emp = null;
     const ownerUserId = s(session.userId) || userId || "";
     if (ownerUserId) {
@@ -475,12 +672,20 @@ async function checkOut(req, res) {
     };
 
     const workedMinutes = computeWorkedMinutes(session.checkInAt, checkOutAt);
-    const otMinutes = computeOtMinutes(policyForOt, shift, session.checkInAt, checkOutAt);
+
+    let otMinutes = 0;
+    const features = withFeatureDefaults(policy.features || {});
+    const allowOtCalc = !!features.autoOtCalculation;
+    const allowOtForThisUser = isEmployeeEligibleForOt(role, empType, policy);
+
+    if (allowOtCalc && allowOtForThisUser) {
+      otMinutes = computeOtMinutes(policyForOt, shift, session.checkInAt, checkOutAt);
+    }
 
     session.checkOutAt = checkOutAt;
     session.status = "closed";
-    session.checkOutMethod = method === "manual" ? "manual" : "biometric";
-    session.biometricVerifiedOut = biometricVerified;
+    session.checkOutMethod = method;
+    session.biometricVerifiedOut = method === "biometric" ? biometricVerified : false;
 
     if (s(req.body?.deviceId)) session.deviceId = s(req.body?.deviceId);
 
@@ -495,11 +700,6 @@ async function checkOut(req, res) {
 
     await session.save();
 
-    // ======================================================
-    // ✅ HOOK: create/update Overtime record (pending)
-    // - ใช้ principalId เป็น key หลักเสมอ (employee/helper ใช้ได้เหมือนกัน)
-    // - staffId เก็บเฉพาะ stf_ (ถ้าไม่มีให้ "")
-    // ======================================================
     try {
       const clinicIdOfSession = s(session.clinicId);
       const workDate = s(session.workDate);
@@ -511,8 +711,9 @@ async function checkOut(req, res) {
       const mul = Number.isFinite(otMul) && otMul > 0 ? otMul : 1.5;
 
       const principalIdForOt = s(session.principalId) || principalId;
-      const principalTypeForOt = s(session.principalType) || principalType || (s(session.staffId) ? "staff" : "user");
-      const staffIdForOt = s(session.staffId); // stf_... or ""
+      const principalTypeForOt =
+        s(session.principalType) || principalType || (s(session.staffId) ? "staff" : "user");
+      const staffIdForOt = s(session.staffId);
 
       if (clampMinutes(otMinutes) > 0 && monthKey) {
         await Overtime.updateOne(
@@ -521,11 +722,9 @@ async function checkOut(req, res) {
             $set: {
               clinicId: clinicIdOfSession,
 
-              // ✅ NEW
               principalId: principalIdForOt,
               principalType: principalTypeForOt,
 
-              // ✅ optional
               staffId: staffIdForOt,
               userId: ownerUserId || "",
 
@@ -533,7 +732,7 @@ async function checkOut(req, res) {
               monthKey,
               minutes: clampMinutes(otMinutes),
               multiplier: mul,
-              status: "pending",
+              status: policy.requireOtApproval ? "pending" : "approved",
               source: "attendance",
               attendanceSessionId: session._id,
               note: s(session.note),
@@ -566,7 +765,10 @@ async function checkOut(req, res) {
         selectedClock,
         rule: s(policyForOt.otRule),
         otMinutes,
+        eligibleForOt: allowOtForThisUser,
+        requireApproval: !!policy.requireOtApproval,
       },
+      policy: buildPublicPolicy(policy),
     });
   } catch (e) {
     return res.status(500).json({ ok: false, message: "check-out failed", error: e.message });
@@ -579,11 +781,12 @@ async function checkOut(req, res) {
 // ======================================================
 async function listMySessions(req, res) {
   try {
-    const { clinicId, principalId } = getPrincipal(req);
+    const { clinicId, principalId, userId } = getPrincipal(req);
 
     if (!clinicId) return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
-    if (!principalId)
+    if (!principalId) {
       return res.status(401).json({ ok: false, message: "Missing userId/staffId in token" });
+    }
 
     const dateFrom = s(req.query?.dateFrom);
     const dateTo = s(req.query?.dateTo);
@@ -592,7 +795,13 @@ async function listMySessions(req, res) {
     if (isYmd(dateFrom) && isYmd(dateTo)) q.workDate = { $gte: dateFrom, $lte: dateTo };
 
     const items = await AttendanceSession.find(q).sort({ checkInAt: -1 }).lean();
-    return res.json({ ok: true, items });
+    const policy = await getOrCreatePolicy(clinicId, userId || principalId);
+
+    return res.json({
+      ok: true,
+      items,
+      policy: buildPublicPolicy(policy),
+    });
   } catch (e) {
     return res.status(500).json({ ok: false, message: "list failed", error: e.message });
   }
@@ -611,7 +820,7 @@ async function listClinicSessions(req, res) {
 
     if (!clinicId) return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
 
-    if (role !== "admin") {
+    if (role !== "admin" && role !== "clinic_admin") {
       return res.status(403).json({ ok: false, message: "Forbidden (admin only)" });
     }
 
@@ -626,7 +835,13 @@ async function listClinicSessions(req, res) {
     }
 
     const items = await AttendanceSession.find(q).sort({ checkInAt: -1 }).lean();
-    return res.json({ ok: true, items });
+    const policy = await getOrCreatePolicy(clinicId, s(req.user?.userId));
+
+    return res.json({
+      ok: true,
+      items,
+      policy: buildPublicPolicy(policy),
+    });
   } catch (e) {
     return res.status(500).json({ ok: false, message: "list clinic failed", error: e.message });
   }
@@ -642,8 +857,9 @@ async function myDayPreview(req, res) {
     const { clinicId, principalId, userId } = getPrincipal(req);
 
     if (!clinicId) return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
-    if (!principalId)
+    if (!principalId) {
       return res.status(401).json({ ok: false, message: "Missing userId/staffId in token" });
+    }
 
     const workDate = s(req.query?.workDate);
     if (!isYmd(workDate)) {
@@ -662,7 +878,6 @@ async function myDayPreview(req, res) {
     const workedMinutes = sessions.reduce((sum, x) => sum + clampMinutes(x.workedMinutes), 0);
     const otMinutesRawFromSessions = sessions.reduce((sum, x) => sum + clampMinutes(x.otMinutes), 0);
 
-    // ✅ NEW: query by principalId
     const approvedOt = await Overtime.find({
       clinicId,
       principalId,
@@ -672,7 +887,6 @@ async function myDayPreview(req, res) {
 
     const otMinutesApproved = approvedOt.reduce((sum, x) => sum + clampMinutes(x.minutes), 0);
 
-    // employee master (may be null for helper marketplace)
     let emp = null;
     const ownerUserId = userId || "";
     if (ownerUserId) {
@@ -709,15 +923,7 @@ async function myDayPreview(req, res) {
         staffId: s(req.user?.staffId),
         userId: s(req.user?.userId),
       },
-      policy: {
-        otRule: policy.otRule,
-        otRounding: policy.otRounding,
-        otMultiplier: policy.otMultiplier,
-        version: policy.version,
-        fullTimeOtClockTime: policy.fullTimeOtClockTime,
-        partTimeOtClockTime: policy.partTimeOtClockTime,
-        otClockTime: policy.otClockTime,
-      },
+      policy: buildPublicPolicy(policy),
       summary: {
         workedMinutes,
         otMinutesApproved,

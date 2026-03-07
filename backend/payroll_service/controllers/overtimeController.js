@@ -1,6 +1,7 @@
 // backend/payroll_service/controllers/overtimeController.js
 const mongoose = require("mongoose");
 const Overtime = require("../models/Overtime");
+const ClinicPolicy = require("../models/ClinicPolicy");
 
 function s(v) {
   return String(v || "").trim();
@@ -34,6 +35,30 @@ function canMutateStatus(ot) {
   return s(ot.status) !== "locked";
 }
 
+function normalizeStringArray(value, fallback = []) {
+  if (Array.isArray(value)) {
+    return value.map((x) => s(x)).filter(Boolean);
+  }
+  if (typeof value === "string") {
+    const one = s(value);
+    return one ? [one] : fallback;
+  }
+  return fallback;
+}
+
+function withFeatureDefaults(features) {
+  return {
+    manualAttendance: true,
+    fingerprintAttendance: true,
+    autoOtCalculation: true,
+    otApprovalWorkflow: true,
+    attendanceApproval: true,
+    payrollLock: true,
+    policyHumanReadable: true,
+    ...(features || {}),
+  };
+}
+
 /**
  * ✅ PRINCIPAL (รองรับทั้ง req.user และ req.userCtx)
  */
@@ -45,7 +70,6 @@ function getPrincipal(req) {
   const role = s(u.role || uc.role);
   const userId = s(u.userId || uc.userId);
 
-  // ✅ staffId ต้องรองรับทั้ง user และ userCtx + legacy employeeId
   const staffId = s(u.staffId || u.employeeId || uc.staffId || uc.employeeId || "");
 
   const principalId = staffId || userId;
@@ -54,14 +78,71 @@ function getPrincipal(req) {
   return { clinicId, role, userId, staffId, principalId, principalType };
 }
 
+async function getOrCreatePolicy(clinicId, userId) {
+  let p = await ClinicPolicy.findOne({ clinicId });
+  if (!p) {
+    p = await ClinicPolicy.create({
+      clinicId,
+      timezone: "Asia/Bangkok",
+
+      requireBiometric: true,
+      requireLocation: false,
+      geoRadiusMeters: 200,
+      graceLateMinutes: 10,
+
+      otRule: "AFTER_CLOCK_TIME",
+      regularHoursPerDay: 8,
+
+      otClockTime: "18:00",
+      fullTimeOtClockTime: "18:00",
+      partTimeOtClockTime: "18:00",
+
+      otWindowStart: "18:00",
+      otWindowEnd: "21:00",
+
+      otStartAfterMinutes: 0,
+      otRounding: "15MIN",
+      otMultiplier: 1.5,
+      holidayMultiplier: 2.0,
+      weekendAllDayOT: false,
+
+      employeeOnlyOt: true,
+      requireOtApproval: true,
+      realTimeAttendanceOnly: true,
+      manualAttendanceRequireApproval: true,
+      manualReasonRequired: true,
+      lockAfterPayrollClose: true,
+
+      attendanceApprovalRoles: ["clinic_admin"],
+      otApprovalRoles: ["clinic_admin"],
+
+      features: {
+        manualAttendance: true,
+        fingerprintAttendance: true,
+        autoOtCalculation: true,
+        otApprovalWorkflow: true,
+        attendanceApproval: true,
+        payrollLock: true,
+        policyHumanReadable: true,
+      },
+
+      version: 1,
+      updatedBy: s(userId),
+    });
+  }
+  return p;
+}
+
+function canApproveOtByRole(policy, role) {
+  const allowed = normalizeStringArray(policy?.otApprovalRoles, ["clinic_admin"]);
+  return allowed.includes(s(role));
+}
+
 // helper
 function buildPrincipalQueryFromInput({ staffId, principalId }) {
   const sid = s(staffId);
   const pid = s(principalId);
 
-  // ✅ FIX: tolerant มากขึ้น
-  // - ถ้าส่ง principalId มา ให้ match ได้ทั้ง principalId / staffId (ของเก่าบาง record)
-  // - ถ้าส่ง staffId มา ให้ match ได้ทั้ง principalId/staffId
   if (pid && sid) {
     return { $or: [{ principalId: pid }, { staffId: sid }, { principalId: sid }] };
   }
@@ -115,10 +196,13 @@ async function sumApprovedMinutesForMonth({ clinicId, principalId, monthKey }) {
     status: "approved",
     ...(pid ? { $or: [{ principalId: pid }, { staffId: pid }] } : {}),
   })
-    .select({ minutes: 1 })
+    .select({ approvedMinutes: 1, minutes: 1 })
     .lean();
 
-  return rows.reduce((a, x) => a + clampMinutes(x.minutes), 0);
+  return rows.reduce(
+    (a, x) => a + clampMinutes(x.approvedMinutes != null ? x.approvedMinutes : x.minutes),
+    0
+  );
 }
 
 async function sumApprovedMinutesForDay({ clinicId, principalId, workDate }) {
@@ -129,44 +213,42 @@ async function sumApprovedMinutesForDay({ clinicId, principalId, workDate }) {
     status: "approved",
     ...(pid ? { $or: [{ principalId: pid }, { staffId: pid }] } : {}),
   })
-    .select({ minutes: 1 })
+    .select({ approvedMinutes: 1, minutes: 1 })
     .lean();
 
-  return rows.reduce((a, x) => a + clampMinutes(x.minutes), 0);
+  return rows.reduce(
+    (a, x) => a + clampMinutes(x.approvedMinutes != null ? x.approvedMinutes : x.minutes),
+    0
+  );
 }
 
 // ======================================================
-// ✅ LIST MY (employee/helper/staff/admin)
-// PATCH ✅: admin เข้าได้ (แก้ 403 ที่ log ท่านเจอ)
-// - employee/helper/staff: เหมือนเดิม (ดูของตัวเอง)
-// - admin:
-//    - ถ้าส่ง ?staffId=... หรือ ?principalId=... => ดูของคนนั้นได้ (ในคลินิกเดียวกัน)
-//    - ถ้าไม่ส่งอะไร => จะดูตาม principalId ของ admin เอง (ส่วนใหญ่จะว่าง) แต่ไม่ 403 แล้ว
+// ✅ LIST MY
 // ======================================================
 async function listMy(req, res) {
   try {
-    const { clinicId, role, staffId, userId, principalId, principalType } =
-      getPrincipal(req);
+    const { clinicId, role, staffId, userId, principalId, principalType } = getPrincipal(req);
 
-    if (!clinicId)
+    if (!clinicId) {
       return res.status(401).json({ ok: false, message: "Missing clinicId" });
+    }
 
-    if (!principalId)
+    if (!principalId) {
       return res.status(401).json({ ok: false, message: "Missing principalId" });
+    }
 
-    // ✅ PATCH: เพิ่ม admin เข้า allowed เพื่อไม่ให้ 403
-    const allowed = ["employee", "helper", "staff", "admin"];
-    if (role && !allowed.includes(role))
+    const allowed = ["employee", "helper", "staff", "admin", "clinic_admin"];
+    if (role && !allowed.includes(role)) {
       return res.status(403).json({ ok: false, message: "Forbidden" });
+    }
 
     const monthKey = parseMonthOrNull(req.query?.month);
-    if (!monthKey)
+    if (!monthKey) {
       return res.status(400).json({ ok: false, message: "month required" });
+    }
 
     const status = s(req.query?.status);
 
-    // ✅ PATCH: admin สามารถระบุเป้าหมายผ่าน query ได้
-    // - staffId / employeeId / principalId
     const targetStaffId =
       s(req.query?.staffId) ||
       s(req.query?.employeeId) ||
@@ -178,8 +260,7 @@ async function listMy(req, res) {
     let q = { clinicId, monthKey };
     if (status) q.status = status;
 
-    // ถ้า admin ส่ง target -> ใช้ tolerant principal match
-    if (role === "admin" && (targetStaffId || targetPrincipalId)) {
+    if ((role === "admin" || role === "clinic_admin") && (targetStaffId || targetPrincipalId)) {
       const pQuery = buildPrincipalQueryFromInput({
         staffId: targetStaffId,
         principalId: targetPrincipalId,
@@ -193,8 +274,6 @@ async function listMy(req, res) {
       }
       q = { ...q, ...pQuery };
     } else {
-      // เดิม: self-view ใช้ principalId ตรง ๆ
-      // (สำหรับ record เก่าที่อาจเก็บ staffId แทน principalId บางครั้ง -> tolerant ให้ด้วย)
       const selfPid = s(principalId);
       q = {
         ...q,
@@ -209,15 +288,16 @@ async function listMy(req, res) {
     const sum = (st) =>
       items
         .filter((x) => s(x.status) === st)
-        .reduce((a, x) => a + clampMinutes(x.minutes), 0);
+        .reduce((a, x) => a + clampMinutes(x.approvedMinutes != null ? x.approvedMinutes : x.minutes), 0);
+
+    const policy = await getOrCreatePolicy(clinicId, userId || principalId);
 
     return res.json({
       ok: true,
       month: monthKey,
       principal: { principalId, principalType, staffId, userId },
-      // ✅ เพิ่ม hint ให้ admin เวลาใช้ endpoint นี้
       hint:
-        role === "admin"
+        role === "admin" || role === "clinic_admin"
           ? "Admin can pass ?staffId=... or ?principalId=... to view specific staff OT."
           : undefined,
       summary: {
@@ -225,6 +305,11 @@ async function listMy(req, res) {
         approvedMinutes: sum("approved"),
         rejectedMinutes: sum("rejected"),
         lockedMinutes: sum("locked"),
+      },
+      policy: {
+        requireOtApproval: !!policy.requireOtApproval,
+        otApprovalRoles: normalizeStringArray(policy.otApprovalRoles, ["clinic_admin"]),
+        features: withFeatureDefaults(policy.features || {}),
       },
       items,
     });
@@ -235,18 +320,19 @@ async function listMy(req, res) {
 
 // ======================================================
 // ✅ LIST FOR STAFF (admin view)
-// - รองรับ: /overtime/staff/:staffId?month=yyyy-MM&status=...
-// - หรือส่ง staffId/principalId ผ่าน query/body
 // ======================================================
 async function listForStaff(req, res) {
   try {
-    const { clinicId, role } = getPrincipal(req);
+    const { clinicId, role, userId } = getPrincipal(req);
 
-    if (!clinicId)
+    if (!clinicId) {
       return res.status(401).json({ ok: false, message: "Missing clinicId" });
+    }
 
-    if (role !== "admin")
+    const policy = await getOrCreatePolicy(clinicId, userId);
+    if (!canApproveOtByRole(policy, role)) {
       return res.status(403).json({ ok: false, message: "Admin only" });
+    }
 
     const monthKey = parseMonthOrNull(req.query?.month);
     const status = s(req.query?.status);
@@ -262,10 +348,11 @@ async function listForStaff(req, res) {
     const principalId = s(req.query?.principalId) || s(req.body?.principalId);
 
     const pQuery = buildPrincipalQueryFromInput({ staffId, principalId });
-    if (!pQuery)
+    if (!pQuery) {
       return res
         .status(400)
         .json({ ok: false, message: "staffId or principalId required" });
+    }
 
     const q = { clinicId, ...pQuery };
     if (monthKey) q.monthKey = monthKey;
@@ -291,35 +378,56 @@ async function listForStaff(req, res) {
 // ======================================================
 async function requestOt(req, res) {
   try {
-    const { clinicId, role, userId, staffId, principalId, principalType } =
-      getPrincipal(req);
+    const { clinicId, role, userId, staffId, principalId, principalType } = getPrincipal(req);
 
-    if (!clinicId)
+    if (!clinicId) {
       return res.status(401).json({ ok: false, message: "Missing clinicId" });
+    }
 
-    if (!principalId)
+    if (!principalId) {
       return res.status(401).json({ ok: false, message: "Missing principalId" });
+    }
 
     const allowed = ["employee", "helper", "staff"];
-    if (role && !allowed.includes(role))
+    if (role && !allowed.includes(role)) {
       return res.status(403).json({ ok: false, message: "Forbidden" });
+    }
+
+    const policy = await getOrCreatePolicy(clinicId, userId || principalId);
+    const features = withFeatureDefaults(policy.features || {});
+
+    // standard/manual OT flow only
+    if (features.autoOtCalculation) {
+      return res.status(409).json({
+        ok: false,
+        message: "Manual OT request is disabled when auto OT calculation is enabled",
+      });
+    }
 
     const workDate = s(req.body?.workDate);
     const start = s(req.body?.start);
     const end = s(req.body?.end);
+    const note = s(req.body?.note);
 
-    if (!isYmd(workDate))
+    if (!isYmd(workDate)) {
       return res.status(400).json({ ok: false, message: "Invalid workDate" });
+    }
 
     const computed = computeMinutesFromStartEnd(start, end);
-    if (computed == null)
+    if (computed == null) {
       return res.status(400).json({ ok: false, message: "Invalid time format" });
+    }
 
-    if (computed <= 0)
+    if (computed <= 0) {
       return res.status(400).json({ ok: false, message: "OT must be > 0" });
+    }
+
+    if (!note) {
+      return res.status(400).json({ ok: false, message: "OT reason is required" });
+    }
 
     const multiplier = Number(req.body?.multiplier);
-    const mul = Number.isFinite(multiplier) && multiplier > 0 ? multiplier : 1.5;
+    const mul = Number.isFinite(multiplier) && multiplier > 0 ? multiplier : Number(policy.otMultiplier || 1.5);
 
     const created = await Overtime.create({
       clinicId,
@@ -330,10 +438,16 @@ async function requestOt(req, res) {
       workDate,
       monthKey: toMonthKey(workDate),
       minutes: computed,
+      approvedMinutes: 0,
       multiplier: mul,
       status: "pending",
       source: "manual_user",
-      note: s(req.body?.note),
+      note,
+      approvedBy: "",
+      approvedAt: null,
+      rejectedBy: "",
+      rejectedAt: null,
+      rejectReason: "",
     });
 
     return res.status(201).json({
@@ -347,46 +461,54 @@ async function requestOt(req, res) {
 
 // ======================================================
 // ✅ ADMIN CREATE MANUAL OT
-// - ใช้ได้ทั้ง minutes หรือ start/end
 // ======================================================
 async function createManual(req, res) {
   try {
     const { clinicId, role, userId } = getPrincipal(req);
 
-    if (!clinicId)
+    if (!clinicId) {
       return res.status(401).json({ ok: false, message: "Missing clinicId" });
+    }
 
-    if (role !== "admin")
+    const policy = await getOrCreatePolicy(clinicId, userId);
+    if (!canApproveOtByRole(policy, role)) {
       return res.status(403).json({ ok: false, message: "Admin only" });
+    }
 
     const workDate = s(req.body?.workDate);
-    if (!isYmd(workDate))
+    if (!isYmd(workDate)) {
       return res.status(400).json({ ok: false, message: "Invalid workDate" });
+    }
 
     const staffId = s(req.body?.staffId || req.body?.employeeId);
     const principalId = s(req.body?.principalId) || staffId;
 
-    if (!principalId)
+    if (!principalId) {
       return res
         .status(400)
         .json({ ok: false, message: "staffId/principalId required" });
+    }
 
-    // minutes direct OR compute from start/end
     let minutes = clampMinutes(req.body?.minutes);
     if (!minutes) {
       const start = s(req.body?.start);
       const end = s(req.body?.end);
       const computed = computeMinutesFromStartEnd(start, end);
-      if (computed == null)
+      if (computed == null) {
         return res.status(400).json({ ok: false, message: "Invalid time format" });
+      }
       minutes = computed;
     }
 
-    if (minutes <= 0)
+    if (minutes <= 0) {
       return res.status(400).json({ ok: false, message: "OT must be > 0" });
+    }
 
     const multiplier = Number(req.body?.multiplier);
-    const mul = Number.isFinite(multiplier) && multiplier > 0 ? multiplier : 1.5;
+    const mul = Number.isFinite(multiplier) && multiplier > 0 ? multiplier : Number(policy.otMultiplier || 1.5);
+
+    const status = policy.requireOtApproval ? "pending" : "approved";
+    const now = new Date();
 
     const created = await Overtime.create({
       clinicId,
@@ -398,11 +520,17 @@ async function createManual(req, res) {
       workDate,
       monthKey: toMonthKey(workDate),
       minutes,
+      approvedMinutes: status === "approved" ? minutes : 0,
       multiplier: mul,
-      status: "pending",
+      status,
       source: "manual",
       note: s(req.body?.note),
       createdBy: userId || "admin",
+      approvedBy: status === "approved" ? (userId || "") : "",
+      approvedAt: status === "approved" ? now : null,
+      rejectedBy: "",
+      rejectedAt: null,
+      rejectReason: "",
     });
 
     return res.status(201).json({ ok: true, overtime: created });
@@ -413,62 +541,84 @@ async function createManual(req, res) {
 
 // ======================================================
 // ✅ ADMIN UPDATE OT
-// - แก้ minutes/multiplier/note ได้ (ถ้าไม่ locked)
 // ======================================================
 async function updateOne(req, res) {
   try {
-    const { clinicId, role } = getPrincipal(req);
+    const { clinicId, role, userId } = getPrincipal(req);
 
-    if (!clinicId)
+    if (!clinicId) {
       return res.status(401).json({ ok: false, message: "Missing clinicId" });
+    }
 
-    if (role !== "admin")
+    const policy = await getOrCreatePolicy(clinicId, userId);
+    if (!canApproveOtByRole(policy, role)) {
       return res.status(403).json({ ok: false, message: "Admin only" });
+    }
 
     const id = s(req.params?.id);
-    if (!mongoose.Types.ObjectId.isValid(id))
+    if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ ok: false, message: "Invalid id" });
+    }
 
     const ot = await Overtime.findById(id);
-    if (!ot || s(ot.clinicId) !== clinicId)
+    if (!ot || s(ot.clinicId) !== clinicId) {
       return res.status(404).json({ ok: false, message: "Not found" });
+    }
 
-    if (!canMutateStatus(ot))
+    if (!canMutateStatus(ot)) {
       return res.status(409).json({ ok: false, message: "Locked" });
+    }
 
     const patch = {};
 
     if (req.body?.minutes != null) {
       const m = clampMinutes(req.body.minutes);
-      if (m <= 0)
+      if (m <= 0) {
         return res.status(400).json({ ok: false, message: "minutes must be > 0" });
+      }
       patch.minutes = m;
+      if (s(ot.status) === "approved") {
+        patch.approvedMinutes = m;
+      }
     } else {
-      // optional start/end update -> recompute
       const start = s(req.body?.start);
       const end = s(req.body?.end);
       if (start && end) {
         const computed = computeMinutesFromStartEnd(start, end);
-        if (computed == null)
+        if (computed == null) {
           return res.status(400).json({ ok: false, message: "Invalid time format" });
-        if (computed <= 0)
+        }
+        if (computed <= 0) {
           return res.status(400).json({ ok: false, message: "OT must be > 0" });
+        }
         patch.minutes = computed;
+        if (s(ot.status) === "approved") {
+          patch.approvedMinutes = computed;
+        }
       }
+    }
+
+    if (req.body?.approvedMinutes != null) {
+      const approvedMinutes = clampMinutes(req.body.approvedMinutes);
+      if (approvedMinutes < 0 || approvedMinutes > clampMinutes(patch.minutes ?? ot.minutes)) {
+        return res.status(400).json({ ok: false, message: "Invalid approvedMinutes" });
+      }
+      patch.approvedMinutes = approvedMinutes;
     }
 
     if (req.body?.multiplier != null) {
       const multiplier = Number(req.body.multiplier);
-      if (!Number.isFinite(multiplier) || multiplier <= 0)
+      if (!Number.isFinite(multiplier) || multiplier <= 0) {
         return res.status(400).json({ ok: false, message: "Invalid multiplier" });
+      }
       patch.multiplier = multiplier;
     }
 
     if (req.body?.note != null) patch.note = s(req.body.note);
 
-    // ไม่ให้ admin เปลี่ยน status แปลก ๆ ผ่าน updateOne (ใช้ approve/reject/bulk)
-    if (Object.keys(patch).length === 0)
+    if (Object.keys(patch).length === 0) {
       return res.json({ ok: true, overtime: ot });
+    }
 
     await Overtime.updateOne({ _id: ot._id }, { $set: patch });
     const fresh = await Overtime.findById(ot._id).lean();
@@ -484,27 +634,54 @@ async function updateOne(req, res) {
 // ======================================================
 async function approveOne(req, res) {
   try {
-    const { clinicId, role } = getPrincipal(req);
+    const { clinicId, role, userId } = getPrincipal(req);
 
-    if (!clinicId)
+    if (!clinicId) {
       return res.status(401).json({ ok: false, message: "Missing clinicId" });
-    if (role !== "admin")
+    }
+
+    const policy = await getOrCreatePolicy(clinicId, userId);
+    if (!canApproveOtByRole(policy, role)) {
       return res.status(403).json({ ok: false, message: "Admin only" });
+    }
 
     const id = s(req.params?.id);
-    if (!mongoose.Types.ObjectId.isValid(id))
+    if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ ok: false, message: "Invalid id" });
+    }
 
     const ot = await Overtime.findById(id);
-    if (!ot || s(ot.clinicId) !== clinicId)
+    if (!ot || s(ot.clinicId) !== clinicId) {
       return res.status(404).json({ ok: false, message: "Not found" });
+    }
 
-    if (!canMutateStatus(ot))
+    if (!canMutateStatus(ot)) {
       return res.status(409).json({ ok: false, message: "Locked" });
+    }
+
+    const approvedMinutesInput = req.body?.approvedMinutes;
+    const approvedMinutes =
+      approvedMinutesInput != null
+        ? clampMinutes(approvedMinutesInput)
+        : clampMinutes(ot.minutes);
+
+    if (approvedMinutes > clampMinutes(ot.minutes)) {
+      return res.status(400).json({ ok: false, message: "approvedMinutes cannot exceed minutes" });
+    }
 
     await Overtime.updateOne(
       { _id: ot._id },
-      { $set: { status: "approved", approvedAt: new Date() } }
+      {
+        $set: {
+          status: "approved",
+          approvedMinutes,
+          approvedAt: new Date(),
+          approvedBy: s(userId),
+          rejectedAt: null,
+          rejectedBy: "",
+          rejectReason: "",
+        },
+      }
     );
 
     const fresh = await Overtime.findById(ot._id).lean();
@@ -516,27 +693,42 @@ async function approveOne(req, res) {
 
 async function rejectOne(req, res) {
   try {
-    const { clinicId, role } = getPrincipal(req);
+    const { clinicId, role, userId } = getPrincipal(req);
 
-    if (!clinicId)
+    if (!clinicId) {
       return res.status(401).json({ ok: false, message: "Missing clinicId" });
-    if (role !== "admin")
+    }
+
+    const policy = await getOrCreatePolicy(clinicId, userId);
+    if (!canApproveOtByRole(policy, role)) {
       return res.status(403).json({ ok: false, message: "Admin only" });
+    }
 
     const id = s(req.params?.id);
-    if (!mongoose.Types.ObjectId.isValid(id))
+    if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ ok: false, message: "Invalid id" });
+    }
 
     const ot = await Overtime.findById(id);
-    if (!ot || s(ot.clinicId) !== clinicId)
+    if (!ot || s(ot.clinicId) !== clinicId) {
       return res.status(404).json({ ok: false, message: "Not found" });
+    }
 
-    if (!canMutateStatus(ot))
+    if (!canMutateStatus(ot)) {
       return res.status(409).json({ ok: false, message: "Locked" });
+    }
 
     await Overtime.updateOne(
       { _id: ot._id },
-      { $set: { status: "rejected", rejectedAt: new Date(), rejectNote: s(req.body?.note) } }
+      {
+        $set: {
+          status: "rejected",
+          approvedMinutes: 0,
+          rejectedAt: new Date(),
+          rejectedBy: s(userId),
+          rejectReason: s(req.body?.note),
+        },
+      }
     );
 
     const fresh = await Overtime.findById(ot._id).lean();
@@ -551,16 +743,21 @@ async function rejectOne(req, res) {
 // ======================================================
 async function bulkApproveMonth(req, res) {
   try {
-    const { clinicId, role } = getPrincipal(req);
+    const { clinicId, role, userId } = getPrincipal(req);
 
-    if (!clinicId)
+    if (!clinicId) {
       return res.status(401).json({ ok: false, message: "Missing clinicId" });
-    if (role !== "admin")
+    }
+
+    const policy = await getOrCreatePolicy(clinicId, userId);
+    if (!canApproveOtByRole(policy, role)) {
       return res.status(403).json({ ok: false, message: "Admin only" });
+    }
 
     const monthKey = parseMonthOrNull(req.body?.month || req.query?.month);
-    if (!monthKey)
+    if (!monthKey) {
       return res.status(400).json({ ok: false, message: "month required (yyyy-MM)" });
+    }
 
     const staffId = s(
       req.body?.staffId ||
@@ -570,28 +767,59 @@ async function bulkApproveMonth(req, res) {
     );
     const principalId = s(req.body?.principalId || req.query?.principalId) || staffId;
 
-    if (!principalId)
+    if (!principalId) {
       return res.status(400).json({ ok: false, message: "staffId/principalId required" });
+    }
 
-    // ✅ FIX: match ได้ทั้ง principalId และ staffId (กัน record เก่าที่เก็บไม่ตรง)
     const principalMatch = buildPrincipalQueryFromInput({
       staffId: staffId || principalId,
       principalId,
     });
 
-    if (!principalMatch)
+    if (!principalMatch) {
       return res.status(400).json({ ok: false, message: "staffId/principalId required" });
+    }
 
-    const q = {
+    const pendingRows = await Overtime.find({
       clinicId,
       monthKey,
       status: "pending",
       ...principalMatch,
-    };
+    }).select({ _id: 1, minutes: 1 });
 
-    const r = await Overtime.updateMany(q, {
-      $set: { status: "approved", approvedAt: new Date() },
-    });
+    if (!pendingRows.length) {
+      return res.json({
+        ok: true,
+        month: monthKey,
+        matched: 0,
+        modified: 0,
+      });
+    }
+
+    const ids = pendingRows.map((x) => x._id);
+
+    const r = await Overtime.updateMany(
+      { _id: { $in: ids } },
+      {
+        $set: {
+          status: "approved",
+          approvedAt: new Date(),
+          approvedBy: s(userId),
+        },
+      }
+    );
+
+    // set approvedMinutes = minutes for rows that still have null/0 and were just approved
+    for (const row of pendingRows) {
+      await Overtime.updateOne(
+        { _id: row._id },
+        {
+          $set: {
+            approvedMinutes: clampMinutes(row.minutes),
+          },
+        }
+      );
+    }
 
     return res.json({
       ok: true,
@@ -606,16 +834,21 @@ async function bulkApproveMonth(req, res) {
 
 async function bulkApproveDay(req, res) {
   try {
-    const { clinicId, role } = getPrincipal(req);
+    const { clinicId, role, userId } = getPrincipal(req);
 
-    if (!clinicId)
+    if (!clinicId) {
       return res.status(401).json({ ok: false, message: "Missing clinicId" });
-    if (role !== "admin")
+    }
+
+    const policy = await getOrCreatePolicy(clinicId, userId);
+    if (!canApproveOtByRole(policy, role)) {
       return res.status(403).json({ ok: false, message: "Admin only" });
+    }
 
     const workDate = s(req.body?.workDate || req.query?.workDate);
-    if (!isYmd(workDate))
+    if (!isYmd(workDate)) {
       return res.status(400).json({ ok: false, message: "workDate required (yyyy-MM-dd)" });
+    }
 
     const staffId = s(
       req.body?.staffId ||
@@ -625,28 +858,58 @@ async function bulkApproveDay(req, res) {
     );
     const principalId = s(req.body?.principalId || req.query?.principalId) || staffId;
 
-    if (!principalId)
+    if (!principalId) {
       return res.status(400).json({ ok: false, message: "staffId/principalId required" });
+    }
 
-    // ✅ FIX: match ได้ทั้ง principalId และ staffId
     const principalMatch = buildPrincipalQueryFromInput({
       staffId: staffId || principalId,
       principalId,
     });
 
-    if (!principalMatch)
+    if (!principalMatch) {
       return res.status(400).json({ ok: false, message: "staffId/principalId required" });
+    }
 
-    const q = {
+    const pendingRows = await Overtime.find({
       clinicId,
       workDate,
       status: "pending",
       ...principalMatch,
-    };
+    }).select({ _id: 1, minutes: 1 });
 
-    const r = await Overtime.updateMany(q, {
-      $set: { status: "approved", approvedAt: new Date() },
-    });
+    if (!pendingRows.length) {
+      return res.json({
+        ok: true,
+        workDate,
+        matched: 0,
+        modified: 0,
+      });
+    }
+
+    const ids = pendingRows.map((x) => x._id);
+
+    const r = await Overtime.updateMany(
+      { _id: { $in: ids } },
+      {
+        $set: {
+          status: "approved",
+          approvedAt: new Date(),
+          approvedBy: s(userId),
+        },
+      }
+    );
+
+    for (const row of pendingRows) {
+      await Overtime.updateOne(
+        { _id: row._id },
+        {
+          $set: {
+            approvedMinutes: clampMinutes(row.minutes),
+          },
+        }
+      );
+    }
 
     return res.json({
       ok: true,
@@ -664,28 +927,35 @@ async function bulkApproveDay(req, res) {
 // ======================================================
 async function removeOne(req, res) {
   try {
-    const { clinicId, role } = getPrincipal(req);
+    const { clinicId, role, userId } = getPrincipal(req);
 
-    if (!clinicId)
+    if (!clinicId) {
       return res.status(401).json({ ok: false, message: "Missing clinicId" });
+    }
 
-    if (role !== "admin")
+    const policy = await getOrCreatePolicy(clinicId, userId);
+    if (!canApproveOtByRole(policy, role)) {
       return res.status(403).json({ ok: false, message: "Admin only" });
+    }
 
     const id = s(req.params.id);
-    if (!mongoose.Types.ObjectId.isValid(id))
+    if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ ok: false, message: "Invalid id" });
+    }
 
     const ot = await Overtime.findById(id);
-    if (!ot || s(ot.clinicId) !== clinicId)
+    if (!ot || s(ot.clinicId) !== clinicId) {
       return res.status(404).json({ ok: false, message: "Not found" });
+    }
 
-    if (!canMutateStatus(ot))
+    if (!canMutateStatus(ot)) {
       return res.status(409).json({ ok: false, message: "Locked" });
+    }
 
     const src = s(ot.source);
-    if (!["manual", "manual_user"].includes(src))
+    if (!["manual", "manual_user"].includes(src)) {
       return res.status(409).json({ ok: false, message: "Cannot delete auto OT" });
+    }
 
     await Overtime.deleteOne({ _id: ot._id });
 
@@ -695,7 +965,7 @@ async function removeOne(req, res) {
   }
 }
 
-// ✅ Safety: กัน export พังเงียบ ๆ
+// ✅ Safety
 function _assertFn(name, fn) {
   if (typeof fn !== "function") {
     throw new Error(`overtimeController: ${name} is not defined`);
