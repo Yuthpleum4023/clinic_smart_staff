@@ -37,6 +37,31 @@ function normalizeStringArray(value, fallback = []) {
   return fallback;
 }
 
+function normalizeApprovalRoles(value, fallback = ["clinic_admin"]) {
+  const arr = normalizeStringArray(value, fallback)
+    .map((x) => {
+      const s = normStr(x).toLowerCase();
+      if (!s) return "";
+      if (s === "clinicadmin") return "clinic_admin";
+      return s;
+    })
+    .filter(Boolean);
+
+  return arr.length ? arr : fallback;
+}
+
+function normalizeOtRule(v) {
+  const s = normStr(v).toUpperCase();
+  const allowed = ["AFTER_DAILY_HOURS", "AFTER_SHIFT_END", "AFTER_CLOCK_TIME"];
+  return allowed.includes(s) ? s : "AFTER_CLOCK_TIME";
+}
+
+function normalizeOtRounding(v) {
+  const s = normStr(v).toUpperCase();
+  const allowed = ["NONE", "15MIN", "30MIN", "HOUR"];
+  return allowed.includes(s) ? s : "15MIN";
+}
+
 const ALLOWED_FEATURE_KEYS = [
   "manualAttendance",
   "fingerprintAttendance",
@@ -133,7 +158,7 @@ function defaultPolicy(clinicId, updatedByUserId = "") {
 }
 
 function validatePolicy(p) {
-  const otRule = normStr(p.otRule);
+  const otRule = normalizeOtRule(p.otRule);
 
   const allowedOtRules = [
     "AFTER_DAILY_HOURS",
@@ -142,8 +167,9 @@ function validatePolicy(p) {
   ];
   if (otRule && !allowedOtRules.includes(otRule)) return "Invalid otRule";
 
+  const otRounding = normalizeOtRounding(p.otRounding);
   const allowedRounding = ["NONE", "15MIN", "30MIN", "HOUR"];
-  if (p.otRounding && !allowedRounding.includes(normStr(p.otRounding))) {
+  if (otRounding && !allowedRounding.includes(otRounding)) {
     return "Invalid otRounding";
   }
 
@@ -198,11 +224,11 @@ function validatePolicy(p) {
     return "otWindowEnd must be HH:mm";
   }
 
-  const attendanceRoles = normalizeStringArray(
+  const attendanceRoles = normalizeApprovalRoles(
     p.attendanceApprovalRoles,
     ["clinic_admin"]
   );
-  const otRoles = normalizeStringArray(
+  const otRoles = normalizeApprovalRoles(
     p.otApprovalRoles,
     ["clinic_admin"]
   );
@@ -265,12 +291,14 @@ async function getMyClinicPolicy(req, res) {
     policy = {
       ...defaults,
       ...policy,
+      otRule: normalizeOtRule(policy.otRule ?? defaults.otRule),
+      otRounding: normalizeOtRounding(policy.otRounding ?? defaults.otRounding),
       features: mergeFeatures(defaults.features, policy.features || {}),
-      attendanceApprovalRoles: normalizeStringArray(
+      attendanceApprovalRoles: normalizeApprovalRoles(
         policy.attendanceApprovalRoles,
         ["clinic_admin"]
       ),
-      otApprovalRoles: normalizeStringArray(
+      otApprovalRoles: normalizeApprovalRoles(
         policy.otApprovalRoles,
         ["clinic_admin"]
       ),
@@ -316,7 +344,7 @@ async function updateMyClinicPolicy(req, res) {
       graceLateMinutes:
         body.graceLateMinutes ?? policy.graceLateMinutes ?? defaults.graceLateMinutes,
 
-      otRule: body.otRule ?? policy.otRule ?? defaults.otRule,
+      otRule: normalizeOtRule(body.otRule ?? policy.otRule ?? defaults.otRule),
       regularHoursPerDay:
         body.regularHoursPerDay ??
         policy.regularHoursPerDay ??
@@ -349,7 +377,9 @@ async function updateMyClinicPolicy(req, res) {
         policy.otStartAfterMinutes ??
         defaults.otStartAfterMinutes,
 
-      otRounding: body.otRounding ?? policy.otRounding ?? defaults.otRounding,
+      otRounding: normalizeOtRounding(
+        body.otRounding ?? policy.otRounding ?? defaults.otRounding
+      ),
       otMultiplier: body.otMultiplier ?? policy.otMultiplier ?? defaults.otMultiplier,
       holidayMultiplier:
         body.holidayMultiplier ??
@@ -383,14 +413,14 @@ async function updateMyClinicPolicy(req, res) {
         defaults.lockAfterPayrollClose,
 
       // ✅ NEW: approval roles
-      attendanceApprovalRoles: normalizeStringArray(
+      attendanceApprovalRoles: normalizeApprovalRoles(
         body.attendanceApprovalRoles ||
           policy.attendanceApprovalRoles ||
           defaults.attendanceApprovalRoles,
         ["clinic_admin"]
       ),
 
-      otApprovalRoles: normalizeStringArray(
+      otApprovalRoles: normalizeApprovalRoles(
         body.otApprovalRoles ||
           policy.otApprovalRoles ||
           defaults.otApprovalRoles,
@@ -403,15 +433,7 @@ async function updateMyClinicPolicy(req, res) {
 
     const err = validatePolicy(next);
     if (err) {
-      return res.status(400).json({
-        message: err,
-        debug: {
-          attendanceApprovalRoles: next.attendanceApprovalRoles,
-          otApprovalRoles: next.otApprovalRoles,
-          otWindowStart: next.otWindowStart,
-          otWindowEnd: next.otWindowEnd,
-        },
-      });
+      return res.status(400).json({ message: err });
     }
 
     policy.timezone = normStr(next.timezone) || "Asia/Bangkok";
@@ -422,7 +444,7 @@ async function updateMyClinicPolicy(req, res) {
 
     policy.graceLateMinutes = Number(next.graceLateMinutes);
 
-    policy.otRule = normStr(next.otRule);
+    policy.otRule = normalizeOtRule(next.otRule);
     policy.regularHoursPerDay = Number(next.regularHoursPerDay);
 
     policy.otClockTime = normStr(next.otClockTime);
@@ -434,7 +456,7 @@ async function updateMyClinicPolicy(req, res) {
 
     policy.otStartAfterMinutes = Number(next.otStartAfterMinutes);
 
-    policy.otRounding = normStr(next.otRounding);
+    policy.otRounding = normalizeOtRounding(next.otRounding);
     policy.otMultiplier = Number(next.otMultiplier);
     policy.holidayMultiplier = Number(next.holidayMultiplier);
     policy.weekendAllDayOT = !!next.weekendAllDayOT;
@@ -448,11 +470,11 @@ async function updateMyClinicPolicy(req, res) {
     policy.lockAfterPayrollClose = !!next.lockAfterPayrollClose;
 
     // ✅ NEW: approval roles
-    policy.attendanceApprovalRoles = normalizeStringArray(
+    policy.attendanceApprovalRoles = normalizeApprovalRoles(
       next.attendanceApprovalRoles,
       ["clinic_admin"]
     );
-    policy.otApprovalRoles = normalizeStringArray(
+    policy.otApprovalRoles = normalizeApprovalRoles(
       next.otApprovalRoles,
       ["clinic_admin"]
     );
