@@ -547,6 +547,7 @@ async function checkIn(req, res) {
     return res.status(201).json({
       ok: true,
       session: created,
+      currentSessionId: String(created._id || ""),
       policy: buildPublicPolicy(policy),
     });
   } catch (e) {
@@ -850,13 +851,17 @@ async function listClinicSessions(req, res) {
 // ======================================================
 // GET /attendance/me-preview?workDate=yyyy-MM-dd
 // ✅ รองรับ helper (ไม่มี staffId ก็ได้)
-// - OT count: approved only
+// ✅ FIX: ต้องเห็น open session ด้วย ไม่ใช่เฉพาะ closed
+// - summary คิดจาก closed sessions / approved OT เป็นหลัก
+// - attendance state ใช้ sessions ทั้งวัน
 // ======================================================
 async function myDayPreview(req, res) {
   try {
     const { clinicId, principalId, userId } = getPrincipal(req);
 
-    if (!clinicId) return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
+    if (!clinicId) {
+      return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
+    }
     if (!principalId) {
       return res.status(401).json({ ok: false, message: "Missing userId/staffId in token" });
     }
@@ -868,15 +873,35 @@ async function myDayPreview(req, res) {
 
     const policy = await getOrCreatePolicy(clinicId, userId || principalId);
 
+    // ✅ IMPORTANT: เอาทุก session ของวันนั้นมา ไม่ filter status: "closed"
     const sessions = await AttendanceSession.find({
       clinicId,
       principalId,
       workDate,
-      status: "closed",
-    }).lean();
+    })
+      .sort({ checkInAt: -1, createdAt: -1 })
+      .lean();
 
-    const workedMinutes = sessions.reduce((sum, x) => sum + clampMinutes(x.workedMinutes), 0);
-    const otMinutesRawFromSessions = sessions.reduce((sum, x) => sum + clampMinutes(x.otMinutes), 0);
+    const openSession =
+      sessions.find((x) => s(x.status).toLowerCase() === "open") || null;
+
+    const closedSessions = sessions.filter(
+      (x) => s(x.status).toLowerCase() === "closed"
+    );
+
+    const checkedIn = !!openSession || closedSessions.length > 0;
+    const checkedOut = !openSession && closedSessions.length > 0;
+
+    // ✅ summary/payroll ยังคิดจาก closed session เป็นหลักเหมือนเดิม
+    const workedMinutes = closedSessions.reduce(
+      (sum, x) => sum + clampMinutes(x.workedMinutes),
+      0
+    );
+
+    const otMinutesRawFromSessions = closedSessions.reduce(
+      (sum, x) => sum + clampMinutes(x.otMinutes),
+      0
+    );
 
     const approvedOt = await Overtime.find({
       clinicId,
@@ -885,7 +910,10 @@ async function myDayPreview(req, res) {
       status: "approved",
     }).lean();
 
-    const otMinutesApproved = approvedOt.reduce((sum, x) => sum + clampMinutes(x.minutes), 0);
+    const otMinutesApproved = approvedOt.reduce(
+      (sum, x) => sum + clampMinutes(x.minutes),
+      0
+    );
 
     let emp = null;
     const ownerUserId = userId || "";
@@ -914,9 +942,27 @@ async function myDayPreview(req, res) {
     const otMul = Number(emp?.otMultiplierNormal || policy.otMultiplier || 1.5);
     const otPay = (otMinutesApproved / 60) * baseHourly * otMul;
 
+    const checkInAt = openSession?.checkInAt || closedSessions[0]?.checkInAt || null;
+    const checkOutAt = closedSessions[0]?.checkOutAt || null;
+
     return res.json({
       ok: true,
       workDate,
+      checkedIn,
+      checkedOut,
+      checkInAt,
+      checkOutAt,
+      message: checkedIn
+        ? checkedOut
+          ? "วันนี้เช็คอินและเช็คเอาท์แล้ว"
+          : "วันนี้เช็คอินแล้ว (ยังไม่เช็คเอาท์)"
+        : "วันนี้ยังไม่ได้เช็คอิน",
+      attendance: {
+        checkedIn,
+        checkedOut,
+        openSession,
+        currentSessionId: openSession ? String(openSession._id || "") : "",
+      },
       employee: emp || null,
       principal: {
         principalId,
