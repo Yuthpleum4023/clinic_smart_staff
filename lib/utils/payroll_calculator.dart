@@ -1,14 +1,14 @@
 // lib/utils/payroll_calculator.dart
 //
 // ✅ Payroll Calculator (Full-time + Part-time + OT)
-// - Full-time: baseSalary + bonus + OT - SSO(% with BASE CAP 17,500 & MAX 750) - absentDeduction
+// - Full-time: baseSalary + bonus + OT - SSO(% with BASE CAP 17,500) - absentDeduction
 // - Part-time: (regularHours * hourlyWage) + bonus + OT (no SSO, no absent)
 // - OT: sum(hours * rate * multiplier)  rate = hourlyRate(fulltime) or hourlyWage(parttime)
 //
 // ✅ IMPORTANT FIX:
-// - ❌ ไม่ fix % ประกันสังคม
-// - ✅ fix "ฐานเงินเดือนสูงสุด" ที่ 17,500 บาท
-// - ✅ คงเพดานเงินหักสูงสุด 750 บาท
+// - ✅ SSO ใช้ % ที่ admin set up
+// - ✅ cap เฉพาะ "ฐานเงินเดือน" ที่ 17,500 บาท
+// - ✅ ไม่ hard code เพดานเงินหัก 750/875
 //
 
 import '../models/employee_model.dart';
@@ -44,51 +44,51 @@ class PayrollMonthResult {
     required this.year,
     required this.month,
     required this.isPartTime,
-
     required this.monthlyBaseSalary,
     required this.absentDays,
     required this.socialSecurity,
     required this.absentDeduction,
-
     required this.bonus,
-
     required this.hourlyWage,
     required this.regularHours,
     required this.regularPay,
-
     required this.otHours,
     required this.otPay,
-
     required this.net,
   });
 }
 
 class PayrollCalculator {
   // ============================================================
-  // ✅ SSO GLOBAL RULES (ต้องตรงกับ EmployeeModel)
+  // ✅ SSO RULE
+  // - cap เฉพาะฐานเงินเดือน
+  // - % มาจาก admin setup
   // ============================================================
-  static const double ssoMaxBaseSalary = 17500.0; // ✅ เพดานฐานเงินเดือน
-  static const double ssoMaxEmployeeMonthly = 750.0; // ✅ เพดานเงินหัก
+  static const double ssoMaxBaseSalary = 17500.0;
 
   static bool isPartTime(EmployeeModel emp) =>
-      emp.employmentType.toLowerCase() == 'parttime';
+      emp.employmentType.toLowerCase().trim() == 'parttime';
 
   // ============================================================
-  // ✅ FIXED: คำนวณ SSO ด้วยฐาน capped
+  // ✅ FIXED: คำนวณ SSO ด้วยฐาน capped เท่านั้น
+  // เช่น:
+  // - base 16000, percent 5 => 800
+  // - base 20000, percent 5 => 17500 * 5% = 875
   // ============================================================
   static double _calcSso(double baseSalary, double percent) {
-    // cap ฐานเงินเดือนก่อน
+    final safePercent = percent < 0 ? 0.0 : percent;
+    final safeBase = baseSalary < 0 ? 0.0 : baseSalary;
+
     final cappedBase =
-        baseSalary > ssoMaxBaseSalary ? ssoMaxBaseSalary : baseSalary;
+        safeBase > ssoMaxBaseSalary ? ssoMaxBaseSalary : safeBase;
 
-    final raw = cappedBase * (percent / 100.0);
-
-    // cap เงินหักสูงสุด
-    return raw > ssoMaxEmployeeMonthly ? ssoMaxEmployeeMonthly : raw;
+    return cappedBase * (safePercent / 100.0);
   }
 
   static double _calcAbsentDeduction(double baseSalary, int absentDays) {
-    return (baseSalary / 30.0) * absentDays;
+    final safeBase = baseSalary < 0 ? 0.0 : baseSalary;
+    final safeAbsent = absentDays < 0 ? 0 : absentDays;
+    return (safeBase / 30.0) * safeAbsent;
   }
 
   static double _sumOtHours(EmployeeModel emp, int year, int month) {
@@ -128,23 +128,27 @@ class PayrollCalculator {
     int hoursPerDay = 8,
   }) {
     final part = isPartTime(emp);
-    final bonus = emp.bonus;
+    final bonus = emp.bonus < 0 ? 0.0 : emp.bonus;
     final otHours = _sumOtHours(emp, year, month);
 
     if (!part) {
       // ---------------- Full-time ----------------
-      final baseSalary = emp.baseSalary;
-      final absentDays = emp.absentDays;
+      final baseSalary = emp.baseSalary < 0 ? 0.0 : emp.baseSalary;
+      final absentDays = emp.absentDays < 0 ? 0 : emp.absentDays;
 
       final hourlyRate = emp.hourlyRate(
         workDaysPerMonth: workDaysPerMonth,
         hoursPerDay: hoursPerDay,
       );
 
-      final otPay =
-          _sumOtPay(emp: emp, year: year, month: month, rate: hourlyRate);
+      final otPay = _sumOtPay(
+        emp: emp,
+        year: year,
+        month: month,
+        rate: hourlyRate,
+      );
 
-      // ✅ FIXED SSO (cap base 17,500)
+      // ✅ SSO = min(baseSalary, 17500) * percent
       final sso = _calcSso(baseSalary, ssoPercent);
       final absentDeduction = _calcAbsentDeduction(baseSalary, absentDays);
 
@@ -154,32 +158,30 @@ class PayrollCalculator {
         year: year,
         month: month,
         isPartTime: false,
-
         monthlyBaseSalary: baseSalary,
         absentDays: absentDays,
         socialSecurity: sso,
         absentDeduction: absentDeduction,
-
         bonus: bonus,
-
         hourlyWage: 0.0,
         regularHours: 0.0,
         regularPay: 0.0,
-
         otHours: otHours,
         otPay: otPay,
-
-        net: net,
+        net: net < 0 ? 0.0 : net,
       );
     } else {
       // ---------------- Part-time ----------------
-      final hourlyWage = emp.hourlyWage;
-
-      final regularHours = parttimeRegularHours;
+      final hourlyWage = emp.hourlyWage < 0 ? 0.0 : emp.hourlyWage;
+      final regularHours = parttimeRegularHours < 0 ? 0.0 : parttimeRegularHours;
       final regularPay = regularHours * hourlyWage;
 
-      final otPay =
-          _sumOtPay(emp: emp, year: year, month: month, rate: hourlyWage);
+      final otPay = _sumOtPay(
+        emp: emp,
+        year: year,
+        month: month,
+        rate: hourlyWage,
+      );
 
       final net = regularPay + bonus + otPay;
 
@@ -187,22 +189,17 @@ class PayrollCalculator {
         year: year,
         month: month,
         isPartTime: true,
-
         monthlyBaseSalary: 0.0,
         absentDays: 0,
         socialSecurity: 0.0,
         absentDeduction: 0.0,
-
         bonus: bonus,
-
         hourlyWage: hourlyWage,
         regularHours: regularHours,
         regularPay: regularPay,
-
         otHours: otHours,
         otPay: otPay,
-
-        net: net,
+        net: net < 0 ? 0.0 : net,
       );
     }
   }

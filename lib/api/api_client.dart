@@ -1,14 +1,21 @@
 // lib/api/api_client.dart
 //
-// ✅ FINAL — SINGLE SOURCE OF TRUTH FOR AUTH HEADER
+// ✅ FINAL — SINGLE SOURCE OF TRUTH FOR AUTH HEADER (JWT + OPAQUE TOKEN SAFE)
+// + ✅ DEBUG LOGGER (debug mode only): method/url/auth/status/body-preview
+// + ✅ FRIENDLY NETWORK ERROR: timeout / socket / connection
+// + ✅ BETTER HTTP ERROR MAPPING: 401/403/400/500
+//
 // - sanitize token (trim / remove quotes / remove leading "Bearer " / reject null)
-// - reject non-JWT token (ต้องมี 3 ส่วน a.b.c) กัน jwt malformed
+// - ✅ ALLOW non-JWT token (opaque tokens)  ❗️ไม่บังคับต้องมี 3 ส่วน a.b.c
+// - ✅ if auth=true but token missing/invalid -> throw (ไม่เงียบ)
 // - Render-safe timeout (60s) กัน cold start
 // - supports: GET / POST / PATCH / PUT / DELETE
 //
+import 'dart:async';
 import 'dart:convert';
-import 'package:http/http.dart' as http;
+import 'dart:io';
 
+import 'package:http/http.dart' as http;
 import 'package:clinic_smart_staff/services/auth_storage.dart';
 
 class ApiClient {
@@ -27,6 +34,22 @@ class ApiClient {
     return Uri.parse('$base$p').replace(queryParameters: query);
   }
 
+  // ===== Debug log (only in debug mode) =====
+  void _d(String msg) {
+    // assert runs only in debug mode
+    assert(() {
+      // ignore: avoid_print
+      print(msg);
+      return true;
+    }());
+  }
+
+  String _preview(String s, {int max = 260}) {
+    final t = s.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (t.length <= max) return t;
+    return '${t.substring(0, max)}...';
+  }
+
   // ===== Token sanitize =====
   String _cleanToken(String raw) {
     var t = raw.trim();
@@ -36,17 +59,19 @@ class ApiClient {
       t = t.substring(1, t.length - 1).trim();
     }
 
-    // กันเคสเก็บมาเป็น Bearer xxx
-    if (t.toLowerCase().startsWith('bearer ')) {
+    // กันเคสเก็บมาเป็น Bearer xxx (ซ้ำหลายรอบก็เอาออกให้หมด)
+    while (t.toLowerCase().startsWith('bearer ')) {
       t = t.substring(7).trim();
     }
 
+    // กัน newline/space แปลก ๆ (token ไม่ควรมี whitespace)
+    t = t.replaceAll(RegExp(r'\s+'), '').trim();
+
     // กัน "null" / ว่าง
-    if (t.isEmpty || t == 'null') return '';
+    if (t.isEmpty || t.toLowerCase() == 'null') return '';
 
-    // กัน token ที่ไม่ใช่ JWT (ต้องมี 3 ส่วน)
-    if (t.split('.').length != 3) return '';
-
+    // ✅ IMPORTANT:
+    // ❌ ไม่บังคับต้องเป็น JWT แล้ว (รองรับ opaque token)
     return t;
   }
 
@@ -56,15 +81,20 @@ class ApiClient {
       'Accept': 'application/json',
     };
 
-    if (auth) {
-      final raw = await AuthStorage.getToken();
-      if (raw != null) {
-        final token = _cleanToken(raw);
-        if (token.isNotEmpty) {
-          h['Authorization'] = 'Bearer $token';
-        }
-      }
+    if (!auth) return h;
+
+    final raw = await AuthStorage.getToken();
+    if (raw == null) {
+      // ✅ ให้พังแบบมีเหตุผล
+      throw Exception('AUTH_REQUIRED');
     }
+
+    final token = _cleanToken(raw);
+    if (token.isEmpty) {
+      throw Exception('AUTH_REQUIRED');
+    }
+
+    h['Authorization'] = 'Bearer $token';
     return h;
   }
 
@@ -81,7 +111,31 @@ class ApiClient {
   Exception _httpError(int code, String body) {
     final m = _decodeJson(body);
     final msg = (m['message'] ?? m['error'] ?? 'HTTP $code').toString();
-    return Exception('API Error ($code): $msg');
+
+    // ✅ map เป็นข้อความที่ UI แยกได้ง่ายขึ้น (ยังคงเป็น Exception ตัวเดียว)
+    if (code == 401) return Exception('API 401: SESSION_EXPIRED');
+    if (code == 403) return Exception('API 403: FORBIDDEN');
+    if (code >= 500) return Exception('API $code: SERVER_ERROR');
+
+    return Exception('API $code: $msg');
+  }
+
+  Exception _netError(Object e) {
+    if (e is TimeoutException) {
+      return Exception('NETWORK_TIMEOUT');
+    }
+    if (e is SocketException) {
+      return Exception('NETWORK_ERROR');
+    }
+    // บางที http โยน ClientException
+    final s = e.toString().toLowerCase();
+    if (s.contains('socket') ||
+        s.contains('failed host lookup') ||
+        s.contains('connection') ||
+        s.contains('network')) {
+      return Exception('NETWORK_ERROR');
+    }
+    return Exception(e.toString());
   }
 
   // ===== Verbs =====
@@ -90,17 +144,24 @@ class ApiClient {
     bool auth = true,
     Map<String, String>? query,
   }) async {
-    final res = await http
-        .get(
-          _uri(path, query),
-          headers: await _headers(auth: auth),
-        )
-        .timeout(_timeout);
+    final url = _uri(path, query);
+    _d('[API] GET $url auth=$auth');
 
-    if (res.statusCode >= 200 && res.statusCode < 300) {
-      return _decodeJson(res.body);
+    try {
+      final res = await http
+          .get(url, headers: await _headers(auth: auth))
+          .timeout(_timeout);
+
+      _d('[API] <- ${res.statusCode} GET $url body="${_preview(res.body)}"');
+
+      if (res.statusCode >= 200 && res.statusCode < 300) {
+        return _decodeJson(res.body);
+      }
+      throw _httpError(res.statusCode, res.body);
+    } catch (e) {
+      _d('[API] !! GET $url error="${e.toString()}"');
+      throw _netError(e);
     }
-    throw _httpError(res.statusCode, res.body);
   }
 
   Future<Map<String, dynamic>> post(
@@ -109,18 +170,25 @@ class ApiClient {
     Map<String, String>? query,
     Map<String, dynamic>? body,
   }) async {
-    final res = await http
-        .post(
-          _uri(path, query),
-          headers: await _headers(auth: auth),
-          body: json.encode(body ?? {}),
-        )
-        .timeout(_timeout);
+    final url = _uri(path, query);
+    final payload = json.encode(body ?? {});
+    _d('[API] POST $url auth=$auth body="${_preview(payload)}"');
 
-    if (res.statusCode >= 200 && res.statusCode < 300) {
-      return _decodeJson(res.body);
+    try {
+      final res = await http
+          .post(url, headers: await _headers(auth: auth), body: payload)
+          .timeout(_timeout);
+
+      _d('[API] <- ${res.statusCode} POST $url body="${_preview(res.body)}"');
+
+      if (res.statusCode >= 200 && res.statusCode < 300) {
+        return _decodeJson(res.body);
+      }
+      throw _httpError(res.statusCode, res.body);
+    } catch (e) {
+      _d('[API] !! POST $url error="${e.toString()}"');
+      throw _netError(e);
     }
-    throw _httpError(res.statusCode, res.body);
   }
 
   Future<Map<String, dynamic>> patch(
@@ -129,22 +197,28 @@ class ApiClient {
     Map<String, String>? query,
     Map<String, dynamic>? body,
   }) async {
-    final res = await http
-        .patch(
-          _uri(path, query),
-          headers: await _headers(auth: auth),
-          body: json.encode(body ?? {}),
-        )
-        .timeout(_timeout);
+    final url = _uri(path, query);
+    final payload = json.encode(body ?? {});
+    _d('[API] PATCH $url auth=$auth body="${_preview(payload)}"');
 
-    if (res.statusCode >= 200 && res.statusCode < 300) {
-      // บาง backend อาจคืน 204 body ว่าง
-      if (res.body.trim().isEmpty) {
-        return {'ok': true, 'statusCode': res.statusCode};
+    try {
+      final res = await http
+          .patch(url, headers: await _headers(auth: auth), body: payload)
+          .timeout(_timeout);
+
+      _d('[API] <- ${res.statusCode} PATCH $url body="${_preview(res.body)}"');
+
+      if (res.statusCode >= 200 && res.statusCode < 300) {
+        if (res.body.trim().isEmpty) {
+          return {'ok': true, 'statusCode': res.statusCode};
+        }
+        return _decodeJson(res.body);
       }
-      return _decodeJson(res.body);
+      throw _httpError(res.statusCode, res.body);
+    } catch (e) {
+      _d('[API] !! PATCH $url error="${e.toString()}"');
+      throw _netError(e);
     }
-    throw _httpError(res.statusCode, res.body);
   }
 
   Future<Map<String, dynamic>> put(
@@ -153,21 +227,28 @@ class ApiClient {
     Map<String, String>? query,
     Map<String, dynamic>? body,
   }) async {
-    final res = await http
-        .put(
-          _uri(path, query),
-          headers: await _headers(auth: auth),
-          body: json.encode(body ?? {}),
-        )
-        .timeout(_timeout);
+    final url = _uri(path, query);
+    final payload = json.encode(body ?? {});
+    _d('[API] PUT $url auth=$auth body="${_preview(payload)}"');
 
-    if (res.statusCode >= 200 && res.statusCode < 300) {
-      if (res.body.trim().isEmpty) {
-        return {'ok': true, 'statusCode': res.statusCode};
+    try {
+      final res = await http
+          .put(url, headers: await _headers(auth: auth), body: payload)
+          .timeout(_timeout);
+
+      _d('[API] <- ${res.statusCode} PUT $url body="${_preview(res.body)}"');
+
+      if (res.statusCode >= 200 && res.statusCode < 300) {
+        if (res.body.trim().isEmpty) {
+          return {'ok': true, 'statusCode': res.statusCode};
+        }
+        return _decodeJson(res.body);
       }
-      return _decodeJson(res.body);
+      throw _httpError(res.statusCode, res.body);
+    } catch (e) {
+      _d('[API] !! PUT $url error="${e.toString()}"');
+      throw _netError(e);
     }
-    throw _httpError(res.statusCode, res.body);
   }
 
   Future<Map<String, dynamic>> delete(
@@ -176,21 +257,31 @@ class ApiClient {
     Map<String, String>? query,
     Map<String, dynamic>? body,
   }) async {
-    final req = http.Request('DELETE', _uri(path, query));
-    req.headers.addAll(await _headers(auth: auth));
-    if (body != null) {
-      req.body = json.encode(body);
-    }
+    final url = _uri(path, query);
+    _d('[API] DELETE $url auth=$auth body="${_preview(json.encode(body ?? {}))}"');
 
-    final streamed = await req.send().timeout(_timeout);
-    final res = await http.Response.fromStream(streamed);
-
-    if (res.statusCode >= 200 && res.statusCode < 300) {
-      if (res.body.trim().isEmpty) {
-        return {'ok': true, 'statusCode': res.statusCode};
+    try {
+      final req = http.Request('DELETE', url);
+      req.headers.addAll(await _headers(auth: auth));
+      if (body != null) {
+        req.body = json.encode(body);
       }
-      return _decodeJson(res.body);
+
+      final streamed = await req.send().timeout(_timeout);
+      final res = await http.Response.fromStream(streamed);
+
+      _d('[API] <- ${res.statusCode} DELETE $url body="${_preview(res.body)}"');
+
+      if (res.statusCode >= 200 && res.statusCode < 300) {
+        if (res.body.trim().isEmpty) {
+          return {'ok': true, 'statusCode': res.statusCode};
+        }
+        return _decodeJson(res.body);
+      }
+      throw _httpError(res.statusCode, res.body);
+    } catch (e) {
+      _d('[API] !! DELETE $url error="${e.toString()}"');
+      throw _netError(e);
     }
-    throw _httpError(res.statusCode, res.body);
   }
 }

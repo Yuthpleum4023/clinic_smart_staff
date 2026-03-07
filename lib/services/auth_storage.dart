@@ -1,3 +1,10 @@
+// lib/services/auth_storage.dart
+//
+// ✅ FIX — DO NOT REQUIRE JWT FORMAT ON CLIENT
+// - sanitize: trim/strip quotes/strip bearer/remove weird whitespace
+// - allow opaque tokens (ไม่บังคับต้องมี 3 ส่วน)
+// - still blocks empty/"null"
+//
 import 'package:shared_preferences/shared_preferences.dart';
 
 class AuthStorage {
@@ -28,6 +35,11 @@ class AuthStorage {
   static Future<void> saveToken(String token) async {
     final prefs = await SharedPreferences.getInstance();
     final t = _sanitize(token);
+    if (t.isEmpty) {
+      // ถ้า token ไม่ถูกต้องก็ลบทิ้ง ไม่เก็บ garbage
+      await prefs.remove(_tokenKey);
+      return;
+    }
     await prefs.setString(_tokenKey, t);
   }
 
@@ -37,10 +49,9 @@ class AuthStorage {
     if (raw == null) return null;
 
     final t = _sanitize(raw);
+    if (t.isEmpty) return null;
 
-    // ✅ guard: ถ้าไม่เหมือน JWT (ต้องมี 3 ส่วน) อย่าส่งไป
-    if (t.split('.').length != 3) return null;
-
+    // ✅ IMPORTANT: ไม่บังคับต้องเป็น JWT แล้ว
     return t;
   }
 

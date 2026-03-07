@@ -1,10 +1,10 @@
 // lib/screens/auth/login_screen.dart
 //
-// ✅ FULL FILE (FIX "no token" after Signup + FIX sheet overflow / yellow bar)
-// - ✅ เพิ่ม SharedPreferences และบันทึก token หลาย key ให้ทุกหน้าที่ดึง token ได้ตรงกัน
-// - ✅ Login ใช้ AuthApi.login() (AuthApi เซฟ token เองแล้ว) แต่เรายัง "sync" key เพิ่มให้ชัวร์
-// - ✅ Signup (Invite / Clinic Admin) ได้ token กลับมา -> ✅ snack สำเร็จชัดเจน + เซฟครบทุก key แล้วไป AuthGate
-// - ✅ FIX แผ่นเหลือง/overflow ตอนคีย์บอร์ดเด้ง: useSafeArea + SafeArea + keyboardDismissBehavior
+// ✅ FULL FILE (FIX invite signup "silent" + FIX sheet overflow / yellow bar)
+// - ✅ token save หลาย key
+// - ✅ Signup ด้วย Invite: แสดง error/success "ในแผ่น" (ไม่ถูก bottom sheet บัง)
+// - ✅ useSafeArea + SafeArea + keyboardDismissBehavior
+// - ✅ _u() กัน double slash
 //
 
 import 'dart:convert';
@@ -44,7 +44,12 @@ class _LoginScreenState extends State<LoginScreen> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
-  Uri _u(String path) => Uri.parse('${ApiConfig.authBaseUrl}$path');
+  // ✅ กัน baseUrl มี / ท้าย แล้ว path มี / หน้า -> จะไม่กลายเป็น //
+  Uri _u(String path) {
+    final base = ApiConfig.authBaseUrl.replaceAll(RegExp(r'\/+$'), '');
+    final p = path.startsWith('/') ? path : '/$path';
+    return Uri.parse('$base$p');
+  }
 
   Future<void> _goGate() async {
     if (!mounted) return;
@@ -57,30 +62,43 @@ class _LoginScreenState extends State<LoginScreen> {
 
   // ✅ IMPORTANT: เซฟ token ให้ครบทุกที่ที่แอปคุณอาจไปอ่าน
   Future<void> _saveToken(String token) async {
-    // 1) storage หลัก
     await AuthStorage.saveToken(token);
 
-    // 2) prefs หลาย key (รองรับหน้าที่ไปหา token หลายชื่อ)
     final prefs = await SharedPreferences.getInstance();
-    const keys = ['jwtToken', 'token', 'authToken', 'userToken', 'jwt_token'];
+    const keys = [
+      'jwtToken',
+      'token',
+      'authToken',
+      'userToken',
+      'jwt_token',
+      'accessToken',
+      'access_token',
+    ];
     for (final k in keys) {
       await prefs.setString(k, token);
     }
   }
 
-  // ✅ Sync token จาก AuthStorage -> prefs keys (กรณี login ผ่าน AuthApi.login ที่เซฟไว้แล้ว)
   Future<void> _syncTokenToPrefs() async {
     final token = await AuthStorage.getToken();
     if (token == null || token.trim().isEmpty) return;
 
     final prefs = await SharedPreferences.getInstance();
-    const keys = ['jwtToken', 'token', 'authToken', 'userToken', 'jwt_token'];
+    const keys = [
+      'jwtToken',
+      'token',
+      'authToken',
+      'userToken',
+      'jwt_token',
+      'accessToken',
+      'access_token',
+    ];
     for (final k in keys) {
       await prefs.setString(k, token);
     }
   }
 
-  // ===================== LOGIN (Regis → Login → Me → Home จบ) =====================
+  // ===================== LOGIN =====================
   Future<void> _doLogin() async {
     FocusScope.of(context).unfocus();
     if (_loading) return;
@@ -95,13 +113,8 @@ class _LoginScreenState extends State<LoginScreen> {
 
     setState(() => _loading = true);
     try {
-      // ✅ ใช้ AuthApi (อย่ายิงด้วย scoreBaseUrl)
       await AuthApi.login(email: id, password: pw);
-
-      // ✅ ทำให้มั่นใจว่า token ถูก sync ไปทุก key ที่ใช้ทั้งแอป
       await _syncTokenToPrefs();
-
-      // ✅ ทดสอบ me ทันที เพื่อฟันธงว่ามีสิทธิ์/role และไม่ค้าง
       await AuthApi.me();
 
       _snack('เข้าสู่ระบบสำเร็จ ✅');
@@ -120,11 +133,9 @@ class _LoginScreenState extends State<LoginScreen> {
     final result = await showModalBottomSheet<_ForgotResult>(
       context: context,
       isScrollControlled: true,
-      useSafeArea: true, // ✅ FIX overflow
+      useSafeArea: true,
       showDragHandle: true,
-      builder: (_) => _ForgotPasswordSheet(
-        initialId: _idCtrl.text.trim(),
-      ),
+      builder: (_) => _ForgotPasswordSheet(initialId: _idCtrl.text.trim(), u: _u),
     );
 
     if (!mounted) return;
@@ -138,24 +149,22 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
-  // ===================== SIGN UP: INVITE (HELPER/EMPLOYEE via INVITE) =====================
+  // ===================== SIGN UP: INVITE =====================
   Future<void> _openSignupInvite() async {
     if (_loading) return;
 
     final token = await showModalBottomSheet<String>(
       context: context,
       isScrollControlled: true,
-      useSafeArea: true, // ✅ FIX overflow
+      useSafeArea: true,
       showDragHandle: true,
-      builder: (_) => const _SignupInviteSheet(),
+      builder: (_) => _SignupInviteSheet(u: _u),
     );
 
     if (!mounted) return;
     if (token == null || token.isEmpty) return;
 
-    // ✅ FIX: ให้เด้ง feedback ที่หน้า Login ชัด ๆ
     _snack('สมัครสำเร็จ ✅ กำลังเข้าสู่ระบบ...');
-
     await _saveToken(token);
     await _goGate();
   }
@@ -167,17 +176,15 @@ class _LoginScreenState extends State<LoginScreen> {
     final token = await showModalBottomSheet<String>(
       context: context,
       isScrollControlled: true,
-      useSafeArea: true, // ✅ FIX overflow
+      useSafeArea: true,
       showDragHandle: true,
-      builder: (_) => const _SignupClinicAdminSheet(),
+      builder: (_) => _SignupClinicAdminSheet(u: _u),
     );
 
     if (!mounted) return;
     if (token == null || token.isEmpty) return;
 
-    // ✅ FIX: ให้เด้ง feedback ที่หน้า Login ชัด ๆ
     _snack('สมัครคลินิกสำเร็จ ✅ กำลังเข้าสู่ระบบ...');
-
     await _saveToken(token);
     await _goGate();
   }
@@ -189,6 +196,7 @@ class _LoginScreenState extends State<LoginScreen> {
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: ListView(
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
           children: [
             const SizedBox(height: 12),
             TextField(
@@ -259,8 +267,6 @@ class _LoginScreenState extends State<LoginScreen> {
 
 // ======================================================================
 // BottomSheet: Forgot password
-// POST /forgot-password   { emailOrPhone }
-// แล้วพาไปหน้า ResetPasswordScreen
 // ======================================================================
 
 class _ForgotResult {
@@ -270,7 +276,8 @@ class _ForgotResult {
 
 class _ForgotPasswordSheet extends StatefulWidget {
   final String initialId;
-  const _ForgotPasswordSheet({required this.initialId});
+  final Uri Function(String) u;
+  const _ForgotPasswordSheet({required this.initialId, required this.u});
 
   @override
   State<_ForgotPasswordSheet> createState() => _ForgotPasswordSheetState();
@@ -279,6 +286,7 @@ class _ForgotPasswordSheet extends StatefulWidget {
 class _ForgotPasswordSheetState extends State<_ForgotPasswordSheet> {
   late final TextEditingController _idCtrl;
   bool _loading = false;
+  String _err = '';
 
   @override
   void initState() {
@@ -292,42 +300,39 @@ class _ForgotPasswordSheetState extends State<_ForgotPasswordSheet> {
     super.dispose();
   }
 
-  void _snack(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-  }
-
-  Uri _u(String path) => Uri.parse('${ApiConfig.authBaseUrl}$path');
-
   Future<void> _send() async {
     FocusScope.of(context).unfocus();
     if (_loading) return;
 
     final id = _idCtrl.text.trim();
     if (id.isEmpty) {
-      _snack('กรอก Email/Phone');
+      setState(() => _err = 'กรอก Email/Phone');
       return;
     }
 
-    setState(() => _loading = true);
+    setState(() {
+      _loading = true;
+      _err = '';
+    });
+
     try {
       final res = await http
           .post(
-            _u('/forgot-password'),
+            widget.u('/forgot-password'),
             headers: const {'Content-Type': 'application/json'},
             body: jsonEncode({'emailOrPhone': id}),
           )
-          .timeout(const Duration(seconds: 15));
+          .timeout(const Duration(seconds: 20));
 
       if (res.statusCode != 200) {
-        throw Exception('forgot-password failed: ${res.statusCode} ${res.body}');
+        throw Exception('ส่งไม่สำเร็จ (${res.statusCode})');
       }
 
       if (!mounted) return;
-      _snack('ส่งคำขอรีเซ็ตรหัสผ่านแล้ว ✅ (OTP อยู่ใน log ตอนนี้)');
       Navigator.pop(context, const _ForgotResult(sentOk: true));
     } catch (e) {
-      _snack('ขอรีเซ็ตรหัสผ่านไม่สำเร็จ: $e');
+      if (!mounted) return;
+      setState(() => _err = 'ขอรีเซ็ตรหัสผ่านไม่สำเร็จ: $e');
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -343,10 +348,8 @@ class _ForgotPasswordSheetState extends State<_ForgotPasswordSheet> {
           keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
           shrinkWrap: true,
           children: [
-            const Text(
-              'ลืมรหัสผ่าน',
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
-            ),
+            const Text('ลืมรหัสผ่าน',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900)),
             const SizedBox(height: 10),
             TextField(
               controller: _idCtrl,
@@ -355,6 +358,16 @@ class _ForgotPasswordSheetState extends State<_ForgotPasswordSheet> {
                 border: OutlineInputBorder(),
               ),
             ),
+            if (_err.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Text(
+                _err,
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.error,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ],
             const SizedBox(height: 12),
             SizedBox(
               width: double.infinity,
@@ -367,7 +380,7 @@ class _ForgotPasswordSheetState extends State<_ForgotPasswordSheet> {
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
                     : const Icon(Icons.sms),
-                label: const Text('ขอรหัส OTP'),
+                label: Text(_loading ? 'กำลังส่ง...' : 'ขอรหัส OTP'),
               ),
             ),
           ],
@@ -378,12 +391,13 @@ class _ForgotPasswordSheetState extends State<_ForgotPasswordSheet> {
 }
 
 // ======================================================================
-// Sheet: Employee signup with invite  POST /register-with-invite
-// คืนค่า token กลับไปที่หน้า Login
+// Sheet: Signup with invite  POST /register-with-invite
+// ✅ FIX: ไม่ใช้ SnackBar เป็นหลัก (ถูกบัง) -> แสดง error ในแผ่น
 // ======================================================================
 
 class _SignupInviteSheet extends StatefulWidget {
-  const _SignupInviteSheet();
+  final Uri Function(String) u;
+  const _SignupInviteSheet({required this.u});
 
   @override
   State<_SignupInviteSheet> createState() => _SignupInviteSheetState();
@@ -397,6 +411,7 @@ class _SignupInviteSheetState extends State<_SignupInviteSheet> {
   final _pwCtrl = TextEditingController();
 
   bool _loading = false;
+  String _err = '';
 
   @override
   void dispose() {
@@ -408,12 +423,13 @@ class _SignupInviteSheetState extends State<_SignupInviteSheet> {
     super.dispose();
   }
 
-  void _snack(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  String _pickMessageFromBody(String body) {
+    try {
+      final any = jsonDecode(body);
+      if (any is Map && any['message'] != null) return any['message'].toString();
+    } catch (_) {}
+    return '';
   }
-
-  Uri _u(String path) => Uri.parse('${ApiConfig.authBaseUrl}$path');
 
   Future<void> _submit() async {
     FocusScope.of(context).unfocus();
@@ -423,15 +439,19 @@ class _SignupInviteSheetState extends State<_SignupInviteSheet> {
     final pw = _pwCtrl.text.trim();
 
     if (code.isEmpty || pw.isEmpty) {
-      _snack('กรอก Invite Code และ Password');
+      setState(() => _err = 'กรอก Invite Code และ Password');
       return;
     }
 
-    setState(() => _loading = true);
+    setState(() {
+      _loading = true;
+      _err = '';
+    });
+
     try {
       final res = await http
           .post(
-            _u('/register-with-invite'),
+            widget.u('/register-with-invite'),
             headers: const {'Content-Type': 'application/json'},
             body: jsonEncode({
               'inviteCode': code,
@@ -441,30 +461,28 @@ class _SignupInviteSheetState extends State<_SignupInviteSheet> {
               'phone': _phoneCtrl.text.trim(),
             }),
           )
-          .timeout(const Duration(seconds: 15));
+          .timeout(const Duration(seconds: 25));
 
       if (res.statusCode != 200 && res.statusCode != 201) {
-        throw Exception(
-            'register-with-invite failed: ${res.statusCode} ${res.body}');
+        final m = _pickMessageFromBody(res.body);
+        throw Exception(m.isNotEmpty ? m : 'สมัครไม่สำเร็จ (${res.statusCode})');
       }
 
-      final data = jsonDecode(res.body);
-      if (data is! Map<String, dynamic>) {
-        throw Exception('register response invalid');
-      }
+      final dataAny = jsonDecode(res.body);
+      if (dataAny is! Map) throw Exception('รูปแบบผลลัพธ์ไม่ถูกต้อง');
 
-      final token = (data['token'] ?? data['jwt'] ?? '').toString();
+      final data = Map<String, dynamic>.from(dataAny as Map);
+      final token = (data['token'] ?? data['jwt'] ?? '').toString().trim();
+
       if (token.isEmpty) {
-        _snack('สมัครสำเร็จ แต่ไม่พบ token — ให้ไป Login แทน');
-        if (!mounted) return;
-        Navigator.pop(context);
-        return;
+        throw Exception('สมัครสำเร็จ แต่ไม่พบ token');
       }
 
       if (!mounted) return;
-      Navigator.pop(context, token); // ✅ ส่ง token กลับไปหน้า Login
+      Navigator.pop(context, token); // ✅ เด้งกลับไปหน้า Login แน่นอน
     } catch (e) {
-      _snack('สมัครไม่สำเร็จ: $e');
+      if (!mounted) return;
+      setState(() => _err = 'สมัครไม่สำเร็จ: $e');
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -504,6 +522,7 @@ class _SignupInviteSheetState extends State<_SignupInviteSheet> {
             const SizedBox(height: 10),
             TextField(
               controller: _emailCtrl,
+              keyboardType: TextInputType.emailAddress,
               decoration: const InputDecoration(
                 labelText: 'Email (optional)',
                 border: OutlineInputBorder(),
@@ -522,11 +541,24 @@ class _SignupInviteSheetState extends State<_SignupInviteSheet> {
             TextField(
               controller: _pwCtrl,
               obscureText: true,
+              onSubmitted: (_) => _submit(),
               decoration: const InputDecoration(
                 labelText: 'Password',
                 border: OutlineInputBorder(),
               ),
             ),
+
+            if (_err.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Text(
+                _err,
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.error,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ],
+
             const SizedBox(height: 12),
             SizedBox(
               width: double.infinity,
@@ -539,7 +571,7 @@ class _SignupInviteSheetState extends State<_SignupInviteSheet> {
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
                     : const Icon(Icons.check),
-                label: const Text('สมัคร'),
+                label: Text(_loading ? 'กำลังสมัคร...' : 'สมัคร'),
               ),
             ),
           ],
@@ -551,11 +583,12 @@ class _SignupInviteSheetState extends State<_SignupInviteSheet> {
 
 // ======================================================================
 // Sheet: Clinic admin signup  POST /register-clinic-admin
-// คืนค่า token กลับไปที่หน้า Login
+// (คงเดิม แต่ปรับให้แสดง error ในแผ่นเช่นกัน)
 // ======================================================================
 
 class _SignupClinicAdminSheet extends StatefulWidget {
-  const _SignupClinicAdminSheet();
+  final Uri Function(String) u;
+  const _SignupClinicAdminSheet({required this.u});
 
   @override
   State<_SignupClinicAdminSheet> createState() => _SignupClinicAdminSheetState();
@@ -569,6 +602,7 @@ class _SignupClinicAdminSheetState extends State<_SignupClinicAdminSheet> {
   final _adminPasswordCtrl = TextEditingController();
 
   bool _loading = false;
+  String _err = '';
 
   @override
   void dispose() {
@@ -580,12 +614,13 @@ class _SignupClinicAdminSheetState extends State<_SignupClinicAdminSheet> {
     super.dispose();
   }
 
-  void _snack(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  String _pickMessageFromBody(String body) {
+    try {
+      final any = jsonDecode(body);
+      if (any is Map && any['message'] != null) return any['message'].toString();
+    } catch (_) {}
+    return '';
   }
-
-  Uri _u(String path) => Uri.parse('${ApiConfig.authBaseUrl}$path');
 
   Future<void> _submit() async {
     FocusScope.of(context).unfocus();
@@ -595,15 +630,19 @@ class _SignupClinicAdminSheetState extends State<_SignupClinicAdminSheet> {
     final adminPassword = _adminPasswordCtrl.text.trim();
 
     if (clinicName.isEmpty || adminPassword.isEmpty) {
-      _snack('กรอกชื่อคลินิก และรหัสผ่าน');
+      setState(() => _err = 'กรอกชื่อคลินิก และรหัสผ่าน');
       return;
     }
 
-    setState(() => _loading = true);
+    setState(() {
+      _loading = true;
+      _err = '';
+    });
+
     try {
       final res = await http
           .post(
-            _u('/register-clinic-admin'),
+            widget.u('/register-clinic-admin'),
             headers: const {'Content-Type': 'application/json'},
             body: jsonEncode({
               'clinicName': clinicName,
@@ -613,25 +652,26 @@ class _SignupClinicAdminSheetState extends State<_SignupClinicAdminSheet> {
               'adminPhone': _adminPhoneCtrl.text.trim(),
             }),
           )
-          .timeout(const Duration(seconds: 15));
+          .timeout(const Duration(seconds: 25));
 
       if (res.statusCode != 200 && res.statusCode != 201) {
-        throw Exception(
-            'register-clinic-admin failed: ${res.statusCode} ${res.body}');
+        final m = _pickMessageFromBody(res.body);
+        throw Exception(m.isNotEmpty ? m : 'สมัครคลินิกไม่สำเร็จ (${res.statusCode})');
       }
 
-      final data = jsonDecode(res.body);
-      if (data is! Map<String, dynamic>) {
-        throw Exception('register response invalid');
-      }
+      final dataAny = jsonDecode(res.body);
+      if (dataAny is! Map) throw Exception('รูปแบบผลลัพธ์ไม่ถูกต้อง');
 
-      final token = (data['token'] ?? data['jwt'] ?? '').toString();
-      if (token.isEmpty) throw Exception('register ok but token missing');
+      final data = Map<String, dynamic>.from(dataAny as Map);
+      final token = (data['token'] ?? data['jwt'] ?? '').toString().trim();
+
+      if (token.isEmpty) throw Exception('สมัครสำเร็จ แต่ไม่พบ token');
 
       if (!mounted) return;
-      Navigator.pop(context, token); // ✅ ส่ง token กลับไปหน้า Login
+      Navigator.pop(context, token);
     } catch (e) {
-      _snack('สมัครคลินิกไม่สำเร็จ: $e');
+      if (!mounted) return;
+      setState(() => _err = 'สมัครคลินิกไม่สำเร็จ: $e');
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -670,6 +710,7 @@ class _SignupClinicAdminSheetState extends State<_SignupClinicAdminSheet> {
             const SizedBox(height: 10),
             TextField(
               controller: _adminEmailCtrl,
+              keyboardType: TextInputType.emailAddress,
               decoration: const InputDecoration(
                 labelText: 'Email (optional)',
                 border: OutlineInputBorder(),
@@ -688,11 +729,24 @@ class _SignupClinicAdminSheetState extends State<_SignupClinicAdminSheet> {
             TextField(
               controller: _adminPasswordCtrl,
               obscureText: true,
+              onSubmitted: (_) => _submit(),
               decoration: const InputDecoration(
                 labelText: 'Password',
                 border: OutlineInputBorder(),
               ),
             ),
+
+            if (_err.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Text(
+                _err,
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.error,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ],
+
             const SizedBox(height: 12),
             SizedBox(
               width: double.infinity,
@@ -705,7 +759,7 @@ class _SignupClinicAdminSheetState extends State<_SignupClinicAdminSheet> {
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
                     : const Icon(Icons.check),
-                label: const Text('สมัครคลินิก'),
+                label: Text(_loading ? 'กำลังสมัคร...' : 'สมัครคลินิก'),
               ),
             ),
           ],

@@ -1,6 +1,17 @@
 // lib/screens/edit_employee_screen.dart
+//
+// ✅ FULL FILE (COPY-PASTE READY) — FIXED (from your real file)
+// - ✅ กันหน้าแดง: ถ้า TextInputAction.newline -> ต้องใช้ TextInputType.multiline
+// - ✅ ช่องข้อความ = multiline แบบ "พิมพ์ธรรมดา" เห็นบรรทัดอื่นได้
+// - ✅ ช่องตัวเลข = บรรทัดเดียว + done
+// - ✅ กันคีย์บอร์ดบัง: AnimatedPadding + SingleChildScrollView
+// - ✅ pop กลับพร้อม EmployeeModel(updated)
+// - ✅ กัน pop ซ้ำ / timing ชน animation (_dependents.isEmpty)
+//
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+
 import 'package:clinic_smart_staff/models/employee_model.dart';
 import 'package:clinic_smart_staff/services/storage_service.dart';
 
@@ -30,6 +41,9 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
 
   bool _isSaving = false;
   bool _dirty = false;
+
+  // ✅ FIX: กัน pop ซ้ำ / timing ชน animation
+  bool _isPopping = false;
 
   // employment type
   late String employmentType; // 'fulltime' | 'parttime'
@@ -92,6 +106,18 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
     return int.tryParse(cleaned) ?? 0;
   }
 
+  // ✅ FIX: safe pop หลังเฟรม (กัน _dependents.isEmpty)
+  void _safePop<T extends Object?>([T? result]) {
+    if (!mounted) return;
+    if (_isPopping) return;
+    _isPopping = true;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      Navigator.of(context).pop(result);
+    });
+  }
+
   // -------------------- Validation --------------------
   String? _validate() {
     final fn = firstNameCtrl.text.trim();
@@ -134,7 +160,7 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
 
     setState(() => _isSaving = true);
 
-    // ✅ keep OT history (เพราะ model มี otEntries แน่นอน)
+    // ✅ keep OT history
     final keepOtEntries = widget.employee.otEntries;
 
     final updated = widget.employee.copyWith(
@@ -175,13 +201,19 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
       _dirty = false;
     });
 
-    Navigator.pop(context, updated);
+    _safePop<EmployeeModel>(updated);
   }
 
   // -------------------- UI helpers --------------------
   final _moneyFormatter = FilteringTextInputFormatter.allow(RegExp(r'[0-9,\.]'));
   final _intFormatter = FilteringTextInputFormatter.digitsOnly;
 
+  bool _isNumericType(TextInputType t) {
+    return t == TextInputType.number ||
+        t == const TextInputType.numberWithOptions(decimal: true);
+  }
+
+  // ✅ FIX แดง + ให้พิมพ์ “ธรรมดา” เห็นบรรทัดอื่นได้
   Widget _field(
     String label,
     TextEditingController c, {
@@ -190,17 +222,28 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
     String? hint,
     bool enabled = true,
   }) {
+    final isNumeric = _isNumericType(type);
+    final effectiveKeyboardType = isNumeric ? type : TextInputType.multiline;
+
     return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.only(bottom: 12),
       child: TextField(
         controller: c,
         enabled: enabled,
-        keyboardType: type,
+        keyboardType: effectiveKeyboardType,
         inputFormatters: formatters,
+
+        // ✅ สำคัญ: กัน assert
+        minLines: 1,
+        maxLines: isNumeric ? 1 : null,
+        textInputAction: isNumeric ? TextInputAction.done : TextInputAction.newline,
+
+        style: const TextStyle(fontSize: 16, height: 1.4),
         decoration: InputDecoration(
           labelText: label,
           hintText: hint,
           border: const OutlineInputBorder(),
+          contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
         ),
       ),
     );
@@ -230,6 +273,19 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
     return ok == true;
   }
 
+  void _onChangeType(String nextType) {
+    if (!mounted) return;
+    setState(() {
+      employmentType = nextType;
+      _dirty = true;
+
+      // UX ตามไฟล์จริงของท่าน: ไม่ยัด "0" แบบบังคับ
+      if (employmentType == 'fulltime') {
+        if (absentDaysCtrl.text.trim().isEmpty) absentDaysCtrl.text = '0';
+      }
+    });
+  }
+
   Widget _typeSelector() {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
@@ -244,21 +300,7 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
               ButtonSegment(value: 'parttime', label: Text('Part-time')),
             ],
             selected: {employmentType},
-            onSelectionChanged: (set) {
-              final nextType = set.first;
-              setState(() {
-                employmentType = nextType;
-                _dirty = true;
-
-                // ช่วยกัน validate fail แบบงง ๆ
-                if (employmentType == 'parttime' && hourlyWageCtrl.text.trim().isEmpty) {
-                  hourlyWageCtrl.text = '0';
-                }
-                if (employmentType == 'fulltime' && baseSalaryCtrl.text.trim().isEmpty) {
-                  baseSalaryCtrl.text = '0';
-                }
-              });
-            },
+            onSelectionChanged: (set) => _onChangeType(set.first),
           ),
           const SizedBox(height: 6),
           Text(
@@ -275,84 +317,95 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
   @override
   Widget build(BuildContext context) {
     final isParttime = employmentType == 'parttime';
+    final kb = MediaQuery.of(context).viewInsets.bottom;
+    final bottomSafe = MediaQuery.of(context).viewPadding.bottom;
 
     return WillPopScope(
       onWillPop: _confirmDiscardIfDirty,
       child: Scaffold(
         appBar: AppBar(
           title: const Text('แก้ไขข้อมูลพนักงาน'),
-          backgroundColor: Colors.blue,
-          foregroundColor: Colors.white,
+          surfaceTintColor: Colors.transparent,
           leading: IconButton(
             icon: const Icon(Icons.arrow_back),
             onPressed: () async {
               final ok = await _confirmDiscardIfDirty();
               if (!ok) return;
               if (!mounted) return;
-              Navigator.pop(context);
+              _safePop();
             },
           ),
         ),
-        body: ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            _field('ชื่อ', firstNameCtrl),
-            _field('นามสกุล', lastNameCtrl),
-            _field('ตำแหน่ง', positionCtrl),
+        body: SafeArea(
+          child: AnimatedPadding(
+            duration: const Duration(milliseconds: 160),
+            curve: Curves.easeOut,
+            padding: EdgeInsets.only(bottom: kb),
+            child: SingleChildScrollView(
+              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+              padding: EdgeInsets.fromLTRB(16, 16, 16, bottomSafe + 24),
+              child: Column(
+                children: [
+                  _field('ชื่อ', firstNameCtrl),
+                  _field('นามสกุล', lastNameCtrl),
+                  _field('ตำแหน่ง', positionCtrl),
 
-            _typeSelector(),
+                  _typeSelector(),
 
-            if (!isParttime) ...[
-              _field(
-                'เงินเดือนพื้นฐาน',
-                baseSalaryCtrl,
-                type: TextInputType.number,
-                formatters: [_moneyFormatter],
-                hint: 'เช่น 30000 หรือ 30,000',
+                  if (!isParttime) ...[
+                    _field(
+                      'เงินเดือนพื้นฐาน',
+                      baseSalaryCtrl,
+                      type: TextInputType.number,
+                      formatters: [_moneyFormatter],
+                      hint: 'เช่น 30000 หรือ 30,000',
+                    ),
+                    _field(
+                      'วันลา/ขาด (วัน)',
+                      absentDaysCtrl,
+                      type: TextInputType.number,
+                      formatters: [_intFormatter],
+                      hint: 'เช่น 0',
+                    ),
+                  ],
+
+                  if (isParttime) ...[
+                    _field(
+                      'ค่าจ้าง/ชั่วโมง (บาท/ชม.)',
+                      hourlyWageCtrl,
+                      type: const TextInputType.numberWithOptions(decimal: true),
+                      formatters: [_moneyFormatter],
+                      hint: 'เช่น 120',
+                    ),
+                  ],
+
+                  _field(
+                    'โบนัส/ค่าคอมมิชชั่น',
+                    bonusCtrl,
+                    type: TextInputType.number,
+                    formatters: [_moneyFormatter],
+                    hint: 'เช่น 0 หรือ 1500',
+                  ),
+
+                  const SizedBox(height: 8),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: _isSaving ? null : _save,
+                      icon: _isSaving
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.save),
+                      label: Text(_isSaving ? 'กำลังบันทึก...' : 'บันทึกการแก้ไข'),
+                    ),
+                  ),
+                ],
               ),
-              _field(
-                'วันลา/ขาด (วัน)',
-                absentDaysCtrl,
-                type: TextInputType.number,
-                formatters: [_intFormatter],
-                hint: 'เช่น 0',
-              ),
-            ],
-
-            if (isParttime) ...[
-              _field(
-                'ค่าจ้าง/ชั่วโมง (บาท/ชม.)',
-                hourlyWageCtrl,
-                type: TextInputType.number,
-                formatters: [_moneyFormatter],
-                hint: 'เช่น 900 หรือ 350',
-              ),
-            ],
-
-            _field(
-              'โบนัส/ค่าคอมมิชชั่น',
-              bonusCtrl,
-              type: TextInputType.number,
-              formatters: [_moneyFormatter],
-              hint: 'เช่น 0 หรือ 1500',
             ),
-
-            const SizedBox(height: 8),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton.icon(
-                onPressed: _isSaving ? null : _save,
-                icon: _isSaving
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.save),
-                label: Text(_isSaving ? 'กำลังบันทึก...' : 'บันทึกการแก้ไข'),
-              ),
-            ),
-          ],
+          ),
         ),
       ),
     );

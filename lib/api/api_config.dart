@@ -97,16 +97,44 @@ class ApiConfig {
   static const String shifts = '/shifts';
   static String shiftStatus(String id) => '/shifts/$id/status';
 
+  // ✅ Payroll close / tax / slip (เพิ่มไว้ให้ OT โผล่ในสลิปชัวร์)
+  // NOTE: ชื่อ path อาจจะตรงกับที่คุณใช้จริงอยู่แล้วใน service อื่น
+  //       ถ้าคุณมีชื่อ path อื่น เดี๋ยวเราจะ map ให้ตรงในไฟล์ api/service ถัดไป
+  static const String payrollTax = '/payroll/tax';
+  static const String payrollClose = '/payroll/close';
+  static const String payslipPreview = '/payslip/preview';
+  static const String payslipDownload = '/payslip/download';
+
+  // =========================
+  // Attendance / OT endpoints (เพิ่มไว้ใช้คู่กับ fingerprint)
+  // =========================
+  // attendance: check-in / check-out / sessions
+  static const String attendanceCheckIn = '/attendance/check-in';
+  static const String attendanceCheckOut = '/attendance/check-out';
+  static const String attendanceMySessions = '/attendance/my-sessions';
+
+  // overtime: approve / list
+  static const String overtimeMy = '/overtime/my';
+  static String overtimeApprove(String overtimeId) => '/overtime/$overtimeId/approve';
+
   // =========================
   // Score endpoints
   // =========================
   static String staffScore(String staffId) => '/score/staff/$staffId/score';
 
   static const String trustScore = '/score/trustscore';
-  static const String attendanceEvent = '/score/events/attendance';
+
+  // ✅ FIX: eventRoutes mount เป็น /events -> POST /events/attendance
+  static const String attendanceEvent = '/events/attendance';
 
   // =========================
   // Staff endpoints
   // =========================
   static const String staffSearch = '/staff/search';
+
+  // ✅ NEW: staff dropdown (โดยตรงจาก staff_service)
+  static const String staffDropdown = '/api/employees/dropdown';
+
+  // ✅ NEW: staff dropdown ผ่าน payroll_service proxy (ถ้าคุณทำ proxy ไว้แล้ว)
+  static const String staffDropdownProxy = '/api/staff/dropdown';
 }

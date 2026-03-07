@@ -1,24 +1,14 @@
 // ============================================================
 // employee_model.dart
 // รองรับ Full-time + Part-time + OT
-//
-// ✅ แนวทางที่เข้ากับโปรเจกต์คุณตอนนี้:
-// - Part-time "ชั่วโมงทำงานปกติ" เก็บใน SharedPreferences แยก key: work_entries_{emp.id}
-//   (เป็น List<{date, hours}>) -> ไม่เก็บ start/end ใน EmployeeModel
-// - SSO% รับจากภายนอก (ตั้งค่าได้จาก UI)
-// - ✅ FIX NEW RULE: ฐานคำนวณประกันสังคม (SSO base) สูงสุด 17,500 บาท
-//   (ไม่ fix % แต่ fix เพดานฐานเงินเดือน)
-// - ✅ FIX: เพดานเงินหักสูงสุด 875 บาท/เดือน (ตามฐาน 17,500 * 5% = 875)
-//   (% ยังปรับได้ แต่ไม่ให้หักเกินเพดานนี้ตามที่คุณกำหนด)
+// ✅ HARDENED: staffId fallback + robust parsing
+// ✅ PATCH: robust numeric parsing for OT multiplier / absentDays / salary fields
 // ============================================================
 
 class OTEntry {
-  final String date; // yyyy-MM-dd
-  final String start; // HH:mm
-  final String end; // HH:mm
-
-  /// 1.5 = OT ปกติ
-  /// 2.0 = OT วันหยุด / นักขัตฤกษ์
+  final String date;
+  final String start;
+  final String end;
   final double multiplier;
 
   const OTEntry({
@@ -36,15 +26,20 @@ class OTEntry {
       };
 
   factory OTEntry.fromMap(Map<String, dynamic> map) {
+    double parseDouble(dynamic v, double fallback) {
+      if (v is num) return v.toDouble();
+      final x = double.tryParse('${v ?? ''}');
+      return (x == null || x <= 0) ? fallback : x;
+    }
+
     return OTEntry(
       date: (map['date'] ?? '').toString(),
       start: (map['start'] ?? '00:00').toString(),
       end: (map['end'] ?? '00:00').toString(),
-      multiplier: (map['multiplier'] as num? ?? 1.5).toDouble(),
+      multiplier: parseDouble(map['multiplier'], 1.5),
     );
   }
 
-  // ---------- Utils ----------
   static int _toMinutes(String hhmm) {
     final parts = hhmm.split(':');
     if (parts.length != 2) return 0;
@@ -53,7 +48,6 @@ class OTEntry {
     return h * 60 + m;
   }
 
-  /// ชั่วโมง OT (รองรับข้ามวัน)
   double get hours {
     final s = _toMinutes(start);
     final e = _toMinutes(end);
@@ -74,73 +68,82 @@ class OTEntry {
 // ============================================================
 // EmployeeModel
 // ============================================================
+
 class EmployeeModel {
+  /// record id ในเครื่อง/ระบบเดิม
   final String id;
+
+  /// payroll_service ต้องใช้ staffId = stf_...
+  final String staffId;
+
+  final String employeeCode;
   final String firstName;
   final String lastName;
   final String position;
-
-  /// fulltime | parttime
   final String employmentType;
 
-  /// ---------- Full-time ----------
   final double baseSalary;
   final double bonus;
   final int absentDays;
+  final double hourlyWage;
 
-  /// ---------- Part-time ----------
-  final double hourlyWage; // บาท/ชม.
-
-  /// ---------- OT ----------
   final List<OTEntry> otEntries;
 
   EmployeeModel({
     required this.id,
+    String staffId = '',
+    this.employeeCode = '',
     required this.firstName,
     required this.lastName,
     required this.position,
     this.employmentType = 'fulltime',
-
-    // full-time
     this.baseSalary = 0.0,
     this.bonus = 0.0,
     this.absentDays = 0,
-
-    // part-time
     this.hourlyWage = 0.0,
-
-    // OT
     this.otEntries = const [],
-  });
+  }) : staffId = _normalizeStaffId(staffId, id);
+
+  static String _normalizeStaffId(String raw, String fallbackId) {
+    final s = raw.trim();
+    if (s.startsWith('stf_')) return s;
+
+    final fid = fallbackId.trim();
+    if (fid.startsWith('stf_')) return fid;
+
+    if (fid.isNotEmpty) return 'stf_$fid';
+    return '';
+  }
+
+  static double _toDouble(dynamic v, [double fallback = 0.0]) {
+    if (v is num) return v.toDouble();
+    final x = double.tryParse('${v ?? ''}');
+    return x ?? fallback;
+  }
+
+  static int _toInt(dynamic v, [int fallback = 0]) {
+    if (v is int) return v;
+    if (v is num) return v.toInt();
+    final x = int.tryParse('${v ?? ''}');
+    return x ?? fallback;
+  }
 
   String get fullName => '$firstName $lastName';
 
   bool get isPartTime => employmentType.toLowerCase().trim() == 'parttime';
   bool get isFullTime => !isPartTime;
 
-  // ============================================================
-  // ✅ SSO RULES (GLOBAL)
-  // - ไม่ fix % (รับจากภายนอก)
-  // - fix เพดานฐานเงินเดือน = 17,500 บาท
-  // - fix เพดานเงินหักสูงสุด = 875 บาท/เดือน
-  // ============================================================
-  static const double ssoMaxBaseSalary = 17500.0; // ✅ ฐานสูงสุด
-  static const double ssoMaxEmployeeMonthly = 875.0; // ✅ เพดานเงินหักสูงสุด
+  static const double ssoMaxBaseSalary = 17500.0;
+  static const double ssoMaxEmployeeMonthly = 875.0;
 
-  // ============================================================
-  // ---------- Full-time Logic (รับ % จากภายนอก) ----------
-  // ============================================================
   double socialSecurity(double percent) {
     if (!isFullTime) return 0.0;
 
-    // ✅ cap ฐานเงินเดือนที่ 17,500 ก่อนคำนวณ %
     final cappedBase =
         baseSalary > ssoMaxBaseSalary ? ssoMaxBaseSalary : baseSalary;
 
-    // % ยังปรับได้จาก UI
     final sso = cappedBase * (percent / 100.0);
 
-    // ✅ cap เพดานเงินหักสูงสุด 875
     return sso > ssoMaxEmployeeMonthly ? ssoMaxEmployeeMonthly : sso;
   }
 
@@ -151,7 +154,9 @@ class EmployeeModel {
 
   double netSalary(double ssoPercent) {
     if (!isFullTime) return 0.0;
-    return (baseSalary + bonus) - socialSecurity(ssoPercent) - absentDeduction();
+    return (baseSalary + bonus) -
+        socialSecurity(ssoPercent) -
+        absentDeduction();
   }
 
   double hourlyRate({
@@ -164,9 +169,6 @@ class EmployeeModel {
     return baseSalary / denom;
   }
 
-  // ============================================================
-  // ---------- OT (ใช้ร่วมกัน) ----------
-  // ============================================================
   double totalOtHoursOfMonth(int year, int month) {
     double total = 0;
     for (final e in otEntries) {
@@ -182,7 +184,10 @@ class EmployeeModel {
     int hoursPerDay = 8,
   }) {
     final rate = isFullTime
-        ? hourlyRate(workDaysPerMonth: workDaysPerMonth, hoursPerDay: hoursPerDay)
+        ? hourlyRate(
+            workDaysPerMonth: workDaysPerMonth,
+            hoursPerDay: hoursPerDay,
+          )
         : hourlyWage;
 
     double total = 0;
@@ -194,9 +199,6 @@ class EmployeeModel {
     return total;
   }
 
-  // ============================================================
-  // ---------- Mutations (immutable) ----------
-  // ============================================================
   EmployeeModel addOtEntry(OTEntry entry) {
     final next = List<OTEntry>.from(otEntries)..add(entry);
     return copyWith(otEntries: next);
@@ -210,6 +212,8 @@ class EmployeeModel {
 
   EmployeeModel copyWith({
     String? id,
+    String? staffId,
+    String? employeeCode,
     String? firstName,
     String? lastName,
     String? position,
@@ -220,17 +224,15 @@ class EmployeeModel {
     double? hourlyWage,
     List<OTEntry>? otEntries,
   }) {
+    final nextId = id ?? this.id;
     return EmployeeModel(
-      id: id ?? this.id,
+      id: nextId,
+      staffId: staffId ?? this.staffId,
+      employeeCode: employeeCode ?? this.employeeCode,
       firstName: firstName ?? this.firstName,
       lastName: lastName ?? this.lastName,
       position: position ?? this.position,
-      employmentType: (employmentType ?? this.employmentType)
-              .toLowerCase()
-              .trim()
-              .isEmpty
-          ? 'fulltime'
-          : (employmentType ?? this.employmentType).toLowerCase().trim(),
+      employmentType: employmentType ?? this.employmentType,
       baseSalary: baseSalary ?? this.baseSalary,
       bonus: bonus ?? this.bonus,
       absentDays: absentDays ?? this.absentDays,
@@ -239,12 +241,11 @@ class EmployeeModel {
     );
   }
 
-  // ============================================================
-  // ---------- Storage ----------
-  // ============================================================
   Map<String, dynamic> toMap() {
     return {
       'id': id,
+      'staffId': staffId,
+      'employeeCode': employeeCode,
       'firstName': firstName,
       'lastName': lastName,
       'position': position,
@@ -258,8 +259,34 @@ class EmployeeModel {
   }
 
   factory EmployeeModel.fromMap(Map<String, dynamic> map) {
-    final rawOt = map['otEntries'];
+    String s(dynamic v) => (v ?? '').toString().trim();
 
+    final id = s(map['id']).isNotEmpty ? s(map['id']) : s(map['_id']);
+
+    String rawStaffId = '';
+    final candidates = <String>[
+      s(map['staffId']),
+      s(map['staffID']),
+      s(map['staff_id']),
+      s(map['employeeId']),
+      s(map['employeeID']),
+      s(map['employee_id']),
+      s(map['principalId']),
+      s(map['principal_id']),
+    ].where((x) => x.isNotEmpty).toList();
+
+    for (final c in candidates) {
+      if (c.startsWith('stf_')) {
+        rawStaffId = c;
+        break;
+      }
+    }
+
+    if (rawStaffId.isEmpty && candidates.isNotEmpty) {
+      rawStaffId = candidates.first;
+    }
+
+    final rawOt = map['otEntries'];
     List<OTEntry> ots = [];
     if (rawOt is List) {
       ots = rawOt
@@ -273,15 +300,17 @@ class EmployeeModel {
     final type = (typeRaw == 'parttime') ? 'parttime' : 'fulltime';
 
     return EmployeeModel(
-      id: (map['id'] ?? '').toString(),
-      firstName: (map['firstName'] ?? '').toString(),
-      lastName: (map['lastName'] ?? '').toString(),
-      position: (map['position'] ?? 'Staff').toString(),
+      id: id,
+      staffId: rawStaffId,
+      employeeCode: s(map['employeeCode']),
+      firstName: s(map['firstName']),
+      lastName: s(map['lastName']),
+      position: s(map['position']).isNotEmpty ? s(map['position']) : 'Staff',
       employmentType: type,
-      baseSalary: (map['baseSalary'] as num? ?? 0).toDouble(),
-      bonus: (map['bonus'] as num? ?? 0).toDouble(),
-      absentDays: (map['absentDays'] as int? ?? 0),
-      hourlyWage: (map['hourlyWage'] as num? ?? 0).toDouble(),
+      baseSalary: _toDouble(map['baseSalary']),
+      bonus: _toDouble(map['bonus']),
+      absentDays: _toInt(map['absentDays']),
+      hourlyWage: _toDouble(map['hourlyWage']),
       otEntries: ots,
     );
   }

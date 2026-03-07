@@ -1,20 +1,25 @@
 // lib/services/helper_availability_service.dart
 //
-// ✅ HelperAvailabilityService — FINAL (Backward compatible + per-helper key)
-// - เดิม: เก็บรวมใน key เดียว = helper_availability_list
-// - ใหม่: เก็บแยกต่อ helper = helper_availability_list_{helperId}
-// - ✅ Migration อัตโนมัติ: ถ้ามีข้อมูลใน key เก่า จะย้ายไป key ใหม่ตาม helperId แล้วลบ key เก่า
-// - ✅ API เดิมยังใช้ได้: loadAll/loadByHelper/add/update/remove
-// - ✅ เพิ่ม export สำหรับส่งให้คลินิก/ดีบัก: exportByHelperMonth()
+// ✅ HelperAvailabilityService — FINAL (Local + Remote API) — Backward compatible
+// - ✅ Local-only เดิมยังอยู่ครบ: loadAll/loadByHelper/add/update/remove/export/clearHelper
+// - ✅ เพิ่ม Remote API (payroll_service):
+//    - addRemote()            -> POST   /availabilities
+//    - listMyRemote()         -> GET    /availabilities/me
+//    - listOpenRemote(date)   -> GET    /availabilities/open?date=YYYY-MM-DD   (admin only)
 //
-// หมายเหตุ:
-// - ตอนนี้ยังเป็น local-only (SharedPreferences) ตามไฟล์เดิมคุณ
-// - ถ้าจะ sync backend (ให้คลินิกเห็นจริง) ผมจะเพิ่มอีกไฟล์ API ทีหลัง
+// NOTE:
+// - Remote จะใช้ token เป็น source of truth (staffId/fullName/phone เติมจาก backend)
+// - ตอนนี้เน้นให้ยิงจริงก่อน (ยังไม่ sync local<->remote)
 //
 
 import 'dart:convert';
+
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:http/http.dart' as http;
+
 import '../models/helper_availability_model.dart';
+import '../api/api_config.dart';
+import '../services/auth_storage.dart';
 
 class HelperAvailabilityService {
   // -----------------------------
@@ -26,11 +31,10 @@ class HelperAvailabilityService {
   // NEW KEY PREFIX (per helper)
   // -----------------------------
   static const String _keyPrefix = 'helper_availability_list_';
-
   static String _keyForHelper(String helperId) => '$_keyPrefix$helperId';
 
   // -----------------------------
-  // Decode helpers
+  // Decode helpers (local)
   // -----------------------------
   static List<HelperAvailability> _decodeList(String raw) {
     if (raw.isEmpty) return [];
@@ -62,12 +66,10 @@ class HelperAvailabilityService {
 
     final legacyList = _decodeList(legacy);
     if (legacyList.isEmpty) {
-      // ถ้าข้อมูลเก่าพัง/ว่าง ก็ลบทิ้งเพื่อกันโหลดซ้ำ
       await prefs.remove(_legacyKey);
       return;
     }
 
-    // แยกตาม helperId
     final Map<String, List<HelperAvailability>> byHelper = {};
     for (final item in legacyList) {
       final hid = item.helperId.trim();
@@ -76,14 +78,11 @@ class HelperAvailabilityService {
       byHelper[hid]!.add(item);
     }
 
-    // เขียนลง key ใหม่
     for (final entry in byHelper.entries) {
       final k = _keyForHelper(entry.key);
-      // merge กับของเดิม (ถ้ามี)
       final existingRaw = prefs.getString(k) ?? '';
       final existing = _decodeList(existingRaw);
 
-      // merge by id (กันซ้ำ)
       final Map<String, HelperAvailability> map = {
         for (final e in existing) e.id: e,
       };
@@ -97,21 +96,16 @@ class HelperAvailabilityService {
       await prefs.setString(k, _encodeList(merged));
     }
 
-    // ลบ key เก่า เพื่อไม่ migrate ซ้ำ
     await prefs.remove(_legacyKey);
   }
 
   // -----------------------------
-  // Public APIs
+  // Public APIs (LOCAL)
   // -----------------------------
-
-  /// โหลดทั้งหมด (รวมทุก helper ที่เคยมีในเครื่อง)
-  /// - จะพยายาม migrate ก่อน
   static Future<List<HelperAvailability>> loadAll() async {
     await _migrateIfNeeded();
     final prefs = await SharedPreferences.getInstance();
 
-    // หา keys ที่ขึ้นต้นด้วย prefix
     final keys = prefs.getKeys().where((k) => k.startsWith(_keyPrefix)).toList();
     final List<HelperAvailability> out = [];
 
@@ -123,7 +117,6 @@ class HelperAvailabilityService {
     return out;
   }
 
-  /// โหลดของ helper คนเดียว
   static Future<List<HelperAvailability>> loadByHelper(String helperId) async {
     await _migrateIfNeeded();
     final prefs = await SharedPreferences.getInstance();
@@ -133,14 +126,12 @@ class HelperAvailabilityService {
     return list;
   }
 
-  /// บันทึกทั้งหมด “ของ helper คนเดียว”
   static Future<void> saveByHelper(String helperId, List<HelperAvailability> list) async {
     await _migrateIfNeeded();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_keyForHelper(helperId), _encodeList(list));
   }
 
-  /// เพิ่มรายการ (ใช้ item.helperId เป็นตัวกำหนด key)
   static Future<void> add(HelperAvailability item) async {
     final hid = item.helperId.trim();
     if (hid.isEmpty) return;
@@ -150,14 +141,12 @@ class HelperAvailabilityService {
     await saveByHelper(hid, list);
   }
 
-  /// ลบรายการด้วย id (ต้องรู้ helperId เพื่อไม่ต้อง scan ทั้งหมด)
   static Future<void> removeById(String id, {required String helperId}) async {
     final list = await loadByHelper(helperId);
     list.removeWhere((e) => e.id == id);
     await saveByHelper(helperId, list);
   }
 
-  /// Update รายการด้วย id
   static Future<void> update(HelperAvailability updated) async {
     final hid = updated.helperId.trim();
     if (hid.isEmpty) return;
@@ -168,12 +157,6 @@ class HelperAvailabilityService {
     await saveByHelper(hid, list);
   }
 
-  // -----------------------------
-  // ✅ Export utilities (สำหรับส่งให้คลินิก / ดีบัก / เตรียม sync)
-  // -----------------------------
-
-  /// export ข้อมูล helper (เฉพาะเดือน) เป็น JSON string
-  /// - monthKey: "YYYY-MM" เช่น "2026-02"
   static Future<String> exportByHelperMonth({
     required String helperId,
     required String monthKey,
@@ -188,10 +171,119 @@ class HelperAvailabilityService {
     });
   }
 
-  /// สำหรับกรณีต้อง “ล้างข้อมูลผู้ช่วยคนนี้” (ใช้ตอน logout/สลับบัญชี)
   static Future<void> clearHelper(String helperId) async {
     await _migrateIfNeeded();
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_keyForHelper(helperId));
+  }
+
+  // ======================================================================
+  // REMOTE API (payroll_service)
+  // ======================================================================
+
+  static String _basePayroll() {
+    final b = ApiConfig.payrollBaseUrl.trim();
+    return b.endsWith('/') ? b.substring(0, b.length - 1) : b;
+  }
+
+  static Future<String> _requireToken() async {
+    // ⚠️ ถ้าโปรเจกต์ท่านชื่อเมธอดต่าง (เช่น readToken()) บอกผม เดี๋ยวปรับ
+    final token = (await AuthStorage.getToken())?.trim() ?? '';
+    if (token.isEmpty) throw Exception('unauthorized: missing token');
+    return token;
+  }
+
+  static Map<String, dynamic> _decodeJson(http.Response r) {
+    try {
+      return json.decode(r.body) as Map<String, dynamic>;
+    } catch (_) {
+      return {'message': r.body};
+    }
+  }
+
+  static Exception _httpError(http.Response r) {
+    final body = _decodeJson(r);
+    final msg = (body['message'] ?? body['error'] ?? 'request failed').toString();
+    return Exception('${r.statusCode}: $msg');
+  }
+
+  /// ✅ POST /availabilities
+  /// backend จะเติม staffId/fullName/phone จาก token ให้เอง
+  static Future<Map<String, dynamic>> addRemote({
+    required String date, // YYYY-MM-DD
+    required String start, // HH:mm
+    required String end, // HH:mm
+    required String role,
+    String note = '',
+  }) async {
+    final token = await _requireToken();
+    final url = Uri.parse('${_basePayroll()}/availabilities');
+
+    final payload = {
+      'date': date,
+      'start': start,
+      'end': end,
+      'role': role,
+      'note': note,
+    };
+
+    final r = await http.post(
+      url,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $token',
+      },
+      body: json.encode(payload),
+    );
+
+    if (r.statusCode < 200 || r.statusCode >= 300) {
+      throw _httpError(r);
+    }
+
+    final body = _decodeJson(r);
+    final av = (body['availability'] ?? body['item'] ?? body);
+
+    if (av is Map) return Map<String, dynamic>.from(av);
+    return Map<String, dynamic>.from(body);
+  }
+
+  /// ✅ GET /availabilities/me
+  static Future<List<Map<String, dynamic>>> listMyRemote() async {
+    final token = await _requireToken();
+    final url = Uri.parse('${_basePayroll()}/availabilities/me');
+
+    final r = await http.get(url, headers: {'Authorization': 'Bearer $token'});
+
+    if (r.statusCode < 200 || r.statusCode >= 300) {
+      throw _httpError(r);
+    }
+
+    final body = _decodeJson(r);
+    final items = (body['items'] ?? body['availabilities'] ?? []) as List;
+    return items
+        .whereType<Map>()
+        .map((e) => Map<String, dynamic>.from(e))
+        .toList();
+  }
+
+  /// ✅ GET /availabilities/open?date=YYYY-MM-DD  (admin only)
+  static Future<List<Map<String, dynamic>>> listOpenRemote({
+    required String date,
+  }) async {
+    final token = await _requireToken();
+    final url = Uri.parse('${_basePayroll()}/availabilities/open?date=$date');
+
+    final r = await http.get(url, headers: {'Authorization': 'Bearer $token'});
+
+    if (r.statusCode < 200 || r.statusCode >= 300) {
+      throw _httpError(r);
+    }
+
+    final body = _decodeJson(r);
+    final items = (body['items'] ?? []) as List;
+    return items
+        .whereType<Map>()
+        .map((e) => Map<String, dynamic>.from(e))
+        .toList();
   }
 }

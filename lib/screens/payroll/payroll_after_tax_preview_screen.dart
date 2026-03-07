@@ -1,28 +1,26 @@
-// lib/screens/payroll/payroll_after_tax_preview_screen.dart
 import 'package:flutter/material.dart';
 
 import '../../api/payroll_tax_api.dart';
-import '../../api/payroll_close_api.dart'; // ✅ NEW: ปิดงวดจริง
+import '../../api/payroll_close_api.dart'; // ✅ ปิดงวดจริง
 import '../../models/payroll_tax_result.dart';
 
 class PayrollAfterTaxPreviewScreen extends StatefulWidget {
   final double grossMonthly;
-  final double ssoEmployeeMonthly; // ✅ NEW
+  final double ssoEmployeeMonthly;
   final int? year;
 
-  // ✅ NEW (ใช้ตอนปิดงวดจริง)
+  // ✅ required for Close Payroll
   final String clinicId;
-  final String employeeId;
+  final String employeeId; // ต้องเป็น staffId (stf_...)
 
-  // ✅ NEW (optionals: เผื่ออนาคต)
+  // ✅ optional components
   final double otPay;
   final double bonus;
   final double otherAllowance;
   final double otherDeduction;
   final double pvdEmployeeMonthly;
 
-  // ✅ NEW: ถ้าส่งมา จะใช้เป็นเดือนปิดงวดโดยตรง (yyyy-MM)
-  // ถ้าไม่ส่ง จะใช้เดือนปัจจุบัน
+  // ✅ ถ้าส่งมา จะใช้เป็นเดือนปิดงวดโดยตรง (yyyy-MM)
   final String? closeMonth;
 
   const PayrollAfterTaxPreviewScreen({
@@ -30,12 +28,8 @@ class PayrollAfterTaxPreviewScreen extends StatefulWidget {
     required this.grossMonthly,
     this.ssoEmployeeMonthly = 0,
     this.year,
-
-    // ✅ required for Close Payroll
     required this.clinicId,
     required this.employeeId,
-
-    // ✅ optional components
     this.otPay = 0,
     this.bonus = 0,
     this.otherAllowance = 0,
@@ -56,14 +50,39 @@ class _PayrollAfterTaxPreviewScreenState
   PayrollTaxResult? _result;
   String? _error;
 
-  bool _closing = false; // ✅ NEW
+  bool _closing = false;
+
+  // ✅ เดือนที่ผู้ใช้เลือกเอง (yyyy-MM) — ทำให้ UI เปลี่ยนทันที
+  late String _pickedCloseMonth;
 
   @override
   void initState() {
     super.initState();
-    _year = widget.year ?? DateTime.now().year;
+
+    final now = DateTime.now();
+    _year = widget.year ?? now.year;
+
+    // ✅ initial month: user picked > widget.closeMonth > current month
+    final cm = (widget.closeMonth ?? '').trim();
+    _pickedCloseMonth = cm.isNotEmpty
+        ? cm
+        : '${now.year}-${now.month.toString().padLeft(2, '0')}';
+
     _load();
   }
+
+  // ---------------- utils ----------------
+  String _money(num n) => n.toStringAsFixed(2);
+
+  void _snack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  bool _isYm(String v) => RegExp(r'^\d{4}-\d{2}$').hasMatch(v.trim());
+
+  // ✅ กัน 400: employeeId ต้องเป็น staffId (stf_...)
+  bool _isValidStaffId(String v) => v.trim().startsWith('stf_');
 
   PayrollTaxResult _ensureResult(dynamic raw) {
     if (raw is PayrollTaxResult) return raw;
@@ -111,28 +130,107 @@ class _PayrollAfterTaxPreviewScreenState
     }
   }
 
-  String _money(num n) => n.toStringAsFixed(2);
-
-  String _closeMonthValue() {
-    if (widget.closeMonth != null && widget.closeMonth!.trim().isNotEmpty) {
-      return widget.closeMonth!.trim();
-    }
+  // ✅ สร้างรายการเดือนย้อนหลัง (รวมเดือนนี้)
+  List<String> _buildMonthOptions({int backMonths = 24}) {
     final now = DateTime.now();
-    return '${now.year}-${now.month.toString().padLeft(2, '0')}';
+    final out = <String>[];
+
+    for (int i = 0; i <= backMonths; i++) {
+      final d = DateTime(now.year, now.month - i, 1);
+      out.add('${d.year}-${d.month.toString().padLeft(2, '0')}');
+    }
+    return out; // ล่าสุด -> เก่าสุด
   }
 
+  // ✅ เลือกเดือนแบบ “เห็นชัดบนหน้า” (แก้ปัญหาเลือกแล้วไม่เปลี่ยน)
+  Future<void> _pickMonthBottomSheet() async {
+    final options = _buildMonthOptions(backMonths: 24);
+    final current = _pickedCloseMonth;
+
+    final picked = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (ctx) {
+        return SafeArea(
+          child: SizedBox(
+            height: MediaQuery.of(ctx).size.height * 0.70,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(16, 8, 16, 10),
+                  child: Text(
+                    'เลือกเดือน',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+                  ),
+                ),
+                const Divider(height: 1),
+                Expanded(
+                  child: ListView.separated(
+                    itemCount: options.length,
+                    separatorBuilder: (_, __) => const Divider(height: 1),
+                    itemBuilder: (_, i) {
+                      final m = options[i];
+                      final selected = (m == current);
+                      return ListTile(
+                        title: Text(m),
+                        trailing: selected
+                            ? const Icon(Icons.check_circle,
+                                color: Colors.green)
+                            : null,
+                        onTap: () => Navigator.pop(ctx, m),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+
+    if (!mounted) return;
+    if (picked == null) return;
+
+    final v = picked.trim();
+    if (v.isEmpty || !_isYm(v)) return;
+
+    setState(() {
+      _pickedCloseMonth = v;
+
+      // ✅ ถ้า user เลือกเดือนคนละปี ให้ปีใน UI ตามด้วย (กันความงง)
+      final yy = int.tryParse(v.split('-').first);
+      if (yy != null) _year = yy;
+    });
+
+    // ภาษีที่คำนวณในหน้านี้ใช้ year เป็นหลัก (ไม่ผูกกับเดือน)
+    // แต่เพื่อให้ user มั่นใจว่า update แล้ว จะโหลดใหม่ให้ด้วย (ไม่หนัก)
+    await _load();
+  }
+
+  // ✅ ปิดงวดจริง
   Future<void> _closePayroll() async {
     if (_closing || _loading) return;
 
-    // ✅ ต้องมีข้อมูลผลคำนวณก่อน
     if (_result == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('ยังไม่มีข้อมูลคำนวณ กรุณาโหลดใหม่')),
-      );
+      _snack('ยังไม่มีข้อมูลคำนวณ กรุณาโหลดใหม่');
       return;
     }
 
-    final month = _closeMonthValue();
+    // ✅ กัน 400: validate staffId
+    final staffId = widget.employeeId.trim();
+    if (!_isValidStaffId(staffId)) {
+      _snack('ปิดงวดไม่สำเร็จ: employeeId ต้องเป็น staffId (stf_...)');
+      return;
+    }
+
+    final month = _pickedCloseMonth.trim();
+    if (month.isEmpty || !_isYm(month)) {
+      _snack('เดือนไม่ถูกต้อง');
+      return;
+    }
 
     final ok = await showDialog<bool>(
       context: context,
@@ -162,11 +260,9 @@ class _PayrollAfterTaxPreviewScreenState
     setState(() => _closing = true);
 
     try {
-      // ✅ ปิดงวดจริงที่ payroll_service
-      // หมายเหตุ: grossBase = grossMonthly ของคุณ (ถ้าอนาคตจะแยกฐานเงินเดือนจริงค่อยปรับ)
       await PayrollCloseApi.closeMonth(
         clinicId: widget.clinicId,
-        employeeId: widget.employeeId,
+        employeeId: staffId, // ✅ staffId เท่านั้น
         month: month,
         grossBase: widget.grossMonthly,
         otPay: widget.otPay,
@@ -179,23 +275,19 @@ class _PayrollAfterTaxPreviewScreenState
 
       if (!mounted) return;
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('✅ ปิดงวดเรียบร้อย')),
-      );
-
-      Navigator.pop(context, true); // ✅ ส่งผลกลับ (optional)
+      _snack('✅ ปิดงวดเรียบร้อย');
+      Navigator.pop(context, true);
     } catch (e) {
       if (!mounted) return;
 
-      // ✅ ถ้าปิดซ้ำ payroll_service จะตอบ 409
       final msg = e.toString();
-      final friendly = msg.contains('409') || msg.contains('already closed')
+      final friendly = (msg.contains('409') || msg.contains('already closed'))
           ? 'เดือนนี้ถูกปิดงวดไปแล้ว'
-          : 'ปิดงวดไม่สำเร็จ: $msg';
+          : msg.contains('400') && msg.contains('staffId')
+              ? 'ปิดงวดไม่สำเร็จ: employeeId ต้องเป็น staffId (stf_...)'
+              : 'ปิดงวดไม่สำเร็จ: $msg';
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(friendly)),
-      );
+      _snack(friendly);
     } finally {
       if (!mounted) return;
       setState(() => _closing = false);
@@ -304,7 +396,7 @@ class _PayrollAfterTaxPreviewScreenState
                                     ? fallbackNetAfterTaxAndSSO
                                     : 0);
 
-                        final month = _closeMonthValue();
+                        final month = _pickedCloseMonth;
 
                         return SingleChildScrollView(
                           padding: const EdgeInsets.all(16),
@@ -314,6 +406,46 @@ class _PayrollAfterTaxPreviewScreenState
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.stretch,
                                 children: [
+                                  // ✅ แถบเลือกเดือน (ชัดมาก) — แก้ “เลือกแล้วไม่เปลี่ยน”
+                                  Card(
+                                    elevation: 1,
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(14),
+                                      child: Row(
+                                        children: [
+                                          Expanded(
+                                            child: Column(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.start,
+                                              children: [
+                                                const Text(
+                                                  'เดือนที่เลือก',
+                                                  style: TextStyle(
+                                                    fontWeight: FontWeight.w800,
+                                                  ),
+                                                ),
+                                                const SizedBox(height: 4),
+                                                Text(
+                                                  month,
+                                                  style: const TextStyle(
+                                                    fontSize: 18,
+                                                    fontWeight: FontWeight.w900,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                          OutlinedButton.icon(
+                                            onPressed: _pickMonthBottomSheet,
+                                            icon: const Icon(Icons.calendar_month),
+                                            label: const Text('เปลี่ยนเดือน'),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 12),
+
                                   Card(
                                     elevation: 2,
                                     child: Padding(
@@ -342,7 +474,6 @@ class _PayrollAfterTaxPreviewScreenState
                                           ),
                                           const Divider(height: 24),
 
-                                          // Earnings
                                           Text(
                                             'รายได้ (Earnings)',
                                             style: Theme.of(context)
@@ -360,7 +491,6 @@ class _PayrollAfterTaxPreviewScreenState
                                             bold: true,
                                           ),
 
-                                          // ✅ Optional items (ถ้ามี)
                                           if (widget.otPay > 0)
                                             _row(
                                               label: 'OT (เป็นเงิน)',
@@ -388,7 +518,6 @@ class _PayrollAfterTaxPreviewScreenState
 
                                           const Divider(height: 24),
 
-                                          // Deductions
                                           Text(
                                             'รายการหัก (Deductions)',
                                             style: Theme.of(context)
@@ -418,7 +547,6 @@ class _PayrollAfterTaxPreviewScreenState
 
                                           const Divider(height: 24),
 
-                                          // Net
                                           _row(
                                             label:
                                                 'Net หลังหักภาษี (ยังไม่หัก SSO)',
@@ -449,7 +577,6 @@ class _PayrollAfterTaxPreviewScreenState
                                   ),
                                   const SizedBox(height: 16),
 
-                                  // ✅ NEW: ปุ่มปิดงวดจริง
                                   ElevatedButton.icon(
                                     onPressed: (_closing || _loading)
                                         ? null

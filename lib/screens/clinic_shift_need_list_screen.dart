@@ -9,7 +9,9 @@
 // - ดูผู้สมัคร (GET /shift-needs/:id/applicants)
 // - ยกเลิกประกาศงาน (PATCH /shift-needs/:id/cancel)
 //
-
+// ✅ FIX (สำคัญ): ส่ง needStatus ไปหน้า applicants (OPTION #2)
+// - ClinicShiftNeedApplicantsScreen ต้องการ required needStatus
+//
 import 'package:flutter/material.dart';
 
 import 'package:clinic_smart_staff/models/clinic_shift_need_model.dart';
@@ -39,8 +41,7 @@ class _ClinicShiftNeedListScreenState extends State<ClinicShiftNeedListScreen> {
 
   void _snack(String msg) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(msg)));
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
   Future<void> _load() async {
@@ -92,6 +93,7 @@ class _ClinicShiftNeedListScreenState extends State<ClinicShiftNeedListScreen> {
         builder: (_) => ClinicShiftNeedApplicantsScreen(
           needId: need.id,
           title: '${need.date} ${need.start}-${need.end} • ${need.role}',
+          needStatus: need.status, // ✅ FIX: ส่งสถานะไปด้วย (OPTION #2)
         ),
       ),
     );
@@ -131,9 +133,7 @@ class _ClinicShiftNeedListScreenState extends State<ClinicShiftNeedListScreen> {
 
                 _kv(
                   'คลินิก',
-                  need.clinicName.isEmpty
-                      ? need.clinicId
-                      : need.clinicName,
+                  need.clinicName.isEmpty ? need.clinicId : need.clinicName,
                 ),
                 _kv('ตำแหน่ง', need.role),
                 _kv('วัน', need.date),
@@ -143,8 +143,7 @@ class _ClinicShiftNeedListScreenState extends State<ClinicShiftNeedListScreen> {
                 ),
                 _kv('จำนวนที่ต้องการ', '${need.requiredCount} คน'),
                 _kv('สถานะ', _statusLabel(need.status)),
-                if (need.note.trim().isNotEmpty)
-                  _kv('หมายเหตุ', need.note),
+                if (need.note.trim().isNotEmpty) _kv('หมายเหตุ', need.note),
 
                 const SizedBox(height: 8),
 
@@ -289,8 +288,7 @@ class _ClinicShiftNeedListScreenState extends State<ClinicShiftNeedListScreen> {
                         ),
                       );
                     },
-                    separatorBuilder: (_, __) =>
-                        const SizedBox(height: 8),
+                    separatorBuilder: (_, __) => const SizedBox(height: 8),
                     itemCount: _items.length,
                   ),
                 ),

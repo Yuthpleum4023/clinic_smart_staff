@@ -1,22 +1,25 @@
 // lib/screens/clinic_need_list_screen.dart
 //
-// ✅ Clinic Need List Screen (คลินิก/แอดมิน)
+// ✅ Clinic Need List Screen — Commercial Polish Mode (PROD CLEAN)
 // - ดูรายการประกาศงานว่าง (ShiftNeed)
-// - Filter เดือน + Filter status (open/filled/cancelled/all)
+// - Filter เดือน + Filter สถานะ (ทั้งหมด/เปิดรับ/ปิดรับแล้ว/ยกเลิก)
 // - ยกเลิกงาน (PATCH /shift-needs/:id/cancel)
-// - Generate เป็น Shift จริง (POST /shift-needs/:id/generate-shifts)
+// - สร้างกะงานจริง (POST /shift-needs/:id/generate-shifts)
 // - ใช้ Bearer token จาก SharedPreferences (หลาย key)
 // - ไม่ใช้ Provider
 //
-// ✅ FIX 404:
-// - ❌ เลิก hardcode 'https://YOUR-PAYROLL-SERVICE.onrender.com'
-// - ✅ ดึง baseUrl จาก prefs ก่อน -> fallback ไป ApiConfig.payrollBaseUrl
-// - ✅ sanitize baseUrl ตัด /api /payroll /shift-needs กัน path ซ้ำ
-// - ✅ แสดง API ที่ใช้งานจริงบนหน้าจอ
+// ✅ FIX 404 (เดิม):
+// - ดึง baseUrl จาก prefs ก่อน -> fallback ApiConfig.payrollBaseUrl
+// - sanitize baseUrl ตัด /api /payroll /shift-needs กัน path ซ้ำ
 //
 // ✅ UI THEME:
-// - ❌ ไม่ hardcode Colors.blue
-// - ✅ ใช้ Theme (ม่วง) ให้เหมือนหน้าอื่นทั้งระบบ
+// - ไม่ hardcode Colors.blue
+// - ใช้ Theme (ม่วง) ให้เหมือนหน้าอื่นทั้งระบบ
+//
+// ✅ Commercial Polish:
+// - ❌ ไม่โชว์ endpoint / clinicId / id / GET/POST/PATCH / status=open/filled/cancelled
+// - ✅ ข้อความเป็นภาษา user-friendly
+// - ✅ error message ไม่หลุดเทคนิค
 //
 
 import 'dart:convert';
@@ -29,7 +32,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:clinic_smart_staff/api/api_config.dart';
 
 class ClinicNeedListScreen extends StatefulWidget {
-  final String clinicId;
+  final String clinicId; // ใช้ภายในเท่านั้น (ไม่โชว์ UI)
   final String clinicName;
 
   const ClinicNeedListScreen({
@@ -52,9 +55,6 @@ class _ClinicNeedListScreenState extends State<ClinicNeedListScreen> {
   // status filter: '' = all, 'open','filled','cancelled'
   String _statusFilter = '';
 
-  // ✅ show resolved API on UI
-  String _apiBase = '';
-
   String _fmtMonth(DateTime d) => '${d.month}/${d.year}';
 
   @override
@@ -64,9 +64,8 @@ class _ClinicNeedListScreenState extends State<ClinicNeedListScreen> {
     _month = DateTime(now.year, now.month, 1);
 
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      await _NeedApi.init(); // ✅ load baseUrl + keep in memory
+      await _NeedApi.init();
       if (!mounted) return;
-      setState(() => _apiBase = _NeedApi.baseUrl);
       await _load();
     });
   }
@@ -112,6 +111,39 @@ class _ClinicNeedListScreenState extends State<ClinicNeedListScreen> {
     return diff / 60.0;
   }
 
+  String _statusToLabel(String raw) {
+    final s = raw.toString().trim().toLowerCase();
+    if (s == 'cancelled' || s == 'canceled') return 'ยกเลิก';
+    if (s == 'filled' || s == 'closed' || s == 'done') return 'ปิดรับแล้ว';
+    return 'เปิดรับ';
+  }
+
+  Color _statusColor(String raw, ColorScheme cs) {
+    final s = raw.toString().trim().toLowerCase();
+    if (s == 'cancelled' || s == 'canceled') return Colors.red;
+    if (s == 'filled' || s == 'closed' || s == 'done') return Colors.green;
+    return cs.primary;
+  }
+
+  Widget _chip(String text, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.12),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: color.withOpacity(0.22)),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          fontWeight: FontWeight.w900,
+          color: color,
+          fontSize: 12,
+        ),
+      ),
+    );
+  }
+
   Future<void> _load() async {
     final clinicId = widget.clinicId.trim();
     if (clinicId.isEmpty) {
@@ -119,7 +151,7 @@ class _ClinicNeedListScreenState extends State<ClinicNeedListScreen> {
         _loading = false;
         _items = [];
       });
-      _snack('ไม่พบ clinicId');
+      _snack('ไม่พบข้อมูลคลินิก กรุณาออกจากระบบแล้วเข้าสู่ระบบใหม่');
       return;
     }
 
@@ -144,10 +176,8 @@ class _ClinicNeedListScreenState extends State<ClinicNeedListScreen> {
         final sb = (b['start'] ?? '').toString();
         return (da + sa).compareTo(db + sb);
       });
-
-      if (mounted) setState(() => _apiBase = _NeedApi.baseUrl);
     } catch (e) {
-      _snack('โหลดรายการไม่สำเร็จ: $e');
+      _snack(_NeedApi.toUserMessage(e, fallback: 'โหลดรายการไม่สำเร็จ กรุณาลองใหม่'));
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -158,7 +188,7 @@ class _ClinicNeedListScreenState extends State<ClinicNeedListScreen> {
 
     final id = (item['_id'] ?? item['id'] ?? '').toString();
     if (id.isEmpty) {
-      _snack('ไม่พบ id ของงาน');
+      _snack('ไม่สามารถทำรายการได้ (ข้อมูลไม่ครบ)');
       return;
     }
 
@@ -177,7 +207,6 @@ class _ClinicNeedListScreenState extends State<ClinicNeedListScreen> {
             onPressed: () => Navigator.pop(ctx, false),
             child: const Text('ไม่ยกเลิก'),
           ),
-          // ✅ ปุ่มยืนยันเป็น primary (ม่วงตาม Theme)
           FilledButton(
             onPressed: () => Navigator.pop(ctx, true),
             child: const Text('ยกเลิกงาน'),
@@ -191,10 +220,10 @@ class _ClinicNeedListScreenState extends State<ClinicNeedListScreen> {
     setState(() => _acting = true);
     try {
       await _NeedApi.cancelNeed(id);
-      _snack('ยกเลิกแล้ว');
+      _snack('ยกเลิกเรียบร้อย');
       await _load();
     } catch (e) {
-      _snack('ยกเลิกไม่สำเร็จ: $e');
+      _snack(_NeedApi.toUserMessage(e, fallback: 'ยกเลิกไม่สำเร็จ กรุณาลองใหม่'));
     } finally {
       if (mounted) setState(() => _acting = false);
     }
@@ -205,7 +234,7 @@ class _ClinicNeedListScreenState extends State<ClinicNeedListScreen> {
 
     final id = (item['_id'] ?? item['id'] ?? '').toString();
     if (id.isEmpty) {
-      _snack('ไม่พบ id ของงาน');
+      _snack('ไม่สามารถทำรายการได้ (ข้อมูลไม่ครบ)');
       return;
     }
 
@@ -219,29 +248,28 @@ class _ClinicNeedListScreenState extends State<ClinicNeedListScreen> {
         : 0;
 
     if (accepted == 0) {
-      _snack('ยังไม่มีผู้ช่วยรับงาน');
+      _snack('ยังไม่มีผู้ช่วยตอบรับงานนี้');
       return;
     }
 
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Generate เป็น Shift จริง'),
+        title: const Text('สร้างกะงานจริง'),
         content: Text(
-          'ต้องการสร้าง Shift จริงจากงานนี้ใช่ไหม?\n'
+          'ต้องการสร้างกะงานจริงจากประกาศนี้ใช่ไหม?\n'
           '$title\n$date $start-$end\n'
-          'ผู้ช่วยที่รับแล้ว: $accepted คน\n\n'
-          'หมายเหตุ: จะสร้าง 1 Shift ต่อ 1 ผู้ช่วยที่รับงาน',
+          'ผู้ช่วยที่ตอบรับ: $accepted คน\n\n'
+          'หมายเหตุ: ระบบจะสร้างกะงานให้ผู้ช่วยแต่ละคน',
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
             child: const Text('ยกเลิก'),
           ),
-          // ✅ ปุ่มยืนยันเป็น primary (ม่วงตาม Theme)
           FilledButton(
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Generate'),
+            child: const Text('สร้างกะงาน'),
           ),
         ],
       ),
@@ -253,10 +281,10 @@ class _ClinicNeedListScreenState extends State<ClinicNeedListScreen> {
     try {
       final res = await _NeedApi.generateShifts(id);
       final shifts = (res['shifts'] as List?) ?? [];
-      _snack('Generate สำเร็จ: ${shifts.length} shifts');
+      _snack('สร้างกะงานสำเร็จ ${shifts.isEmpty ? '' : '(${shifts.length} รายการ)'}');
       await _load();
     } catch (e) {
-      _snack('Generate ไม่สำเร็จ: $e');
+      _snack(_NeedApi.toUserMessage(e, fallback: 'สร้างกะงานไม่สำเร็จ กรุณาลองใหม่'));
     } finally {
       if (mounted) setState(() => _acting = false);
     }
@@ -264,16 +292,31 @@ class _ClinicNeedListScreenState extends State<ClinicNeedListScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final clinicLabel = widget.clinicName.trim().isEmpty
-        ? widget.clinicId
-        : '${widget.clinicName} (${widget.clinicId})';
+    final cs = Theme.of(context).colorScheme;
+
+    // ✅ Commercial: ไม่โชว์ clinicId
+    final clinicLabel = widget.clinicName.trim().isNotEmpty
+        ? widget.clinicName.trim()
+        : 'คลินิกของฉัน';
 
     final monthItems = _items.where((e) => _isInMonth(e, _month)).toList();
 
+    String filterLabel(String v) {
+      switch (v) {
+        case 'open':
+          return 'เปิดรับ';
+        case 'filled':
+          return 'ปิดรับแล้ว';
+        case 'cancelled':
+          return 'ยกเลิก';
+        default:
+          return 'ทั้งหมด';
+      }
+    }
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text('คลินิก: รายการประกาศงาน (ShiftNeed)'),
-        // ✅ ไม่ hardcode สี → ใช้ Theme (ม่วง) เหมือนหน้าอื่น
+        title: const Text('รายการประกาศงาน'),
         actions: [
           IconButton(
             tooltip: 'เปลี่ยนเดือน',
@@ -293,17 +336,9 @@ class _ClinicNeedListScreenState extends State<ClinicNeedListScreen> {
               padding: const EdgeInsets.all(16),
               children: [
                 Text(
-                  'คลินิก: $clinicLabel',
-                  style: const TextStyle(fontWeight: FontWeight.bold),
+                  clinicLabel,
+                  style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
                 ),
-                const SizedBox(height: 6),
-
-                // ✅ show actual API
-                Text(
-                  'API: ${(_apiBase.isEmpty ? "(loading...)" : _apiBase)}/shift-needs',
-                  style: const TextStyle(fontSize: 12),
-                ),
-
                 const SizedBox(height: 10),
 
                 Row(
@@ -312,8 +347,8 @@ class _ClinicNeedListScreenState extends State<ClinicNeedListScreen> {
                       child: Text(
                         'เดือนที่เลือก: ${_fmtMonth(_month)}',
                         style: const TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w700,
+                          fontSize: 16,
+                          fontWeight: FontWeight.w800,
                         ),
                       ),
                     ),
@@ -328,18 +363,18 @@ class _ClinicNeedListScreenState extends State<ClinicNeedListScreen> {
 
                 Row(
                   children: [
-                    const Text('สถานะ: '),
+                    Text(
+                      'สถานะ: ',
+                      style: TextStyle(color: cs.onSurface.withOpacity(0.8)),
+                    ),
                     const SizedBox(width: 8),
                     DropdownButton<String>(
                       value: _statusFilter,
                       items: const [
                         DropdownMenuItem(value: '', child: Text('ทั้งหมด')),
-                        DropdownMenuItem(value: 'open', child: Text('open')),
-                        DropdownMenuItem(value: 'filled', child: Text('filled')),
-                        DropdownMenuItem(
-                          value: 'cancelled',
-                          child: Text('cancelled'),
-                        ),
+                        DropdownMenuItem(value: 'open', child: Text('เปิดรับ')),
+                        DropdownMenuItem(value: 'filled', child: Text('ปิดรับแล้ว')),
+                        DropdownMenuItem(value: 'cancelled', child: Text('ยกเลิก')),
                       ],
                       onChanged: (v) async {
                         setState(() => _statusFilter = v ?? '');
@@ -362,7 +397,10 @@ class _ClinicNeedListScreenState extends State<ClinicNeedListScreen> {
                 const SizedBox(height: 10),
 
                 if (monthItems.isEmpty)
-                  const Text('ยังไม่มีประกาศงานในเดือนนี้')
+                  Text(
+                    'ยังไม่มีประกาศงานในเดือนนี้ (${filterLabel(_statusFilter)})',
+                    style: TextStyle(color: cs.onSurface.withOpacity(0.7)),
+                  )
                 else
                   ...monthItems.map((n) {
                     final title = (n['title'] ?? 'ต้องการผู้ช่วย').toString();
@@ -382,51 +420,96 @@ class _ClinicNeedListScreenState extends State<ClinicNeedListScreen> {
                         ? (n['acceptedStaffIds'] as List).length
                         : 0;
 
-                    final status = (n['status'] ?? 'open').toString();
-                    final hours = _calcHours(start, end);
-                    final note = (n['note'] ?? '').toString();
+                    final rawStatus = (n['status'] ?? 'open').toString();
+                    final statusLabel = _statusToLabel(rawStatus);
+                    final statusColor = _statusColor(rawStatus, cs);
 
-                    final canCancel = status != 'cancelled';
-                    final canGenerate = accepted > 0 && status != 'cancelled';
+                    final hours = _calcHours(start, end);
+                    final note = (n['note'] ?? '').toString().trim();
+
+                    final isCancelled = statusLabel == 'ยกเลิก';
+                    final canCancel = !isCancelled;
+                    final canGenerate = accepted > 0 && !isCancelled;
 
                     return Card(
+                      margin: const EdgeInsets.only(bottom: 10),
                       child: Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 6),
-                        child: ListTile(
-                          title: Text('$date  $start-$end'),
-                          subtitle: Text(
-                            '$title • $role\n'
-                            'เรท ${hourlyRate.toStringAsFixed(0)} บ./ชม. • ${hours.toStringAsFixed(2)} ชม.\n'
-                            'รับแล้ว $accepted / ต้องการ $requiredCount • status=$status'
-                            '${note.isNotEmpty ? '\nหมายเหตุ: $note' : ''}',
-                          ),
-                          isThreeLine: true,
-                          trailing: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              SizedBox(
-                                width: 110,
-                                // ✅ ปุ่มหลักให้เป็นม่วงชัดตาม Theme
-                                child: FilledButton(
-                                  onPressed: (_acting || !canGenerate)
-                                      ? null
-                                      : () => _generate(n),
-                                  child: const Text('Generate'),
+                        padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    '$date  $start-$end',
+                                    style: const TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w900,
+                                    ),
+                                  ),
                                 ),
+                                _chip(statusLabel, statusColor),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+
+                            Text(
+                              '$title • $role',
+                              style: TextStyle(
+                                fontWeight: FontWeight.w800,
+                                color: cs.onSurface.withOpacity(0.85),
                               ),
-                              const SizedBox(height: 6),
-                              SizedBox(
-                                width: 110,
-                                // ✅ OutlinedButton ขอบม่วงตาม Theme
-                                child: OutlinedButton(
-                                  onPressed: (_acting || !canCancel)
-                                      ? null
-                                      : () => _cancel(n),
-                                  child: const Text('ยกเลิก'),
+                            ),
+                            const SizedBox(height: 6),
+
+                            Wrap(
+                              spacing: 10,
+                              runSpacing: 10,
+                              children: [
+                                _chip('เรท ${hourlyRate.toStringAsFixed(0)} บ./ชม.', cs.primary),
+                                _chip('${hours.toStringAsFixed(2)} ชม.', cs.secondary),
+                                _chip('ต้องการ $requiredCount คน', cs.primary),
+                                _chip('ตอบรับ $accepted คน', cs.secondary),
+                              ],
+                            ),
+
+                            if (note.isNotEmpty) ...[
+                              const SizedBox(height: 10),
+                              Text(
+                                'หมายเหตุ: $note',
+                                style: TextStyle(
+                                  color: cs.onSurface.withOpacity(0.7),
                                 ),
                               ),
                             ],
-                          ),
+
+                            const SizedBox(height: 12),
+
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: FilledButton.icon(
+                                    onPressed: (_acting || !canGenerate)
+                                        ? null
+                                        : () => _generate(n),
+                                    icon: const Icon(Icons.playlist_add_check),
+                                    label: const Text('สร้างกะงาน'),
+                                  ),
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: OutlinedButton.icon(
+                                    onPressed: (_acting || !canCancel)
+                                        ? null
+                                        : () => _cancel(n),
+                                    icon: const Icon(Icons.cancel_outlined),
+                                    label: const Text('ยกเลิกประกาศ'),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
                         ),
                       ),
                     );
@@ -520,7 +603,7 @@ class _NeedApi {
 
   static Future<Map<String, String>> _headers() async {
     final token = await _getToken();
-    if (token == null) throw Exception('no token (กรุณา login ก่อน)');
+    if (token == null) throw Exception('AUTH_REQUIRED');
     return {
       'Content-Type': 'application/json',
       'Authorization': 'Bearer $token',
@@ -547,11 +630,12 @@ class _NeedApi {
     final uri = _u('/shift-needs').replace(queryParameters: qs);
 
     _log('GET $uri');
-    final res = await http.get(uri, headers: await _headers());
-    _log('status=${res.statusCode} body=${res.body}');
+    final res = await http
+        .get(uri, headers: await _headers())
+        .timeout(const Duration(seconds: 20));
 
     if (res.statusCode != 200) {
-      throw Exception('listNeeds failed: ${res.statusCode} ${res.body}');
+      throw Exception('SERVER_ERROR:${res.statusCode}:${res.body}');
     }
 
     final data = jsonDecode(res.body);
@@ -565,11 +649,12 @@ class _NeedApi {
     final uri = _u('/shift-needs/$needId/cancel');
     _log('PATCH $uri');
 
-    final res = await http.patch(uri, headers: await _headers());
-    _log('status=${res.statusCode} body=${res.body}');
+    final res = await http
+        .patch(uri, headers: await _headers())
+        .timeout(const Duration(seconds: 20));
 
     if (res.statusCode != 200) {
-      throw Exception('cancelNeed failed: ${res.statusCode} ${res.body}');
+      throw Exception('SERVER_ERROR:${res.statusCode}:${res.body}');
     }
 
     final data = jsonDecode(res.body);
@@ -583,15 +668,46 @@ class _NeedApi {
     final uri = _u('/shift-needs/$needId/generate-shifts');
     _log('POST $uri');
 
-    final res = await http.post(uri, headers: await _headers());
-    _log('status=${res.statusCode} body=${res.body}');
+    final res = await http
+        .post(uri, headers: await _headers())
+        .timeout(const Duration(seconds: 25));
 
     if (res.statusCode != 200 && res.statusCode != 201) {
-      throw Exception('generateShifts failed: ${res.statusCode} ${res.body}');
+      throw Exception('SERVER_ERROR:${res.statusCode}:${res.body}');
     }
 
     final data = jsonDecode(res.body);
     if (data is Map<String, dynamic>) return data;
     return {'data': data};
+  }
+
+  /// ✅ Commercial: แปลง error ให้เป็นภาษาผู้ใช้
+  static String toUserMessage(Object e, {String fallback = 'ทำรายการไม่สำเร็จ'}) {
+    final raw = e.toString();
+    final s = raw.toLowerCase();
+
+    if (s.contains('auth_required') || s.contains('401') || s.contains('403')) {
+      return 'เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่';
+    }
+
+    if (s.contains('timeout') || s.contains('socket') || s.contains('network')) {
+      return 'เชื่อมต่อไม่สำเร็จ กรุณาตรวจสอบอินเทอร์เน็ตแล้วลองใหม่';
+    }
+
+    if (s.contains('server_error:')) {
+      // ลองอ่าน message จาก body ถ้ามี
+      try {
+        final parts = raw.split(':');
+        final body = parts.isNotEmpty ? parts.last : '';
+        final decoded = jsonDecode(body);
+        if (decoded is Map && (decoded['message'] != null || decoded['error'] != null)) {
+          final msg = (decoded['message'] ?? decoded['error']).toString().trim();
+          if (msg.isNotEmpty) return msg;
+        }
+      } catch (_) {}
+      return 'ระบบขัดข้องชั่วคราว กรุณาลองใหม่อีกครั้ง';
+    }
+
+    return fallback;
   }
 }

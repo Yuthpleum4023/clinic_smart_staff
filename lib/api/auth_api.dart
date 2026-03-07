@@ -1,18 +1,9 @@
 // lib/api/auth_api.dart
 //
-// ✅ FINAL (ROBUST) for Regis → Login → Me → Home
-// - ยิงไป auth_user_service (3101) ผ่าน ApiConfig.authBaseUrl
-// - มี timeout กัน spin ค้าง
-// - รองรับ backend รับหลาย key: emailOrPhone / email / identifier
-// - รองรับ token หลายชื่อ: token / jwt
-// - me รองรับ response แบบ {user:{...}} หรือ {...}
-//
-// ✅ FIX (สำคัญมาก):
-// - Login สำเร็จแล้ว "ต้องเซฟ token" ให้ทุกหน้าที่อ่าน SharedPreferences หาเจอ
-// - me() ก็ sync token -> prefs เผื่อบาง flow มี token แค่ใน storage
-//
-// ✅ NEW (AppContext Pattern):
-// - หลัง me() ได้ข้อมูลแล้ว จะ cache app_clinic_id/app_user_id/app_role ให้ทั้งแอปใช้แบบเดียวกัน
+// ✅ FINAL (ROBUST) + ✅ MULTI-ROLE READY
+// - login รองรับ activeRole (optional)
+// - เพิ่ม switchRole() -> POST /switch-role (auth required)
+// - me() cache app_clinic_id/app_user_id/app_role + app_active_role/app_roles
 //
 
 import 'dart:convert';
@@ -23,10 +14,11 @@ import 'package:clinic_smart_staff/api/api_config.dart';
 import 'package:clinic_smart_staff/services/auth_storage.dart';
 
 class AuthApi {
-  // 🔧 ถ้า backend ใช้ /auth/login ให้เปลี่ยนเป็น '/auth/login'
   static const String _loginPath = '/login';
-  // 🔧 ถ้า backend ใช้ /auth/me ให้เปลี่ยนเป็น '/auth/me'
   static const String _mePath = '/me';
+
+  // ✅ NEW: switch role endpoint (ตาม backend ที่ท่านทำไว้)
+  static const String _switchRolePath = '/switch-role';
 
   static const Duration _timeout = Duration(seconds: 15);
 
@@ -35,7 +27,13 @@ class AuthApi {
   // ✅ Shared prefs keys (pattern เดียวทั้งแอป)
   static const String _kClinicId = 'app_clinic_id';
   static const String _kUserId = 'app_user_id';
+
+  // legacy: หน้าต่าง ๆ ยังอ่าน app_role อยู่
   static const String _kRole = 'app_role';
+
+  // ✅ NEW: multi-role cache
+  static const String _kActiveRole = 'app_active_role';
+  static const String _kRolesJson = 'app_roles_json';
 
   static const List<String> _tokenKeys = [
     'jwtToken',
@@ -65,10 +63,8 @@ class AuthApi {
 
   // ✅ เซฟ token ให้ครบทุก key ที่หน้าอื่น ๆ ใช้หา
   static Future<void> _saveTokenEverywhere(String token) async {
-    // 1) เซฟผ่าน storage หลักของคุณ
     await AuthStorage.saveToken(token);
 
-    // 2) เซฟซ้ำลง prefs หลาย key (กันหน้าอื่นอ่านไม่เจอ)
     final prefs = await SharedPreferences.getInstance();
     for (final k in _tokenKeys) {
       await prefs.setString(k, token);
@@ -84,7 +80,6 @@ class AuthApi {
     for (final k in _tokenKeys) {
       final v = prefs.getString(k);
       if (v != null && v.trim().isNotEmpty && v != 'null') {
-        // sync กลับเข้า storage + keys อื่นด้วย
         await _saveTokenEverywhere(v.trim());
         return v.trim();
       }
@@ -139,7 +134,12 @@ class AuthApi {
     return '';
   }
 
+  // ✅ IMPORTANT (Multi-role):
+  // prefer activeRole > role > roles[0]
   static String _extractRole(Map<String, dynamic> me) {
+    final ar = _pickString(me['activeRole']);
+    if (ar.isNotEmpty) return ar;
+
     final r1 = _pickString(me['role']);
     if (r1.isNotEmpty) return r1;
 
@@ -150,36 +150,62 @@ class AuthApi {
     return '';
   }
 
+  static List<String> _extractRoles(Map<String, dynamic> me) {
+    final roles = me['roles'];
+    if (roles is List) {
+      return roles.map((e) => _pickString(e)).where((e) => e.isNotEmpty).toList();
+    }
+    // fallback: ถ้าไม่มี roles แต่มี role เดียว
+    final single = _pickString(me['role']);
+    if (single.isNotEmpty) return [single];
+    return [];
+  }
+
   static Future<void> _cacheAppContextFromMe(Map<String, dynamic> me) async {
     final clinicId = _extractClinicId(me);
     final userId = _extractUserId(me);
     final role = _extractRole(me);
 
-    // cache เฉพาะเมื่อมีค่าจริง
-    if (clinicId.isEmpty && userId.isEmpty && role.isEmpty) return;
+    final roles = _extractRoles(me);
+    final activeRole = _pickString(me['activeRole']).isNotEmpty ? _pickString(me['activeRole']) : role;
 
     final prefs = await SharedPreferences.getInstance();
+
     if (clinicId.isNotEmpty) await prefs.setString(_kClinicId, clinicId);
     if (userId.isNotEmpty) await prefs.setString(_kUserId, userId);
+
+    // legacy consumers
     if (role.isNotEmpty) await prefs.setString(_kRole, role);
+
+    // ✅ multi-role cache
+    if (activeRole.isNotEmpty) await prefs.setString(_kActiveRole, activeRole);
+    await prefs.setString(_kRolesJson, jsonEncode(roles));
   }
 
   /// Login แล้ว save token
-  /// ✅ ปรับให้ return user จาก me() ด้วย (ช่วย flow: login -> dashboard พร้อม clinicId/userId ทันที)
+  /// ✅ NEW: ส่ง activeRole ได้ (optional)
   static Future<Map<String, dynamic>> login({
-    required String email, // ใช้เป็น id ได้ทั้ง email/phone
+    required String email,
     required String password,
+    String? activeRole, // ✅ NEW
   }) async {
+    final body = {
+      'emailOrPhone': email,
+      'email': email,
+      'identifier': email,
+      'password': password,
+    };
+
+    // ✅ backend รองรับ body.activeRole ตามที่ท่านแก้ไว้
+    if (activeRole != null && activeRole.trim().isNotEmpty) {
+      body['activeRole'] = activeRole.trim();
+    }
+
     final res = await http
         .post(
           _url(_loginPath),
           headers: const {'Content-Type': 'application/json'},
-          body: json.encode({
-            'emailOrPhone': email,
-            'email': email,
-            'identifier': email,
-            'password': password,
-          }),
+          body: json.encode(body),
         )
         .timeout(_timeout);
 
@@ -194,22 +220,61 @@ class AuthApi {
       throw Exception('Login ok but token missing');
     }
 
-    // ✅ FIX: เซฟ token ให้ทุกหน้าหาเจอ
     await _saveTokenEverywhere(token);
 
-    // ✅ NEW: ดึง /me ต่อทันที เพื่อ cache app_context ให้พร้อมใช้
+    // ✅ ดึง /me ต่อทันที เพื่อ cache app_context ให้พร้อมใช้
     return await me();
   }
 
+  /// ✅ NEW: Switch role แล้วออก token ใหม่
+  static Future<Map<String, dynamic>> switchRole({
+    required String activeRole,
+  }) async {
+    final token = await _getTokenRobust();
+    if (token == null || token.trim().isEmpty) {
+      throw Exception('Not logged in');
+    }
+
+    final res = await http
+        .post(
+          _url(_switchRolePath),
+          headers: {
+            'Authorization': 'Bearer $token',
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+          },
+          body: jsonEncode({'activeRole': activeRole.trim()}),
+        )
+        .timeout(_timeout);
+
+    if (res.statusCode != 200) {
+      throw Exception('switchRole failed: ${res.statusCode} ${res.body}');
+    }
+
+    final data = json.decode(res.body);
+    final newToken = _pickToken(data);
+    if (newToken.isEmpty) {
+      throw Exception('switchRole ok but token missing');
+    }
+
+    await _saveTokenEverywhere(newToken);
+
+    // response บางทีส่ง {user:{...}} ให้ unify เป็น me map
+    final map = _asMap(data);
+    final Map<String, dynamic> meMap =
+        (map['user'] is Map) ? (map['user'] as Map).cast<String, dynamic>() : map;
+
+    await _cacheAppContextFromMe(meMap);
+    return meMap;
+  }
+
   /// ดึงข้อมูลผู้ใช้จาก token
-  /// ✅ return Map เพื่อให้ AuthGate / AppContext ใช้ต่อได้
   static Future<Map<String, dynamic>> me() async {
     final token = await _getTokenRobust();
     if (token == null || token.trim().isEmpty) {
       throw Exception('Not logged in');
     }
 
-    // ✅ sync token ไป prefs ทุกครั้ง เผื่อ prefs โดนล้าง
     await _saveTokenEverywhere(token);
 
     final res = await http
@@ -229,13 +294,10 @@ class AuthApi {
     final data = json.decode(res.body);
     final map = _asMap(data);
 
-    // ✅ รองรับ backend ส่ง { user: {...} }
     final Map<String, dynamic> me =
         (map['user'] is Map) ? (map['user'] as Map).cast<String, dynamic>() : map;
 
-    // ✅ NEW: cache clinicId/userId/role ลง prefs แบบ pattern เดียว
     await _cacheAppContextFromMe(me);
-
     return me;
   }
 }

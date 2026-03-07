@@ -1,19 +1,24 @@
 // lib/screens/auth/auth_gate_screen.dart
 //
-// ✅ FINAL / STABLE VERSION — MATCH main.dart (Named Routes ONLY)
+// ✅ FINAL / STABLE — Multi-role READY (NO UNKNOWN ROUTES)
 // - ใช้ AuthApi.me()
-// - โหลด/เซฟ clinicId,userId,role เข้า AppContext
+// - save clinicId,userId,role + ✅ activeRole + ✅ roles[] ลง prefs (กันฟีเจอร์หาย)
 // - redirect ครั้งเดียว
-// - ✅ FIX: ใช้ pushNamedAndRemoveUntil (ไม่ใช้ MaterialPageRoute)
-// - ✅ FIX: navigate หลังเฟรม (post-frame) กัน build scope crash
+// - ✅ Named Routes ONLY
+// - ✅ navigate หลังเฟรม กัน build scope crash
+//
+// IMPORTANT:
+// - ไม่อ้าง AppRoutes.helperHome/clinicHome เพื่อกันแดง (เพราะบางโปรเจกต์ไม่มี)
+// - เดินทางไป AppRoutes.home เสมอ แล้วให้ HomeScreen แยก flow ตาม role เอง
 //
 
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:clinic_smart_staff/api/auth_api.dart';
 import 'package:clinic_smart_staff/services/auth_storage.dart';
-
-import 'package:clinic_smart_staff/screens/auth/login_screen.dart';
 import 'package:clinic_smart_staff/app/app_context_resolver.dart';
 
 // ✅ route names จาก main.dart
@@ -29,23 +34,30 @@ class AuthGateScreen extends StatefulWidget {
 class _AuthGateScreenState extends State<AuthGateScreen> {
   bool _navigated = false;
 
+  // prefs keys (เพิ่มเอง ไม่ชนของเดิม)
+  static const String _kActiveRole = 'app_active_role';
+  static const String _kRolesJson = 'app_roles_json';
+
   @override
   void initState() {
     super.initState();
-
-    // ✅ เริ่มหลังเฟรมแรก
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _boot();
-    });
+    WidgetsBinding.instance.addPostFrameCallback((_) => _boot());
   }
 
   // ------------------------------
-  // Helpers: extract context from /me
+  // Helpers
   // ------------------------------
   String _pickString(dynamic v) {
     final s = (v ?? '').toString().trim();
     if (s.isEmpty || s == 'null') return '';
     return s;
+  }
+
+  List<String> _pickStringList(dynamic v) {
+    if (v is List) {
+      return v.map((e) => _pickString(e)).where((e) => e.isNotEmpty).toList();
+    }
+    return const [];
   }
 
   String _extractClinicId(Map<String, dynamic> me) {
@@ -91,9 +103,14 @@ class _AuthGateScreenState extends State<AuthGateScreen> {
     return '';
   }
 
-  String _extractRole(Map<String, dynamic> me) {
-    final r1 = _pickString(me['role']);
-    if (r1.isNotEmpty) return r1;
+  /// ✅ IMPORTANT (multi-role):
+  /// priority: activeRole > role > roles[0]
+  String _extractEffectiveRole(Map<String, dynamic> me) {
+    final a = _pickString(me['activeRole']);
+    if (a.isNotEmpty) return a;
+
+    final r = _pickString(me['role']);
+    if (r.isNotEmpty) return r;
 
     final roles = me['roles'];
     if (roles is List && roles.isNotEmpty) {
@@ -101,6 +118,21 @@ class _AuthGateScreenState extends State<AuthGateScreen> {
     }
 
     return '';
+  }
+
+  List<String> _extractRolesAll(Map<String, dynamic> me) {
+    final roles = _pickStringList(me['roles']);
+    final legacy = _pickString(me['role']);
+    final active = _pickString(me['activeRole']);
+
+    final set = <String>{};
+    for (final r in roles) {
+      set.add(r);
+    }
+    if (legacy.isNotEmpty) set.add(legacy);
+    if (active.isNotEmpty) set.add(active);
+
+    return set.toList();
   }
 
   // ----------------------------------------------------------
@@ -119,6 +151,9 @@ class _AuthGateScreenState extends State<AuthGateScreen> {
     });
   }
 
+  void _goLogin() => _scheduleNamedNav(AppRoutes.login);
+  void _goHome() => _scheduleNamedNav(AppRoutes.home);
+
   Future<void> _boot() async {
     if (_navigated) return;
 
@@ -127,7 +162,7 @@ class _AuthGateScreenState extends State<AuthGateScreen> {
       final token = await AuthStorage.getToken();
       if (!mounted) return;
 
-      if (token == null || token.isEmpty) {
+      if (token == null || token.trim().isEmpty) {
         _goLogin();
         return;
       }
@@ -136,31 +171,44 @@ class _AuthGateScreenState extends State<AuthGateScreen> {
       final dynamic rawMe = await AuthApi.me();
       if (!mounted) return;
 
-      // 3) โหลด context
+      // 3) normalize + save context (กันฟีเจอร์หาย)
+      Map<String, dynamic> me;
       if (rawMe is Map) {
-        final me = Map<String, dynamic>.from(rawMe);
-
-        final clinicId = _extractClinicId(me);
-        final userId = _extractUserId(me);
-        final role = _extractRole(me);
-
-        if (clinicId.isNotEmpty && userId.isNotEmpty) {
-          await AppContextResolver.save(
-            clinicId: clinicId,
-            userId: userId,
-            role: role,
-          );
-          if (!mounted) return;
-        } else {
-          await AppContextResolver.loadFromPrefs();
-          if (!mounted) return;
-        }
+        me = Map<String, dynamic>.from(rawMe);
       } else {
+        // fallback โหลดจาก prefs
         await AppContextResolver.loadFromPrefs();
         if (!mounted) return;
+        _goHome();
+        return;
       }
 
-      // 4) ผ่าน = ไป Home/My (ตามโครง main.dart)
+      final clinicId = _extractClinicId(me);
+      final userId = _extractUserId(me);
+
+      final effectiveRole = _extractEffectiveRole(me);
+      final rolesAll = _extractRolesAll(me);
+
+      // ✅ save to AppContextResolver (ของเดิม)
+      if (clinicId.isNotEmpty && userId.isNotEmpty) {
+        await AppContextResolver.save(
+          clinicId: clinicId,
+          userId: userId,
+          role: effectiveRole,
+        );
+      } else {
+        await AppContextResolver.loadFromPrefs();
+      }
+      if (!mounted) return;
+
+      // ✅ save extra multi-role info
+      final prefs = await SharedPreferences.getInstance();
+      if (effectiveRole.isNotEmpty) {
+        await prefs.setString(_kActiveRole, effectiveRole);
+      }
+      await prefs.setString(_kRolesJson, jsonEncode(rolesAll));
+
+      // 4) ไป home เสมอ แล้วให้ HomeScreen ตัดสินใจตาม role
       _goHome();
     } catch (_) {
       // error = logout
@@ -176,21 +224,8 @@ class _AuthGateScreenState extends State<AuthGateScreen> {
     }
   }
 
-  void _goLogin() {
-    _scheduleNamedNav(AppRoutes.authGate == AppRoutes.login
-        ? AppRoutes.login
-        : AppRoutes.login);
-  }
-
-  void _goHome() {
-    // ตอนนี้ main.dart วาง placeholder ไว้ที่ /home
-    // ถ้าคุณอยากแยก clinic/helper ภายหลัง ค่อยมาปรับตรงนี้
-    _scheduleNamedNav(AppRoutes.home);
-  }
-
   @override
   Widget build(BuildContext context) {
-    // Gate = loading อย่างเดียว
     return const Scaffold(
       body: Center(child: CircularProgressIndicator()),
     );

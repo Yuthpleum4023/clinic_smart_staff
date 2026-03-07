@@ -1,4 +1,3 @@
-//
 // lib/screens/location_settings_screen.dart
 //
 // ✅ FULL FILE (OSM 403 FIXED + PRODUCTION SAFE)
@@ -6,6 +5,7 @@
 // - ✅ ใส่ userAgentPackageName = applicationId จริง
 // - ✅ ไม่มี type ซ้ำ ClinicLocation
 // - ✅ Save local + Sync backend
+// - ✅ STORE SAFE: ซ่อน ApiConfig.debugPayroll ใน Release ด้วย DebugOnly
 //
 
 import 'dart:convert';
@@ -19,6 +19,9 @@ import 'package:latlong2/latlong.dart';
 import 'package:clinic_smart_staff/api/api_config.dart';
 import 'package:clinic_smart_staff/services/auth_storage.dart';
 import 'package:clinic_smart_staff/services/settings_service.dart';
+
+// ✅ STORE SAFE: DebugOnly
+import 'package:clinic_smart_staff/widgets/debug_only.dart';
 
 class LocationSettingsScreen extends StatefulWidget {
   const LocationSettingsScreen({super.key});
@@ -303,13 +306,19 @@ class _LocationSettingsScreenState extends State<LocationSettingsScreen> {
                         const SizedBox(height: 10),
                         const LinearProgressIndicator(),
                       ],
-                      const SizedBox(height: 8),
-                      Text(
-                        ApiConfig.debugPayroll,
-                        style: Theme.of(context)
-                            .textTheme
-                            .bodySmall
-                            ?.copyWith(color: Colors.grey),
+
+                      // ✅ STORE SAFE: show only in debug
+                      DebugOnly(
+                        child: Padding(
+                          padding: const EdgeInsets.only(top: 8),
+                          child: Text(
+                            ApiConfig.debugPayroll,
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodySmall
+                                ?.copyWith(color: Colors.grey),
+                          ),
+                        ),
                       ),
                     ],
                   ),

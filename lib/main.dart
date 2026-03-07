@@ -1,4 +1,3 @@
-// lib/main.dart
 import 'package:flutter/material.dart';
 
 // ================================
@@ -25,17 +24,29 @@ class AppRoutes {
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
 
-  /// ✅ ม่วงหลัก (ตัวกำหนดทั้งระบบ)
-  static const Color _purplePrimary = Color(0xFF6A1B9A);
+  // 🔥 ม่วงสด
+  static const Color _purplePrimary = Color(0xFF7C3AED);
 
-  /// ✅ พื้นหลังม่วงอ่อน
-  static const Color _bgLavender = Color(0xFFF6F1FF);
+  // 💜 Lavender Background
+  static const Color _bgLavender = Color(0xFFFBF7FF);
+
+  // 🧊 Surface ขาว
+  static const Color _surface = Colors.white;
+
+  // 🟣 Outline นิ่ม
+  static const Color _outlineSoft = Color(0xFFE9D5FF);
 
   @override
   Widget build(BuildContext context) {
     final scheme = ColorScheme.fromSeed(
       seedColor: _purplePrimary,
       brightness: Brightness.light,
+    ).copyWith(
+      primary: _purplePrimary,
+      secondary: _purplePrimary,
+      tertiary: _purplePrimary,
+      surface: _surface,
+      background: _bgLavender,
     );
 
     return MaterialApp(
@@ -45,97 +56,124 @@ class MyApp extends StatelessWidget {
 
       theme: ThemeData(
         useMaterial3: true,
-
-        /// ✅ ตัวล็อกสีจริง (กัน Android ฟ้า)
-        colorScheme: scheme.copyWith(
-          primary: _purplePrimary,
-          secondary: _purplePrimary,
-        ),
-
-        primaryColor: _purplePrimary,
-
+        colorScheme: scheme,
         scaffoldBackgroundColor: _bgLavender,
 
-        /// ✅ AppBar ม่วงนิ่ง
+        // ✅ AppBar ขาวคม
         appBarTheme: const AppBarTheme(
-          backgroundColor: Colors.transparent,
-          elevation: 0,
+          backgroundColor: _surface,
           foregroundColor: Colors.black,
+          elevation: 0,
           surfaceTintColor: Colors.transparent,
           titleTextStyle: TextStyle(
             fontSize: 20,
-            fontWeight: FontWeight.w700,
+            fontWeight: FontWeight.w800,
             color: Colors.black,
           ),
         ),
 
-        /// ✅ FAB ไม่ฟ้าแน่นอน
+        // ✅ FIX แดง — ใช้ CardThemeData
+        cardTheme: CardThemeData(
+          elevation: 0,
+          color: _surface,
+          surfaceTintColor: Colors.transparent,
+          margin: EdgeInsets.zero,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(18),
+            side: const BorderSide(color: _outlineSoft, width: 1),
+          ),
+        ),
+
+        // ✅ FIX แดง — ใช้ DialogThemeData
+        dialogTheme: DialogThemeData(
+          backgroundColor: _surface,
+          surfaceTintColor: Colors.transparent,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(18),
+            side: const BorderSide(color: _outlineSoft, width: 1),
+          ),
+        ),
+
+        // ✅ BottomSheet ขาว
+        bottomSheetTheme: const BottomSheetThemeData(
+          backgroundColor: _surface,
+          surfaceTintColor: Colors.transparent,
+          showDragHandle: true,
+        ),
+
+        dividerTheme: const DividerThemeData(
+          color: _outlineSoft,
+          thickness: 1,
+        ),
+
+        iconTheme: const IconThemeData(
+          color: Color(0xFF2E1065),
+        ),
+
         floatingActionButtonTheme: const FloatingActionButtonThemeData(
           backgroundColor: _purplePrimary,
           foregroundColor: Colors.white,
         ),
 
-        /// ✅ ElevatedButton ม่วงตายตัว
         elevatedButtonTheme: ElevatedButtonThemeData(
           style: ElevatedButton.styleFrom(
             backgroundColor: _purplePrimary,
             foregroundColor: Colors.white,
-            textStyle: const TextStyle(fontWeight: FontWeight.w700),
+            elevation: 0,
+            textStyle: const TextStyle(
+              fontWeight: FontWeight.w800,
+              fontSize: 15,
+            ),
+            padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 18),
             shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
+              borderRadius: BorderRadius.circular(14),
             ),
           ),
         ),
 
-        /// ✅ OutlinedButton ขอบม่วง (กันฟ้า)
         outlinedButtonTheme: OutlinedButtonThemeData(
           style: OutlinedButton.styleFrom(
             foregroundColor: _purplePrimary,
-            side: const BorderSide(color: _purplePrimary),
+            side: const BorderSide(color: _purplePrimary, width: 1.4),
             shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
+              borderRadius: BorderRadius.circular(14),
             ),
+            padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 18),
           ),
         ),
 
-        /// ✅ Progress / Switch / Checkbox = ม่วง
+        textButtonTheme: TextButtonThemeData(
+          style: TextButton.styleFrom(
+            foregroundColor: _purplePrimary,
+            textStyle: const TextStyle(fontWeight: FontWeight.w800),
+          ),
+        ),
+
         progressIndicatorTheme: const ProgressIndicatorThemeData(
           color: _purplePrimary,
         ),
 
         checkboxTheme: const CheckboxThemeData(
           fillColor: WidgetStatePropertyAll(_purplePrimary),
+          checkColor: WidgetStatePropertyAll(Colors.white),
         ),
 
         switchTheme: const SwitchThemeData(
           thumbColor: WidgetStatePropertyAll(_purplePrimary),
-          trackColor: WidgetStatePropertyAll(Color(0xFFCE93D8)),
         ),
 
-        /// ✅ TextField โทนม่วง
-        inputDecorationTheme: InputDecorationTheme(
-          filled: true,
-          fillColor: Colors.white,
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
-          focusedBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-            borderSide: const BorderSide(
-              color: _purplePrimary,
-              width: 2,
-            ),
-          ),
+        navigationBarTheme: NavigationBarThemeData(
+          backgroundColor: _surface,
+          surfaceTintColor: Colors.transparent,
+          indicatorColor: const Color(0xFFE9D5FF),
         ),
       ),
 
       initialRoute: AppRoutes.authGate,
-
       routes: {
         AppRoutes.authGate: (_) => const AuthGateScreen(),
         AppRoutes.login: (_) => const LoginScreen(),
         AppRoutes.home: (_) => const HomeScreen(),
-
         AppRoutes.clinicGate: (_) => const _PlaceholderScreen(
               title: 'CLINIC GATE',
               subtitle: 'หน้าขอรหัสคลินิก',

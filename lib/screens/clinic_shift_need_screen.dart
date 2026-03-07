@@ -1,12 +1,12 @@
 // lib/screens/clinic_shift_need_screen.dart
 //
-// ✅ FULL FILE (FIXED + SAME PATTERN WHOLE APP)
+// ✅ FULL FILE — Commercial Polish Mode (PROD CLEAN)
 // - ✅ รองรับของเดิม: ยังรับ clinicId ผ่าน constructor ได้
 // - ✅ IMPROVE UX: ไม่ต้องส่ง clinicId ก็ได้ -> resolve อัตโนมัติจาก prefs (app_clinic_id / clinicId / ...)
-// - ✅ ไม่ตัด function ใด ๆ ออก (คงครบ) + เพิ่ม resolver/cache ให้เสถียร
-// - ✅ FIX BASE URL: ใช้ ApiConfig.payrollBaseUrl ตรง ๆ (อย่าตัด /payroll ออกเอง)
-// - ✅ show real API on UI เหมือนเดิม
-// - ✅ FIX UI: ไม่ hardcode สีฟ้า -> ใช้ Theme สีม่วงทั้งระบบ
+// - ✅ ไม่ตัด function ใด ๆ ออก (คงครบ) + resolver/cache เสถียร
+// - ✅ ใช้ ApiConfig.payrollBaseUrl ตรง ๆ
+// - ✅ ไม่โชว์คำเทคนิค/endpoint/id/token/clinicId ใน UI
+// - ✅ ไม่ hardcode สี -> ให้ Theme (ม่วง) คุมทั้งระบบ
 //
 
 import 'dart:convert';
@@ -49,10 +49,7 @@ class _ClinicShiftNeedScreenState extends State<ClinicShiftNeedScreen> {
 
   bool _loading = false;
 
-  // ✅ show real API on UI
-  String _apiBase = '';
-
-  // ✅ clinicId resolved
+  // ✅ clinicId resolved (ใช้ภายในเท่านั้น)
   String _clinicId = '';
   bool _ctxLoaded = false;
 
@@ -64,8 +61,6 @@ class _ClinicShiftNeedScreenState extends State<ClinicShiftNeedScreen> {
     _recalcExpectedHours();
 
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      final base = await _NeedApi.getBaseUrl();
-      if (mounted) setState(() => _apiBase = base);
       await _resolveClinicId();
     });
   }
@@ -112,11 +107,12 @@ class _ClinicShiftNeedScreenState extends State<ClinicShiftNeedScreen> {
     final s = _start!.hour * 60 + _start!.minute;
     final e = _end!.hour * 60 + _end!.minute;
     if (s == e) {
-      _snack('เวลาเริ่ม/เลิก ห้ามเท่ากัน');
+      _snack('เวลาเริ่มและเวลาสิ้นสุดห้ามเท่ากัน');
       return false;
     }
+    // ข้ามวันได้ (แจ้งแบบนุ่ม ๆ)
     if (e < s) {
-      _snack('หมายเหตุ: เลือกเวลาข้ามวัน');
+      _snack('หมายเหตุ: ช่วงเวลานี้เป็นแบบข้ามวัน');
     }
     return true;
   }
@@ -187,7 +183,7 @@ class _ClinicShiftNeedScreenState extends State<ClinicShiftNeedScreen> {
 
     final clinicId = _clinicId.trim();
     if (clinicId.isEmpty) {
-      _snack('ไม่พบ clinicId (ลอง logout/login ใหม่ หรือเข้า MyClinic ก่อน)');
+      _snack('ไม่พบข้อมูลคลินิก กรุณาออกจากระบบแล้วเข้าสู่ระบบใหม่');
       return;
     }
 
@@ -200,14 +196,14 @@ class _ClinicShiftNeedScreenState extends State<ClinicShiftNeedScreen> {
     final hourlyRate = _toDouble(_hourlyRateCtrl.text);
     final requiredCount = _toInt(_requiredCountCtrl.text);
     if (hourlyRate <= 0 || requiredCount <= 0) {
-      _snack('ข้อมูลไม่ถูกต้อง');
+      _snack('กรุณาตรวจสอบข้อมูลให้ถูกต้อง');
       return;
     }
 
     setState(() => _loading = true);
     try {
       final payload = {
-        'clinicId': clinicId,
+        'clinicId': clinicId, // ✅ ส่งให้ backend (แต่ไม่โชว์ UI)
         'title': _titleCtrl.text.trim(),
         'role': _roleCtrl.text.trim().isEmpty ? 'ผู้ช่วย' : _roleCtrl.text.trim(),
         'date': _fmtDate(_date!),
@@ -218,14 +214,12 @@ class _ClinicShiftNeedScreenState extends State<ClinicShiftNeedScreen> {
         'note': _noteCtrl.text.trim(),
       };
 
-      final res = await _NeedApi.createNeed(payload);
-      final need = (res['need'] ?? res) as Map?;
-      final id = need?['_id'] ?? need?['id'] ?? '';
+      await _NeedApi.createNeed(payload);
 
-      _snack('ประกาศงานสำเร็จ ${id.isNotEmpty ? '(id: $id)' : ''}');
+      _snack('ประกาศงานสำเร็จ');
       if (mounted) Navigator.pop(context, true);
     } catch (e) {
-      _snack('ประกาศงานไม่สำเร็จ: $e');
+      _snack(_NeedApi.toUserMessage(e));
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -233,20 +227,20 @@ class _ClinicShiftNeedScreenState extends State<ClinicShiftNeedScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final clinicId = _clinicId.trim();
-    final api = _apiBase.trim().replaceAll(RegExp(r'\/+$'), '');
-
     return Scaffold(
       appBar: AppBar(
-        title: const Text('คลินิก: ต้องการผู้ช่วย'),
-        // ✅ ไม่ hardcode สีฟ้า ให้ Theme คุม
+        title: const Text('ประกาศงาน (คลินิก)'),
         actions: [
           IconButton(
-            tooltip: 'รีเฟรช clinicId',
+            tooltip: 'รีเฟรช',
             onPressed: () async {
+              // รีโหลด clinic context แบบเงียบ ๆ
+              setState(() {
+                _ctxLoaded = false;
+                _clinicId = '';
+              });
               await _resolveClinicId();
-              final base = await _NeedApi.getBaseUrl();
-              if (mounted) setState(() => _apiBase = base);
+              _snack('อัปเดตข้อมูลแล้ว');
             },
             icon: const Icon(Icons.refresh),
           ),
@@ -258,16 +252,7 @@ class _ClinicShiftNeedScreenState extends State<ClinicShiftNeedScreen> {
           key: _formKey,
           child: ListView(
             children: [
-              Text(
-                'API: ${api.isEmpty ? '(loading...)' : '$api$kCreateNeedPath'}',
-                style: TextStyle(color: Colors.grey.shade700),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                'clinicId: ${clinicId.isEmpty ? '-' : clinicId}',
-                style: TextStyle(color: Colors.grey.shade700),
-              ),
-              const SizedBox(height: 12),
+              // ✅ ไม่โชว์ endpoint/clinicId ใน UI
 
               TextFormField(
                 controller: _titleCtrl,
@@ -346,7 +331,7 @@ class _ClinicShiftNeedScreenState extends State<ClinicShiftNeedScreen> {
                 keyboardType:
                     const TextInputType.numberWithOptions(decimal: true),
                 decoration: const InputDecoration(
-                  labelText: 'เรท (บาท/ชม.)',
+                  labelText: 'เรท (บาท/ชั่วโมง)',
                   border: OutlineInputBorder(),
                 ),
               ),
@@ -356,7 +341,7 @@ class _ClinicShiftNeedScreenState extends State<ClinicShiftNeedScreen> {
                 controller: _requiredCountCtrl,
                 keyboardType: TextInputType.number,
                 decoration: const InputDecoration(
-                  labelText: 'จำนวนผู้ช่วย',
+                  labelText: 'จำนวนผู้ช่วยที่ต้องการ',
                   border: OutlineInputBorder(),
                 ),
               ),
@@ -366,13 +351,12 @@ class _ClinicShiftNeedScreenState extends State<ClinicShiftNeedScreen> {
                 controller: _noteCtrl,
                 maxLines: 3,
                 decoration: const InputDecoration(
-                  labelText: 'หมายเหตุ',
+                  labelText: 'หมายเหตุ (ถ้ามี)',
                   border: OutlineInputBorder(),
                 ),
               ),
               const SizedBox(height: 14),
 
-              // ✅ ปุ่มหลักให้ม่วงชัดตาม Theme (Material 3)
               SizedBox(
                 width: double.infinity,
                 child: FilledButton.icon(
@@ -384,7 +368,7 @@ class _ClinicShiftNeedScreenState extends State<ClinicShiftNeedScreen> {
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
                       : const Icon(Icons.send),
-                  label: const Text('ประกาศงานว่าง'),
+                  label: const Text('ประกาศงาน'),
                 ),
               ),
             ],
@@ -396,7 +380,8 @@ class _ClinicShiftNeedScreenState extends State<ClinicShiftNeedScreen> {
 }
 
 /// ============================================================
-/// ✅ API helper (no hardcode baseUrl)
+/// ✅ API helper (PROD CLEAN)
+//  - ไม่โยนข้อความเทคนิคให้ UI
 /// ============================================================
 class _NeedApi {
   static const _tokenKeys = [
@@ -419,7 +404,6 @@ class _NeedApi {
   }
 
   static Future<String> getBaseUrl() async {
-    // ✅ ใช้ ApiConfig.payrollBaseUrl ตรง ๆ
     var base = ApiConfig.payrollBaseUrl.trim();
     base = base.replaceAll(RegExp(r'\/+$'), '');
     return base;
@@ -433,7 +417,10 @@ class _NeedApi {
 
   static Future<Map<String, String>> _headers() async {
     final token = await _getToken();
-    if (token == null) throw Exception('no token (กรุณา login ก่อน)');
+    if (token == null) {
+      // โยน error แบบ internal แล้วแปลงเป็น user msg ที่ชั้นบน
+      throw Exception('AUTH_REQUIRED');
+    }
     return {
       'Content-Type': 'application/json',
       'Authorization': 'Bearer $token',
@@ -446,19 +433,68 @@ class _NeedApi {
     final base = await getBaseUrl();
     final uri = _u(base, kCreateNeedPath);
 
-    final res = await http.post(
-      uri,
-      headers: await _headers(),
-      body: jsonEncode(payload),
-    );
+    http.Response res;
+    try {
+      res = await http
+          .post(
+            uri,
+            headers: await _headers(),
+            body: jsonEncode(payload),
+          )
+          .timeout(const Duration(seconds: 20));
+    } catch (e) {
+      // timeout / network
+      throw Exception('NETWORK_ERROR:$e');
+    }
 
     if (res.statusCode != 200 && res.statusCode != 201) {
-      throw Exception('createNeed failed: ${res.statusCode} ${res.body}');
+      // พยายามอ่าน message จาก backend (แต่ไม่โชว์ดิบ)
+      try {
+        final decoded = jsonDecode(res.body);
+        if (decoded is Map && (decoded['message'] != null || decoded['error'] != null)) {
+          throw Exception('SERVER_MSG:${decoded['message'] ?? decoded['error']}');
+        }
+      } catch (_) {}
+      throw Exception('SERVER_ERROR:${res.statusCode}');
     }
 
     final data = jsonDecode(res.body);
     if (data is Map<String, dynamic>) return data;
     if (data is Map) return Map<String, dynamic>.from(data);
     return {'data': data};
+  }
+
+  /// แปลง error ให้เป็นข้อความผู้ใช้ (Commercial)
+  static String toUserMessage(Object e) {
+    final s = e.toString().toLowerCase();
+
+    if (s.contains('auth_required')) {
+      return 'เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่';
+    }
+
+    if (s.contains('network_error') || s.contains('timeout') || s.contains('socket')) {
+      return 'เชื่อมต่อไม่สำเร็จ กรุณาตรวจสอบอินเทอร์เน็ตแล้วลองใหม่';
+    }
+
+    if (s.contains('server_msg:')) {
+      final raw = e.toString();
+      final idx = raw.indexOf('SERVER_MSG:');
+      if (idx >= 0) {
+        final msg = raw.substring(idx + 'SERVER_MSG:'.length).trim();
+        if (msg.isNotEmpty) return msg;
+      }
+      return 'ทำรายการไม่สำเร็จ กรุณาลองใหม่';
+    }
+
+    if (s.contains('server_error:401') || s.contains('server_error:403')) {
+      return 'ไม่มีสิทธิ์ใช้งาน กรุณาเข้าสู่ระบบใหม่';
+    }
+
+    if (s.contains('server_error:') || s.contains('500') || s.contains('404')) {
+      return 'ระบบขัดข้องชั่วคราว กรุณาลองใหม่อีกครั้ง';
+    }
+
+    // fallback สุภาพ
+    return 'ประกาศงานไม่สำเร็จ กรุณาลองใหม่';
   }
 }

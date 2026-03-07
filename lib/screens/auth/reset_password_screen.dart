@@ -1,11 +1,13 @@
 // lib/screens/auth/reset_password_screen.dart
 //
-// ✅ FIXED FULL FILE (ADD HOME BUTTON)
+// ✅ FIXED FULL FILE (ADD HOME BUTTON) + STORE SAFE DEBUG
 // - เพิ่มปุ่ม "ขอรหัส OTP" -> เรียก POST /forgot-password
 // - กันกดซ้ำ + แสดงสถานะ + นับถอยหลัง resend (60s)
 // - ใช้ ApiConfig.authBaseUrl เดิมของคุณ
 // - Reset ใช้ POST /reset-password { emailOrPhone, code, newPassword }
 // - ✅ NEW: มีปุ่ม Home กลับหน้า HomeScreen ได้ทันที (ล้าง stack)
+// - ✅ STORE SAFE: ซ่อน "Auth: ..." ใน Release ด้วย DebugOnly
+// - ✅ STORE SAFE: ปรับข้อความ SnackBar ให้ user-friendly (ไม่พูดว่า "ดู log")
 
 import 'dart:async';
 import 'dart:convert';
@@ -18,6 +20,9 @@ import 'package:clinic_smart_staff/screens/auth/login_screen.dart';
 
 // ✅ NEW: เพื่อกลับหน้า HomeScreen ได้ทันที
 import 'package:clinic_smart_staff/screens/home_screen.dart';
+
+// ✅ STORE SAFE: DebugOnly
+import 'package:clinic_smart_staff/widgets/debug_only.dart';
 
 class ResetPasswordScreen extends StatefulWidget {
   const ResetPasswordScreen({super.key});
@@ -121,7 +126,8 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
         throw Exception('forgot failed: ${res.statusCode} ${res.body}');
       }
 
-      _snack('ส่งรหัส OTP แล้ว ✅ (ดูที่ backend log หรือ SMS)');
+      // ✅ STORE SAFE: ไม่พูดว่า "ดู log"
+      _snack('ส่งรหัส OTP แล้ว ✅ กรุณาตรวจสอบ OTP แล้วกรอกด้านล่าง');
       _startCooldown();
     } catch (e) {
       _snack('ขอ OTP ไม่สำเร็จ: $e');
@@ -201,9 +207,12 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
         padding: const EdgeInsets.all(16),
         child: ListView(
           children: [
-            Text(
-              'Auth: $authUrl',
-              style: TextStyle(color: Colors.grey.shade700),
+            // ✅ STORE SAFE: show only in debug
+            DebugOnly(
+              child: Text(
+                'Auth: $authUrl',
+                style: TextStyle(color: Colors.grey.shade700),
+              ),
             ),
             const SizedBox(height: 12),
 
