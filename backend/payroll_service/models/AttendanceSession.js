@@ -8,11 +8,20 @@ const mongoose = require("mongoose");
  * - principalId  : ตัวตนหลักสำหรับ attendance (staffId ถ้ามี ไม่งั้นใช้ userId)
  * - principalType: "staff" | "user"
  *
- * ✅ ทำให้ helper (ไม่มี staffId) ลงเวลาได้ โดยไม่ต้องยัด usr_ ไปใน staffId
+ * ✅ helper (ไม่มี staffId) ลงเวลาได้ โดยไม่ต้องยัด usr_ ไปใน staffId
  *
- * ✅ NEW:
- * - source / manualReason / approval fields
- * - รองรับ policy manual approval / audit trail ในอนาคต
+ * ✅ V1 ATTENDANCE RULE
+ * - 1 principal ต่อ 1 workDate ควรมี 1 session หลัก
+ * - scan แรก = check-in
+ * - scan ถัดมา (session open) = check-out
+ * - ถ้าปิดวันแล้ว ห้ามเปิด session ใหม่เอง
+ * - ถ้าผิด flow / เลย cut-off / ลืม check-out -> ไป manual request flow
+ *
+ * ✅ NEW
+ * - schedule snapshot fields
+ * - early leave / abnormal flags
+ * - reasonCode / reasonText
+ * - policy snapshot เพื่อให้คำนวณย้อนหลังได้แม้ admin เปลี่ยน policy ภายหลัง
  */
 
 const AttendanceSessionSchema = new mongoose.Schema(
@@ -56,7 +65,9 @@ const AttendanceSessionSchema = new mongoose.Schema(
       index: true,
     },
 
-    // method/meta
+    // ======================================================
+    // Method / biometric meta
+    // ======================================================
     checkInMethod: {
       type: String,
       enum: ["biometric", "manual"],
@@ -73,13 +84,21 @@ const AttendanceSessionSchema = new mongoose.Schema(
 
     deviceId: { type: String, default: "" },
 
-    // ✅ source/audit
+    // ======================================================
+    // Source / manual / approval
+    // ======================================================
     source: {
       type: String,
       enum: ["fingerprint", "manual"],
       default: "fingerprint",
       index: true,
     },
+
+    // ✅ code + text ดีกว่า text อย่างเดียว
+    reasonCode: { type: String, default: "", index: true },
+    reasonText: { type: String, default: "" },
+
+    // legacy/manual text (ยังเก็บไว้เพื่อ backward compatibility)
     manualReason: { type: String, default: "" },
 
     approvalStatus: {
@@ -96,16 +115,43 @@ const AttendanceSessionSchema = new mongoose.Schema(
     rejectedAt: { type: Date, default: null },
     rejectReason: { type: String, default: "" },
 
-    // location (optional)
+    // ======================================================
+    // Location (optional)
+    // ======================================================
     inLat: { type: Number, default: null },
     inLng: { type: Number, default: null },
     outLat: { type: Number, default: null },
     outLng: { type: Number, default: null },
 
-    // computed
+    // ======================================================
+    // Schedule / policy snapshot of that day
+    // IMPORTANT:
+    // เก็บ snapshot ตอน check-in เพื่อกัน policy เปลี่ยนย้อนหลัง
+    // ======================================================
+    scheduledStart: { type: String, default: "" }, // "08:00"
+    scheduledEnd: { type: String, default: "" },   // "17:00"
+
+    normalMinutesBeforeOt: { type: Number, default: 0 }, // เช่น 480
+    otWindowStart: { type: String, default: "" },        // "17:00"
+    otWindowEnd: { type: String, default: "" },          // "21:00"
+    cutoffTime: { type: String, default: "" },           // "03:00"
+
+    graceMinutes: { type: Number, default: 0 },
+    leaveEarlyToleranceMinutes: { type: Number, default: 0 },
+
+    // ======================================================
+    // Computed / reporting
+    // ======================================================
     workedMinutes: { type: Number, default: 0 },
     lateMinutes: { type: Number, default: 0 },
     otMinutes: { type: Number, default: 0 },
+
+    leftEarly: { type: Boolean, default: false, index: true },
+    leftEarlyMinutes: { type: Number, default: 0 },
+
+    abnormal: { type: Boolean, default: false, index: true },
+    abnormalReasonCode: { type: String, default: "", index: true },
+    abnormalReasonText: { type: String, default: "" },
 
     note: { type: String, default: "" },
 
@@ -130,7 +176,12 @@ AttendanceSessionSchema.index(
 );
 
 // ✅ staffId based queries (employee reports / legacy screens)
-AttendanceSessionSchema.index({ clinicId: 1, staffId: 1, workDate: 1, status: 1 });
+AttendanceSessionSchema.index({
+  clinicId: 1,
+  staffId: 1,
+  workDate: 1,
+  status: 1,
+});
 AttendanceSessionSchema.index({ staffId: 1, checkInAt: -1 });
 
 // ✅ principal timeline queries
@@ -140,9 +191,20 @@ AttendanceSessionSchema.index({ principalId: 1, checkInAt: -1 });
 AttendanceSessionSchema.index({ clinicId: 1, workDate: -1 });
 
 // approval / admin queue
-AttendanceSessionSchema.index({ clinicId: 1, approvalStatus: 1, workDate: -1 });
+AttendanceSessionSchema.index({
+  clinicId: 1,
+  approvalStatus: 1,
+  workDate: -1,
+});
 
 // source filters
 AttendanceSessionSchema.index({ clinicId: 1, source: 1, workDate: -1 });
+
+// abnormal / early leave admin review
+AttendanceSessionSchema.index({ clinicId: 1, abnormal: 1, workDate: -1 });
+AttendanceSessionSchema.index({ clinicId: 1, leftEarly: 1, workDate: -1 });
+
+// reason filters
+AttendanceSessionSchema.index({ clinicId: 1, reasonCode: 1, workDate: -1 });
 
 module.exports = mongoose.model("AttendanceSession", AttendanceSessionSchema);

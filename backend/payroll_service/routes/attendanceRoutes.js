@@ -12,6 +12,7 @@ const ctrl = require("../controllers/attendanceController");
 // ======================================
 
 const SELF_ROLES = ["employee", "helper"];
+const ADMIN_ROLES = ["admin", "clinic_admin"];
 
 // check-in
 router.post(
@@ -59,8 +60,13 @@ router.get(
 );
 
 // ======================================
-// ✅ admin reports (admin-only จริงๆ)
+// ✅ admin reports
 // ======================================
-router.get("/clinic", auth, requireRole(["admin"]), ctrl.listClinicSessions);
+router.get(
+  "/clinic",
+  auth,
+  requireRole(ADMIN_ROLES),
+  ctrl.listClinicSessions
+);
 
 module.exports = router;

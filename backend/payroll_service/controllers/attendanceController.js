@@ -433,6 +433,7 @@ function isEmployeeEligibleForOt(role, empType, policy) {
 // POST /attendance/check-in
 // body: { workDate, shiftId?, method?, biometricVerified?, deviceId?, lat?, lng?, note? }
 // ✅ รองรับ employee + helper (helper ไม่มี staffId ก็ได้)
+// ✅ V1 RULE: 1 principal ต่อ 1 workDate มีได้ 1 session หลัก
 // ======================================================
 async function checkIn(req, res) {
   try {
@@ -503,18 +504,33 @@ async function checkIn(req, res) {
       }
     }
 
-    const existing = await AttendanceSession.findOne({
+    const existingOpen = await AttendanceSession.findOne({
       clinicId,
       principalId,
       workDate,
       status: "open",
     });
 
-    if (existing) {
+    if (existingOpen) {
       return res.status(409).json({
         ok: false,
         message: "Already checked-in (open session exists)",
-        session: existing,
+        session: existingOpen,
+      });
+    }
+
+    // ✅ V1 RULE: ถ้าวันนี้มี closed session แล้ว ห้ามสร้าง session ใหม่เอง
+    const existingClosed = await AttendanceSession.findOne({
+      clinicId,
+      principalId,
+      workDate,
+      status: "closed",
+    }).lean();
+
+    if (existingClosed) {
+      return res.status(409).json({
+        ok: false,
+        message: "Attendance already completed for today",
       });
     }
 
@@ -559,6 +575,7 @@ async function checkIn(req, res) {
 // POST /attendance/check-out (recommended)
 // POST /attendance/:id/check-out (backward compatible)
 // ✅ รองรับ employee + helper (helper ไม่มี staffId ก็ได้)
+// ✅ V1 RULE: check-out ต้องปิด session open ของ workDate ที่ต้องการ
 // ======================================================
 async function checkOut(req, res) {
   try {
@@ -572,20 +589,40 @@ async function checkOut(req, res) {
     }
 
     const id = s(req.params?.id);
+    const bodyWorkDate = s(req.body?.workDate);
 
     let session = null;
+
     if (id) {
       session = await AttendanceSession.findById(id);
       if (!session) return res.status(404).json({ ok: false, message: "Session not found" });
+
+      // ถ้ามี workDate ใน body และไม่ตรงกับ session ที่จะปิด -> conflict
+      if (bodyWorkDate && isYmd(bodyWorkDate) && s(session.workDate) !== bodyWorkDate) {
+        return res.status(409).json({
+          ok: false,
+          message: "Session workDate does not match requested workDate",
+        });
+      }
     } else {
-      session = await AttendanceSession.findOne({
+      const q = {
         clinicId,
         principalId,
         status: "open",
-      }).sort({ checkInAt: -1 });
+      };
+
+      // ✅ สำคัญ: ถ้าฝั่ง client ส่ง workDate มา ให้ lock วันนั้นเลย
+      if (isYmd(bodyWorkDate)) {
+        q.workDate = bodyWorkDate;
+      }
+
+      session = await AttendanceSession.findOne(q).sort({ checkInAt: -1 });
 
       if (!session) {
-        return res.status(404).json({ ok: false, message: "No open session to check-out" });
+        return res.status(409).json({
+          ok: false,
+          message: "No open session to check-out",
+        });
       }
     }
 
@@ -873,7 +910,6 @@ async function myDayPreview(req, res) {
 
     const policy = await getOrCreatePolicy(clinicId, userId || principalId);
 
-    // ✅ IMPORTANT: เอาทุก session ของวันนั้นมา ไม่ filter status: "closed"
     const sessions = await AttendanceSession.find({
       clinicId,
       principalId,
@@ -892,7 +928,6 @@ async function myDayPreview(req, res) {
     const checkedIn = !!openSession || closedSessions.length > 0;
     const checkedOut = !openSession && closedSessions.length > 0;
 
-    // ✅ summary/payroll ยังคิดจาก closed session เป็นหลักเหมือนเดิม
     const workedMinutes = closedSessions.reduce(
       (sum, x) => sum + clampMinutes(x.workedMinutes),
       0
