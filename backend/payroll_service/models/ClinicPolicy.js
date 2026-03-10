@@ -23,28 +23,56 @@ const ClinicPolicySchema = new mongoose.Schema(
 
     timezone: { type: String, default: "Asia/Bangkok" },
 
+    // ======================================================
     // Attendance security
+    // ======================================================
     requireBiometric: { type: Boolean, default: true },
     requireLocation: { type: Boolean, default: false },
     geoRadiusMeters: { type: Number, default: 200 },
 
-    // Late rule
+    // ======================================================
+    // Attendance late / early / cutoff rules
+    // ======================================================
     graceLateMinutes: { type: Number, default: 10 },
 
-    // ✅ OT rule
+    // เวลาตัดรอบของ workDate นั้น ๆ เช่น workDate 2026-03-10 cutoff 03:00
+    // จะหมายถึง check-out ปกติได้ถึง 2026-03-11 03:00
+    cutoffTime: { type: String, default: "03:00" },
+
+    // กันกด check-out เร็วเกินไป เช่น 1 นาทีแรก
+    minMinutesBeforeCheckout: { type: Number, default: 1 },
+
+    // ถ้ามี open session จากวันก่อน -> ห้าม check-in ใหม่
+    blockNewCheckInIfPreviousOpen: { type: Boolean, default: true },
+
+    // ถ้าลืม check-out จนเกิน cutoff -> ต้องไป manual only
+    forgotCheckoutManualOnly: { type: Boolean, default: true },
+
+    // เข้างานก่อนเวลา ต้องมีเหตุผล/ไป manual flow
+    requireReasonForEarlyCheckIn: { type: Boolean, default: true },
+
+    // ออกก่อนเวลา ต้องมีเหตุผลก่อนจึงจะ checkout ได้
+    requireReasonForEarlyCheckOut: { type: Boolean, default: true },
+
+    // เผื่อ tolerance สำหรับ left early เช่น 0, 5, 10 นาที
+    leaveEarlyToleranceMinutes: { type: Number, default: 0 },
+
+    // ======================================================
+    // OT rule
+    // ======================================================
     otRule: { type: String, enum: OT_RULES, default: "AFTER_CLOCK_TIME" },
 
     // for AFTER_DAILY_HOURS
     regularHoursPerDay: { type: Number, default: 8 },
 
-    // 🔹 LEGACY single clock time (fallback)
+    // LEGACY single clock time (fallback)
     otClockTime: { type: String, default: "18:00" },
 
-    // ✅ Separate OT clock time by employment type (legacy-compatible)
+    // Separate OT clock time by employment type (legacy-compatible)
     fullTimeOtClockTime: { type: String, default: "18:00" },
     partTimeOtClockTime: { type: String, default: "18:00" },
 
-    // ✅ NEW: OT window (ใช้จริงตาม policy ปัจจุบัน)
+    // OT window
     otWindowStart: { type: String, default: "18:00" },
     otWindowEnd: { type: String, default: "21:00" },
 
@@ -59,7 +87,9 @@ const ClinicPolicySchema = new mongoose.Schema(
     holidayMultiplier: { type: Number, default: 2.0 },
     weekendAllDayOT: { type: Boolean, default: false },
 
-    // ✅ NEW: core attendance / OT policy
+    // ======================================================
+    // Core attendance / OT policy
+    // ======================================================
     employeeOnlyOt: { type: Boolean, default: true },
     requireOtApproval: { type: Boolean, default: true },
     realTimeAttendanceOnly: { type: Boolean, default: true },
@@ -67,7 +97,9 @@ const ClinicPolicySchema = new mongoose.Schema(
     manualReasonRequired: { type: Boolean, default: true },
     lockAfterPayrollClose: { type: Boolean, default: true },
 
-    // ✅ NEW: approval roles
+    // ======================================================
+    // Approval roles
+    // ======================================================
     attendanceApprovalRoles: {
       type: [String],
       default: ["clinic_admin"],
@@ -77,7 +109,9 @@ const ClinicPolicySchema = new mongoose.Schema(
       default: ["clinic_admin"],
     },
 
-    // ✅ NEW: feature flags
+    // ======================================================
+    // Feature flags
+    // ======================================================
     features: {
       type: FeatureFlagsSchema,
       default: () => ({
@@ -91,11 +125,16 @@ const ClinicPolicySchema = new mongoose.Schema(
       }),
     },
 
-    // versioning
+    // ======================================================
+    // Versioning / audit
+    // ======================================================
     version: { type: Number, default: 1 },
     updatedBy: { type: String, default: "" }, // userId admin
   },
   { timestamps: true }
 );
+
+// useful indexes
+ClinicPolicySchema.index({ clinicId: 1 }, { unique: true, name: "uniq_clinic_policy" });
 
 module.exports = mongoose.model("ClinicPolicy", ClinicPolicySchema);

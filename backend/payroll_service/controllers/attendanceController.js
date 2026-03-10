@@ -251,13 +251,13 @@ async function getOrCreatePolicy(clinicId, userId) {
       attendanceApprovalRoles: ["clinic_admin"],
       otApprovalRoles: ["clinic_admin"],
 
-      // ✅ attendance rules v1 defaults
       cutoffTime: "03:00",
       minMinutesBeforeCheckout: 1,
       blockNewCheckInIfPreviousOpen: true,
       forgotCheckoutManualOnly: true,
       requireReasonForEarlyCheckIn: true,
       requireReasonForEarlyCheckOut: true,
+      leaveEarlyToleranceMinutes: 0,
 
       features: {
         manualAttendance: true,
@@ -560,12 +560,310 @@ function detectLeftEarlyMinutes({ shift, checkOutAt, toleranceMinutes = 0 }) {
   return clampMinutes(early);
 }
 
+function hasEarlyCheckoutReason(req) {
+  return !!s(req.body?.reasonCode) || !!s(req.body?.reasonText) || !!s(req.body?.note);
+}
+
+function parseDateOrNull(v) {
+  if (!v) return null;
+  const d = new Date(v);
+  return Number.isFinite(d.getTime()) ? d : null;
+}
+
+function firstValidDate(...values) {
+  for (const v of values) {
+    const d = parseDateOrNull(v);
+    if (d) return d;
+  }
+  return null;
+}
+
+function normalizeManualRequestType(v) {
+  const t = s(v);
+  if (["check_in", "check_out", "edit_both", "forgot_checkout"].includes(t)) return t;
+  return "";
+}
+
+function inferRoleFromSession(session) {
+  return s(session?.staffId) ? "employee" : "helper";
+}
+
+function isStatusPendingManual(session) {
+  return s(session?.status) === "pending_manual" && s(session?.approvalStatus) === "pending";
+}
+
+function buildRequestedReason(req) {
+  return {
+    requestReasonCode: s(req.body?.reasonCode),
+    requestReasonText: s(req.body?.reasonText || req.body?.note),
+  };
+}
+
+function shouldRequireReason(policy, req) {
+  return !!policy?.manualReasonRequired && !s(req.body?.reasonCode) && !s(req.body?.reasonText) && !s(req.body?.note);
+}
+
+function buildSessionBaseForCreate({
+  clinicId,
+  principalId,
+  principalType,
+  staffId,
+  userId,
+  workDate,
+  shift,
+  checkInAt,
+  policy,
+  req,
+}) {
+  const snapshot = getScheduleSnapshot({ policy, shift });
+  return {
+    clinicId,
+    principalId,
+    principalType,
+    staffId: staffId || "",
+    userId: userId || "",
+    shiftId: shift ? shift._id : null,
+    workDate,
+    checkInAt,
+    checkInMethod: "manual",
+    biometricVerifiedIn: false,
+    checkOutMethod: "manual",
+    biometricVerifiedOut: false,
+    deviceId: s(req.body?.deviceId),
+    note: s(req.body?.note),
+    source: "manual",
+    reasonCode: s(req.body?.reasonCode),
+    reasonText: s(req.body?.reasonText),
+    manualReason: s(req.body?.note),
+    policyVersion: Number(policy.version || 0),
+    ...snapshot,
+  };
+}
+
+function applyManualRequestFields(session, req, manualRequestType, requestedCheckInAt, requestedCheckOutAt, requesterId) {
+  const { requestReasonCode, requestReasonText } = buildRequestedReason(req);
+
+  session.status = "pending_manual";
+  session.approvalStatus = "pending";
+  session.manualRequestType = manualRequestType;
+  session.requestedCheckInAt = requestedCheckInAt || null;
+  session.requestedCheckOutAt = requestedCheckOutAt || null;
+  session.requestedBy = s(requesterId);
+  session.requestedAt = new Date();
+  session.requestReasonCode = requestReasonCode;
+  session.requestReasonText = requestReasonText;
+  session.manualLocked = true;
+
+  if (s(req.body?.reasonCode)) session.reasonCode = s(req.body?.reasonCode);
+  if (s(req.body?.reasonText)) session.reasonText = s(req.body?.reasonText);
+  if (s(req.body?.note)) {
+    session.note = s(req.body?.note);
+    session.manualReason = s(req.body?.note);
+  }
+
+  session.approvedBy = "";
+  session.approvedAt = null;
+  session.approvalNote = "";
+  session.rejectedBy = "";
+  session.rejectedAt = null;
+  session.rejectReason = "";
+}
+
+function clearManualRequestFields(session) {
+  session.manualRequestType = "";
+  session.requestedCheckInAt = null;
+  session.requestedCheckOutAt = null;
+  session.requestedBy = "";
+  session.requestedAt = null;
+  session.requestReasonCode = "";
+  session.requestReasonText = "";
+  session.manualLocked = false;
+}
+
+async function syncOvertimeForSession({ session, policy, shift }) {
+  try {
+    const ownerUserId = s(session.userId) || "";
+    let emp = null;
+
+    if (ownerUserId) {
+      try {
+        emp = await getEmployeeByUserId(ownerUserId);
+      } catch (_) {
+        emp = null;
+      }
+    }
+
+    const empType = normalizeEmploymentType(emp?.employmentType);
+    const selectedClock = pickOtClockByType(policy, empType);
+    const role = inferRoleFromSession(session);
+
+    const policyForOt = {
+      ...(policy.toObject?.() ?? policy),
+      otClockTime: selectedClock,
+    };
+
+    const allowOtCalc = !!withFeatureDefaults(policy.features || {}).autoOtCalculation;
+    const allowOtForThisUser = isEmployeeEligibleForOt(role, empType, policy);
+
+    let otMinutes = 0;
+    if (session.checkInAt && session.checkOutAt && allowOtCalc && allowOtForThisUser) {
+      otMinutes = computeOtMinutes(policyForOt, shift, session.checkInAt, session.checkOutAt);
+    }
+
+    session.otMinutes = clampMinutes(otMinutes);
+
+    const clinicIdOfSession = s(session.clinicId);
+    const workDate = s(session.workDate);
+    const monthKey = monthKeyFromYmd(workDate);
+
+    const otMul = Number(
+      emp?.otMultiplierNormal || policyForOt.otMultiplier || policy.otMultiplier || 1.5
+    );
+    const mul = Number.isFinite(otMul) && otMul > 0 ? otMul : 1.5;
+
+    const principalIdForOt = s(session.principalId);
+    const principalTypeForOt = s(session.principalType) || (s(session.staffId) ? "staff" : "user");
+    const staffIdForOt = s(session.staffId);
+
+    if (clampMinutes(session.otMinutes) > 0 && monthKey && s(session.status) === "closed") {
+      await Overtime.updateOne(
+        { clinicId: clinicIdOfSession, attendanceSessionId: session._id },
+        {
+          $set: {
+            clinicId: clinicIdOfSession,
+            principalId: principalIdForOt,
+            principalType: principalTypeForOt,
+            staffId: staffIdForOt,
+            userId: ownerUserId || "",
+            workDate,
+            monthKey,
+            minutes: clampMinutes(session.otMinutes),
+            multiplier: mul,
+            status: policy.requireOtApproval ? "pending" : "approved",
+            source: "attendance",
+            attendanceSessionId: session._id,
+            note: s(session.note),
+          },
+          $setOnInsert: {
+            approvedBy: "",
+            approvedAt: null,
+            rejectedBy: "",
+            rejectedAt: null,
+            rejectReason: "",
+            lockedBy: "",
+            lockedAt: null,
+            lockedMonth: "",
+          },
+        },
+        { upsert: true }
+      );
+    } else {
+      await Overtime.deleteOne({ clinicId: clinicIdOfSession, attendanceSessionId: session._id });
+    }
+
+    return {
+      employmentType: empType || null,
+      selectedClock,
+      rule: s(policyForOt.otRule),
+      otMinutes: clampMinutes(session.otMinutes),
+      eligibleForOt: allowOtForThisUser,
+      requireApproval: !!policy.requireOtApproval,
+    };
+  } catch (e) {
+    console.log("❌ Overtime sync failed:", e.message);
+    return {
+      employmentType: null,
+      selectedClock: null,
+      rule: s(policy?.otRule),
+      otMinutes: clampMinutes(session.otMinutes),
+      eligibleForOt: false,
+      requireApproval: !!policy?.requireOtApproval,
+    };
+  }
+}
+
+async function recalcSessionByTimes({ session, policy, shift }) {
+  const rules = attendanceRuleDefaults(policy);
+
+  session.lateMinutes = computeLateMinutes(policy, shift, session.checkInAt);
+
+  if (session.checkOutAt) {
+    session.workedMinutes = computeWorkedMinutes(session.checkInAt, session.checkOutAt);
+
+    const leftEarlyMinutes = detectLeftEarlyMinutes({
+      shift,
+      checkOutAt: session.checkOutAt,
+      toleranceMinutes:
+        clampMinutes(session.leaveEarlyToleranceMinutes) ||
+        clampMinutes(policy.leaveEarlyToleranceMinutes || 0),
+    });
+
+    session.leftEarly = leftEarlyMinutes > 0;
+    session.leftEarlyMinutes = leftEarlyMinutes;
+
+    if (leftEarlyMinutes > 0) {
+      session.abnormal = true;
+      session.abnormalReasonCode = "LEFT_EARLY";
+      session.abnormalReasonText = "Employee checked out before scheduled end time";
+    } else if (s(session.abnormalReasonCode) === "LEFT_EARLY") {
+      session.abnormal = false;
+      session.abnormalReasonCode = "";
+      session.abnormalReasonText = "";
+    }
+
+    if (
+      session.workedMinutes > 0 &&
+      session.workedMinutes < rules.minMinutesBeforeCheckout
+    ) {
+      session.abnormal = true;
+      session.abnormalReasonCode = "CHECKOUT_TOO_FAST";
+      session.abnormalReasonText = "Worked time is below minimum before checkout";
+    }
+  } else {
+    session.workedMinutes = 0;
+    session.otMinutes = 0;
+    session.leftEarly = false;
+    session.leftEarlyMinutes = 0;
+  }
+
+  session.policyVersion = Number(policy.version || session.policyVersion || 0);
+}
+
+function buildManualRequestQueryForSelf({ clinicId, principalId, workDate, approvalStatus }) {
+  const q = {
+    clinicId,
+    principalId,
+    manualRequestType: { $ne: "" },
+  };
+  if (isYmd(workDate)) q.workDate = workDate;
+  if (approvalStatus) q.approvalStatus = s(approvalStatus);
+  return q;
+}
+
+function buildManualRequestQueryForClinic({ clinicId, workDate, approvalStatus, staffIdOrPrincipal }) {
+  const q = {
+    clinicId,
+    manualRequestType: { $ne: "" },
+  };
+  if (isYmd(workDate)) q.workDate = workDate;
+  if (approvalStatus) q.approvalStatus = s(approvalStatus);
+  if (staffIdOrPrincipal) {
+    q.$or = [{ staffId: staffIdOrPrincipal }, { principalId: staffIdOrPrincipal }];
+  }
+  return q;
+}
+
+function determineRejectedStatus(session) {
+  if (session.checkOutAt) return "closed";
+  if (s(session.source) === "manual" && s(session.checkInMethod) === "manual" && !session.biometricVerifiedIn) {
+    return "cancelled";
+  }
+  return "open";
+}
+
 // ======================================================
 // POST /attendance/check-in
 // body: { workDate, shiftId?, method?, biometricVerified?, deviceId?, lat?, lng?, note? }
-// ✅ รองรับ employee + helper (helper ไม่มี staffId ก็ได้)
-// ✅ V1 RULE: 1 principal ต่อ 1 workDate มีได้ 1 session หลัก
-// ✅ BLOCK: previous open session, early check-in -> manual flow
 // ======================================================
 async function checkIn(req, res) {
   try {
@@ -761,11 +1059,8 @@ async function checkIn(req, res) {
 }
 
 // ======================================================
-// POST /attendance/check-out (recommended)
-// POST /attendance/:id/check-out (backward compatible)
-// ✅ รองรับ employee + helper (helper ไม่มี staffId ก็ได้)
-// ✅ V1 RULE: check-out ต้องปิด session open ของ workDate ที่ต้องการ
-// ✅ BLOCK: too fast, early checkout, after cutoff -> manual flow
+// POST /attendance/check-out
+// POST /attendance/:id/check-out
 // ======================================================
 async function checkOut(req, res) {
   try {
@@ -824,7 +1119,11 @@ async function checkOut(req, res) {
     }
 
     if (session.status !== "open") {
-      return res.status(409).json({ ok: false, code: "SESSION_NOT_OPEN", message: "Session is not open" });
+      return res.status(409).json({
+        ok: false,
+        code: "SESSION_NOT_OPEN",
+        message: "Session is not open",
+      });
     }
 
     const policy = await getOrCreatePolicy(s(session.clinicId), userId || principalId);
@@ -912,55 +1211,20 @@ async function checkOut(req, res) {
       return res.status(out.status).json(out.body);
     }
 
-    if (method === "biometric" && detectEarlyCheckOut({ policy, shift, checkOutAt })) {
+    const isEarlyCheckout = detectEarlyCheckOut({ policy, shift, checkOutAt });
+    if (isEarlyCheckout && !hasEarlyCheckoutReason(req)) {
       const out = buildCodeResponse(
         409,
-        "MANUAL_REQUIRED_EARLY_CHECKOUT",
-        "Early check-out requires manual request and clinic approval.",
+        "EARLY_CHECKOUT_REASON_REQUIRED",
+        "Early check-out requires a reason before checkout is allowed.",
         {
           workDate: s(session.workDate),
           shiftEnd: s(shift?.end),
+          requiresReason: true,
         }
       );
       return res.status(out.status).json(out.body);
     }
-
-    let emp = null;
-    const ownerUserId = s(session.userId) || userId || "";
-    if (ownerUserId) {
-      try {
-        emp = await getEmployeeByUserId(ownerUserId);
-      } catch (_) {
-        emp = null;
-      }
-    }
-
-    const empType = normalizeEmploymentType(emp?.employmentType);
-    const selectedClock = pickOtClockByType(policy, empType);
-
-    const policyForOt = {
-      ...(policy.toObject?.() ?? policy),
-      otClockTime: selectedClock,
-    };
-
-    const workedMinutes = computeWorkedMinutes(session.checkInAt, checkOutAt);
-
-    let otMinutes = 0;
-    const features = withFeatureDefaults(policy.features || {});
-    const allowOtCalc = !!features.autoOtCalculation;
-    const allowOtForThisUser = isEmployeeEligibleForOt(role, empType, policy);
-
-    if (allowOtCalc && allowOtForThisUser) {
-      otMinutes = computeOtMinutes(policyForOt, shift, session.checkInAt, checkOutAt);
-    }
-
-    const leftEarlyMinutes = detectLeftEarlyMinutes({
-      shift,
-      checkOutAt,
-      toleranceMinutes:
-        clampMinutes(session.leaveEarlyToleranceMinutes) ||
-        clampMinutes(policy.leaveEarlyToleranceMinutes || 0),
-    });
 
     session.checkOutAt = checkOutAt;
     session.status = "closed";
@@ -972,19 +1236,6 @@ async function checkOut(req, res) {
     session.outLat = Number.isFinite(lat) ? lat : session.outLat;
     session.outLng = Number.isFinite(lng) ? lng : session.outLng;
 
-    session.workedMinutes = workedMinutes;
-    session.otMinutes = otMinutes;
-    session.leftEarly = leftEarlyMinutes > 0;
-    session.leftEarlyMinutes = leftEarlyMinutes;
-
-    if (leftEarlyMinutes > 0) {
-      session.abnormal = true;
-      session.abnormalReasonCode = "LEFT_EARLY";
-      session.abnormalReasonText = "Employee checked out before scheduled end time";
-    }
-
-    session.policyVersion = Number(policy.version || session.policyVersion || 0);
-
     if (s(req.body?.reasonCode)) session.reasonCode = s(req.body?.reasonCode);
     if (s(req.body?.reasonText)) session.reasonText = s(req.body?.reasonText);
     if (s(req.body?.note)) {
@@ -992,76 +1243,15 @@ async function checkOut(req, res) {
       session.manualReason = s(req.body?.note);
     }
 
+    await recalcSessionByTimes({ session, policy, shift });
     await session.save();
 
-    try {
-      const clinicIdOfSession = s(session.clinicId);
-      const workDate = s(session.workDate);
-      const monthKey = monthKeyFromYmd(workDate);
-
-      const otMul = Number(
-        emp?.otMultiplierNormal || policyForOt.otMultiplier || policy.otMultiplier || 1.5
-      );
-      const mul = Number.isFinite(otMul) && otMul > 0 ? otMul : 1.5;
-
-      const principalIdForOt = s(session.principalId) || principalId;
-      const principalTypeForOt =
-        s(session.principalType) || principalType || (s(session.staffId) ? "staff" : "user");
-      const staffIdForOt = s(session.staffId);
-
-      if (clampMinutes(otMinutes) > 0 && monthKey) {
-        await Overtime.updateOne(
-          { clinicId: clinicIdOfSession, attendanceSessionId: session._id },
-          {
-            $set: {
-              clinicId: clinicIdOfSession,
-
-              principalId: principalIdForOt,
-              principalType: principalTypeForOt,
-
-              staffId: staffIdForOt,
-              userId: ownerUserId || "",
-
-              workDate,
-              monthKey,
-              minutes: clampMinutes(otMinutes),
-              multiplier: mul,
-              status: policy.requireOtApproval ? "pending" : "approved",
-              source: "attendance",
-              attendanceSessionId: session._id,
-              note: s(session.note),
-            },
-            $setOnInsert: {
-              approvedBy: "",
-              approvedAt: null,
-              rejectedBy: "",
-              rejectedAt: null,
-              rejectReason: "",
-              lockedBy: "",
-              lockedAt: null,
-              lockedMonth: "",
-            },
-          },
-          { upsert: true }
-        );
-      } else {
-        await Overtime.deleteOne({ clinicId: clinicIdOfSession, attendanceSessionId: session._id });
-      }
-    } catch (e) {
-      console.log("❌ Overtime hook failed:", e.message);
-    }
+    const otMeta = await syncOvertimeForSession({ session, policy, shift });
 
     return res.json({
       ok: true,
       session,
-      otMeta: {
-        employmentType: empType || null,
-        selectedClock,
-        rule: s(policyForOt.otRule),
-        otMinutes,
-        eligibleForOt: allowOtForThisUser,
-        requireApproval: !!policy.requireOtApproval,
-      },
+      otMeta,
       policy: buildPublicPolicy(policy),
     });
   } catch (e) {
@@ -1070,8 +1260,534 @@ async function checkOut(req, res) {
 }
 
 // ======================================================
+// POST /attendance/manual-request
+// body:
+// {
+//   workDate,
+//   manualRequestType: "check_in" | "check_out" | "edit_both" | "forgot_checkout",
+//   shiftId?,
+//   requestedCheckInAt?,
+//   requestedCheckOutAt?,
+//   reasonCode?,
+//   reasonText?,
+//   note?
+// }
+// ======================================================
+async function submitManualRequest(req, res) {
+  try {
+    const { clinicId, userId, staffId, principalId, principalType } = getPrincipal(req);
+
+    if (!clinicId) {
+      return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
+    }
+    if (!principalId) {
+      return res.status(401).json({ ok: false, message: "Missing userId/staffId in token" });
+    }
+
+    const workDate = s(req.body?.workDate);
+    const manualRequestType = normalizeManualRequestType(req.body?.manualRequestType);
+    const shiftId = req.body?.shiftId || null;
+
+    if (!isYmd(workDate)) {
+      return res.status(400).json({ ok: false, message: "workDate required (yyyy-MM-dd)" });
+    }
+
+    if (!manualRequestType) {
+      return res.status(400).json({
+        ok: false,
+        message: "manualRequestType required (check_in | check_out | edit_both | forgot_checkout)",
+      });
+    }
+
+    const policy = await getOrCreatePolicy(clinicId, userId || principalId);
+    const features = withFeatureDefaults(policy?.features || {});
+    if (!features.manualAttendance) {
+      return res.status(400).json({ ok: false, message: "Manual attendance is not enabled" });
+    }
+
+    if (shouldRequireReason(policy, req)) {
+      return res.status(400).json({
+        ok: false,
+        message: "Manual attendance reason is required",
+      });
+    }
+
+    const requestedCheckInAt = firstValidDate(
+      req.body?.requestedCheckInAt,
+      req.body?.checkInAt
+    );
+    const requestedCheckOutAt = firstValidDate(
+      req.body?.requestedCheckOutAt,
+      req.body?.checkOutAt
+    );
+
+    const shift = await loadShiftForSession({
+      clinicId,
+      staffId,
+      userId,
+      workDate,
+      shiftId,
+    });
+
+    const sameDaySessions = await AttendanceSession.find({
+      clinicId,
+      principalId,
+      workDate,
+    })
+      .sort({ createdAt: -1, checkInAt: -1 })
+      .exec();
+
+    const pendingExisting = sameDaySessions.find((x) => isStatusPendingManual(x));
+    if (pendingExisting) {
+      return res.status(409).json({
+        ok: false,
+        code: "MANUAL_REQUEST_PENDING",
+        message: "Manual attendance request is already pending for this date",
+        sessionId: String(pendingExisting._id || ""),
+      });
+    }
+
+    const openSession = sameDaySessions.find((x) => s(x.status) === "open") || null;
+    const closedSession = sameDaySessions.find((x) => s(x.status) === "closed") || null;
+    let targetSession = openSession || closedSession || null;
+
+    if (manualRequestType === "check_in") {
+      if (targetSession) {
+        return res.status(409).json({
+          ok: false,
+          code: "SESSION_ALREADY_EXISTS",
+          message: "A session already exists for this date. Use edit_both instead.",
+        });
+      }
+      if (!requestedCheckInAt) {
+        return res.status(400).json({
+          ok: false,
+          message: "requestedCheckInAt is required for manual check-in request",
+        });
+      }
+
+      const created = new AttendanceSession(
+        buildSessionBaseForCreate({
+          clinicId,
+          principalId,
+          principalType,
+          staffId,
+          userId,
+          workDate,
+          shift,
+          checkInAt: requestedCheckInAt,
+          policy,
+          req,
+        })
+      );
+
+      applyManualRequestFields(
+        created,
+        req,
+        manualRequestType,
+        requestedCheckInAt,
+        requestedCheckOutAt,
+        userId || principalId
+      );
+
+      created.approvalStatus = policy.manualAttendanceRequireApproval ? "pending" : "approved";
+
+      if (created.approvalStatus === "approved") {
+        created.status = requestedCheckOutAt ? "closed" : "open";
+        created.checkInAt = requestedCheckInAt;
+        if (requestedCheckOutAt) created.checkOutAt = requestedCheckOutAt;
+        clearManualRequestFields(created);
+        await recalcSessionByTimes({ session: created, policy, shift });
+      }
+
+      await created.save();
+
+      let otMeta = null;
+      if (s(created.status) === "closed") {
+        otMeta = await syncOvertimeForSession({ session: created, policy, shift });
+        await created.save();
+      }
+
+      return res.status(201).json({
+        ok: true,
+        session: created,
+        requiresApproval: created.approvalStatus === "pending",
+        otMeta,
+        policy: buildPublicPolicy(policy),
+      });
+    }
+
+    if ((manualRequestType === "check_out" || manualRequestType === "forgot_checkout") && !openSession) {
+      return res.status(409).json({
+        ok: false,
+        code: "OPEN_SESSION_REQUIRED",
+        message: "Manual checkout request requires an open session for this date",
+      });
+    }
+
+    if (manualRequestType === "check_out" || manualRequestType === "forgot_checkout") {
+      if (!requestedCheckOutAt) {
+        return res.status(400).json({
+          ok: false,
+          message: "requestedCheckOutAt is required for manual checkout request",
+        });
+      }
+      targetSession = openSession;
+    }
+
+    if (manualRequestType === "edit_both") {
+      if (!targetSession && !requestedCheckInAt) {
+        return res.status(400).json({
+          ok: false,
+          message: "requestedCheckInAt is required when no session exists for edit_both",
+        });
+      }
+
+      if (!targetSession) {
+        targetSession = new AttendanceSession(
+          buildSessionBaseForCreate({
+            clinicId,
+            principalId,
+            principalType,
+            staffId,
+            userId,
+            workDate,
+            shift,
+            checkInAt: requestedCheckInAt,
+            policy,
+            req,
+          })
+        );
+      }
+    }
+
+    applyManualRequestFields(
+      targetSession,
+      req,
+      manualRequestType,
+      requestedCheckInAt,
+      requestedCheckOutAt,
+      userId || principalId
+    );
+
+    if (!s(targetSession.source)) targetSession.source = "manual";
+    if (!s(targetSession.checkInMethod)) targetSession.checkInMethod = "manual";
+    if (!s(targetSession.checkOutMethod)) targetSession.checkOutMethod = "manual";
+
+    targetSession.approvalStatus = policy.manualAttendanceRequireApproval ? "pending" : "approved";
+
+    if (targetSession.approvalStatus === "approved") {
+      if (requestedCheckInAt) targetSession.checkInAt = requestedCheckInAt;
+      if (requestedCheckOutAt) targetSession.checkOutAt = requestedCheckOutAt;
+
+      targetSession.status = targetSession.checkOutAt ? "closed" : "open";
+      clearManualRequestFields(targetSession);
+      await recalcSessionByTimes({ session: targetSession, policy, shift });
+    }
+
+    await targetSession.save();
+
+    let otMeta = null;
+    if (s(targetSession.status) === "closed") {
+      otMeta = await syncOvertimeForSession({ session: targetSession, policy, shift });
+      await targetSession.save();
+    }
+
+    return res.status(201).json({
+      ok: true,
+      session: targetSession,
+      requiresApproval: targetSession.approvalStatus === "pending",
+      otMeta,
+      policy: buildPublicPolicy(policy),
+    });
+  } catch (e) {
+    if (e?.code === 11000) {
+      return res.status(409).json({
+        ok: false,
+        code: "DUPLICATE_MAIN_SESSION",
+        message: "A main session already exists for this date",
+      });
+    }
+    return res.status(500).json({
+      ok: false,
+      message: "submit manual request failed",
+      error: e.message,
+    });
+  }
+}
+
+// ======================================================
+// GET /attendance/manual-request/my?workDate=yyyy-MM-dd&approvalStatus=pending
+// ======================================================
+async function listMyManualRequests(req, res) {
+  try {
+    const { clinicId, principalId, userId } = getPrincipal(req);
+
+    if (!clinicId) return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
+    if (!principalId) {
+      return res.status(401).json({ ok: false, message: "Missing userId/staffId in token" });
+    }
+
+    const workDate = s(req.query?.workDate);
+    const approvalStatus = s(req.query?.approvalStatus);
+
+    const q = buildManualRequestQueryForSelf({
+      clinicId,
+      principalId,
+      workDate,
+      approvalStatus,
+    });
+
+    const items = await AttendanceSession.find(q).sort({ workDate: -1, requestedAt: -1, createdAt: -1 }).lean();
+    const policy = await getOrCreatePolicy(clinicId, userId || principalId);
+
+    return res.json({
+      ok: true,
+      items,
+      policy: buildPublicPolicy(policy),
+    });
+  } catch (e) {
+    return res.status(500).json({
+      ok: false,
+      message: "list my manual requests failed",
+      error: e.message,
+    });
+  }
+}
+
+// ======================================================
+// GET /attendance/manual-request/clinic?workDate=yyyy-MM-dd&approvalStatus=pending&staffId=...
+// ======================================================
+async function listClinicManualRequests(req, res) {
+  try {
+    const clinicId = s(req.user?.clinicId);
+    const role = s(req.user?.role);
+    const actorUserId = s(req.user?.userId);
+
+    if (!clinicId) return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
+    if (role !== "admin" && role !== "clinic_admin") {
+      return res.status(403).json({ ok: false, message: "Forbidden (admin only)" });
+    }
+
+    const workDate = s(req.query?.workDate);
+    const approvalStatus = s(req.query?.approvalStatus) || "pending";
+    const staffIdOrPrincipal = s(req.query?.staffId);
+
+    const q = buildManualRequestQueryForClinic({
+      clinicId,
+      workDate,
+      approvalStatus,
+      staffIdOrPrincipal,
+    });
+
+    const items = await AttendanceSession.find(q).sort({ requestedAt: -1, workDate: -1, createdAt: -1 }).lean();
+    const policy = await getOrCreatePolicy(clinicId, actorUserId);
+
+    return res.json({
+      ok: true,
+      items,
+      policy: buildPublicPolicy(policy),
+    });
+  } catch (e) {
+    return res.status(500).json({
+      ok: false,
+      message: "list clinic manual requests failed",
+      error: e.message,
+    });
+  }
+}
+
+// ======================================================
+// POST /attendance/manual-request/:id/approve
+// body: { approvalNote? }
+// ======================================================
+async function approveManualRequest(req, res) {
+  try {
+    const clinicId = s(req.user?.clinicId);
+    const role = s(req.user?.role);
+    const actorUserId = s(req.user?.userId);
+    const id = s(req.params?.id);
+
+    if (!clinicId) return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
+    if (role !== "admin" && role !== "clinic_admin") {
+      return res.status(403).json({ ok: false, message: "Forbidden (admin only)" });
+    }
+    if (!id) return res.status(400).json({ ok: false, message: "Request id is required" });
+
+    const session = await AttendanceSession.findById(id);
+    if (!session) return res.status(404).json({ ok: false, message: "Manual request not found" });
+    if (s(session.clinicId) !== clinicId) {
+      return res.status(403).json({ ok: false, message: "Forbidden (cross-clinic request)" });
+    }
+    if (!isStatusPendingManual(session)) {
+      return res.status(409).json({
+        ok: false,
+        message: "Manual request is not pending approval",
+      });
+    }
+
+    const policy = await getOrCreatePolicy(clinicId, actorUserId);
+    if (policy.lockAfterPayrollClose && session.lockedByPayroll) {
+      return res.status(409).json({
+        ok: false,
+        code: "PAYROLL_LOCKED",
+        message: "Attendance is locked by payroll",
+      });
+    }
+
+    const shift = await loadShiftForSession({
+      clinicId: s(session.clinicId),
+      staffId: s(session.staffId),
+      userId: s(session.userId),
+      workDate: s(session.workDate),
+      shiftId: session.shiftId,
+    });
+
+    const requestedType = s(session.manualRequestType);
+
+    const finalCheckInAt =
+      session.requestedCheckInAt ||
+      session.checkInAt ||
+      null;
+
+    const finalCheckOutAt =
+      session.requestedCheckOutAt ||
+      session.checkOutAt ||
+      null;
+
+    if ((requestedType === "check_in" || requestedType === "edit_both") && !finalCheckInAt) {
+      return res.status(400).json({
+        ok: false,
+        message: "Requested check-in time is missing",
+      });
+    }
+
+    if ((requestedType === "check_out" || requestedType === "forgot_checkout") && !finalCheckOutAt) {
+      return res.status(400).json({
+        ok: false,
+        message: "Requested check-out time is missing",
+      });
+    }
+
+    if (finalCheckInAt) {
+      session.checkInAt = finalCheckInAt;
+      session.checkInMethod = "manual";
+      session.biometricVerifiedIn = false;
+    }
+
+    if (finalCheckOutAt) {
+      session.checkOutAt = finalCheckOutAt;
+      session.checkOutMethod = "manual";
+      session.biometricVerifiedOut = false;
+    }
+
+    session.status = session.checkOutAt ? "closed" : "open";
+    session.approvalStatus = "approved";
+    session.approvedBy = actorUserId;
+    session.approvedAt = new Date();
+    session.approvalNote = s(req.body?.approvalNote);
+    session.manualLocked = false;
+
+    clearManualRequestFields(session);
+
+    await recalcSessionByTimes({ session, policy, shift });
+
+    if (s(session.reasonCode) === "") {
+      session.reasonCode = s(session.requestReasonCode);
+    }
+    if (s(session.reasonText) === "") {
+      session.reasonText = s(session.requestReasonText);
+    }
+
+    await session.save();
+
+    const otMeta = await syncOvertimeForSession({ session, policy, shift });
+    await session.save();
+
+    return res.json({
+      ok: true,
+      session,
+      otMeta,
+      policy: buildPublicPolicy(policy),
+    });
+  } catch (e) {
+    return res.status(500).json({
+      ok: false,
+      message: "approve manual request failed",
+      error: e.message,
+    });
+  }
+}
+
+// ======================================================
+// POST /attendance/manual-request/:id/reject
+// body: { rejectReason }
+// ======================================================
+async function rejectManualRequest(req, res) {
+  try {
+    const clinicId = s(req.user?.clinicId);
+    const role = s(req.user?.role);
+    const actorUserId = s(req.user?.userId);
+    const id = s(req.params?.id);
+
+    if (!clinicId) return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
+    if (role !== "admin" && role !== "clinic_admin") {
+      return res.status(403).json({ ok: false, message: "Forbidden (admin only)" });
+    }
+    if (!id) return res.status(400).json({ ok: false, message: "Request id is required" });
+    if (!s(req.body?.rejectReason)) {
+      return res.status(400).json({ ok: false, message: "rejectReason is required" });
+    }
+
+    const session = await AttendanceSession.findById(id);
+    if (!session) return res.status(404).json({ ok: false, message: "Manual request not found" });
+    if (s(session.clinicId) !== clinicId) {
+      return res.status(403).json({ ok: false, message: "Forbidden (cross-clinic request)" });
+    }
+    if (!isStatusPendingManual(session)) {
+      return res.status(409).json({
+        ok: false,
+        message: "Manual request is not pending rejection",
+      });
+    }
+
+    session.approvalStatus = "rejected";
+    session.rejectedBy = actorUserId;
+    session.rejectedAt = new Date();
+    session.rejectReason = s(req.body?.rejectReason);
+    session.manualLocked = false;
+
+    session.status = determineRejectedStatus(session);
+
+    if (s(session.status) === "cancelled") {
+      session.checkOutAt = null;
+      session.workedMinutes = 0;
+      session.lateMinutes = 0;
+      session.otMinutes = 0;
+      session.leftEarly = false;
+      session.leftEarlyMinutes = 0;
+      session.abnormal = false;
+      session.abnormalReasonCode = "";
+      session.abnormalReasonText = "";
+    }
+
+    await session.save();
+
+    return res.json({
+      ok: true,
+      session,
+    });
+  } catch (e) {
+    return res.status(500).json({
+      ok: false,
+      message: "reject manual request failed",
+      error: e.message,
+    });
+  }
+}
+
+// ======================================================
 // GET /attendance/me?dateFrom=yyyy-MM-dd&dateTo=yyyy-MM-dd
-// ✅ รองรับ helper ไม่มี staffId (ใช้ principalId)
 // ======================================================
 async function listMySessions(req, res) {
   try {
@@ -1102,10 +1818,7 @@ async function listMySessions(req, res) {
 }
 
 // ======================================================
-// ✅ Admin-only report
 // GET /attendance/clinic?workDate=yyyy-MM-dd&staffId=...
-// NOTE:
-// - staffId param นี้: รองรับทั้ง staffId จริง และ principalId เพื่อ backward compatible
 // ======================================================
 async function listClinicSessions(req, res) {
   try {
@@ -1143,10 +1856,6 @@ async function listClinicSessions(req, res) {
 
 // ======================================================
 // GET /attendance/me-preview?workDate=yyyy-MM-dd
-// ✅ รองรับ helper (ไม่มี staffId ก็ได้)
-// ✅ FIX: ต้องเห็น open session ด้วย ไม่ใช่เฉพาะ closed
-// - summary คิดจาก closed sessions / approved OT เป็นหลัก
-// - attendance state ใช้ sessions ทั้งวัน
 // ======================================================
 async function myDayPreview(req, res) {
   try {
@@ -1295,6 +2004,11 @@ async function myDayPreview(req, res) {
 module.exports = {
   checkIn,
   checkOut,
+  submitManualRequest,
+  listMyManualRequests,
+  listClinicManualRequests,
+  approveManualRequest,
+  rejectManualRequest,
   listMySessions,
   listClinicSessions,
   myDayPreview,

@@ -49,6 +49,28 @@ router.post(
   ctrl.checkOut
 );
 
+// =====================================================
+// ✅ Self manual request flow
+// =====================================================
+
+// submit manual attendance request
+router.post(
+  "/manual-request",
+  auth,
+  requireRole(SELF_ROLES),
+  requireSelfAttendance(),
+  ctrl.submitManualRequest
+);
+
+// list my manual attendance requests
+router.get(
+  "/manual-request/my",
+  auth,
+  requireRole(SELF_ROLES),
+  requireSelfAttendance(),
+  ctrl.listMyManualRequests
+);
+
 // my sessions
 router.get(
   "/me",
@@ -68,13 +90,39 @@ router.get(
 );
 
 // =====================================================
-// ✅ Admin report
+// ✅ Admin report / manual approval flow
 // =====================================================
+
+// attendance sessions report
 router.get(
   "/clinic",
   auth,
   requireRole(ADMIN_ROLES),
   ctrl.listClinicSessions
+);
+
+// list clinic manual attendance queue
+router.get(
+  "/manual-request/clinic",
+  auth,
+  requireRole(ADMIN_ROLES),
+  ctrl.listClinicManualRequests
+);
+
+// approve manual attendance request
+router.post(
+  "/manual-request/:id/approve",
+  auth,
+  requireRole(ADMIN_ROLES),
+  ctrl.approveManualRequest
+);
+
+// reject manual attendance request
+router.post(
+  "/manual-request/:id/reject",
+  auth,
+  requireRole(ADMIN_ROLES),
+  ctrl.rejectManualRequest
 );
 
 module.exports = router;

@@ -11,7 +11,7 @@ const mongoose = require("mongoose");
  * ✅ helper (ไม่มี staffId) ลงเวลาได้ โดยไม่ต้องยัด usr_ ไปใน staffId
  *
  * ✅ V1 ATTENDANCE RULE
- * - 1 principal ต่อ 1 workDate ควรมี 1 session หลัก
+ * - 1 principal ต่อ 1 workDate มี session หลักได้ 1 อัน
  * - scan แรก = check-in
  * - scan ถัดมา (session open) = check-out
  * - ถ้าปิดวันแล้ว ห้ามเปิด session ใหม่เอง
@@ -138,10 +138,10 @@ const AttendanceSessionSchema = new mongoose.Schema(
     // ======================================================
     /**
      * manualRequestType
-     * - ""            : ไม่มี manual request
-     * - check_in      : ขอเช็คอินย้อนหลัง
-     * - check_out     : ขอเช็คเอาท์ย้อนหลัง
-     * - edit_both     : ขอแก้ทั้งเวลาเข้า/เวลาออก
+     * - ""              : ไม่มี manual request
+     * - check_in        : ขอเช็คอินย้อนหลัง
+     * - check_out       : ขอเช็คเอาท์ย้อนหลัง
+     * - edit_both       : ขอแก้ทั้งเวลาเข้า/เวลาออก
      * - forgot_checkout : ลืมเช็คเอาท์
      */
     manualRequestType: {
@@ -216,86 +216,131 @@ const AttendanceSessionSchema = new mongoose.Schema(
 // Indexes
 // ======================================================
 
-// ✅ prevent duplicate OPEN sessions per principal per day
+/**
+ * ✅ RULE หลัก:
+ * 1 principal / 1 workDate / 1 main session only
+ *
+ * main session statuses:
+ * - open
+ * - closed
+ * - pending_manual
+ *
+ * cancelled ไม่นับเป็น main session
+ *
+ * หมายเหตุ:
+ * index นี้จะกันไม่ให้มี session หลักมากกว่า 1 อันต่อวัน
+ * เช่น:
+ * - open แล้วสร้าง closed ซ้ำไม่ได้
+ * - closed แล้วกลับมาเปิดใหม่ไม่ได้
+ * - pending_manual ซ้ำอีกอันไม่ได้
+ */
+AttendanceSessionSchema.index(
+  { clinicId: 1, principalId: 1, workDate: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      status: { $in: ["open", "closed", "pending_manual"] },
+    },
+    name: "uniq_main_session_per_principal_per_day",
+  }
+);
+
+// ✅ เผื่อ query หา open session เร็ว
 AttendanceSessionSchema.index(
   { clinicId: 1, principalId: 1, workDate: 1, status: 1 },
   {
     partialFilterExpression: { status: "open" },
-    unique: true,
+    name: "idx_open_session_per_day",
   }
 );
 
-// ✅ prevent duplicate PENDING_MANUAL session state per principal per day
+// ✅ เผื่อ query หา pending manual เร็ว
 AttendanceSessionSchema.index(
   { clinicId: 1, principalId: 1, workDate: 1, status: 1 },
   {
     partialFilterExpression: { status: "pending_manual" },
+    name: "idx_pending_manual_per_day",
   }
 );
 
 // ✅ 1 principal/day timeline query
-AttendanceSessionSchema.index({ clinicId: 1, principalId: 1, workDate: 1 });
+AttendanceSessionSchema.index(
+  { clinicId: 1, principalId: 1, workDate: 1 },
+  { name: "idx_principal_day" }
+);
 
 // ✅ staffId based queries (employee reports / legacy screens)
-AttendanceSessionSchema.index({
-  clinicId: 1,
-  staffId: 1,
-  workDate: 1,
-  status: 1,
-});
-AttendanceSessionSchema.index({ staffId: 1, checkInAt: -1 });
+AttendanceSessionSchema.index(
+  { clinicId: 1, staffId: 1, workDate: 1, status: 1 },
+  { name: "idx_staff_day_status" }
+);
+AttendanceSessionSchema.index(
+  { staffId: 1, checkInAt: -1 },
+  { name: "idx_staff_checkin_desc" }
+);
 
 // ✅ principal timeline queries
-AttendanceSessionSchema.index({ principalId: 1, checkInAt: -1 });
+AttendanceSessionSchema.index(
+  { principalId: 1, checkInAt: -1 },
+  { name: "idx_principal_checkin_desc" }
+);
 
 // clinic/day
-AttendanceSessionSchema.index({ clinicId: 1, workDate: -1 });
+AttendanceSessionSchema.index(
+  { clinicId: 1, workDate: -1 },
+  { name: "idx_clinic_workdate_desc" }
+);
 
 // approval / admin queue
-AttendanceSessionSchema.index({
-  clinicId: 1,
-  approvalStatus: 1,
-  workDate: -1,
-});
+AttendanceSessionSchema.index(
+  { clinicId: 1, approvalStatus: 1, workDate: -1 },
+  { name: "idx_clinic_approval_queue" }
+);
 
 // manual request queue
-AttendanceSessionSchema.index({
-  clinicId: 1,
-  manualRequestType: 1,
-  approvalStatus: 1,
-  workDate: -1,
-});
+AttendanceSessionSchema.index(
+  { clinicId: 1, manualRequestType: 1, approvalStatus: 1, workDate: -1 },
+  { name: "idx_clinic_manual_queue" }
+);
 
 // source filters
-AttendanceSessionSchema.index({ clinicId: 1, source: 1, workDate: -1 });
+AttendanceSessionSchema.index(
+  { clinicId: 1, source: 1, workDate: -1 },
+  { name: "idx_clinic_source_workdate" }
+);
 
 // abnormal / early leave admin review
-AttendanceSessionSchema.index({ clinicId: 1, abnormal: 1, workDate: -1 });
-AttendanceSessionSchema.index({ clinicId: 1, leftEarly: 1, workDate: -1 });
+AttendanceSessionSchema.index(
+  { clinicId: 1, abnormal: 1, workDate: -1 },
+  { name: "idx_clinic_abnormal_workdate" }
+);
+AttendanceSessionSchema.index(
+  { clinicId: 1, leftEarly: 1, workDate: -1 },
+  { name: "idx_clinic_left_early_workdate" }
+);
 
 // reason filters
-AttendanceSessionSchema.index({ clinicId: 1, reasonCode: 1, workDate: -1 });
-AttendanceSessionSchema.index({
-  clinicId: 1,
-  abnormalReasonCode: 1,
-  workDate: -1,
-});
-AttendanceSessionSchema.index({
-  clinicId: 1,
-  requestReasonCode: 1,
-  workDate: -1,
-});
+AttendanceSessionSchema.index(
+  { clinicId: 1, reasonCode: 1, workDate: -1 },
+  { name: "idx_clinic_reason_workdate" }
+);
+AttendanceSessionSchema.index(
+  { clinicId: 1, abnormalReasonCode: 1, workDate: -1 },
+  { name: "idx_clinic_abnormal_reason_workdate" }
+);
+AttendanceSessionSchema.index(
+  { clinicId: 1, requestReasonCode: 1, workDate: -1 },
+  { name: "idx_clinic_request_reason_workdate" }
+);
 
 // payroll lock filters
-AttendanceSessionSchema.index({
-  clinicId: 1,
-  lockedByPayroll: 1,
-  workDate: -1,
-});
-AttendanceSessionSchema.index({
-  clinicId: 1,
-  lockedMonth: 1,
-  principalId: 1,
-});
+AttendanceSessionSchema.index(
+  { clinicId: 1, lockedByPayroll: 1, workDate: -1 },
+  { name: "idx_clinic_payroll_lock_workdate" }
+);
+AttendanceSessionSchema.index(
+  { clinicId: 1, lockedMonth: 1, principalId: 1 },
+  { name: "idx_clinic_locked_month_principal" }
+);
 
 module.exports = mongoose.model("AttendanceSession", AttendanceSessionSchema);
