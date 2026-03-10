@@ -1,6 +1,10 @@
 // backend/payroll_service/routes/attendanceRoutes.js
 const router = require("express").Router();
-const { auth, requireRole, requireSelfAttendance } = require("../middleware/auth");
+const {
+  auth,
+  requireRole,
+  requireSelfAttendance,
+} = require("../middleware/auth");
 const ctrl = require("../controllers/attendanceController");
 
 // ======================================
@@ -13,6 +17,10 @@ const ctrl = require("../controllers/attendanceController");
 
 const SELF_ROLES = ["employee", "helper"];
 const ADMIN_ROLES = ["admin", "clinic_admin"];
+
+// =====================================================
+// ✅ Self attendance
+// =====================================================
 
 // check-in
 router.post(
@@ -50,7 +58,7 @@ router.get(
   ctrl.listMySessions
 );
 
-// optional preview
+// today preview
 router.get(
   "/me-preview",
   auth,
@@ -59,9 +67,9 @@ router.get(
   ctrl.myDayPreview
 );
 
-// ======================================
-// ✅ admin reports
-// ======================================
+// =====================================================
+// ✅ Admin report
+// =====================================================
 router.get(
   "/clinic",
   auth,

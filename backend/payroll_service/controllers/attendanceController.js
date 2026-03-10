@@ -129,8 +129,33 @@ function buildHumanReadablePolicy(policy) {
   return lines;
 }
 
+function attendanceRuleDefaults(policy) {
+  return {
+    cutoffTime: isHHmm(policy?.cutoffTime) ? s(policy.cutoffTime) : "03:00",
+    minMinutesBeforeCheckout: clampMinutes(policy?.minMinutesBeforeCheckout || 1),
+    blockNewCheckInIfPreviousOpen:
+      policy?.blockNewCheckInIfPreviousOpen === undefined
+        ? true
+        : !!policy.blockNewCheckInIfPreviousOpen,
+    forgotCheckoutManualOnly:
+      policy?.forgotCheckoutManualOnly === undefined
+        ? true
+        : !!policy.forgotCheckoutManualOnly,
+    requireReasonForEarlyCheckIn:
+      policy?.requireReasonForEarlyCheckIn === undefined
+        ? true
+        : !!policy.requireReasonForEarlyCheckIn,
+    requireReasonForEarlyCheckOut:
+      policy?.requireReasonForEarlyCheckOut === undefined
+        ? true
+        : !!policy.requireReasonForEarlyCheckOut,
+  };
+}
+
 function buildPublicPolicy(policy) {
   const features = withFeatureDefaults(policy?.features || {});
+  const rules = attendanceRuleDefaults(policy);
+
   return {
     otRule: s(policy?.otRule),
     otRounding: s(policy?.otRounding),
@@ -150,6 +175,13 @@ function buildPublicPolicy(policy) {
     manualAttendanceRequireApproval: !!policy?.manualAttendanceRequireApproval,
     manualReasonRequired: !!policy?.manualReasonRequired,
     lockAfterPayrollClose: !!policy?.lockAfterPayrollClose,
+
+    cutoffTime: rules.cutoffTime,
+    minMinutesBeforeCheckout: rules.minMinutesBeforeCheckout,
+    blockNewCheckInIfPreviousOpen: rules.blockNewCheckInIfPreviousOpen,
+    forgotCheckoutManualOnly: rules.forgotCheckoutManualOnly,
+    requireReasonForEarlyCheckIn: rules.requireReasonForEarlyCheckIn,
+    requireReasonForEarlyCheckOut: rules.requireReasonForEarlyCheckOut,
 
     attendanceApprovalRoles: normalizeStringArray(policy?.attendanceApprovalRoles, [
       "clinic_admin",
@@ -218,6 +250,14 @@ async function getOrCreatePolicy(clinicId, userId) {
 
       attendanceApprovalRoles: ["clinic_admin"],
       otApprovalRoles: ["clinic_admin"],
+
+      // ✅ attendance rules v1 defaults
+      cutoffTime: "03:00",
+      minMinutesBeforeCheckout: 1,
+      blockNewCheckInIfPreviousOpen: true,
+      forgotCheckoutManualOnly: true,
+      requireReasonForEarlyCheckIn: true,
+      requireReasonForEarlyCheckOut: true,
 
       features: {
         manualAttendance: true,
@@ -429,11 +469,103 @@ function isEmployeeEligibleForOt(role, empType, policy) {
   return true;
 }
 
+function buildCodeResponse(status, code, message, extra = {}) {
+  return {
+    status,
+    body: {
+      ok: false,
+      code,
+      message,
+      ...extra,
+    },
+  };
+}
+
+function getShiftStartDateTime(shift) {
+  if (!shift || !isYmd(shift.date) || !isHHmm(shift.start)) return null;
+  return makeLocalDateTime(shift.date, shift.start);
+}
+
+function getShiftEndDateTime(shift) {
+  if (!shift || !isYmd(shift.date) || !isHHmm(shift.end)) return null;
+
+  const startAt = isHHmm(shift.start) ? makeLocalDateTime(shift.date, shift.start) : null;
+  let endAt = makeLocalDateTime(shift.date, shift.end);
+
+  if (startAt && endAt.getTime() <= startAt.getTime()) {
+    endAt = new Date(endAt.getTime() + 24 * 60 * 60000);
+  }
+
+  return endAt;
+}
+
+function getCutoffDateTime(workDate, cutoffTime) {
+  const cutoff = isHHmm(cutoffTime) ? cutoffTime : "03:00";
+  const base = makeLocalDateTime(workDate, cutoff);
+  return new Date(base.getTime() + 24 * 60 * 60000);
+}
+
+async function findPreviousOpenSession({ clinicId, principalId, workDate }) {
+  return AttendanceSession.findOne({
+    clinicId,
+    principalId,
+    status: "open",
+    workDate: { $lt: workDate },
+  })
+    .sort({ workDate: -1, checkInAt: -1 })
+    .lean();
+}
+
+function getScheduleSnapshot({ policy, shift }) {
+  const rules = attendanceRuleDefaults(policy);
+
+  return {
+    scheduledStart: s(shift?.start),
+    scheduledEnd: s(shift?.end),
+    normalMinutesBeforeOt: clampMinutes(Number(policy?.regularHoursPerDay || 8) * 60),
+    otWindowStart: s(policy?.otWindowStart),
+    otWindowEnd: s(policy?.otWindowEnd),
+    cutoffTime: rules.cutoffTime,
+    graceMinutes: clampMinutes(policy?.graceLateMinutes || 0),
+    leaveEarlyToleranceMinutes: clampMinutes(policy?.leaveEarlyToleranceMinutes || 0),
+  };
+}
+
+function detectEarlyCheckIn({ policy, shift, checkInAt }) {
+  const rules = attendanceRuleDefaults(policy);
+  if (!rules.requireReasonForEarlyCheckIn) return false;
+
+  const startAt = getShiftStartDateTime(shift);
+  if (!startAt) return false;
+
+  return checkInAt.getTime() < startAt.getTime();
+}
+
+function detectEarlyCheckOut({ policy, shift, checkOutAt }) {
+  const rules = attendanceRuleDefaults(policy);
+  if (!rules.requireReasonForEarlyCheckOut) return false;
+
+  const endAt = getShiftEndDateTime(shift);
+  if (!endAt) return false;
+
+  return checkOutAt.getTime() < endAt.getTime();
+}
+
+function detectLeftEarlyMinutes({ shift, checkOutAt, toleranceMinutes = 0 }) {
+  const endAt = getShiftEndDateTime(shift);
+  if (!endAt || !checkOutAt) return 0;
+
+  const raw = minutesDiff(checkOutAt, endAt);
+  const early = Math.max(0, raw - clampMinutes(toleranceMinutes));
+  return clampMinutes(early);
+}
+
 // ======================================================
 // POST /attendance/check-in
 // body: { workDate, shiftId?, method?, biometricVerified?, deviceId?, lat?, lng?, note? }
 // ✅ รองรับ employee + helper (helper ไม่มี staffId ก็ได้)
 // ✅ V1 RULE: 1 principal ต่อ 1 workDate มีได้ 1 session หลัก
+// ✅ BLOCK: previous open session, early check-in -> manual flow
 // ======================================================
 async function checkIn(req, res) {
   try {
@@ -454,6 +586,7 @@ async function checkIn(req, res) {
     }
 
     const policy = await getOrCreatePolicy(clinicId, userId || principalId);
+    const rules = attendanceRuleDefaults(policy);
 
     const biometricVerified = !!req.body?.biometricVerified;
     const method = resolveAttendanceMethod(req.body?.method, biometricVerified);
@@ -469,6 +602,24 @@ async function checkIn(req, res) {
 
     if (method === "biometric" && policy.requireBiometric && !biometricVerified) {
       return res.status(400).json({ ok: false, message: "Biometric required" });
+    }
+
+    const previousOpen =
+      rules.blockNewCheckInIfPreviousOpen
+        ? await findPreviousOpenSession({ clinicId, principalId, workDate })
+        : null;
+
+    if (previousOpen) {
+      const out = buildCodeResponse(
+        409,
+        "MANUAL_REQUIRED_PREVIOUS_OPEN_SESSION",
+        "Previous day session is still open. Please submit manual attendance request.",
+        {
+          previousSessionId: String(previousOpen._id || ""),
+          previousWorkDate: s(previousOpen.workDate),
+        }
+      );
+      return res.status(out.status).json(out.body);
     }
 
     const lat = n(req.body?.lat, null);
@@ -514,12 +665,12 @@ async function checkIn(req, res) {
     if (existingOpen) {
       return res.status(409).json({
         ok: false,
+        code: "ALREADY_CHECKED_IN",
         message: "Already checked-in (open session exists)",
         session: existingOpen,
       });
     }
 
-    // ✅ V1 RULE: ถ้าวันนี้มี closed session แล้ว ห้ามสร้าง session ใหม่เอง
     const existingClosed = await AttendanceSession.findOne({
       clinicId,
       principalId,
@@ -530,12 +681,43 @@ async function checkIn(req, res) {
     if (existingClosed) {
       return res.status(409).json({
         ok: false,
+        code: "ATTENDANCE_ALREADY_COMPLETED",
         message: "Attendance already completed for today",
       });
     }
 
+    const existingPendingManual = await AttendanceSession.findOne({
+      clinicId,
+      principalId,
+      workDate,
+      status: "pending_manual",
+    }).lean();
+
+    if (existingPendingManual) {
+      return res.status(409).json({
+        ok: false,
+        code: "MANUAL_REQUEST_PENDING",
+        message: "Manual attendance request is pending for this date",
+      });
+    }
+
     const checkInAt = new Date();
+
+    if (method === "biometric" && detectEarlyCheckIn({ policy, shift, checkInAt })) {
+      const out = buildCodeResponse(
+        409,
+        "MANUAL_REQUIRED_EARLY_CHECKIN",
+        "Early check-in requires manual request and clinic approval.",
+        {
+          workDate,
+          shiftStart: s(shift?.start),
+        }
+      );
+      return res.status(out.status).json(out.body);
+    }
+
     const lateMinutes = computeLateMinutes(policy, shift, checkInAt);
+    const snapshot = getScheduleSnapshot({ policy, shift });
 
     const created = await AttendanceSession.create({
       clinicId,
@@ -556,8 +738,15 @@ async function checkIn(req, res) {
       inLng: Number.isFinite(lng) ? lng : null,
       note: s(req.body?.note),
 
+      source: method === "manual" ? "manual" : "fingerprint",
+      reasonCode: s(req.body?.reasonCode),
+      reasonText: s(req.body?.reasonText),
+      manualReason: s(req.body?.note),
+
       lateMinutes,
       policyVersion: Number(policy.version || 0),
+
+      ...snapshot,
     });
 
     return res.status(201).json({
@@ -576,6 +765,7 @@ async function checkIn(req, res) {
 // POST /attendance/:id/check-out (backward compatible)
 // ✅ รองรับ employee + helper (helper ไม่มี staffId ก็ได้)
 // ✅ V1 RULE: check-out ต้องปิด session open ของ workDate ที่ต้องการ
+// ✅ BLOCK: too fast, early checkout, after cutoff -> manual flow
 // ======================================================
 async function checkOut(req, res) {
   try {
@@ -597,7 +787,6 @@ async function checkOut(req, res) {
       session = await AttendanceSession.findById(id);
       if (!session) return res.status(404).json({ ok: false, message: "Session not found" });
 
-      // ถ้ามี workDate ใน body และไม่ตรงกับ session ที่จะปิด -> conflict
       if (bodyWorkDate && isYmd(bodyWorkDate) && s(session.workDate) !== bodyWorkDate) {
         return res.status(409).json({
           ok: false,
@@ -611,7 +800,6 @@ async function checkOut(req, res) {
         status: "open",
       };
 
-      // ✅ สำคัญ: ถ้าฝั่ง client ส่ง workDate มา ให้ lock วันนั้นเลย
       if (isYmd(bodyWorkDate)) {
         q.workDate = bodyWorkDate;
       }
@@ -621,6 +809,7 @@ async function checkOut(req, res) {
       if (!session) {
         return res.status(409).json({
           ok: false,
+          code: "NO_OPEN_SESSION",
           message: "No open session to check-out",
         });
       }
@@ -635,10 +824,11 @@ async function checkOut(req, res) {
     }
 
     if (session.status !== "open") {
-      return res.status(409).json({ ok: false, message: "Session is not open" });
+      return res.status(409).json({ ok: false, code: "SESSION_NOT_OPEN", message: "Session is not open" });
     }
 
     const policy = await getOrCreatePolicy(s(session.clinicId), userId || principalId);
+    const rules = attendanceRuleDefaults(policy);
 
     const biometricVerified = !!req.body?.biometricVerified;
     const method = resolveAttendanceMethod(req.body?.method, biometricVerified);
@@ -691,6 +881,50 @@ async function checkOut(req, res) {
 
     const checkOutAt = new Date();
 
+    if (
+      method === "biometric" &&
+      rules.forgotCheckoutManualOnly &&
+      checkOutAt.getTime() > getCutoffDateTime(s(session.workDate), rules.cutoffTime).getTime()
+    ) {
+      const out = buildCodeResponse(
+        409,
+        "MANUAL_REQUIRED_AFTER_CUTOFF",
+        "Check-out after cutoff is not allowed by biometric. Please submit manual request.",
+        {
+          workDate: s(session.workDate),
+          cutoffTime: rules.cutoffTime,
+        }
+      );
+      return res.status(out.status).json(out.body);
+    }
+
+    const workedMinutesNow = computeWorkedMinutes(session.checkInAt, checkOutAt);
+    if (workedMinutesNow < rules.minMinutesBeforeCheckout) {
+      const out = buildCodeResponse(
+        409,
+        "CHECKOUT_TOO_FAST",
+        "Checkout is too fast.",
+        {
+          minMinutesBeforeCheckout: rules.minMinutesBeforeCheckout,
+          workedMinutes: workedMinutesNow,
+        }
+      );
+      return res.status(out.status).json(out.body);
+    }
+
+    if (method === "biometric" && detectEarlyCheckOut({ policy, shift, checkOutAt })) {
+      const out = buildCodeResponse(
+        409,
+        "MANUAL_REQUIRED_EARLY_CHECKOUT",
+        "Early check-out requires manual request and clinic approval.",
+        {
+          workDate: s(session.workDate),
+          shiftEnd: s(shift?.end),
+        }
+      );
+      return res.status(out.status).json(out.body);
+    }
+
     let emp = null;
     const ownerUserId = s(session.userId) || userId || "";
     if (ownerUserId) {
@@ -720,6 +954,14 @@ async function checkOut(req, res) {
       otMinutes = computeOtMinutes(policyForOt, shift, session.checkInAt, checkOutAt);
     }
 
+    const leftEarlyMinutes = detectLeftEarlyMinutes({
+      shift,
+      checkOutAt,
+      toleranceMinutes:
+        clampMinutes(session.leaveEarlyToleranceMinutes) ||
+        clampMinutes(policy.leaveEarlyToleranceMinutes || 0),
+    });
+
     session.checkOutAt = checkOutAt;
     session.status = "closed";
     session.checkOutMethod = method;
@@ -732,9 +974,23 @@ async function checkOut(req, res) {
 
     session.workedMinutes = workedMinutes;
     session.otMinutes = otMinutes;
+    session.leftEarly = leftEarlyMinutes > 0;
+    session.leftEarlyMinutes = leftEarlyMinutes;
+
+    if (leftEarlyMinutes > 0) {
+      session.abnormal = true;
+      session.abnormalReasonCode = "LEFT_EARLY";
+      session.abnormalReasonText = "Employee checked out before scheduled end time";
+    }
+
     session.policyVersion = Number(policy.version || session.policyVersion || 0);
 
-    if (s(req.body?.note)) session.note = s(req.body?.note);
+    if (s(req.body?.reasonCode)) session.reasonCode = s(req.body?.reasonCode);
+    if (s(req.body?.reasonText)) session.reasonText = s(req.body?.reasonText);
+    if (s(req.body?.note)) {
+      session.note = s(req.body?.note);
+      session.manualReason = s(req.body?.note);
+    }
 
     await session.save();
 
@@ -921,11 +1177,14 @@ async function myDayPreview(req, res) {
     const openSession =
       sessions.find((x) => s(x.status).toLowerCase() === "open") || null;
 
+    const pendingManualSession =
+      sessions.find((x) => s(x.status).toLowerCase() === "pending_manual") || null;
+
     const closedSessions = sessions.filter(
       (x) => s(x.status).toLowerCase() === "closed"
     );
 
-    const checkedIn = !!openSession || closedSessions.length > 0;
+    const checkedIn = !!openSession || closedSessions.length > 0 || !!pendingManualSession;
     const checkedOut = !openSession && closedSessions.length > 0;
 
     const workedMinutes = closedSessions.reduce(
@@ -977,8 +1236,22 @@ async function myDayPreview(req, res) {
     const otMul = Number(emp?.otMultiplierNormal || policy.otMultiplier || 1.5);
     const otPay = (otMinutesApproved / 60) * baseHourly * otMul;
 
-    const checkInAt = openSession?.checkInAt || closedSessions[0]?.checkInAt || null;
+    const checkInAt =
+      openSession?.checkInAt ||
+      pendingManualSession?.checkInAt ||
+      closedSessions[0]?.checkInAt ||
+      null;
+
     const checkOutAt = closedSessions[0]?.checkOutAt || null;
+
+    let message = "วันนี้ยังไม่ได้เช็คอิน";
+    if (pendingManualSession) {
+      message = "วันนี้มีคำขอแก้ไขเวลา รออนุมัติ";
+    } else if (checkedIn) {
+      message = checkedOut
+        ? "วันนี้เช็คอินและเช็คเอาท์แล้ว"
+        : "วันนี้เช็คอินแล้ว (ยังไม่เช็คเอาท์)";
+    }
 
     return res.json({
       ok: true,
@@ -987,15 +1260,12 @@ async function myDayPreview(req, res) {
       checkedOut,
       checkInAt,
       checkOutAt,
-      message: checkedIn
-        ? checkedOut
-          ? "วันนี้เช็คอินและเช็คเอาท์แล้ว"
-          : "วันนี้เช็คอินแล้ว (ยังไม่เช็คเอาท์)"
-        : "วันนี้ยังไม่ได้เช็คอิน",
+      message,
       attendance: {
         checkedIn,
         checkedOut,
         openSession,
+        pendingManualSession,
         currentSessionId: openSession ? String(openSession._id || "") : "",
       },
       employee: emp || null,

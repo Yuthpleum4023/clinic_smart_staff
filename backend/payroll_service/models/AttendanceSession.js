@@ -22,13 +22,16 @@ const mongoose = require("mongoose");
  * - early leave / abnormal flags
  * - reasonCode / reasonText
  * - policy snapshot เพื่อให้คำนวณย้อนหลังได้แม้ admin เปลี่ยน policy ภายหลัง
+ * - manual request fields สำหรับ approve/reject โดยคลินิก
  */
 
 const AttendanceSessionSchema = new mongoose.Schema(
   {
     clinicId: { type: String, required: true, index: true },
 
-    // ✅ identity ที่ใช้ query หลักสำหรับ attendance
+    // ======================================================
+    // Identity
+    // ======================================================
     principalId: { type: String, required: true, index: true }, // staffId || userId
     principalType: {
       type: String,
@@ -37,10 +40,7 @@ const AttendanceSessionSchema = new mongoose.Schema(
       index: true,
     },
 
-    // ✅ staffId แยกออกมา (อาจว่างได้สำหรับ helper marketplace)
     staffId: { type: String, default: "", index: true },
-
-    // ✅ userId (usr_...)
     userId: { type: String, default: "", index: true },
 
     // optional link to shift
@@ -54,13 +54,22 @@ const AttendanceSessionSchema = new mongoose.Schema(
     // local business date (yyyy-MM-dd) for reporting
     workDate: { type: String, required: true, index: true },
 
-    // timestamps (ISO/UTC)
+    // ======================================================
+    // Attendance timestamps (actual)
+    // ======================================================
     checkInAt: { type: Date, required: true },
     checkOutAt: { type: Date, default: null },
 
+    /**
+     * status meaning
+     * - open           : session เปิดอยู่
+     * - closed         : session ปิดแล้ว
+     * - cancelled      : ยกเลิก
+     * - pending_manual : มีคำขอ manual แก้ไข/ปิดเวลา รออนุมัติ
+     */
     status: {
       type: String,
-      enum: ["open", "closed", "cancelled"],
+      enum: ["open", "closed", "cancelled", "pending_manual"],
       default: "open",
       index: true,
     },
@@ -94,13 +103,22 @@ const AttendanceSessionSchema = new mongoose.Schema(
       index: true,
     },
 
-    // ✅ code + text ดีกว่า text อย่างเดียว
+    /**
+     * เหตุผลระดับ session เช่น เข้างานก่อนเวลา / ออกก่อนเวลา
+     */
     reasonCode: { type: String, default: "", index: true },
     reasonText: { type: String, default: "" },
 
     // legacy/manual text (ยังเก็บไว้เพื่อ backward compatibility)
     manualReason: { type: String, default: "" },
 
+    /**
+     * approvalStatus
+     * - none      : ไม่ต้องอนุมัติ
+     * - pending   : รออนุมัติ
+     * - approved  : อนุมัติแล้ว
+     * - rejected  : ปฏิเสธแล้ว
+     */
     approvalStatus: {
       type: String,
       enum: ["none", "pending", "approved", "rejected"],
@@ -116,6 +134,35 @@ const AttendanceSessionSchema = new mongoose.Schema(
     rejectReason: { type: String, default: "" },
 
     // ======================================================
+    // Manual request flow
+    // ======================================================
+    /**
+     * manualRequestType
+     * - ""            : ไม่มี manual request
+     * - check_in      : ขอเช็คอินย้อนหลัง
+     * - check_out     : ขอเช็คเอาท์ย้อนหลัง
+     * - edit_both     : ขอแก้ทั้งเวลาเข้า/เวลาออก
+     * - forgot_checkout : ลืมเช็คเอาท์
+     */
+    manualRequestType: {
+      type: String,
+      enum: ["", "check_in", "check_out", "edit_both", "forgot_checkout"],
+      default: "",
+      index: true,
+    },
+
+    requestedCheckInAt: { type: Date, default: null },
+    requestedCheckOutAt: { type: Date, default: null },
+
+    requestedBy: { type: String, default: "", index: true },
+    requestedAt: { type: Date, default: null },
+
+    requestReasonCode: { type: String, default: "", index: true },
+    requestReasonText: { type: String, default: "" },
+
+    manualLocked: { type: Boolean, default: false, index: true },
+
+    // ======================================================
     // Location (optional)
     // ======================================================
     inLat: { type: Number, default: null },
@@ -129,12 +176,12 @@ const AttendanceSessionSchema = new mongoose.Schema(
     // เก็บ snapshot ตอน check-in เพื่อกัน policy เปลี่ยนย้อนหลัง
     // ======================================================
     scheduledStart: { type: String, default: "" }, // "08:00"
-    scheduledEnd: { type: String, default: "" },   // "17:00"
+    scheduledEnd: { type: String, default: "" }, // "17:00"
 
     normalMinutesBeforeOt: { type: Number, default: 0 }, // เช่น 480
-    otWindowStart: { type: String, default: "" },        // "17:00"
-    otWindowEnd: { type: String, default: "" },          // "21:00"
-    cutoffTime: { type: String, default: "" },           // "03:00"
+    otWindowStart: { type: String, default: "" }, // "17:00"
+    otWindowEnd: { type: String, default: "" }, // "21:00"
+    cutoffTime: { type: String, default: "" }, // "03:00"
 
     graceMinutes: { type: Number, default: 0 },
     leaveEarlyToleranceMinutes: { type: Number, default: 0 },
@@ -169,11 +216,25 @@ const AttendanceSessionSchema = new mongoose.Schema(
 // Indexes
 // ======================================================
 
-// ✅ prevent duplicate open sessions per principal per day
+// ✅ prevent duplicate OPEN sessions per principal per day
 AttendanceSessionSchema.index(
   { clinicId: 1, principalId: 1, workDate: 1, status: 1 },
-  { partialFilterExpression: { status: "open" } }
+  {
+    partialFilterExpression: { status: "open" },
+    unique: true,
+  }
 );
+
+// ✅ prevent duplicate PENDING_MANUAL session state per principal per day
+AttendanceSessionSchema.index(
+  { clinicId: 1, principalId: 1, workDate: 1, status: 1 },
+  {
+    partialFilterExpression: { status: "pending_manual" },
+  }
+);
+
+// ✅ 1 principal/day timeline query
+AttendanceSessionSchema.index({ clinicId: 1, principalId: 1, workDate: 1 });
 
 // ✅ staffId based queries (employee reports / legacy screens)
 AttendanceSessionSchema.index({
@@ -197,6 +258,14 @@ AttendanceSessionSchema.index({
   workDate: -1,
 });
 
+// manual request queue
+AttendanceSessionSchema.index({
+  clinicId: 1,
+  manualRequestType: 1,
+  approvalStatus: 1,
+  workDate: -1,
+});
+
 // source filters
 AttendanceSessionSchema.index({ clinicId: 1, source: 1, workDate: -1 });
 
@@ -206,5 +275,27 @@ AttendanceSessionSchema.index({ clinicId: 1, leftEarly: 1, workDate: -1 });
 
 // reason filters
 AttendanceSessionSchema.index({ clinicId: 1, reasonCode: 1, workDate: -1 });
+AttendanceSessionSchema.index({
+  clinicId: 1,
+  abnormalReasonCode: 1,
+  workDate: -1,
+});
+AttendanceSessionSchema.index({
+  clinicId: 1,
+  requestReasonCode: 1,
+  workDate: -1,
+});
+
+// payroll lock filters
+AttendanceSessionSchema.index({
+  clinicId: 1,
+  lockedByPayroll: 1,
+  workDate: -1,
+});
+AttendanceSessionSchema.index({
+  clinicId: 1,
+  lockedMonth: 1,
+  principalId: 1,
+});
 
 module.exports = mongoose.model("AttendanceSession", AttendanceSessionSchema);
