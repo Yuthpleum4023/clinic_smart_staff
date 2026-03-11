@@ -16,9 +16,7 @@ function isHHmm(v) {
 
 function normalizeStringArray(value, fallback = []) {
   if (Array.isArray(value)) {
-    const arr = value
-      .map((x) => normStr(x))
-      .filter(Boolean);
+    const arr = value.map((x) => normStr(x)).filter(Boolean);
     return arr.length ? arr : fallback;
   }
 
@@ -107,18 +105,14 @@ function defaultPolicy(clinicId, updatedByUserId = "") {
 
     graceLateMinutes: 10,
 
-    // ✅ DEFAULT CHANGED
     otRule: "AFTER_CLOCK_TIME",
     regularHoursPerDay: 8,
 
-    // legacy fallback
     otClockTime: "18:00",
 
-    // ✅ separated employee/helper clock time (legacy support)
     fullTimeOtClockTime: "18:00",
     partTimeOtClockTime: "18:00",
 
-    // ✅ NEW: OT window (ใช้กับ employee เท่านั้น)
     otWindowStart: "18:00",
     otWindowEnd: "21:00",
 
@@ -129,7 +123,6 @@ function defaultPolicy(clinicId, updatedByUserId = "") {
     holidayMultiplier: 2.0,
     weekendAllDayOT: false,
 
-    // ✅ NEW: core policy
     employeeOnlyOt: true,
     requireOtApproval: true,
     realTimeAttendanceOnly: true,
@@ -137,11 +130,19 @@ function defaultPolicy(clinicId, updatedByUserId = "") {
     manualReasonRequired: true,
     lockAfterPayrollClose: true,
 
-    // ✅ NEW: approval roles
     attendanceApprovalRoles: ["clinic_admin"],
     otApprovalRoles: ["clinic_admin"],
 
-    // ✅ NEW: feature flags
+    // ✅ Attendance policy
+    shiftStart: "09:00",
+    shiftEnd: "18:00",
+    cutoffTime: "03:00",
+    minMinutesBeforeCheckout: 1,
+    requireReasonForEarlyCheckIn: true,
+    requireReasonForEarlyCheckOut: true,
+    forgotCheckoutManualOnly: true,
+    blockNewCheckInIfPreviousOpen: true,
+
     features: {
       manualAttendance: true,
       fingerprintAttendance: true,
@@ -276,6 +277,36 @@ function normalizePolicyShape(raw, clinicId, updatedByUserId = "") {
       defaults.otApprovalRoles
     ),
 
+    // ✅ Attendance policy
+    shiftStart: normStr(src.shiftStart || defaults.shiftStart) || "09:00",
+    shiftEnd: normStr(src.shiftEnd || defaults.shiftEnd) || "18:00",
+    cutoffTime: normStr(src.cutoffTime || defaults.cutoffTime) || "03:00",
+
+    minMinutesBeforeCheckout: toNum(
+      src.minMinutesBeforeCheckout,
+      defaults.minMinutesBeforeCheckout
+    ),
+
+    requireReasonForEarlyCheckIn:
+      src.requireReasonForEarlyCheckIn === undefined
+        ? defaults.requireReasonForEarlyCheckIn
+        : !!src.requireReasonForEarlyCheckIn,
+
+    requireReasonForEarlyCheckOut:
+      src.requireReasonForEarlyCheckOut === undefined
+        ? defaults.requireReasonForEarlyCheckOut
+        : !!src.requireReasonForEarlyCheckOut,
+
+    forgotCheckoutManualOnly:
+      src.forgotCheckoutManualOnly === undefined
+        ? defaults.forgotCheckoutManualOnly
+        : !!src.forgotCheckoutManualOnly,
+
+    blockNewCheckInIfPreviousOpen:
+      src.blockNewCheckInIfPreviousOpen === undefined
+        ? defaults.blockNewCheckInIfPreviousOpen
+        : !!src.blockNewCheckInIfPreviousOpen,
+
     features: sanitizeFeatures(src.features, defaults.features),
 
     version: Math.max(1, toNum(src.version, defaults.version)),
@@ -325,6 +356,16 @@ function applyPolicyToDoc(doc, normalized, updatedByUserId = "") {
     normalized.otApprovalRoles,
     ["clinic_admin"]
   );
+
+  // ✅ Attendance policy
+  doc.shiftStart = normStr(normalized.shiftStart) || "09:00";
+  doc.shiftEnd = normStr(normalized.shiftEnd) || "18:00";
+  doc.cutoffTime = normStr(normalized.cutoffTime) || "03:00";
+  doc.minMinutesBeforeCheckout = Number(normalized.minMinutesBeforeCheckout);
+  doc.requireReasonForEarlyCheckIn = !!normalized.requireReasonForEarlyCheckIn;
+  doc.requireReasonForEarlyCheckOut = !!normalized.requireReasonForEarlyCheckOut;
+  doc.forgotCheckoutManualOnly = !!normalized.forgotCheckoutManualOnly;
+  doc.blockNewCheckInIfPreviousOpen = !!normalized.blockNewCheckInIfPreviousOpen;
 
   doc.features = sanitizeFeatures(normalized.features, doc.features || {});
   doc.updatedBy = normStr(updatedByUserId || normalized.updatedBy || "");
@@ -396,14 +437,29 @@ function validatePolicy(p) {
     return "otWindowEnd must be HH:mm";
   }
 
+  // ✅ Attendance validation
+  if (p.shiftStart && !isHHmm(p.shiftStart)) {
+    return "shiftStart must be HH:mm";
+  }
+
+  if (p.shiftEnd && !isHHmm(p.shiftEnd)) {
+    return "shiftEnd must be HH:mm";
+  }
+
+  if (p.cutoffTime && !isHHmm(p.cutoffTime)) {
+    return "cutoffTime must be HH:mm";
+  }
+
+  const minCheckout = toNum(p.minMinutesBeforeCheckout, NaN);
+  if (!Number.isFinite(minCheckout) || minCheckout < 1 || minCheckout > 1440) {
+    return "minMinutesBeforeCheckout must be 1..1440";
+  }
+
   const attendanceRoles = normalizeApprovalRoles(
     p.attendanceApprovalRoles,
     ["clinic_admin"]
   );
-  const otRoles = normalizeApprovalRoles(
-    p.otApprovalRoles,
-    ["clinic_admin"]
-  );
+  const otRoles = normalizeApprovalRoles(p.otApprovalRoles, ["clinic_admin"]);
 
   if (!attendanceRoles.length) {
     return "attendanceApprovalRoles must contain at least 1 role";

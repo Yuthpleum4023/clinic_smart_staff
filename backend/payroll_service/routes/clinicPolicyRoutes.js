@@ -7,8 +7,31 @@ const {
   updateMyClinicPolicy,
 } = require("../controllers/clinicPolicyController");
 
-// ✅ Admin only
-router.get("/me", auth, requireRole(["admin"]), getMyClinicPolicy);
-router.put("/me", auth, requireRole(["admin"]), updateMyClinicPolicy);
+// ✅ รองรับทั้ง admin และ clinic_admin
+const POLICY_ADMIN_ROLES = ["admin", "clinic_admin"];
+
+// GET current clinic policy
+router.get(
+  "/me",
+  auth,
+  requireRole(POLICY_ADMIN_ROLES),
+  getMyClinicPolicy
+);
+
+// PUT full update
+router.put(
+  "/me",
+  auth,
+  requireRole(POLICY_ADMIN_ROLES),
+  updateMyClinicPolicy
+);
+
+// PATCH partial update (Flutter หน้าตั้งค่าใช้อันนี้)
+router.patch(
+  "/me",
+  auth,
+  requireRole(POLICY_ADMIN_ROLES),
+  updateMyClinicPolicy
+);
 
 module.exports = router;
