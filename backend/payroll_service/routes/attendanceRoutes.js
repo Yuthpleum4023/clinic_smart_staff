@@ -1,28 +1,27 @@
-// backend/payroll_service/routes/attendanceRoutes.js
 const router = require("express").Router();
+
 const {
   auth,
   requireRole,
   requireSelfAttendance,
 } = require("../middleware/auth");
+
 const ctrl = require("../controllers/attendanceController");
 
 // ======================================
-// ✅ Self-attendance (employee + helper)
-// - ห้าม admin ลงเวลาแทน
-// - กัน spoof clinicId/staffId/userId
-// - เติม clinicId ให้เสมอ
-// - เติม staffId ให้ถ้ามี (employee มักมี, helper อาจมี/ไม่มี)
+// Roles
 // ======================================
 
 const SELF_ROLES = ["employee", "helper"];
 const ADMIN_ROLES = ["admin", "clinic_admin"];
 
 // =====================================================
-// ✅ Self attendance
+// SELF ATTENDANCE (employee + helper)
 // =====================================================
 
-// check-in
+// -------------------------------
+// CHECK-IN
+// -------------------------------
 router.post(
   "/check-in",
   auth,
@@ -31,7 +30,9 @@ router.post(
   ctrl.checkIn
 );
 
-// check-out (recommended)
+// -------------------------------
+// CHECK-OUT (recommended)
+// -------------------------------
 router.post(
   "/check-out",
   auth,
@@ -40,7 +41,7 @@ router.post(
   ctrl.checkOut
 );
 
-// backward compatible (with session id)
+// backward compatible
 router.post(
   "/:id/check-out",
   auth,
@@ -50,7 +51,7 @@ router.post(
 );
 
 // =====================================================
-// ✅ Self manual request flow
+// MANUAL ATTENDANCE REQUEST (SELF)
 // =====================================================
 
 // submit manual attendance request
@@ -62,7 +63,7 @@ router.post(
   ctrl.submitManualRequest
 );
 
-// list my manual attendance requests
+// list my manual requests
 router.get(
   "/manual-request/my",
   auth,
@@ -71,7 +72,11 @@ router.get(
   ctrl.listMyManualRequests
 );
 
-// my sessions
+// =====================================================
+// MY ATTENDANCE
+// =====================================================
+
+// my sessions history
 router.get(
   "/me",
   auth,
@@ -90,10 +95,10 @@ router.get(
 );
 
 // =====================================================
-// ✅ Admin report / manual approval flow
+// ADMIN / CLINIC ATTENDANCE
 // =====================================================
 
-// attendance sessions report
+// clinic attendance sessions
 router.get(
   "/clinic",
   auth,
@@ -101,7 +106,7 @@ router.get(
   ctrl.listClinicSessions
 );
 
-// list clinic manual attendance queue
+// clinic manual request queue
 router.get(
   "/manual-request/clinic",
   auth,
@@ -109,7 +114,7 @@ router.get(
   ctrl.listClinicManualRequests
 );
 
-// approve manual attendance request
+// approve manual request
 router.post(
   "/manual-request/:id/approve",
   auth,
@@ -117,7 +122,7 @@ router.post(
   ctrl.approveManualRequest
 );
 
-// reject manual attendance request
+// reject manual request
 router.post(
   "/manual-request/:id/reject",
   auth,

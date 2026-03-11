@@ -197,10 +197,6 @@ function buildPublicPolicy(policy) {
  * ✅ PRINCIPAL (รองรับ helper ไม่มี staffId)
  * - ถ้ามี staffId => principalId = staffId, principalType="staff"
  * - ถ้าไม่มี staffId => principalId = userId, principalType="user"
- *
- * ✅ IMPORTANT:
- * - AttendanceSession.staffId = เก็บ "staffId จริง" เท่านั้น (อาจเป็น "")
- * - ไม่เอา usr_ ไปยัดใน staffId แล้ว
  */
 function getPrincipal(req) {
   const clinicId = s(req.user?.clinicId);
@@ -404,7 +400,6 @@ function computeOtMinutes(policy, shift, checkInAt, checkOutAt) {
   return 0;
 }
 
-// helper: normalize employmentType from staff_service (robust)
 function normalizeEmploymentType(v) {
   const t = s(v).toLowerCase();
   if (!t) return "";
@@ -413,7 +408,6 @@ function normalizeEmploymentType(v) {
   return s(v);
 }
 
-// helper: select OT clock time by employee type (fullTime/partTime)
 function pickOtClockByType(policy, empTypeRaw) {
   const empType = normalizeEmploymentType(empTypeRaw);
   const legacy = isHHmm(policy?.otClockTime) ? policy.otClockTime : "18:00";
@@ -600,7 +594,12 @@ function buildRequestedReason(req) {
 }
 
 function shouldRequireReason(policy, req) {
-  return !!policy?.manualReasonRequired && !s(req.body?.reasonCode) && !s(req.body?.reasonText) && !s(req.body?.note);
+  return (
+    !!policy?.manualReasonRequired &&
+    !s(req.body?.reasonCode) &&
+    !s(req.body?.reasonText) &&
+    !s(req.body?.note)
+  );
 }
 
 function buildSessionBaseForCreate({
@@ -640,7 +639,14 @@ function buildSessionBaseForCreate({
   };
 }
 
-function applyManualRequestFields(session, req, manualRequestType, requestedCheckInAt, requestedCheckOutAt, requesterId) {
+function applyManualRequestFields(
+  session,
+  req,
+  manualRequestType,
+  requestedCheckInAt,
+  requestedCheckOutAt,
+  requesterId
+) {
   const { requestReasonCode, requestReasonText } = buildRequestedReason(req);
 
   session.status = "pending_manual";
@@ -840,7 +846,12 @@ function buildManualRequestQueryForSelf({ clinicId, principalId, workDate, appro
   return q;
 }
 
-function buildManualRequestQueryForClinic({ clinicId, workDate, approvalStatus, staffIdOrPrincipal }) {
+function buildManualRequestQueryForClinic({
+  clinicId,
+  workDate,
+  approvalStatus,
+  staffIdOrPrincipal,
+}) {
   const q = {
     clinicId,
     manualRequestType: { $ne: "" },
@@ -855,7 +866,11 @@ function buildManualRequestQueryForClinic({ clinicId, workDate, approvalStatus, 
 
 function determineRejectedStatus(session) {
   if (session.checkOutAt) return "closed";
-  if (s(session.source) === "manual" && s(session.checkInMethod) === "manual" && !session.biometricVerifiedIn) {
+  if (
+    s(session.source) === "manual" &&
+    s(session.checkInMethod) === "manual" &&
+    !session.biometricVerifiedIn
+  ) {
     return "cancelled";
   }
   return "open";
@@ -863,7 +878,6 @@ function determineRejectedStatus(session) {
 
 // ======================================================
 // POST /attendance/check-in
-// body: { workDate, shiftId?, method?, biometricVerified?, deviceId?, lat?, lng?, note? }
 // ======================================================
 async function checkIn(req, res) {
   try {
@@ -1019,13 +1033,10 @@ async function checkIn(req, res) {
 
     const created = await AttendanceSession.create({
       clinicId,
-
       principalId,
       principalType,
-
       staffId: staffId || "",
       userId: userId || "",
-
       shiftId: shift ? shift._id : null,
       workDate,
       checkInAt,
@@ -1035,15 +1046,12 @@ async function checkIn(req, res) {
       inLat: Number.isFinite(lat) ? lat : null,
       inLng: Number.isFinite(lng) ? lng : null,
       note: s(req.body?.note),
-
       source: method === "manual" ? "manual" : "fingerprint",
       reasonCode: s(req.body?.reasonCode),
       reasonText: s(req.body?.reasonText),
       manualReason: s(req.body?.note),
-
       lateMinutes,
       policyVersion: Number(policy.version || 0),
-
       ...snapshot,
     });
 
@@ -1064,7 +1072,7 @@ async function checkIn(req, res) {
 // ======================================================
 async function checkOut(req, res) {
   try {
-    const { clinicId, userId, staffId, principalId, principalType, role } = getPrincipal(req);
+    const { clinicId, userId, staffId, principalId, principalType } = getPrincipal(req);
 
     if (!clinicId) {
       return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
@@ -1351,6 +1359,9 @@ async function submitManualRequest(req, res) {
     const closedSession = sameDaySessions.find((x) => s(x.status) === "closed") || null;
     let targetSession = openSession || closedSession || null;
 
+    // ------------------------------------------------------
+    // check_in
+    // ------------------------------------------------------
     if (manualRequestType === "check_in") {
       if (targetSession) {
         return res.status(409).json({
@@ -1359,6 +1370,7 @@ async function submitManualRequest(req, res) {
           message: "A session already exists for this date. Use edit_both instead.",
         });
       }
+
       if (!requestedCheckInAt) {
         return res.status(400).json({
           ok: false,
@@ -1417,24 +1429,66 @@ async function submitManualRequest(req, res) {
       });
     }
 
-    if ((manualRequestType === "check_out" || manualRequestType === "forgot_checkout") && !openSession) {
-      return res.status(409).json({
-        ok: false,
-        code: "OPEN_SESSION_REQUIRED",
-        message: "Manual checkout request requires an open session for this date",
-      });
-    }
+    // ------------------------------------------------------
+    // check_out
+    // - ต้องมี open session ชัดเจน
+    // ------------------------------------------------------
+    if (manualRequestType === "check_out") {
+      if (!openSession) {
+        return res.status(409).json({
+          ok: false,
+          code: "OPEN_SESSION_REQUIRED",
+          message: "Manual checkout request requires an open session for this date",
+        });
+      }
 
-    if (manualRequestType === "check_out" || manualRequestType === "forgot_checkout") {
       if (!requestedCheckOutAt) {
         return res.status(400).json({
           ok: false,
           message: "requestedCheckOutAt is required for manual checkout request",
         });
       }
+
       targetSession = openSession;
     }
 
+    // ------------------------------------------------------
+    // forgot_checkout
+    // - แยกจาก check_out
+    // - อนุญาตถ้ามี session ของวันนั้นให้ยึดอ้างอิง
+    // - ถ้ามี open session ให้ใช้ open session ก่อน
+    // - ถ้ามี closed session อยู่แล้ว ให้ถือว่าวันนั้นปิดงานแล้ว ไม่ควรส่ง forgot_checkout
+    // ------------------------------------------------------
+    if (manualRequestType === "forgot_checkout") {
+      if (!requestedCheckOutAt) {
+        return res.status(400).json({
+          ok: false,
+          message: "requestedCheckOutAt is required for forgot checkout request",
+        });
+      }
+
+      if (openSession) {
+        targetSession = openSession;
+      } else if (closedSession) {
+        return res.status(409).json({
+          ok: false,
+          code: "ATTENDANCE_ALREADY_COMPLETED",
+          message: "Attendance already completed for this date. Use edit_both instead if correction is needed.",
+        });
+      } else if (targetSession && targetSession.checkInAt && !targetSession.checkOutAt) {
+        targetSession = targetSession;
+      } else {
+        return res.status(409).json({
+          ok: false,
+          code: "CHECKIN_SESSION_REQUIRED",
+          message: "Forgot checkout request requires an existing check-in session for this date",
+        });
+      }
+    }
+
+    // ------------------------------------------------------
+    // edit_both
+    // ------------------------------------------------------
     if (manualRequestType === "edit_both") {
       if (!targetSession && !requestedCheckInAt) {
         return res.status(400).json({
@@ -1538,7 +1592,10 @@ async function listMyManualRequests(req, res) {
       approvalStatus,
     });
 
-    const items = await AttendanceSession.find(q).sort({ workDate: -1, requestedAt: -1, createdAt: -1 }).lean();
+    const items = await AttendanceSession.find(q)
+      .sort({ workDate: -1, requestedAt: -1, createdAt: -1 })
+      .lean();
+
     const policy = await getOrCreatePolicy(clinicId, userId || principalId);
 
     return res.json({
@@ -1580,7 +1637,10 @@ async function listClinicManualRequests(req, res) {
       staffIdOrPrincipal,
     });
 
-    const items = await AttendanceSession.find(q).sort({ requestedAt: -1, workDate: -1, createdAt: -1 }).lean();
+    const items = await AttendanceSession.find(q)
+      .sort({ requestedAt: -1, workDate: -1, createdAt: -1 })
+      .lean();
+
     const policy = await getOrCreatePolicy(clinicId, actorUserId);
 
     return res.json({
@@ -1644,16 +1704,11 @@ async function approveManualRequest(req, res) {
     });
 
     const requestedType = s(session.manualRequestType);
+    const requestReasonCodeBeforeClear = s(session.requestReasonCode);
+    const requestReasonTextBeforeClear = s(session.requestReasonText);
 
-    const finalCheckInAt =
-      session.requestedCheckInAt ||
-      session.checkInAt ||
-      null;
-
-    const finalCheckOutAt =
-      session.requestedCheckOutAt ||
-      session.checkOutAt ||
-      null;
+    const finalCheckInAt = session.requestedCheckInAt || session.checkInAt || null;
+    const finalCheckOutAt = session.requestedCheckOutAt || session.checkOutAt || null;
 
     if ((requestedType === "check_in" || requestedType === "edit_both") && !finalCheckInAt) {
       return res.status(400).json({
@@ -1692,11 +1747,11 @@ async function approveManualRequest(req, res) {
 
     await recalcSessionByTimes({ session, policy, shift });
 
-    if (s(session.reasonCode) === "") {
-      session.reasonCode = s(session.requestReasonCode);
+    if (!s(session.reasonCode) && requestReasonCodeBeforeClear) {
+      session.reasonCode = requestReasonCodeBeforeClear;
     }
-    if (s(session.reasonText) === "") {
-      session.reasonText = s(session.requestReasonText);
+    if (!s(session.reasonText) && requestReasonTextBeforeClear) {
+      session.reasonText = requestReasonTextBeforeClear;
     }
 
     await session.save();
