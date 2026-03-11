@@ -17,6 +17,77 @@ const FeatureFlagsSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const DayScheduleSchema = new mongoose.Schema(
+  {
+    enabled: { type: Boolean, default: true },
+    start: { type: String, default: "09:00" },
+    end: { type: String, default: "18:00" },
+  },
+  { _id: false }
+);
+
+const WeeklyScheduleSchema = new mongoose.Schema(
+  {
+    monday: {
+      type: DayScheduleSchema,
+      default: () => ({
+        enabled: true,
+        start: "09:00",
+        end: "18:00",
+      }),
+    },
+    tuesday: {
+      type: DayScheduleSchema,
+      default: () => ({
+        enabled: true,
+        start: "09:00",
+        end: "18:00",
+      }),
+    },
+    wednesday: {
+      type: DayScheduleSchema,
+      default: () => ({
+        enabled: true,
+        start: "09:00",
+        end: "18:00",
+      }),
+    },
+    thursday: {
+      type: DayScheduleSchema,
+      default: () => ({
+        enabled: true,
+        start: "09:00",
+        end: "18:00",
+      }),
+    },
+    friday: {
+      type: DayScheduleSchema,
+      default: () => ({
+        enabled: true,
+        start: "09:00",
+        end: "18:00",
+      }),
+    },
+    saturday: {
+      type: DayScheduleSchema,
+      default: () => ({
+        enabled: false,
+        start: "09:00",
+        end: "13:00",
+      }),
+    },
+    sunday: {
+      type: DayScheduleSchema,
+      default: () => ({
+        enabled: false,
+        start: "09:00",
+        end: "13:00",
+      }),
+    },
+  },
+  { _id: false }
+);
+
 const ClinicPolicySchema = new mongoose.Schema(
   {
     clinicId: { type: String, required: true, unique: true, index: true },
@@ -56,6 +127,28 @@ const ClinicPolicySchema = new mongoose.Schema(
 
     // เผื่อ tolerance สำหรับ left early เช่น 0, 5, 10 นาที
     leaveEarlyToleranceMinutes: { type: Number, default: 0 },
+
+    // ======================================================
+    // Clinic working hours (legacy/global)
+    // ======================================================
+    shiftStart: { type: String, default: "09:00" },
+    shiftEnd: { type: String, default: "18:00" },
+
+    // ======================================================
+    // Clinic working hours by day
+    // ======================================================
+    weeklySchedule: {
+      type: WeeklyScheduleSchema,
+      default: () => ({
+        monday: { enabled: true, start: "09:00", end: "18:00" },
+        tuesday: { enabled: true, start: "09:00", end: "18:00" },
+        wednesday: { enabled: true, start: "09:00", end: "18:00" },
+        thursday: { enabled: true, start: "09:00", end: "18:00" },
+        friday: { enabled: true, start: "09:00", end: "18:00" },
+        saturday: { enabled: false, start: "09:00", end: "13:00" },
+        sunday: { enabled: false, start: "09:00", end: "13:00" },
+      }),
+    },
 
     // ======================================================
     // OT rule
@@ -135,6 +228,9 @@ const ClinicPolicySchema = new mongoose.Schema(
 );
 
 // useful indexes
-ClinicPolicySchema.index({ clinicId: 1 }, { unique: true, name: "uniq_clinic_policy" });
+ClinicPolicySchema.index(
+  { clinicId: 1 },
+  { unique: true, name: "uniq_clinic_policy" }
+);
 
 module.exports = mongoose.model("ClinicPolicy", ClinicPolicySchema);

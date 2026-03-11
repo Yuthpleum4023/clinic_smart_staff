@@ -70,6 +70,16 @@ const ALLOWED_FEATURE_KEYS = [
   "policyHumanReadable",
 ];
 
+const WEEK_DAYS = [
+  "monday",
+  "tuesday",
+  "wednesday",
+  "thursday",
+  "friday",
+  "saturday",
+  "sunday",
+];
+
 function sanitizeFeatures(value, fallback = {}) {
   const safe = {
     manualAttendance: true,
@@ -94,7 +104,53 @@ function sanitizeFeatures(value, fallback = {}) {
   return safe;
 }
 
+function defaultDaySchedule(start = "09:00", end = "18:00", enabled = true) {
+  return {
+    enabled: !!enabled,
+    start: start,
+    end: end,
+  };
+}
+
+function defaultWeeklySchedule() {
+  return {
+    monday: defaultDaySchedule("09:00", "18:00", true),
+    tuesday: defaultDaySchedule("09:00", "18:00", true),
+    wednesday: defaultDaySchedule("09:00", "18:00", true),
+    thursday: defaultDaySchedule("09:00", "18:00", true),
+    friday: defaultDaySchedule("09:00", "18:00", true),
+    saturday: defaultDaySchedule("09:00", "13:00", false),
+    sunday: defaultDaySchedule("09:00", "13:00", false),
+  };
+}
+
+function normalizeDaySchedule(raw, fallback = defaultDaySchedule()) {
+  const src = raw && typeof raw === "object" ? raw : {};
+  const start = normStr(src.start || fallback.start || "09:00") || "09:00";
+  const end = normStr(src.end || fallback.end || "18:00") || "18:00";
+
+  return {
+    enabled:
+      src.enabled === undefined ? !!fallback.enabled : !!src.enabled,
+    start,
+    end,
+  };
+}
+
+function normalizeWeeklySchedule(value, fallback = defaultWeeklySchedule()) {
+  const src = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const out = {};
+
+  for (const day of WEEK_DAYS) {
+    out[day] = normalizeDaySchedule(src[day], fallback[day] || defaultDaySchedule());
+  }
+
+  return out;
+}
+
 function defaultPolicy(clinicId, updatedByUserId = "") {
+  const weeklySchedule = defaultWeeklySchedule();
+
   return {
     clinicId,
     timezone: "Asia/Bangkok",
@@ -133,7 +189,7 @@ function defaultPolicy(clinicId, updatedByUserId = "") {
     attendanceApprovalRoles: ["clinic_admin"],
     otApprovalRoles: ["clinic_admin"],
 
-    // ✅ Attendance policy
+    // ✅ Attendance policy (legacy/global)
     shiftStart: "09:00",
     shiftEnd: "18:00",
     cutoffTime: "03:00",
@@ -142,6 +198,9 @@ function defaultPolicy(clinicId, updatedByUserId = "") {
     requireReasonForEarlyCheckOut: true,
     forgotCheckoutManualOnly: true,
     blockNewCheckInIfPreviousOpen: true,
+
+    // ✅ NEW: per-day schedule
+    weeklySchedule,
 
     features: {
       manualAttendance: true,
@@ -277,7 +336,7 @@ function normalizePolicyShape(raw, clinicId, updatedByUserId = "") {
       defaults.otApprovalRoles
     ),
 
-    // ✅ Attendance policy
+    // ✅ Attendance policy (legacy/global)
     shiftStart: normStr(src.shiftStart || defaults.shiftStart) || "09:00",
     shiftEnd: normStr(src.shiftEnd || defaults.shiftEnd) || "18:00",
     cutoffTime: normStr(src.cutoffTime || defaults.cutoffTime) || "03:00",
@@ -306,6 +365,12 @@ function normalizePolicyShape(raw, clinicId, updatedByUserId = "") {
       src.blockNewCheckInIfPreviousOpen === undefined
         ? defaults.blockNewCheckInIfPreviousOpen
         : !!src.blockNewCheckInIfPreviousOpen,
+
+    // ✅ NEW: per-day schedule
+    weeklySchedule: normalizeWeeklySchedule(
+      src.weeklySchedule,
+      defaults.weeklySchedule
+    ),
 
     features: sanitizeFeatures(src.features, defaults.features),
 
@@ -357,7 +422,7 @@ function applyPolicyToDoc(doc, normalized, updatedByUserId = "") {
     ["clinic_admin"]
   );
 
-  // ✅ Attendance policy
+  // ✅ Attendance policy (legacy/global)
   doc.shiftStart = normStr(normalized.shiftStart) || "09:00";
   doc.shiftEnd = normStr(normalized.shiftEnd) || "18:00";
   doc.cutoffTime = normStr(normalized.cutoffTime) || "03:00";
@@ -367,8 +432,34 @@ function applyPolicyToDoc(doc, normalized, updatedByUserId = "") {
   doc.forgotCheckoutManualOnly = !!normalized.forgotCheckoutManualOnly;
   doc.blockNewCheckInIfPreviousOpen = !!normalized.blockNewCheckInIfPreviousOpen;
 
+  // ✅ NEW: per-day schedule
+  doc.weeklySchedule = normalizeWeeklySchedule(
+    normalized.weeklySchedule,
+    defaultWeeklySchedule()
+  );
+
   doc.features = sanitizeFeatures(normalized.features, doc.features || {});
   doc.updatedBy = normStr(updatedByUserId || normalized.updatedBy || "");
+}
+
+function validateDaySchedule(dayName, day) {
+  if (!day || typeof day !== "object" || Array.isArray(day)) {
+    return `${dayName} must be an object`;
+  }
+
+  if (day.start && !isHHmm(day.start)) {
+    return `${dayName}.start must be HH:mm`;
+  }
+
+  if (day.end && !isHHmm(day.end)) {
+    return `${dayName}.end must be HH:mm`;
+  }
+
+  if (day.enabled && day.start && day.end && day.start === day.end) {
+    return `${dayName}.start and ${dayName}.end must not be the same`;
+  }
+
+  return null;
 }
 
 function validatePolicy(p) {
@@ -437,7 +528,7 @@ function validatePolicy(p) {
     return "otWindowEnd must be HH:mm";
   }
 
-  // ✅ Attendance validation
+  // ✅ Attendance validation (legacy/global)
   if (p.shiftStart && !isHHmm(p.shiftStart)) {
     return "shiftStart must be HH:mm";
   }
@@ -453,6 +544,24 @@ function validatePolicy(p) {
   const minCheckout = toNum(p.minMinutesBeforeCheckout, NaN);
   if (!Number.isFinite(minCheckout) || minCheckout < 1 || minCheckout > 1440) {
     return "minMinutesBeforeCheckout must be 1..1440";
+  }
+
+  // ✅ NEW: weeklySchedule validation
+  if (
+    p.weeklySchedule !== undefined &&
+    (typeof p.weeklySchedule !== "object" || Array.isArray(p.weeklySchedule))
+  ) {
+    return "weeklySchedule must be an object";
+  }
+
+  const normalizedWeekly = normalizeWeeklySchedule(
+    p.weeklySchedule,
+    defaultWeeklySchedule()
+  );
+
+  for (const day of WEEK_DAYS) {
+    const err = validateDaySchedule(day, normalizedWeekly[day]);
+    if (err) return err;
   }
 
   const attendanceRoles = normalizeApprovalRoles(
@@ -523,7 +632,7 @@ async function getMyClinicPolicy(req, res) {
   }
 }
 
-// PUT /clinic-policy/me
+// PUT/PATCH /clinic-policy/me
 async function updateMyClinicPolicy(req, res) {
   try {
     const clinicId = normStr(req.user?.clinicId);
@@ -549,6 +658,8 @@ async function updateMyClinicPolicy(req, res) {
         attendanceApprovalRoles:
           body.attendanceApprovalRoles ?? base.attendanceApprovalRoles,
         otApprovalRoles: body.otApprovalRoles ?? base.otApprovalRoles,
+        weeklySchedule:
+          body.weeklySchedule ?? base.weeklySchedule,
       },
       clinicId,
       userId
