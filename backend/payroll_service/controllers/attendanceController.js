@@ -1,4 +1,3 @@
-// backend/payroll_service/controllers/attendanceController.js
 const mongoose = require("mongoose");
 const AttendanceSession = require("../models/AttendanceSession");
 const Shift = require("../models/Shift");
@@ -65,7 +64,9 @@ function haversineMeters(lat1, lon1, lat2, lon2) {
   const dLon = toRad(lon2 - lon1);
   const a =
     Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+    Math.cos(toRad(lat1)) *
+      Math.cos(toRad(lat2)) *
+      Math.sin(dLon / 2) ** 2;
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return R * c;
 }
@@ -132,7 +133,9 @@ function buildHumanReadablePolicy(policy) {
 function attendanceRuleDefaults(policy) {
   return {
     cutoffTime: isHHmm(policy?.cutoffTime) ? s(policy.cutoffTime) : "03:00",
-    minMinutesBeforeCheckout: clampMinutes(policy?.minMinutesBeforeCheckout || 1),
+    minMinutesBeforeCheckout: clampMinutes(
+      policy?.minMinutesBeforeCheckout || 1
+    ),
     blockNewCheckInIfPreviousOpen:
       policy?.blockNewCheckInIfPreviousOpen === undefined
         ? true
@@ -183,13 +186,18 @@ function buildPublicPolicy(policy) {
     requireReasonForEarlyCheckIn: rules.requireReasonForEarlyCheckIn,
     requireReasonForEarlyCheckOut: rules.requireReasonForEarlyCheckOut,
 
-    attendanceApprovalRoles: normalizeStringArray(policy?.attendanceApprovalRoles, [
+    attendanceApprovalRoles: normalizeStringArray(
+      policy?.attendanceApprovalRoles,
+      ["clinic_admin"]
+    ),
+    otApprovalRoles: normalizeStringArray(policy?.otApprovalRoles, [
       "clinic_admin",
     ]),
-    otApprovalRoles: normalizeStringArray(policy?.otApprovalRoles, ["clinic_admin"]),
 
     features,
-    humanReadable: features.policyHumanReadable ? buildHumanReadablePolicy(policy) : [],
+    humanReadable: features.policyHumanReadable
+      ? buildHumanReadablePolicy(policy)
+      : [],
   };
 }
 
@@ -279,7 +287,13 @@ async function getOrCreatePolicy(clinicId, userId) {
  *  2) if staffId exists -> findOne clinicId + staffId + date
  *  3) else -> findOne clinicId + helperUserId(userId) + date
  */
-async function loadShiftForSession({ clinicId, staffId, userId, workDate, shiftId }) {
+async function loadShiftForSession({
+  clinicId,
+  staffId,
+  userId,
+  workDate,
+  shiftId,
+}) {
   if (shiftId && mongoose.Types.ObjectId.isValid(String(shiftId))) {
     const sh = await Shift.findById(shiftId).lean();
     return sh || null;
@@ -323,11 +337,22 @@ function computeWorkedMinutes(checkInAt, checkOutAt) {
   return clampMinutes(m);
 }
 
-function computeWindowOverlapMinutes(windowStartAt, windowEndAt, actualStartAt, actualEndAt) {
-  if (!windowStartAt || !windowEndAt || !actualStartAt || !actualEndAt) return 0;
+function computeWindowOverlapMinutes(
+  windowStartAt,
+  windowEndAt,
+  actualStartAt,
+  actualEndAt
+) {
+  if (!windowStartAt || !windowEndAt || !actualStartAt || !actualEndAt) {
+    return 0;
+  }
 
-  const startAt = new Date(Math.max(windowStartAt.getTime(), actualStartAt.getTime()));
-  const endAt = new Date(Math.min(windowEndAt.getTime(), actualEndAt.getTime()));
+  const startAt = new Date(
+    Math.max(windowStartAt.getTime(), actualStartAt.getTime())
+  );
+  const endAt = new Date(
+    Math.min(windowEndAt.getTime(), actualEndAt.getTime())
+  );
 
   if (endAt.getTime() <= startAt.getTime()) return 0;
   return clampMinutes(minutesDiff(startAt, endAt));
@@ -341,7 +366,9 @@ function computeOtMinutes(policy, shift, checkInAt, checkOutAt) {
   if (rule === "AFTER_SHIFT_END") {
     if (!shift || !isYmd(shift.date) || !isHHmm(shift.end)) return 0;
 
-    const startLocal = isHHmm(shift.start) ? makeLocalDateTime(shift.date, shift.start) : null;
+    const startLocal = isHHmm(shift.start)
+      ? makeLocalDateTime(shift.date, shift.start)
+      : null;
     let endLocal = makeLocalDateTime(shift.date, shift.end);
 
     if (startLocal && endLocal.getTime() <= startLocal.getTime()) {
@@ -361,7 +388,8 @@ function computeOtMinutes(policy, shift, checkInAt, checkOutAt) {
     const baseDate = ymd || null;
     if (!baseDate) return 0;
 
-    const hasWindow = isHHmm(policy.otWindowStart) && isHHmm(policy.otWindowEnd);
+    const hasWindow =
+      isHHmm(policy.otWindowStart) && isHHmm(policy.otWindowEnd);
 
     if (hasWindow) {
       let windowStartAt = makeLocalDateTime(baseDate, policy.otWindowStart);
@@ -403,8 +431,22 @@ function computeOtMinutes(policy, shift, checkInAt, checkOutAt) {
 function normalizeEmploymentType(v) {
   const t = s(v).toLowerCase();
   if (!t) return "";
-  if (t === "fulltime" || t === "full_time" || t === "full-time" || t === "ft") return "fullTime";
-  if (t === "parttime" || t === "part_time" || t === "part-time" || t === "pt") return "partTime";
+  if (
+    t === "fulltime" ||
+    t === "full_time" ||
+    t === "full-time" ||
+    t === "ft"
+  ) {
+    return "fullTime";
+  }
+  if (
+    t === "parttime" ||
+    t === "part_time" ||
+    t === "part-time" ||
+    t === "pt"
+  ) {
+    return "partTime";
+  }
   return s(v);
 }
 
@@ -483,7 +525,9 @@ function getShiftStartDateTime(shift) {
 function getShiftEndDateTime(shift) {
   if (!shift || !isYmd(shift.date) || !isHHmm(shift.end)) return null;
 
-  const startAt = isHHmm(shift.start) ? makeLocalDateTime(shift.date, shift.start) : null;
+  const startAt = isHHmm(shift.start)
+    ? makeLocalDateTime(shift.date, shift.start)
+    : null;
   let endAt = makeLocalDateTime(shift.date, shift.end);
 
   if (startAt && endAt.getTime() <= startAt.getTime()) {
@@ -516,12 +560,16 @@ function getScheduleSnapshot({ policy, shift }) {
   return {
     scheduledStart: s(shift?.start),
     scheduledEnd: s(shift?.end),
-    normalMinutesBeforeOt: clampMinutes(Number(policy?.regularHoursPerDay || 8) * 60),
+    normalMinutesBeforeOt: clampMinutes(
+      Number(policy?.regularHoursPerDay || 8) * 60
+    ),
     otWindowStart: s(policy?.otWindowStart),
     otWindowEnd: s(policy?.otWindowEnd),
     cutoffTime: rules.cutoffTime,
     graceMinutes: clampMinutes(policy?.graceLateMinutes || 0),
-    leaveEarlyToleranceMinutes: clampMinutes(policy?.leaveEarlyToleranceMinutes || 0),
+    leaveEarlyToleranceMinutes: clampMinutes(
+      policy?.leaveEarlyToleranceMinutes || 0
+    ),
   };
 }
 
@@ -555,7 +603,11 @@ function detectLeftEarlyMinutes({ shift, checkOutAt, toleranceMinutes = 0 }) {
 }
 
 function hasEarlyCheckoutReason(req) {
-  return !!s(req.body?.reasonCode) || !!s(req.body?.reasonText) || !!s(req.body?.note);
+  return (
+    !!s(req.body?.reasonCode) ||
+    !!s(req.body?.reasonText) ||
+    !!s(req.body?.note)
+  );
 }
 
 function parseDateOrNull(v) {
@@ -574,7 +626,15 @@ function firstValidDate(...values) {
 
 function normalizeManualRequestType(v) {
   const t = s(v);
-  if (["check_in", "check_out", "edit_both", "forgot_checkout"].includes(t)) return t;
+  if (["check_in", "check_out", "edit_both", "forgot_checkout"].includes(t)) {
+    return t;
+  }
+  return "";
+}
+
+function normalizeApprovalFilter(v) {
+  const t = s(v).toLowerCase();
+  if (["pending", "approved", "rejected", "history"].includes(t)) return t;
   return "";
 }
 
@@ -583,7 +643,10 @@ function inferRoleFromSession(session) {
 }
 
 function isStatusPendingManual(session) {
-  return s(session?.status) === "pending_manual" && s(session?.approvalStatus) === "pending";
+  return (
+    s(session?.status) === "pending_manual" &&
+    s(session?.approvalStatus) === "pending"
+  );
 }
 
 function buildRequestedReason(req) {
@@ -708,12 +771,23 @@ async function syncOvertimeForSession({ session, policy, shift }) {
       otClockTime: selectedClock,
     };
 
-    const allowOtCalc = !!withFeatureDefaults(policy.features || {}).autoOtCalculation;
+    const allowOtCalc = !!withFeatureDefaults(policy.features || {})
+      .autoOtCalculation;
     const allowOtForThisUser = isEmployeeEligibleForOt(role, empType, policy);
 
     let otMinutes = 0;
-    if (session.checkInAt && session.checkOutAt && allowOtCalc && allowOtForThisUser) {
-      otMinutes = computeOtMinutes(policyForOt, shift, session.checkInAt, session.checkOutAt);
+    if (
+      session.checkInAt &&
+      session.checkOutAt &&
+      allowOtCalc &&
+      allowOtForThisUser
+    ) {
+      otMinutes = computeOtMinutes(
+        policyForOt,
+        shift,
+        session.checkInAt,
+        session.checkOutAt
+      );
     }
 
     session.otMinutes = clampMinutes(otMinutes);
@@ -723,15 +797,23 @@ async function syncOvertimeForSession({ session, policy, shift }) {
     const monthKey = monthKeyFromYmd(workDate);
 
     const otMul = Number(
-      emp?.otMultiplierNormal || policyForOt.otMultiplier || policy.otMultiplier || 1.5
+      emp?.otMultiplierNormal ||
+        policyForOt.otMultiplier ||
+        policy.otMultiplier ||
+        1.5
     );
     const mul = Number.isFinite(otMul) && otMul > 0 ? otMul : 1.5;
 
     const principalIdForOt = s(session.principalId);
-    const principalTypeForOt = s(session.principalType) || (s(session.staffId) ? "staff" : "user");
+    const principalTypeForOt =
+      s(session.principalType) || (s(session.staffId) ? "staff" : "user");
     const staffIdForOt = s(session.staffId);
 
-    if (clampMinutes(session.otMinutes) > 0 && monthKey && s(session.status) === "closed") {
+    if (
+      clampMinutes(session.otMinutes) > 0 &&
+      monthKey &&
+      s(session.status) === "closed"
+    ) {
       await Overtime.updateOne(
         { clinicId: clinicIdOfSession, attendanceSessionId: session._id },
         {
@@ -764,7 +846,10 @@ async function syncOvertimeForSession({ session, policy, shift }) {
         { upsert: true }
       );
     } else {
-      await Overtime.deleteOne({ clinicId: clinicIdOfSession, attendanceSessionId: session._id });
+      await Overtime.deleteOne({
+        clinicId: clinicIdOfSession,
+        attendanceSessionId: session._id,
+      });
     }
 
     return {
@@ -794,7 +879,10 @@ async function recalcSessionByTimes({ session, policy, shift }) {
   session.lateMinutes = computeLateMinutes(policy, shift, session.checkInAt);
 
   if (session.checkOutAt) {
-    session.workedMinutes = computeWorkedMinutes(session.checkInAt, session.checkOutAt);
+    session.workedMinutes = computeWorkedMinutes(
+      session.checkInAt,
+      session.checkOutAt
+    );
 
     const leftEarlyMinutes = detectLeftEarlyMinutes({
       shift,
@@ -810,7 +898,8 @@ async function recalcSessionByTimes({ session, policy, shift }) {
     if (leftEarlyMinutes > 0) {
       session.abnormal = true;
       session.abnormalReasonCode = "LEFT_EARLY";
-      session.abnormalReasonText = "Employee checked out before scheduled end time";
+      session.abnormalReasonText =
+        "Employee checked out before scheduled end time";
     } else if (s(session.abnormalReasonCode) === "LEFT_EARLY") {
       session.abnormal = false;
       session.abnormalReasonCode = "";
@@ -823,7 +912,8 @@ async function recalcSessionByTimes({ session, policy, shift }) {
     ) {
       session.abnormal = true;
       session.abnormalReasonCode = "CHECKOUT_TOO_FAST";
-      session.abnormalReasonText = "Worked time is below minimum before checkout";
+      session.abnormalReasonText =
+        "Worked time is below minimum before checkout";
     }
   } else {
     session.workedMinutes = 0;
@@ -835,14 +925,27 @@ async function recalcSessionByTimes({ session, policy, shift }) {
   session.policyVersion = Number(policy.version || session.policyVersion || 0);
 }
 
-function buildManualRequestQueryForSelf({ clinicId, principalId, workDate, approvalStatus }) {
+function buildManualRequestQueryForSelf({
+  clinicId,
+  principalId,
+  workDate,
+  approvalStatus,
+}) {
   const q = {
     clinicId,
     principalId,
     manualRequestType: { $ne: "" },
   };
+
   if (isYmd(workDate)) q.workDate = workDate;
-  if (approvalStatus) q.approvalStatus = s(approvalStatus);
+
+  const filter = normalizeApprovalFilter(approvalStatus);
+  if (filter === "history") {
+    q.approvalStatus = { $in: ["approved", "rejected"] };
+  } else if (filter) {
+    q.approvalStatus = filter;
+  }
+
   return q;
 }
 
@@ -856,11 +959,23 @@ function buildManualRequestQueryForClinic({
     clinicId,
     manualRequestType: { $ne: "" },
   };
+
   if (isYmd(workDate)) q.workDate = workDate;
-  if (approvalStatus) q.approvalStatus = s(approvalStatus);
-  if (staffIdOrPrincipal) {
-    q.$or = [{ staffId: staffIdOrPrincipal }, { principalId: staffIdOrPrincipal }];
+
+  const filter = normalizeApprovalFilter(approvalStatus) || "pending";
+  if (filter === "history") {
+    q.approvalStatus = { $in: ["approved", "rejected"] };
+  } else {
+    q.approvalStatus = filter;
   }
+
+  if (staffIdOrPrincipal) {
+    q.$or = [
+      { staffId: staffIdOrPrincipal },
+      { principalId: staffIdOrPrincipal },
+    ];
+  }
+
   return q;
 }
 
@@ -881,20 +996,27 @@ function determineRejectedStatus(session) {
 // ======================================================
 async function checkIn(req, res) {
   try {
-    const { clinicId, userId, staffId, principalId, principalType } = getPrincipal(req);
+    const { clinicId, userId, staffId, principalId, principalType } =
+      getPrincipal(req);
 
     if (!clinicId) {
-      return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
+      return res
+        .status(401)
+        .json({ ok: false, message: "Missing clinicId in token" });
     }
     if (!principalId) {
-      return res.status(401).json({ ok: false, message: "Missing userId/staffId in token" });
+      return res
+        .status(401)
+        .json({ ok: false, message: "Missing userId/staffId in token" });
     }
 
     const workDate = s(req.body?.workDate);
     const shiftId = req.body?.shiftId || null;
 
     if (!isYmd(workDate)) {
-      return res.status(400).json({ ok: false, message: "workDate required (yyyy-MM-dd)" });
+      return res
+        .status(400)
+        .json({ ok: false, message: "workDate required (yyyy-MM-dd)" });
     }
 
     const policy = await getOrCreatePolicy(clinicId, userId || principalId);
@@ -907,7 +1029,11 @@ async function checkIn(req, res) {
       return res.status(400).json({ ok: false, message: methodErr });
     }
 
-    const manualReasonErr = requireManualReasonIfNeeded(policy, method, req.body?.note);
+    const manualReasonErr = requireManualReasonIfNeeded(
+      policy,
+      method,
+      req.body?.note
+    );
     if (manualReasonErr) {
       return res.status(400).json({ ok: false, message: manualReasonErr });
     }
@@ -916,10 +1042,9 @@ async function checkIn(req, res) {
       return res.status(400).json({ ok: false, message: "Biometric required" });
     }
 
-    const previousOpen =
-      rules.blockNewCheckInIfPreviousOpen
-        ? await findPreviousOpenSession({ clinicId, principalId, workDate })
-        : null;
+    const previousOpen = rules.blockNewCheckInIfPreviousOpen
+      ? await findPreviousOpenSession({ clinicId, principalId, workDate })
+      : null;
 
     if (previousOpen) {
       const out = buildCodeResponse(
@@ -1062,7 +1187,9 @@ async function checkIn(req, res) {
       policy: buildPublicPolicy(policy),
     });
   } catch (e) {
-    return res.status(500).json({ ok: false, message: "check-in failed", error: e.message });
+    return res
+      .status(500)
+      .json({ ok: false, message: "check-in failed", error: e.message });
   }
 }
 
@@ -1072,13 +1199,17 @@ async function checkIn(req, res) {
 // ======================================================
 async function checkOut(req, res) {
   try {
-    const { clinicId, userId, staffId, principalId, principalType } = getPrincipal(req);
+    const { clinicId, userId, staffId, principalId } = getPrincipal(req);
 
     if (!clinicId) {
-      return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
+      return res
+        .status(401)
+        .json({ ok: false, message: "Missing clinicId in token" });
     }
     if (!principalId) {
-      return res.status(401).json({ ok: false, message: "Missing userId/staffId in token" });
+      return res
+        .status(401)
+        .json({ ok: false, message: "Missing userId/staffId in token" });
     }
 
     const id = s(req.params?.id);
@@ -1088,7 +1219,9 @@ async function checkOut(req, res) {
 
     if (id) {
       session = await AttendanceSession.findById(id);
-      if (!session) return res.status(404).json({ ok: false, message: "Session not found" });
+      if (!session) {
+        return res.status(404).json({ ok: false, message: "Session not found" });
+      }
 
       if (bodyWorkDate && isYmd(bodyWorkDate) && s(session.workDate) !== bodyWorkDate) {
         return res.status(409).json({
@@ -1119,11 +1252,15 @@ async function checkOut(req, res) {
     }
 
     if (s(session.clinicId) !== clinicId) {
-      return res.status(403).json({ ok: false, message: "Forbidden (cross-clinic session)" });
+      return res
+        .status(403)
+        .json({ ok: false, message: "Forbidden (cross-clinic session)" });
     }
 
     if (s(session.principalId) !== principalId) {
-      return res.status(403).json({ ok: false, message: "Forbidden (not your session)" });
+      return res
+        .status(403)
+        .json({ ok: false, message: "Forbidden (not your session)" });
     }
 
     if (session.status !== "open") {
@@ -1134,7 +1271,10 @@ async function checkOut(req, res) {
       });
     }
 
-    const policy = await getOrCreatePolicy(s(session.clinicId), userId || principalId);
+    const policy = await getOrCreatePolicy(
+      s(session.clinicId),
+      userId || principalId
+    );
     const rules = attendanceRuleDefaults(policy);
 
     const biometricVerified = !!req.body?.biometricVerified;
@@ -1144,7 +1284,11 @@ async function checkOut(req, res) {
       return res.status(400).json({ ok: false, message: methodErr });
     }
 
-    const manualReasonErr = requireManualReasonIfNeeded(policy, method, req.body?.note);
+    const manualReasonErr = requireManualReasonIfNeeded(
+      policy,
+      method,
+      req.body?.note
+    );
     if (manualReasonErr) {
       return res.status(400).json({ ok: false, message: manualReasonErr });
     }
@@ -1191,7 +1335,8 @@ async function checkOut(req, res) {
     if (
       method === "biometric" &&
       rules.forgotCheckoutManualOnly &&
-      checkOutAt.getTime() > getCutoffDateTime(s(session.workDate), rules.cutoffTime).getTime()
+      checkOutAt.getTime() >
+        getCutoffDateTime(s(session.workDate), rules.cutoffTime).getTime()
     ) {
       const out = buildCodeResponse(
         409,
@@ -1263,54 +1408,57 @@ async function checkOut(req, res) {
       policy: buildPublicPolicy(policy),
     });
   } catch (e) {
-    return res.status(500).json({ ok: false, message: "check-out failed", error: e.message });
+    return res
+      .status(500)
+      .json({ ok: false, message: "check-out failed", error: e.message });
   }
 }
 
 // ======================================================
 // POST /attendance/manual-request
-// body:
-// {
-//   workDate,
-//   manualRequestType: "check_in" | "check_out" | "edit_both" | "forgot_checkout",
-//   shiftId?,
-//   requestedCheckInAt?,
-//   requestedCheckOutAt?,
-//   reasonCode?,
-//   reasonText?,
-//   note?
-// }
 // ======================================================
 async function submitManualRequest(req, res) {
   try {
-    const { clinicId, userId, staffId, principalId, principalType } = getPrincipal(req);
+    const { clinicId, userId, staffId, principalId, principalType } =
+      getPrincipal(req);
 
     if (!clinicId) {
-      return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
+      return res
+        .status(401)
+        .json({ ok: false, message: "Missing clinicId in token" });
     }
     if (!principalId) {
-      return res.status(401).json({ ok: false, message: "Missing userId/staffId in token" });
+      return res
+        .status(401)
+        .json({ ok: false, message: "Missing userId/staffId in token" });
     }
 
     const workDate = s(req.body?.workDate);
-    const manualRequestType = normalizeManualRequestType(req.body?.manualRequestType);
+    const manualRequestType = normalizeManualRequestType(
+      req.body?.manualRequestType
+    );
     const shiftId = req.body?.shiftId || null;
 
     if (!isYmd(workDate)) {
-      return res.status(400).json({ ok: false, message: "workDate required (yyyy-MM-dd)" });
+      return res
+        .status(400)
+        .json({ ok: false, message: "workDate required (yyyy-MM-dd)" });
     }
 
     if (!manualRequestType) {
       return res.status(400).json({
         ok: false,
-        message: "manualRequestType required (check_in | check_out | edit_both | forgot_checkout)",
+        message:
+          "manualRequestType required (check_in | check_out | edit_both | forgot_checkout)",
       });
     }
 
     const policy = await getOrCreatePolicy(clinicId, userId || principalId);
     const features = withFeatureDefaults(policy?.features || {});
     if (!features.manualAttendance) {
-      return res.status(400).json({ ok: false, message: "Manual attendance is not enabled" });
+      return res
+        .status(400)
+        .json({ ok: false, message: "Manual attendance is not enabled" });
     }
 
     if (shouldRequireReason(policy, req)) {
@@ -1355,8 +1503,10 @@ async function submitManualRequest(req, res) {
       });
     }
 
-    const openSession = sameDaySessions.find((x) => s(x.status) === "open") || null;
-    const closedSession = sameDaySessions.find((x) => s(x.status) === "closed") || null;
+    const openSession =
+      sameDaySessions.find((x) => s(x.status) === "open") || null;
+    const closedSession =
+      sameDaySessions.find((x) => s(x.status) === "closed") || null;
     let targetSession = openSession || closedSession || null;
 
     // ------------------------------------------------------
@@ -1367,7 +1517,8 @@ async function submitManualRequest(req, res) {
         return res.status(409).json({
           ok: false,
           code: "SESSION_ALREADY_EXISTS",
-          message: "A session already exists for this date. Use edit_both instead.",
+          message:
+            "A session already exists for this date. Use edit_both instead.",
         });
       }
 
@@ -1402,7 +1553,9 @@ async function submitManualRequest(req, res) {
         userId || principalId
       );
 
-      created.approvalStatus = policy.manualAttendanceRequireApproval ? "pending" : "approved";
+      created.approvalStatus = policy.manualAttendanceRequireApproval
+        ? "pending"
+        : "approved";
 
       if (created.approvalStatus === "approved") {
         created.status = requestedCheckOutAt ? "closed" : "open";
@@ -1416,7 +1569,11 @@ async function submitManualRequest(req, res) {
 
       let otMeta = null;
       if (s(created.status) === "closed") {
-        otMeta = await syncOvertimeForSession({ session: created, policy, shift });
+        otMeta = await syncOvertimeForSession({
+          session: created,
+          policy,
+          shift,
+        });
         await created.save();
       }
 
@@ -1431,21 +1588,22 @@ async function submitManualRequest(req, res) {
 
     // ------------------------------------------------------
     // check_out
-    // - ต้องมี open session ชัดเจน
     // ------------------------------------------------------
     if (manualRequestType === "check_out") {
       if (!openSession) {
         return res.status(409).json({
           ok: false,
           code: "OPEN_SESSION_REQUIRED",
-          message: "Manual checkout request requires an open session for this date",
+          message:
+            "Manual checkout request requires an open session for this date",
         });
       }
 
       if (!requestedCheckOutAt) {
         return res.status(400).json({
           ok: false,
-          message: "requestedCheckOutAt is required for manual checkout request",
+          message:
+            "requestedCheckOutAt is required for manual checkout request",
         });
       }
 
@@ -1454,16 +1612,13 @@ async function submitManualRequest(req, res) {
 
     // ------------------------------------------------------
     // forgot_checkout
-    // - แยกจาก check_out
-    // - อนุญาตถ้ามี session ของวันนั้นให้ยึดอ้างอิง
-    // - ถ้ามี open session ให้ใช้ open session ก่อน
-    // - ถ้ามี closed session อยู่แล้ว ให้ถือว่าวันนั้นปิดงานแล้ว ไม่ควรส่ง forgot_checkout
     // ------------------------------------------------------
     if (manualRequestType === "forgot_checkout") {
       if (!requestedCheckOutAt) {
         return res.status(400).json({
           ok: false,
-          message: "requestedCheckOutAt is required for forgot checkout request",
+          message:
+            "requestedCheckOutAt is required for forgot checkout request",
         });
       }
 
@@ -1473,7 +1628,8 @@ async function submitManualRequest(req, res) {
         return res.status(409).json({
           ok: false,
           code: "ATTENDANCE_ALREADY_COMPLETED",
-          message: "Attendance already completed for this date. Use edit_both instead if correction is needed.",
+          message:
+            "Attendance already completed for this date. Use edit_both instead if correction is needed.",
         });
       } else if (targetSession && targetSession.checkInAt && !targetSession.checkOutAt) {
         targetSession = targetSession;
@@ -1481,7 +1637,8 @@ async function submitManualRequest(req, res) {
         return res.status(409).json({
           ok: false,
           code: "CHECKIN_SESSION_REQUIRED",
-          message: "Forgot checkout request requires an existing check-in session for this date",
+          message:
+            "Forgot checkout request requires an existing check-in session for this date",
         });
       }
     }
@@ -1493,7 +1650,8 @@ async function submitManualRequest(req, res) {
       if (!targetSession && !requestedCheckInAt) {
         return res.status(400).json({
           ok: false,
-          message: "requestedCheckInAt is required when no session exists for edit_both",
+          message:
+            "requestedCheckInAt is required when no session exists for edit_both",
         });
       }
 
@@ -1528,7 +1686,9 @@ async function submitManualRequest(req, res) {
     if (!s(targetSession.checkInMethod)) targetSession.checkInMethod = "manual";
     if (!s(targetSession.checkOutMethod)) targetSession.checkOutMethod = "manual";
 
-    targetSession.approvalStatus = policy.manualAttendanceRequireApproval ? "pending" : "approved";
+    targetSession.approvalStatus = policy.manualAttendanceRequireApproval
+      ? "pending"
+      : "approved";
 
     if (targetSession.approvalStatus === "approved") {
       if (requestedCheckInAt) targetSession.checkInAt = requestedCheckInAt;
@@ -1543,7 +1703,11 @@ async function submitManualRequest(req, res) {
 
     let otMeta = null;
     if (s(targetSession.status) === "closed") {
-      otMeta = await syncOvertimeForSession({ session: targetSession, policy, shift });
+      otMeta = await syncOvertimeForSession({
+        session: targetSession,
+        policy,
+        shift,
+      });
       await targetSession.save();
     }
 
@@ -1571,15 +1735,21 @@ async function submitManualRequest(req, res) {
 }
 
 // ======================================================
-// GET /attendance/manual-request/my?workDate=yyyy-MM-dd&approvalStatus=pending
+// GET /attendance/manual-request/my?workDate=yyyy-MM-dd&approvalStatus=pending|approved|rejected|history
 // ======================================================
 async function listMyManualRequests(req, res) {
   try {
     const { clinicId, principalId, userId } = getPrincipal(req);
 
-    if (!clinicId) return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
+    if (!clinicId) {
+      return res
+        .status(401)
+        .json({ ok: false, message: "Missing clinicId in token" });
+    }
     if (!principalId) {
-      return res.status(401).json({ ok: false, message: "Missing userId/staffId in token" });
+      return res
+        .status(401)
+        .json({ ok: false, message: "Missing userId/staffId in token" });
     }
 
     const workDate = s(req.query?.workDate);
@@ -1597,10 +1767,18 @@ async function listMyManualRequests(req, res) {
       .lean();
 
     const policy = await getOrCreatePolicy(clinicId, userId || principalId);
+    const normalizedFilter = normalizeApprovalFilter(approvalStatus);
 
     return res.json({
       ok: true,
       items,
+      filter: {
+        view:
+          normalizedFilter === "history"
+            ? "history"
+            : normalizedFilter || "all",
+        approvalStatus: normalizedFilter || "",
+      },
       policy: buildPublicPolicy(policy),
     });
   } catch (e) {
@@ -1613,7 +1791,9 @@ async function listMyManualRequests(req, res) {
 }
 
 // ======================================================
-// GET /attendance/manual-request/clinic?workDate=yyyy-MM-dd&approvalStatus=pending&staffId=...
+// GET /attendance/manual-request/clinic?workDate=yyyy-MM-dd&approvalStatus=pending|approved|rejected|history&staffId=...
+// queue   = approvalStatus=pending
+// history = approvalStatus=history
 // ======================================================
 async function listClinicManualRequests(req, res) {
   try {
@@ -1621,13 +1801,19 @@ async function listClinicManualRequests(req, res) {
     const role = s(req.user?.role);
     const actorUserId = s(req.user?.userId);
 
-    if (!clinicId) return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
+    if (!clinicId) {
+      return res
+        .status(401)
+        .json({ ok: false, message: "Missing clinicId in token" });
+    }
     if (role !== "admin" && role !== "clinic_admin") {
-      return res.status(403).json({ ok: false, message: "Forbidden (admin only)" });
+      return res
+        .status(403)
+        .json({ ok: false, message: "Forbidden (admin only)" });
     }
 
     const workDate = s(req.query?.workDate);
-    const approvalStatus = s(req.query?.approvalStatus) || "pending";
+    const approvalStatus = s(req.query?.approvalStatus);
     const staffIdOrPrincipal = s(req.query?.staffId);
 
     const q = buildManualRequestQueryForClinic({
@@ -1642,10 +1828,15 @@ async function listClinicManualRequests(req, res) {
       .lean();
 
     const policy = await getOrCreatePolicy(clinicId, actorUserId);
+    const normalizedFilter = normalizeApprovalFilter(approvalStatus) || "pending";
 
     return res.json({
       ok: true,
       items,
+      filter: {
+        view: normalizedFilter === "pending" ? "queue" : "history",
+        approvalStatus: normalizedFilter,
+      },
       policy: buildPublicPolicy(policy),
     });
   } catch (e) {
@@ -1668,16 +1859,32 @@ async function approveManualRequest(req, res) {
     const actorUserId = s(req.user?.userId);
     const id = s(req.params?.id);
 
-    if (!clinicId) return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
-    if (role !== "admin" && role !== "clinic_admin") {
-      return res.status(403).json({ ok: false, message: "Forbidden (admin only)" });
+    if (!clinicId) {
+      return res
+        .status(401)
+        .json({ ok: false, message: "Missing clinicId in token" });
     }
-    if (!id) return res.status(400).json({ ok: false, message: "Request id is required" });
+    if (role !== "admin" && role !== "clinic_admin") {
+      return res
+        .status(403)
+        .json({ ok: false, message: "Forbidden (admin only)" });
+    }
+    if (!id) {
+      return res
+        .status(400)
+        .json({ ok: false, message: "Request id is required" });
+    }
 
     const session = await AttendanceSession.findById(id);
-    if (!session) return res.status(404).json({ ok: false, message: "Manual request not found" });
+    if (!session) {
+      return res
+        .status(404)
+        .json({ ok: false, message: "Manual request not found" });
+    }
     if (s(session.clinicId) !== clinicId) {
-      return res.status(403).json({ ok: false, message: "Forbidden (cross-clinic request)" });
+      return res
+        .status(403)
+        .json({ ok: false, message: "Forbidden (cross-clinic request)" });
     }
     if (!isStatusPendingManual(session)) {
       return res.status(409).json({
@@ -1708,16 +1915,23 @@ async function approveManualRequest(req, res) {
     const requestReasonTextBeforeClear = s(session.requestReasonText);
 
     const finalCheckInAt = session.requestedCheckInAt || session.checkInAt || null;
-    const finalCheckOutAt = session.requestedCheckOutAt || session.checkOutAt || null;
+    const finalCheckOutAt =
+      session.requestedCheckOutAt || session.checkOutAt || null;
 
-    if ((requestedType === "check_in" || requestedType === "edit_both") && !finalCheckInAt) {
+    if (
+      (requestedType === "check_in" || requestedType === "edit_both") &&
+      !finalCheckInAt
+    ) {
       return res.status(400).json({
         ok: false,
         message: "Requested check-in time is missing",
       });
     }
 
-    if ((requestedType === "check_out" || requestedType === "forgot_checkout") && !finalCheckOutAt) {
+    if (
+      (requestedType === "check_out" || requestedType === "forgot_checkout") &&
+      !finalCheckOutAt
+    ) {
       return res.status(400).json({
         ok: false,
         message: "Requested check-out time is missing",
@@ -1785,19 +1999,37 @@ async function rejectManualRequest(req, res) {
     const actorUserId = s(req.user?.userId);
     const id = s(req.params?.id);
 
-    if (!clinicId) return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
-    if (role !== "admin" && role !== "clinic_admin") {
-      return res.status(403).json({ ok: false, message: "Forbidden (admin only)" });
+    if (!clinicId) {
+      return res
+        .status(401)
+        .json({ ok: false, message: "Missing clinicId in token" });
     }
-    if (!id) return res.status(400).json({ ok: false, message: "Request id is required" });
+    if (role !== "admin" && role !== "clinic_admin") {
+      return res
+        .status(403)
+        .json({ ok: false, message: "Forbidden (admin only)" });
+    }
+    if (!id) {
+      return res
+        .status(400)
+        .json({ ok: false, message: "Request id is required" });
+    }
     if (!s(req.body?.rejectReason)) {
-      return res.status(400).json({ ok: false, message: "rejectReason is required" });
+      return res
+        .status(400)
+        .json({ ok: false, message: "rejectReason is required" });
     }
 
     const session = await AttendanceSession.findById(id);
-    if (!session) return res.status(404).json({ ok: false, message: "Manual request not found" });
+    if (!session) {
+      return res
+        .status(404)
+        .json({ ok: false, message: "Manual request not found" });
+    }
     if (s(session.clinicId) !== clinicId) {
-      return res.status(403).json({ ok: false, message: "Forbidden (cross-clinic request)" });
+      return res
+        .status(403)
+        .json({ ok: false, message: "Forbidden (cross-clinic request)" });
     }
     if (!isStatusPendingManual(session)) {
       return res.status(409).json({
@@ -1848,18 +2080,28 @@ async function listMySessions(req, res) {
   try {
     const { clinicId, principalId, userId } = getPrincipal(req);
 
-    if (!clinicId) return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
+    if (!clinicId) {
+      return res
+        .status(401)
+        .json({ ok: false, message: "Missing clinicId in token" });
+    }
     if (!principalId) {
-      return res.status(401).json({ ok: false, message: "Missing userId/staffId in token" });
+      return res
+        .status(401)
+        .json({ ok: false, message: "Missing userId/staffId in token" });
     }
 
     const dateFrom = s(req.query?.dateFrom);
     const dateTo = s(req.query?.dateTo);
 
     const q = { clinicId, principalId };
-    if (isYmd(dateFrom) && isYmd(dateTo)) q.workDate = { $gte: dateFrom, $lte: dateTo };
+    if (isYmd(dateFrom) && isYmd(dateTo)) {
+      q.workDate = { $gte: dateFrom, $lte: dateTo };
+    }
 
-    const items = await AttendanceSession.find(q).sort({ checkInAt: -1 }).lean();
+    const items = await AttendanceSession.find(q)
+      .sort({ checkInAt: -1 })
+      .lean();
     const policy = await getOrCreatePolicy(clinicId, userId || principalId);
 
     return res.json({
@@ -1868,7 +2110,9 @@ async function listMySessions(req, res) {
       policy: buildPublicPolicy(policy),
     });
   } catch (e) {
-    return res.status(500).json({ ok: false, message: "list failed", error: e.message });
+    return res
+      .status(500)
+      .json({ ok: false, message: "list failed", error: e.message });
   }
 }
 
@@ -1880,10 +2124,16 @@ async function listClinicSessions(req, res) {
     const clinicId = s(req.user?.clinicId);
     const role = s(req.user?.role);
 
-    if (!clinicId) return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
+    if (!clinicId) {
+      return res
+        .status(401)
+        .json({ ok: false, message: "Missing clinicId in token" });
+    }
 
     if (role !== "admin" && role !== "clinic_admin") {
-      return res.status(403).json({ ok: false, message: "Forbidden (admin only)" });
+      return res
+        .status(403)
+        .json({ ok: false, message: "Forbidden (admin only)" });
     }
 
     const workDate = s(req.query?.workDate);
@@ -1893,10 +2143,15 @@ async function listClinicSessions(req, res) {
     if (isYmd(workDate)) q.workDate = workDate;
 
     if (staffIdOrPrincipal) {
-      q.$or = [{ staffId: staffIdOrPrincipal }, { principalId: staffIdOrPrincipal }];
+      q.$or = [
+        { staffId: staffIdOrPrincipal },
+        { principalId: staffIdOrPrincipal },
+      ];
     }
 
-    const items = await AttendanceSession.find(q).sort({ checkInAt: -1 }).lean();
+    const items = await AttendanceSession.find(q)
+      .sort({ checkInAt: -1 })
+      .lean();
     const policy = await getOrCreatePolicy(clinicId, s(req.user?.userId));
 
     return res.json({
@@ -1905,7 +2160,11 @@ async function listClinicSessions(req, res) {
       policy: buildPublicPolicy(policy),
     });
   } catch (e) {
-    return res.status(500).json({ ok: false, message: "list clinic failed", error: e.message });
+    return res.status(500).json({
+      ok: false,
+      message: "list clinic failed",
+      error: e.message,
+    });
   }
 }
 
@@ -1917,15 +2176,21 @@ async function myDayPreview(req, res) {
     const { clinicId, principalId, userId } = getPrincipal(req);
 
     if (!clinicId) {
-      return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
+      return res
+        .status(401)
+        .json({ ok: false, message: "Missing clinicId in token" });
     }
     if (!principalId) {
-      return res.status(401).json({ ok: false, message: "Missing userId/staffId in token" });
+      return res
+        .status(401)
+        .json({ ok: false, message: "Missing userId/staffId in token" });
     }
 
     const workDate = s(req.query?.workDate);
     if (!isYmd(workDate)) {
-      return res.status(400).json({ ok: false, message: "workDate required (yyyy-MM-dd)" });
+      return res
+        .status(400)
+        .json({ ok: false, message: "workDate required (yyyy-MM-dd)" });
     }
 
     const policy = await getOrCreatePolicy(clinicId, userId || principalId);
@@ -1942,13 +2207,15 @@ async function myDayPreview(req, res) {
       sessions.find((x) => s(x.status).toLowerCase() === "open") || null;
 
     const pendingManualSession =
-      sessions.find((x) => s(x.status).toLowerCase() === "pending_manual") || null;
+      sessions.find((x) => s(x.status).toLowerCase() === "pending_manual") ||
+      null;
 
     const closedSessions = sessions.filter(
       (x) => s(x.status).toLowerCase() === "closed"
     );
 
-    const checkedIn = !!openSession || closedSessions.length > 0 || !!pendingManualSession;
+    const checkedIn =
+      !!openSession || closedSessions.length > 0 || !!pendingManualSession;
     const checkedOut = !openSession && closedSessions.length > 0;
 
     const workedMinutes = closedSessions.reduce(
@@ -2052,7 +2319,9 @@ async function myDayPreview(req, res) {
       approvedOtRecords: approvedOt,
     });
   } catch (e) {
-    return res.status(500).json({ ok: false, message: "preview failed", error: e.message });
+    return res
+      .status(500)
+      .json({ ok: false, message: "preview failed", error: e.message });
   }
 }
 
