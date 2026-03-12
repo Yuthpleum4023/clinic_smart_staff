@@ -118,6 +118,43 @@ async function loadClinicMapByIds(ids = []) {
   return m;
 }
 
+function normalizeShiftOutput(row, clinicMap = new Map()) {
+  const out = {
+    ...row,
+    staffId: s(row.staffId),
+    helperUserId: s(row.helperUserId),
+    clinicId: s(row.clinicId),
+    date: s(row.date),
+    start: s(row.start),
+    end: s(row.end),
+    note: s(row.note),
+    clinicLat: row.clinicLat ?? null,
+    clinicLng: row.clinicLng ?? null,
+    clinicName: s(row.clinicName),
+    clinicPhone: s(row.clinicPhone),
+    clinicAddress: s(row.clinicAddress),
+  };
+
+  const hasLatLng = isValidLatLng(
+    numOrNull(out.clinicLat),
+    numOrNull(out.clinicLng)
+  );
+
+  if (!hasLatLng) {
+    const picked = clinicMap.get(s(out.clinicId));
+    if (picked) {
+      out.clinicLat = picked.clinicLat;
+      out.clinicLng = picked.clinicLng;
+
+      if (!s(out.clinicPhone)) out.clinicPhone = picked.clinicPhone;
+      if (!s(out.clinicName)) out.clinicName = picked.clinicName;
+      if (!s(out.clinicAddress)) out.clinicAddress = picked.clinicAddress;
+    }
+  }
+
+  return out;
+}
+
 // -------------------- Controllers --------------------
 
 // POST /shifts (admin)
@@ -128,7 +165,7 @@ async function createShift(req, res) {
     const {
       clinicId,
       staffId,
-      helperUserId, // ✅ NEW (optional)
+      helperUserId,
       date,
       start,
       end,
@@ -139,16 +176,23 @@ async function createShift(req, res) {
       clinicPhone,
       clinicName,
       clinicAddress,
+      status,
     } = req.body || {};
-
-    if (!clinicId || !staffId || !date || !start || !end) {
-      return res.status(400).json({
-        message: "clinicId, staffId, date, start, end required",
-      });
-    }
 
     const cid = s(clinicId);
     const sid = s(staffId);
+    const hid = s(helperUserId);
+    const d = s(date);
+    const st = s(start);
+    const en = s(end);
+
+    // ✅ รองรับทั้ง employee และ helper
+    if (!cid || (!sid && !hid) || !d || !st || !en) {
+      return res.status(400).json({
+        message:
+          "clinicId + (staffId or helperUserId) + date + start + end required",
+      });
+    }
 
     const lat = numOrNull(clinicLat);
     const lng = numOrNull(clinicLng);
@@ -156,13 +200,11 @@ async function createShift(req, res) {
     const created = await Shift.create({
       clinicId: cid,
       staffId: sid,
-
-      // ✅ NEW: บันทึก helperUserId ถ้ามี (ไม่บังคับ)
-      helperUserId: s(helperUserId),
-
-      date,
-      start,
-      end,
+      helperUserId: hid,
+      date: d,
+      start: st,
+      end: en,
+      status: s(status) || "scheduled",
       hourlyRate: Number(hourlyRate || 0),
       note: String(note || ""),
 
@@ -174,7 +216,15 @@ async function createShift(req, res) {
       clinicAddress: s(clinicAddress),
     });
 
-    return res.json({ ok: true, shift: created });
+    let clinicMap = new Map();
+    if (Clinic && cid) {
+      clinicMap = await loadClinicMapByIds([cid]);
+    }
+
+    return res.json({
+      ok: true,
+      shift: normalizeShiftOutput(created.toObject(), clinicMap),
+    });
   } catch (e) {
     return res.status(500).json({
       message: "createShift failed",
@@ -187,41 +237,63 @@ async function createShift(req, res) {
 async function listShifts(req, res) {
   try {
     const role = s(req.user?.role);
+    const tokenClinicId = s(req.user?.clinicId);
     const tokenStaffId = s(req.user?.staffId);
     const tokenUserId = s(req.user?.userId);
 
-    const { clinicId = "", staffId = "" } = req.query || {};
+    const {
+      clinicId = "",
+      staffId = "",
+      helperUserId = "",
+      date = "",
+      status = "",
+    } = req.query || {};
+
     const q = {};
 
-    if (clinicId) q.clinicId = s(clinicId);
+    // clinic filter
+    if (role === "admin") {
+      if (clinicId) {
+        q.clinicId = s(clinicId);
+      } else if (tokenClinicId) {
+        // ✅ admin ในระบบนี้มักควรถูกผูกกับคลินิกตัวเอง
+        q.clinicId = tokenClinicId;
+      }
+    } else {
+      if (!tokenClinicId) {
+        return res.status(401).json({ message: "clinicId missing in token" });
+      }
+      q.clinicId = tokenClinicId;
+    }
+
+    if (date) q.date = s(date);
+    if (status) q.status = s(status);
 
     if (role === "admin") {
-      // admin: ดูได้ทั้งหมด หรือกรอง staffId ได้
+      // admin ดูได้ทั้งหมดในคลินิกตัวเอง และกรองเพิ่มได้
       if (staffId) q.staffId = s(staffId);
+      if (helperUserId) q.helperUserId = s(helperUserId);
     } else if (role === "employee") {
-      // employee: ต้องมี staffId เสมอ
+      // employee ต้องใช้ staffId จาก token
       if (!tokenStaffId) {
         return res.status(403).json({ message: "staffId missing in token" });
       }
       q.staffId = tokenStaffId;
     } else if (role === "helper") {
-      // ✅ DURABLE FIX:
-      // helper อาจไม่มี staffId -> ใช้ helperUserId แทน
-      if (tokenStaffId) {
-        q.staffId = tokenStaffId; // รองรับกรณีเก่า
-      } else {
-        if (!tokenUserId) {
-          // แทบไม่ควรเกิด แต่กันไว้
-          return res.json({ ok: true, items: [] });
-        }
+      // helper ใช้ helperUserId เป็นหลัก
+      if (tokenUserId) {
         q.helperUserId = tokenUserId;
+      } else if (tokenStaffId) {
+        // fallback legacy
+        q.staffId = tokenStaffId;
+      } else {
+        return res.json({ ok: true, items: [] });
       }
     } else {
-      // role อื่น ๆ: ปลอดภัยไว้ก่อน
       return res.status(403).json({ message: "Forbidden" });
     }
 
-    const rows = await Shift.find(q).lean();
+    const rows = await Shift.find(q).sort({ date: -1, createdAt: -1 }).lean();
 
     let clinicMap = new Map();
     if (Clinic && rows.length) {
@@ -229,34 +301,7 @@ async function listShifts(req, res) {
       clinicMap = await loadClinicMapByIds(clinicIds);
     }
 
-    const items = rows.map((r) => {
-      const out = {
-        ...r,
-        clinicLat: r.clinicLat ?? null,
-        clinicLng: r.clinicLng ?? null,
-        clinicName: s(r.clinicName) || "",
-        clinicPhone: s(r.clinicPhone) || "",
-        clinicAddress: s(r.clinicAddress) || "",
-      };
-
-      const hasLatLng = isValidLatLng(
-        numOrNull(out.clinicLat),
-        numOrNull(out.clinicLng)
-      );
-
-      if (!hasLatLng) {
-        const picked = clinicMap.get(s(out.clinicId));
-        if (picked) {
-          out.clinicLat = picked.clinicLat;
-          out.clinicLng = picked.clinicLng;
-          if (!s(out.clinicPhone)) out.clinicPhone = picked.clinicPhone;
-          if (!s(out.clinicName)) out.clinicName = picked.clinicName;
-          if (!s(out.clinicAddress)) out.clinicAddress = picked.clinicAddress;
-        }
-      }
-
-      return out;
-    });
+    const items = rows.map((r) => normalizeShiftOutput(r, clinicMap));
 
     return res.json({
       ok: true,
@@ -278,18 +323,29 @@ async function updateShiftStatus(req, res) {
     const id = s(req.params.id || "");
     if (!id) return res.status(400).json({ message: "id required" });
 
-    const { status, minutesLate = 0 } = req.body || {};
-
     const shift = await Shift.findById(id);
     if (!shift) {
       return res.status(404).json({ message: "Shift not found" });
     }
 
-    shift.status = s(status);
-    shift.minutesLate = Number(minutesLate || 0);
+    if (req.body?.status !== undefined) {
+      shift.status = s(req.body.status);
+    }
+    if (req.body?.minutesLate !== undefined) {
+      shift.minutesLate = Number(req.body.minutesLate || 0);
+    }
+
     await shift.save();
 
-    return res.json({ ok: true, shift });
+    let clinicMap = new Map();
+    if (Clinic && s(shift.clinicId)) {
+      clinicMap = await loadClinicMapByIds([s(shift.clinicId)]);
+    }
+
+    return res.json({
+      ok: true,
+      shift: normalizeShiftOutput(shift.toObject(), clinicMap),
+    });
   } catch (e) {
     return res.status(500).json({
       message: "updateShiftStatus failed",
