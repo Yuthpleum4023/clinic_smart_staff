@@ -32,3 +32,6 @@ Thumbs.db
 # local backups / secrets
 backup/
 android/app/upload-keystore.jks.bak
+
+# local backups
+*_back_up_*.dart

@@ -45,6 +45,13 @@ dependencies:
   share_plus: ^10.0.2
 
   # -------------------------------
+  # ✅ Fingerprint / FaceID (Biometric)
+  # -------------------------------
+  local_auth: ^2.2.0
+  local_auth_android: ^1.0.46
+  local_auth_ios: ^1.1.7
+
+  # -------------------------------
   # PDF & Printing
   # -------------------------------
   pdf: ^3.10.7
@@ -64,6 +71,16 @@ flutter:
   assets:
     - assets/logo.png
     - assets/icons/app_icon_1024.png
+    - assets/fonts/
+
+  # ✅ Thai font for app widgets (Text) + can be used by name: "NotoSansThai"
+  fonts:
+    - family: NotoSansThai
+      fonts:
+        - asset: assets/fonts/NotoSansThai_Condensed-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/NotoSansThai_Condensed-Bold.ttf
+          weight: 700
 
 flutter_launcher_icons:
   android: true

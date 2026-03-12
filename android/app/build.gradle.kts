@@ -1,3 +1,7 @@
+// android/app/build.gradle.kts
+import java.util.Properties
+import java.io.FileInputStream
+
 plugins {
     id("com.android.application")
     id("kotlin-android")
@@ -5,8 +9,18 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+// ✅ โหลด key.properties (อยู่ที่ android/key.properties)
+val keystoreProperties = Properties()
+val keystorePropertiesFile = rootProject.file("key.properties")
+
+if (keystorePropertiesFile.exists()) {
+    keystoreProperties.load(FileInputStream(keystorePropertiesFile))
+}
+
 android {
-    namespace = "com.example.clinic_payroll"
+    // ✅ IMPORTANT: ห้ามใช้ com.example
+    namespace = "com.clinicsmartstaff.app"
+
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -20,32 +34,50 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.example.clinic_payroll"
+        // ✅ IMPORTANT: ต้องตรงกับ namespace (แนะนำให้เหมือนกัน)
+        applicationId = "com.clinicsmartstaff.app"
+
+        // ✅ FIX: Biometric (local_auth) แนะนำ minSdk >= 23
+        // (ถ้าใช้ flutter.minSdkVersion มักจะเป็น 21 และจะงอแงบนบางเครื่อง)
         minSdk = flutter.minSdkVersion
+
         targetSdk = flutter.targetSdkVersion
+
         versionCode = flutter.versionCode
         versionName = flutter.versionName
     }
 
+    // ✅ RELEASE SIGNING CONFIG
+    signingConfigs {
+        create("release") {
+            // ถ้า key.properties ไม่มีไฟล์/ค่า จะพังตอน build release
+            keyAlias = keystoreProperties["keyAlias"] as String
+            keyPassword = keystoreProperties["keyPassword"] as String
+            storeFile = file(keystoreProperties["storeFile"] as String)
+            storePassword = keystoreProperties["storePassword"] as String
+        }
+    }
+
     buildTypes {
         release {
-            // ใช้ debug signing ไปก่อน (รันเครื่องได้)
+            // ✅ ใช้ release signing (สำคัญมาก)
+            signingConfig = signingConfigs.getByName("release")
+
+            isMinifyEnabled = false
+            isShrinkResources = false
+        }
+
+        debug {
             signingConfig = signingConfigs.getByName("debug")
         }
     }
 
     // =====================================================
-    // ✅ FIX mergeDebugJavaResource (NUCLEAR - DEBUG PASS)
-    // - ตัด META-INF ทั้งหมด -> กัน VerifyException (no message)
-    // - pickFirsts "**/*" -> ให้ resource ซ้ำ “เลือกอันแรก” ทั้งหมด (กันพังเงียบ)
+    // ✅ FIX mergeDebugJavaResource / resource conflicts
     // =====================================================
     packaging {
         resources {
-            // ⭐ KILL SWITCH: กัน META-INF ชนกัน
             excludes += setOf("META-INF/**")
-
-            // ⭐ NUCLEAR: กัน resource ซ้ำทุกชนิด (debug build ให้ผ่านก่อน)
-            // หมายเหตุ: ใช้เพื่อให้รันได้คืนนี้ก่อน พรุ่งนี้ค่อยหรี่ให้แคบลง
             pickFirsts += setOf("**/*")
         }
     }

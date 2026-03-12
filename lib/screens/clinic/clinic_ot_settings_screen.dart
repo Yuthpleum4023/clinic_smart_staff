@@ -19,6 +19,7 @@ class ClinicOtSettingsScreen extends StatefulWidget {
 
 class _ClinicOtSettingsScreenState extends State<ClinicOtSettingsScreen> {
   bool _loading = true;
+  bool _saving = false;
   String _error = '';
 
   // ===== POLICY FIELDS =====
@@ -27,6 +28,9 @@ class _ClinicOtSettingsScreenState extends State<ClinicOtSettingsScreen> {
 
   double _otMultiplier = 1.5;
   double _holidayMultiplier = 2.0;
+
+  double _regularHoursPerDay = 8.0;
+  int _graceLateMinutes = 10;
 
   bool _employeeOnlyOt = true;
   bool _requireOtApproval = true;
@@ -77,8 +81,10 @@ class _ClinicOtSettingsScreenState extends State<ClinicOtSettingsScreen> {
     if (s.isEmpty) return null;
     final parts = s.split(':');
     if (parts.length < 2) return null;
+
     final h = int.tryParse(parts[0]) ?? 0;
     final m = int.tryParse(parts[1]) ?? 0;
+
     return TimeOfDay(
       hour: h.clamp(0, 23),
       minute: m.clamp(0, 59),
@@ -92,15 +98,80 @@ class _ClinicOtSettingsScreenState extends State<ClinicOtSettingsScreen> {
     return x;
   }
 
+  int _parseInt(dynamic v, int fallback) {
+    if (v is int) return v;
+    if (v is num) return v.toInt();
+    final x = int.tryParse('${v ?? ''}');
+    if (x == null) return fallback;
+    return x;
+  }
+
   List<String> _parseRoleList(dynamic value, List<String> fallback) {
     if (value is List) {
-      final list = value.map((e) => e.toString().trim()).where((e) => e.isNotEmpty).toList();
+      final list = value
+          .map((e) => e.toString().trim())
+          .where((e) => e.isNotEmpty)
+          .toList();
       return list.isEmpty ? fallback : list;
     }
+
     if (value is String && value.trim().isNotEmpty) {
       return [value.trim()];
     }
+
     return fallback;
+  }
+
+  List<String> _normalizeRolesForSave(List<String> roles) {
+    final normalized = roles
+        .map((e) => e.trim().toLowerCase())
+        .where((e) => e.isNotEmpty)
+        .map((e) {
+          if (e == 'admin') return 'clinic_admin';
+          if (e == 'clinicadmin') return 'clinic_admin';
+          return e;
+        })
+        .toSet()
+        .toList();
+
+    if (normalized.isEmpty) return ['clinic_admin'];
+    return normalized;
+  }
+
+  String _friendlyBackendMessage(http.Response res) {
+    try {
+      final decoded = jsonDecode(res.body);
+
+      if (decoded is Map) {
+        final msg = (decoded['message'] ?? '').toString().trim();
+        if (msg.isNotEmpty) {
+          switch (msg) {
+            case 'Invalid otRule':
+              return 'รูปแบบกติกา OT ไม่ถูกต้อง';
+            case 'Invalid otRounding':
+              return 'รูปแบบการปัดเวลา OT ไม่ถูกต้อง';
+            case 'otWindowStart must be HH:mm':
+              return 'เวลาเริ่ม OT ต้องเป็นรูปแบบ HH:mm';
+            case 'otWindowEnd must be HH:mm':
+              return 'เวลาสิ้นสุด OT ต้องเป็นรูปแบบ HH:mm';
+            case 'attendanceApprovalRoles must contain at least 1 role':
+              return 'กรุณากำหนดผู้มีสิทธิ์อนุมัติ Attendance';
+            case 'otApprovalRoles must contain at least 1 role':
+              return 'กรุณากำหนดผู้มีสิทธิ์อนุมัติ OT';
+            case 'regularHoursPerDay must be 1..24':
+              return 'ชั่วโมงทำงานปกติต่อวันต้องอยู่ระหว่าง 1-24 ชั่วโมง';
+            case 'graceLateMinutes must be 0..180':
+              return 'จำนวนนาทีสายได้ต้องอยู่ระหว่าง 0-180 นาที';
+          }
+          return msg;
+        }
+      }
+    } catch (_) {}
+
+    if (res.statusCode == 400) return 'ข้อมูลไม่ถูกต้อง กรุณาตรวจสอบค่า OT';
+    if (res.statusCode == 401) return 'เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่';
+    if (res.statusCode == 403) return 'ไม่มีสิทธิ์บันทึกนโยบายนี้';
+    return 'บันทึกไม่สำเร็จ';
   }
 
   @override
@@ -158,6 +229,11 @@ class _ClinicOtSettingsScreenState extends State<ClinicOtSettingsScreen> {
       _otMultiplier = _parseDouble(policy['otMultiplier'], 1.5);
       _holidayMultiplier = _parseDouble(policy['holidayMultiplier'], 2.0);
 
+      _regularHoursPerDay =
+          _parseDouble(policy['regularHoursPerDay'], 8.0);
+      _graceLateMinutes =
+          _parseInt(policy['graceLateMinutes'], 10).clamp(0, 180);
+
       _employeeOnlyOt = policy['employeeOnlyOt'] != false;
       _requireOtApproval = policy['requireOtApproval'] == true;
       _realTimeAttendanceOnly = policy['realTimeAttendanceOnly'] == true;
@@ -197,6 +273,8 @@ class _ClinicOtSettingsScreenState extends State<ClinicOtSettingsScreen> {
   }
 
   Future<void> _savePolicy() async {
+    if (_saving) return;
+
     try {
       final token = await _getToken();
       if (token == null || token.trim().isEmpty) {
@@ -214,20 +292,41 @@ class _ClinicOtSettingsScreenState extends State<ClinicOtSettingsScreen> {
         return;
       }
 
-      final body = jsonEncode({
-        'otWindowStart': _fmt(_otWindowStart),
-        'otWindowEnd': _fmt(_otWindowEnd),
+      if (_regularHoursPerDay <= 0 || _regularHoursPerDay > 24) {
+        _snack('ชั่วโมงทำงานปกติต่อวันต้องอยู่ระหว่าง 1-24 ชั่วโมง');
+        return;
+      }
+
+      if (_graceLateMinutes < 0 || _graceLateMinutes > 180) {
+        _snack('จำนวนนาทีสายได้ต้องอยู่ระหว่าง 0-180 นาที');
+        return;
+      }
+
+      final startText = _fmt(_otWindowStart);
+      final endText = _fmt(_otWindowEnd);
+
+      if (startText == null || endText == null) {
+        _snack('กรุณาตั้งเวลา OT ให้ครบ');
+        return;
+      }
+
+      final payload = <String, dynamic>{
+        'otWindowStart': startText,
+        'otWindowEnd': endText,
         'otMultiplier': _otMultiplier,
         'holidayMultiplier': _holidayMultiplier,
+        'regularHoursPerDay': _regularHoursPerDay,
+        'graceLateMinutes': _graceLateMinutes,
         'employeeOnlyOt': _employeeOnlyOt,
         'requireOtApproval': _requireOtApproval,
         'realTimeAttendanceOnly': _realTimeAttendanceOnly,
         'manualAttendanceRequireApproval': _manualAttendanceRequireApproval,
         'manualReasonRequired': _manualReasonRequired,
         'lockAfterPayrollClose': _lockAfterPayrollClose,
-        'attendanceApprovalRoles': _attendanceApprovalRoles,
-        'otApprovalRoles': _otApprovalRoles,
-        'features': {
+        'attendanceApprovalRoles':
+            _normalizeRolesForSave(_attendanceApprovalRoles),
+        'otApprovalRoles': _normalizeRolesForSave(_otApprovalRoles),
+        'features': <String, dynamic>{
           'fingerprintAttendance': _fingerprintAttendance,
           'manualAttendance': _manualAttendance,
           'autoOtCalculation': _autoOtCalculation,
@@ -236,19 +335,22 @@ class _ClinicOtSettingsScreenState extends State<ClinicOtSettingsScreen> {
           'payrollLock': _payrollLock,
           'policyHumanReadable': _policyHumanReadable,
         },
-      });
+      };
+
+      if (!mounted) return;
+      setState(() => _saving = true);
 
       http.Response res = await http.put(
         _uri('/clinic-policy/me'),
         headers: _headers(token),
-        body: body,
+        body: jsonEncode(payload),
       );
 
       if (res.statusCode == 404) {
         res = await http.put(
           _uri('/api/clinic-policy/me'),
           headers: _headers(token),
-          body: body,
+          body: jsonEncode(payload),
         );
       }
 
@@ -258,11 +360,14 @@ class _ClinicOtSettingsScreenState extends State<ClinicOtSettingsScreen> {
         _snack('บันทึกสำเร็จ');
         await _loadPolicy();
       } else {
-        throw Exception('save failed');
+        _snack(_friendlyBackendMessage(res));
       }
     } catch (_) {
       if (!mounted) return;
       _snack('บันทึกไม่สำเร็จ');
+    } finally {
+      if (!mounted) return;
+      setState(() => _saving = false);
     }
   }
 
@@ -369,6 +474,89 @@ class _ClinicOtSettingsScreenState extends State<ClinicOtSettingsScreen> {
     }
   }
 
+  Future<void> _editRegularHoursPerDay() async {
+    final controller =
+        TextEditingController(text: _regularHoursPerDay.toStringAsFixed(0));
+
+    final result = await showDialog<double>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('ตั้งค่าชั่วโมงทำงานปกติ/วัน'),
+        content: TextField(
+          controller: controller,
+          keyboardType:
+              const TextInputType.numberWithOptions(decimal: true, signed: false),
+          decoration: const InputDecoration(
+            hintText: 'เช่น 8',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, null),
+            child: const Text('ยกเลิก'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(
+              ctx,
+              double.tryParse(controller.text.trim()),
+            ),
+            child: const Text('ตกลง'),
+          ),
+        ],
+      ),
+    );
+
+    if (!mounted) return;
+
+    if (result != null && result > 0 && result <= 24) {
+      setState(() {
+        _regularHoursPerDay = result;
+      });
+    }
+  }
+
+  Future<void> _editGraceLateMinutes() async {
+    final controller = TextEditingController(text: _graceLateMinutes.toString());
+
+    final result = await showDialog<int>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('ตั้งค่านาทีสายได้'),
+        content: TextField(
+          controller: controller,
+          keyboardType:
+              const TextInputType.numberWithOptions(decimal: false, signed: false),
+          decoration: const InputDecoration(
+            hintText: 'เช่น 10',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, null),
+            child: const Text('ยกเลิก'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(
+              ctx,
+              int.tryParse(controller.text.trim()),
+            ),
+            child: const Text('ตกลง'),
+          ),
+        ],
+      ),
+    );
+
+    if (!mounted) return;
+
+    if (result != null && result >= 0 && result <= 180) {
+      setState(() {
+        _graceLateMinutes = result;
+      });
+    }
+  }
+
   Widget _sectionTitle(String text) {
     return Text(
       text,
@@ -397,6 +585,8 @@ class _ClinicOtSettingsScreenState extends State<ClinicOtSettingsScreen> {
               style: TextStyle(fontWeight: FontWeight.w900),
             ),
             const SizedBox(height: 8),
+            Text('• ชั่วโมงทำงานปกติ/วัน ${_regularHoursPerDay.toStringAsFixed(0)} ชั่วโมง'),
+            Text('• สายได้ ${_graceLateMinutes.toString()} นาที'),
             if (_employeeOnlyOt)
               const Text('• OT ใช้กับพนักงานประจำเท่านั้น'),
             Text('• OT ปกติคิดเฉพาะช่วง $startText - $endText'),
@@ -435,7 +625,7 @@ class _ClinicOtSettingsScreenState extends State<ClinicOtSettingsScreen> {
             Text('อนุมัติ OT: ${_rolesText(_otApprovalRoles)}'),
             const SizedBox(height: 8),
             Text(
-              'ตอนนี้หน้าแอปนี้แสดงผล role ที่ backend กำหนดไว้ก่อน หากภายหลังท่านต้องการให้แก้ role ได้จาก UI เดี๋ยวค่อยเพิ่มได้',
+              'ระบบจะบันทึก role ให้ตรงกับ backend policy ของคลินิก',
               style: TextStyle(
                 color: Colors.grey.shade700,
                 fontSize: 12,
@@ -451,7 +641,6 @@ class _ClinicOtSettingsScreenState extends State<ClinicOtSettingsScreen> {
   Widget build(BuildContext context) {
     if (_loading) {
       return const Scaffold(
-        appBar: null,
         body: Center(child: CircularProgressIndicator()),
       );
     }
@@ -484,8 +673,14 @@ class _ClinicOtSettingsScreenState extends State<ClinicOtSettingsScreen> {
         title: const Text('ตั้งค่า OT'),
         actions: [
           IconButton(
-            icon: const Icon(Icons.save),
-            onPressed: _savePolicy,
+            icon: _saving
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.save),
+            onPressed: _saving ? null : _savePolicy,
             tooltip: 'บันทึก',
           )
         ],
@@ -493,8 +688,20 @@ class _ClinicOtSettingsScreenState extends State<ClinicOtSettingsScreen> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          _sectionTitle('ช่วงเวลา OT'),
+          _sectionTitle('เวลางานและ OT'),
           const SizedBox(height: 10),
+          ListTile(
+            title: const Text('ชั่วโมงทำงานปกติ/วัน'),
+            subtitle: Text('${_regularHoursPerDay.toStringAsFixed(0)} ชั่วโมง'),
+            trailing: const Icon(Icons.edit),
+            onTap: _editRegularHoursPerDay,
+          ),
+          ListTile(
+            title: const Text('สายได้กี่นาที'),
+            subtitle: Text('${_graceLateMinutes.toString()} นาที'),
+            trailing: const Icon(Icons.edit),
+            onTap: _editGraceLateMinutes,
+          ),
           ListTile(
             title: const Text('เวลาเริ่มคิด OT'),
             subtitle: Text(_otWindowStart?.format(context) ?? 'ยังไม่ได้ตั้งค่า'),
@@ -508,7 +715,6 @@ class _ClinicOtSettingsScreenState extends State<ClinicOtSettingsScreen> {
             onTap: () => _pickTime(false),
           ),
           const Divider(height: 32),
-
           _sectionTitle('การคำนวณและการอนุมัติ'),
           const SizedBox(height: 8),
           ListTile(
@@ -536,7 +742,6 @@ class _ClinicOtSettingsScreenState extends State<ClinicOtSettingsScreen> {
             onChanged: (v) => setState(() => _requireOtApproval = v),
           ),
           const Divider(height: 32),
-
           _sectionTitle('กติกาการลงเวลา'),
           const SizedBox(height: 8),
           SwitchListTile(
@@ -549,7 +754,8 @@ class _ClinicOtSettingsScreenState extends State<ClinicOtSettingsScreen> {
             title: const Text('การแก้ไขเวลาต้องได้รับการอนุมัติ'),
             subtitle: const Text('หากลืมลงเวลา ต้องส่งคำขอและรอผู้ดูแลอนุมัติ'),
             value: _manualAttendanceRequireApproval,
-            onChanged: (v) => setState(() => _manualAttendanceRequireApproval = v),
+            onChanged: (v) =>
+                setState(() => _manualAttendanceRequireApproval = v),
           ),
           SwitchListTile(
             title: const Text('บังคับกรอกเหตุผลเมื่อแก้ไขเวลา'),
@@ -564,7 +770,6 @@ class _ClinicOtSettingsScreenState extends State<ClinicOtSettingsScreen> {
             onChanged: (v) => setState(() => _lockAfterPayrollClose = v),
           ),
           const Divider(height: 32),
-
           _sectionTitle('Feature Flags'),
           const SizedBox(height: 8),
           SwitchListTile(
@@ -603,16 +808,23 @@ class _ClinicOtSettingsScreenState extends State<ClinicOtSettingsScreen> {
             onChanged: (v) => setState(() => _policyHumanReadable = v),
           ),
           const SizedBox(height: 12),
-
           _roleInfoCard(),
           const SizedBox(height: 12),
-
           _policyHintCard(),
-          const SizedBox(height: 12),
-
-          Text(
-            'หมายเหตุ: หน้านี้อ่าน/บันทึกนโยบายผ่าน /clinic-policy/me โดยอ้างอิง clinicId จาก token',
-            style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+          const SizedBox(height: 20),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: _saving ? null : _savePolicy,
+              icon: _saving
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.save),
+              label: const Text('บันทึกการตั้งค่า'),
+            ),
           ),
           const SizedBox(height: 20),
         ],

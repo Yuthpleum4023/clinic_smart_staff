@@ -1,14 +1,3 @@
-// lib/screens/auth/reset_password_screen.dart
-//
-// ✅ FIXED FULL FILE (ADD HOME BUTTON) + STORE SAFE DEBUG
-// - เพิ่มปุ่ม "ขอรหัส OTP" -> เรียก POST /forgot-password
-// - กันกดซ้ำ + แสดงสถานะ + นับถอยหลัง resend (60s)
-// - ใช้ ApiConfig.authBaseUrl เดิมของคุณ
-// - Reset ใช้ POST /reset-password { emailOrPhone, code, newPassword }
-// - ✅ NEW: มีปุ่ม Home กลับหน้า HomeScreen ได้ทันที (ล้าง stack)
-// - ✅ STORE SAFE: ซ่อน "Auth: ..." ใน Release ด้วย DebugOnly
-// - ✅ STORE SAFE: ปรับข้อความ SnackBar ให้ user-friendly (ไม่พูดว่า "ดู log")
-
 import 'dart:async';
 import 'dart:convert';
 
@@ -18,8 +7,8 @@ import 'package:http/http.dart' as http;
 import 'package:clinic_smart_staff/api/api_config.dart';
 import 'package:clinic_smart_staff/screens/auth/login_screen.dart';
 
-// ✅ NEW: เพื่อกลับหน้า HomeScreen ได้ทันที
-import 'package:clinic_smart_staff/screens/home_screen.dart';
+// ✅ FIX: path ใหม่ของ HomeScreen
+import 'package:clinic_smart_staff/screens/home/home_screen.dart';
 
 // ✅ STORE SAFE: DebugOnly
 import 'package:clinic_smart_staff/widgets/debug_only.dart';
@@ -32,14 +21,13 @@ class ResetPasswordScreen extends StatefulWidget {
 }
 
 class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
-  final _idCtrl = TextEditingController(); // email หรือ phone
-  final _codeCtrl = TextEditingController(); // OTP 6 หลัก
-  final _pwCtrl = TextEditingController(); // new password
+  final _idCtrl = TextEditingController();
+  final _codeCtrl = TextEditingController();
+  final _pwCtrl = TextEditingController();
 
-  bool _loading = false; // ใช้กับปุ่ม reset
-  bool _otpLoading = false; // ใช้กับปุ่มขอ OTP
+  bool _loading = false;
+  bool _otpLoading = false;
 
-  // resend cooldown
   static const int _cooldownSeconds = 60;
   int _cooldownLeft = 0;
   Timer? _cooldownTimer;
@@ -60,7 +48,7 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
 
   Uri _u(String path) => Uri.parse('${ApiConfig.authBaseUrl}$path');
 
-  // ✅ NEW: กลับหน้า HomeScreen แบบชัวร์ (ล้าง stack)
+  // ✅ กลับหน้า HomeScreen แบบล้าง stack
   void _goHome() {
     Navigator.pushAndRemoveUntil(
       context,
@@ -70,11 +58,11 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
   }
 
   void _goLoginSafe() {
-    // ✅ กันจอแดง: ถ้า pop ได้ก็ pop, ถ้า pop ไม่ได้ให้ replace ไป Login
     if (Navigator.canPop(context)) {
       Navigator.pop(context, true);
       return;
     }
+
     Navigator.pushAndRemoveUntil(
       context,
       MaterialPageRoute(builder: (_) => const LoginScreen()),
@@ -84,9 +72,12 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
 
   void _startCooldown() {
     _cooldownTimer?.cancel();
+
     setState(() => _cooldownLeft = _cooldownSeconds);
+
     _cooldownTimer = Timer.periodic(const Duration(seconds: 1), (t) {
       if (!mounted) return;
+
       if (_cooldownLeft <= 1) {
         t.cancel();
         setState(() => _cooldownLeft = 0);
@@ -97,25 +88,29 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
   }
 
   // =========================
-  // ✅ ขอรหัส OTP
+  // ขอ OTP
   // =========================
+
   Future<void> _requestOtp() async {
     FocusScope.of(context).unfocus();
+
     if (_otpLoading) return;
 
     final id = _idCtrl.text.trim();
+
     if (id.isEmpty) {
       _snack('กรอก Email หรือ Phone ก่อน');
       return;
     }
+
     if (_cooldownLeft > 0) {
       _snack('รอสักครู่ ($_cooldownLeft วินาที) แล้วค่อยขอ OTP ใหม่');
       return;
     }
 
     setState(() => _otpLoading = true);
+
     try {
-      // POST /forgot-password { emailOrPhone }
       final res = await http.post(
         _u('/forgot-password'),
         headers: const {'Content-Type': 'application/json'},
@@ -123,14 +118,14 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
       );
 
       if (res.statusCode != 200) {
-        throw Exception('forgot failed: ${res.statusCode} ${res.body}');
+        throw Exception('forgot failed: ${res.statusCode}');
       }
 
-      // ✅ STORE SAFE: ไม่พูดว่า "ดู log"
-      _snack('ส่งรหัส OTP แล้ว ✅ กรุณาตรวจสอบ OTP แล้วกรอกด้านล่าง');
+      _snack('ส่งรหัส OTP แล้ว กรุณาตรวจสอบ OTP');
+
       _startCooldown();
     } catch (e) {
-      _snack('ขอ OTP ไม่สำเร็จ: $e');
+      _snack('ขอ OTP ไม่สำเร็จ');
     } finally {
       if (mounted) setState(() => _otpLoading = false);
     }
@@ -139,30 +134,29 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
   // =========================
   // Reset password
   // =========================
+
   Future<void> _submit() async {
     FocusScope.of(context).unfocus();
+
     if (_loading) return;
 
-    final id = _idCtrl.text.trim(); // email หรือ phone
+    final id = _idCtrl.text.trim();
     final code = _codeCtrl.text.trim();
     final pw = _pwCtrl.text.trim();
 
     if (id.isEmpty || code.isEmpty || pw.isEmpty) {
-      _snack('กรอก Email/Phone, รหัส OTP และรหัสใหม่ให้ครบ');
+      _snack('กรอก Email/Phone, OTP และรหัสใหม่ให้ครบ');
       return;
     }
-    if (code.length < 4) {
-      _snack('OTP ไม่ถูกต้อง');
-      return;
-    }
+
     if (pw.length < 4) {
       _snack('รหัสใหม่ต้องอย่างน้อย 4 ตัวอักษร');
       return;
     }
 
     setState(() => _loading = true);
+
     try {
-      // POST /reset-password { emailOrPhone, code, newPassword }
       final res = await http.post(
         _u('/reset-password'),
         headers: const {'Content-Type': 'application/json'},
@@ -174,13 +168,14 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
       );
 
       if (res.statusCode != 200) {
-        throw Exception('reset failed: ${res.statusCode} ${res.body}');
+        throw Exception('reset failed');
       }
 
-      _snack('ตั้งรหัสใหม่สำเร็จ ✅');
+      _snack('ตั้งรหัสใหม่สำเร็จ');
+
       _goLoginSafe();
     } catch (e) {
-      _snack('Reset ไม่สำเร็จ: $e');
+      _snack('Reset ไม่สำเร็จ');
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -196,9 +191,7 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('ตั้งรหัสผ่านใหม่'),
-        // ✅ NEW: ปุ่มกลับหน้า Home แบบชัวร์
         leading: IconButton(
-          tooltip: 'กลับหน้า Home',
           icon: const Icon(Icons.home),
           onPressed: _goHome,
         ),
@@ -207,30 +200,30 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
         padding: const EdgeInsets.all(16),
         child: ListView(
           children: [
-            // ✅ STORE SAFE: show only in debug
             DebugOnly(
               child: Text(
                 'Auth: $authUrl',
                 style: TextStyle(color: Colors.grey.shade700),
               ),
             ),
+
             const SizedBox(height: 12),
 
             TextField(
               controller: _idCtrl,
-              keyboardType: TextInputType.phone,
-              textInputAction: TextInputAction.next,
               decoration: const InputDecoration(
                 labelText: 'Email หรือ Phone',
                 border: OutlineInputBorder(),
               ),
             ),
+
             const SizedBox(height: 10),
 
             SizedBox(
               width: double.infinity,
               child: OutlinedButton.icon(
-                onPressed: (_otpLoading || _cooldownLeft > 0) ? null : _requestOtp,
+                onPressed:
+                    (_otpLoading || _cooldownLeft > 0) ? null : _requestOtp,
                 icon: _otpLoading
                     ? const SizedBox(
                         width: 18,
@@ -241,30 +234,29 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
                 label: Text(otpBtnText),
               ),
             ),
+
             const SizedBox(height: 10),
 
             TextField(
               controller: _codeCtrl,
               keyboardType: TextInputType.number,
-              textInputAction: TextInputAction.next,
               decoration: const InputDecoration(
                 labelText: 'รหัส OTP',
                 border: OutlineInputBorder(),
-                helperText: 'กด “ขอรหัส OTP” ก่อน แล้วนำรหัส 6 หลักมาใส่',
               ),
             ),
+
             const SizedBox(height: 10),
 
             TextField(
               controller: _pwCtrl,
               obscureText: true,
-              onSubmitted: (_) => _submit(),
               decoration: const InputDecoration(
                 labelText: 'รหัสใหม่',
                 border: OutlineInputBorder(),
-                helperText: 'อย่างน้อย 4 ตัวอักษร',
               ),
             ),
+
             const SizedBox(height: 14),
 
             SizedBox(

@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 // Screens
 // ================================
 import 'package:clinic_smart_staff/screens/auth/auth_gate_screen.dart';
-import 'package:clinic_smart_staff/screens/home_screen.dart';
+import 'package:clinic_smart_staff/screens/home/home_screen.dart';
 import 'package:clinic_smart_staff/screens/auth/login_screen.dart';
 
 void main() {
@@ -53,13 +53,10 @@ class MyApp extends StatelessWidget {
       title: 'Clinic Smart Staff',
       debugShowCheckedModeBanner: false,
       themeMode: ThemeMode.light,
-
       theme: ThemeData(
         useMaterial3: true,
         colorScheme: scheme,
         scaffoldBackgroundColor: _bgLavender,
-
-        // ✅ AppBar ขาวคม
         appBarTheme: const AppBarTheme(
           backgroundColor: _surface,
           foregroundColor: Colors.black,
@@ -71,8 +68,6 @@ class MyApp extends StatelessWidget {
             color: Colors.black,
           ),
         ),
-
-        // ✅ FIX แดง — ใช้ CardThemeData
         cardTheme: CardThemeData(
           elevation: 0,
           color: _surface,
@@ -83,8 +78,6 @@ class MyApp extends StatelessWidget {
             side: const BorderSide(color: _outlineSoft, width: 1),
           ),
         ),
-
-        // ✅ FIX แดง — ใช้ DialogThemeData
         dialogTheme: DialogThemeData(
           backgroundColor: _surface,
           surfaceTintColor: Colors.transparent,
@@ -93,28 +86,22 @@ class MyApp extends StatelessWidget {
             side: const BorderSide(color: _outlineSoft, width: 1),
           ),
         ),
-
-        // ✅ BottomSheet ขาว
         bottomSheetTheme: const BottomSheetThemeData(
           backgroundColor: _surface,
           surfaceTintColor: Colors.transparent,
           showDragHandle: true,
         ),
-
         dividerTheme: const DividerThemeData(
           color: _outlineSoft,
           thickness: 1,
         ),
-
         iconTheme: const IconThemeData(
           color: Color(0xFF2E1065),
         ),
-
         floatingActionButtonTheme: const FloatingActionButtonThemeData(
           backgroundColor: _purplePrimary,
           foregroundColor: Colors.white,
         ),
-
         elevatedButtonTheme: ElevatedButtonThemeData(
           style: ElevatedButton.styleFrom(
             backgroundColor: _purplePrimary,
@@ -130,7 +117,6 @@ class MyApp extends StatelessWidget {
             ),
           ),
         ),
-
         outlinedButtonTheme: OutlinedButtonThemeData(
           style: OutlinedButton.styleFrom(
             foregroundColor: _purplePrimary,
@@ -141,34 +127,28 @@ class MyApp extends StatelessWidget {
             padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 18),
           ),
         ),
-
         textButtonTheme: TextButtonThemeData(
           style: TextButton.styleFrom(
             foregroundColor: _purplePrimary,
             textStyle: const TextStyle(fontWeight: FontWeight.w800),
           ),
         ),
-
         progressIndicatorTheme: const ProgressIndicatorThemeData(
           color: _purplePrimary,
         ),
-
         checkboxTheme: const CheckboxThemeData(
           fillColor: WidgetStatePropertyAll(_purplePrimary),
           checkColor: WidgetStatePropertyAll(Colors.white),
         ),
-
         switchTheme: const SwitchThemeData(
           thumbColor: WidgetStatePropertyAll(_purplePrimary),
         ),
-
         navigationBarTheme: NavigationBarThemeData(
           backgroundColor: _surface,
           surfaceTintColor: Colors.transparent,
           indicatorColor: const Color(0xFFE9D5FF),
         ),
       ),
-
       initialRoute: AppRoutes.authGate,
       routes: {
         AppRoutes.authGate: (_) => const AuthGateScreen(),

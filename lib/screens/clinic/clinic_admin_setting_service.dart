@@ -1,15 +1,4 @@
 // lib/screens/clinic/clinic_admin_settings_service.dart
-//
-// ✅ FULL FILE (PURPLE THEME + CLINIC PROFILE EDIT + LOCATION SETTINGS + OT SETTINGS NAV)
-// - ✅ เพิ่มการ์ด "ตั้งค่า OT" -> นำทางไปหน้า ClinicOtSettingsScreen
-// - ✅ FIX: ไม่เช็ค clinicId แล้ว (เพราะ OT policy ใช้ /clinic-policy/me)
-// - ✅ ไม่ลบ function เดิมออก
-//
-// Notes:
-// - clinicId: SharedPreferences key = 'clinicId'
-// - token: SharedPreferences key = 'auth_token' (ถ้าโปรเจกต์ท่านต่าง ให้แก้ _tokenKey บรรทัดเดียว)
-// - Payroll base: Render URL ของท่าน
-//
 
 import 'dart:convert';
 
@@ -22,11 +11,7 @@ import 'package:http/http.dart' as http;
 
 import 'package:clinic_smart_staff/services/settings_service.dart';
 import 'package:clinic_smart_staff/services/auth_service.dart';
-
-// ✅ หน้าแผนที่ (ปรับ path/ชื่อ class ให้ตรงของท่าน)
 import 'package:clinic_smart_staff/screens/location_settings_screen.dart';
-
-// ✅ OT Settings Screen (ท่านสร้างไฟล์นี้ไว้แล้ว / ถ้าชื่อไฟล์ต่าง ให้แก้ import ให้ตรง)
 import 'package:clinic_smart_staff/screens/clinic/clinic_ot_settings_screen.dart';
 
 class ClinicAdminSettingsScreen extends StatefulWidget {
@@ -40,19 +25,11 @@ class ClinicAdminSettingsScreen extends StatefulWidget {
 class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
   bool _loading = true;
 
-  // =========================
-  // ✅ BACKEND CONFIG
-  // =========================
   static const String _tokenKey = 'auth_token';
   static const String _clinicIdKey = 'clinicId';
-
-  // ✅ Payroll service base (Render)
   static const String _payrollBaseUrl =
       'https://payroll-service-808t.onrender.com';
 
-  // =========================
-  // ✅ CLINIC PROFILE (name/address/phone)
-  // =========================
   static const String _kClinicContactPhone = 'clinic_contact_phone';
   static const String _kClinicName = 'clinic_name';
   static const String _kClinicAddress = 'clinic_address';
@@ -63,18 +40,15 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
 
   bool _savingProfile = false;
 
-  // SSO
   double _ssoPercent = 5.0;
   bool _savingSso = false;
 
-  // PIN
   bool _hasPin = false;
   bool _savingPin = false;
 
   final _newPinCtrl = TextEditingController();
   final _confirmPinCtrl = TextEditingController();
 
-  // LOCATION
   double? _lat;
   double? _lng;
   bool _savingLocation = false;
@@ -90,7 +64,6 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
     _clinicNameCtrl.dispose();
     _clinicAddressCtrl.dispose();
     _phoneCtrl.dispose();
-
     _newPinCtrl.dispose();
     _confirmPinCtrl.dispose();
     super.dispose();
@@ -101,9 +74,6 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
-  // =========================
-  // ✅ PREFS helpers
-  // =========================
   Future<String> _prefGet(String k) async {
     final prefs = await SharedPreferences.getInstance();
     return (prefs.getString(k) ?? '').trim();
@@ -120,7 +90,7 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
     final phone = await _prefGet(_kClinicContactPhone);
 
     if (!mounted) return;
-    // เติมเฉพาะที่ว่าง เพื่อไม่ชนกับค่าจาก backend
+
     if (_clinicNameCtrl.text.trim().isEmpty && name.isNotEmpty) {
       _clinicNameCtrl.text = name;
     }
@@ -132,9 +102,6 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
     }
   }
 
-  // =========================
-  // ✅ BACKEND: load clinic profile
-  // =========================
   Future<void> _loadClinicProfileFromBackend() async {
     final prefs = await SharedPreferences.getInstance();
     final token = (prefs.getString(_tokenKey) ?? '').trim();
@@ -167,20 +134,12 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
         if (phone.isNotEmpty) _phoneCtrl.text = phone;
       });
 
-      // ✅ sync to prefs as fallback
       if (name.isNotEmpty) await _prefSet(_kClinicName, name);
       if (addr.isNotEmpty) await _prefSet(_kClinicAddress, addr);
       if (phone.isNotEmpty) await _prefSet(_kClinicContactPhone, phone);
-    } catch (_) {
-      // เงียบไว้: UI ยังใช้งานได้ด้วย prefs
-    }
+    } catch (_) {}
   }
 
-  // =========================
-  // ✅ BACKEND: save clinic profile (name/address/phone)
-  // PATCH /clinics/me/location
-  // body: { clinicName, clinicPhone, clinicAddress }  (ไม่ต้องส่ง lat/lng)
-  // =========================
   bool _isValidPhoneOrEmpty(String phone) {
     final p = phone.trim();
     if (p.isEmpty) return true;
@@ -206,7 +165,6 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
     setState(() => _savingProfile = true);
 
     try {
-      // ✅ Save to prefs first (offline-safe)
       await _prefSet(_kClinicName, name);
       await _prefSet(_kClinicAddress, address);
       await _prefSet(_kClinicContactPhone, phone);
@@ -214,9 +172,8 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
       final prefs = await SharedPreferences.getInstance();
       final token = (prefs.getString(_tokenKey) ?? '').trim();
 
-      // ไม่มี token ก็ไม่พัง: แค่ยังไม่ sync ขึ้น backend
       if (token.isEmpty) {
-        _snack('บันทึกในเครื่องแล้ว ✅ (ยังไม่ sync เพราะไม่มี token)');
+        _snack('บันทึกในเครื่องแล้ว');
         return;
       }
 
@@ -225,7 +182,6 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
         'clinicName': name,
         'clinicPhone': phone,
         'clinicAddress': address,
-        // ไม่ส่ง clinicLat/clinicLng เพื่อเน้น “แก้โปรไฟล์อย่างเดียว”
       };
 
       final resp = await http.patch(
@@ -238,11 +194,11 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
       );
 
       if (resp.statusCode >= 400) {
-        _snack('อัปเดตชื่อคลินิกไม่สำเร็จ (${resp.statusCode})');
+        _snack('อัปเดตข้อมูลคลินิกไม่สำเร็จ (${resp.statusCode})');
         return;
       }
 
-      _snack('อัปเดตข้อมูลคลินิกแล้ว ✅');
+      _snack('อัปเดตข้อมูลคลินิกแล้ว');
     } catch (e) {
       _snack('บันทึกไม่สำเร็จ: $e');
     } finally {
@@ -265,7 +221,6 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
         _lng = loc?.lng;
       });
 
-      // ✅ Profile: load prefs -> then backend (ถ้ามี token/clinicId)
       await _loadProfileFromPrefs();
       await _loadClinicProfileFromBackend();
 
@@ -278,16 +233,12 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
     }
   }
 
-  // =========================
-  // ✅ OPEN MAP SCREEN
-  // =========================
   Future<void> _openMapPicker() async {
     await Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => const LocationSettingsScreen()),
     );
 
-    // กลับมาแล้ว reload location เพื่ออัปเดต UI
     try {
       final loc = await SettingService.loadClinicLocation();
       if (!mounted) return;
@@ -298,9 +249,6 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
     } catch (_) {}
   }
 
-  // =========================
-  // ✅ LOCATION (CURRENT GPS)
-  // =========================
   Future<void> _useCurrentLocation() async {
     if (_savingLocation) return;
 
@@ -309,7 +257,7 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
 
       final serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
-        _snack('กรุณาเปิด Location Services / GPS');
+        _snack('กรุณาเปิด Location Services หรือ GPS');
         await Geolocator.openLocationSettings();
         return;
       }
@@ -321,7 +269,7 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
       }
 
       if (permission == LocationPermission.denied) {
-        _snack('ผู้ใช้ปฏิเสธ permission location');
+        _snack('ยังไม่ได้รับสิทธิ์เข้าถึงตำแหน่ง');
         return;
       }
 
@@ -331,7 +279,6 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
         return;
       }
 
-      // ✅ กันค้าง: ใส่ timeLimit + fallback lastKnown
       Position? pos;
       try {
         pos = await Geolocator.getCurrentPosition(
@@ -343,11 +290,7 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
       }
 
       if (pos == null) {
-        _snack(
-          'ยังอ่านตำแหน่งไม่ได้\n'
-          '- ถ้าเป็น iOS Simulator: Features > Location เลือก Apple/Custom\n'
-          '- ถ้าเป็นเครื่องจริง: เปิด Location + ให้สิทธิ์ While in use',
-        );
+        _snack('ยังไม่สามารถอ่านตำแหน่งปัจจุบันได้');
         return;
       }
 
@@ -359,10 +302,10 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
       if (!mounted) return;
       setState(() {
         _lat = pos!.latitude;
-        _lng = pos!.longitude;
+        _lng = pos.longitude;
       });
 
-      _snack('บันทึกตำแหน่งคลินิกแล้ว ✅');
+      _snack('บันทึกตำแหน่งคลินิกแล้ว');
     } catch (e) {
       _snack('อ่านตำแหน่งไม่สำเร็จ: $e');
     } finally {
@@ -371,10 +314,6 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
     }
   }
 
-  // =========================
-  // ✅ OPEN OT SETTINGS (FIXED)
-  // - ไม่ต้องใช้ clinicId แล้ว เพราะ backend ใช้ /clinic-policy/me
-  // =========================
   Future<void> _openOtSettings() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -390,20 +329,17 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
         MaterialPageRoute(builder: (_) => const ClinicOtSettingsScreen()),
       );
     } catch (_) {
-      _snack('ไม่สามารถเปิดหน้า OT ได้');
+      _snack('ไม่สามารถเปิดหน้าตั้งค่า OT ได้');
     }
   }
 
-  // =========================
-  // SSO
-  // =========================
   Future<void> _saveSso() async {
     if (_savingSso) return;
     setState(() => _savingSso = true);
 
     try {
       await SettingService.saveSsoPercent(_ssoPercent);
-      _snack('บันทึก SSO เรียบร้อยแล้ว ✅');
+      _snack('บันทึก SSO เรียบร้อยแล้ว');
     } catch (e) {
       _snack('บันทึก SSO ไม่สำเร็จ: $e');
     } finally {
@@ -412,9 +348,6 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
     }
   }
 
-  // =========================
-  // PIN
-  // =========================
   bool _isValidPin(String pin) {
     final p = pin.trim();
     if (p.length < 4 || p.length > 6) return false;
@@ -438,7 +371,7 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
     }
 
     if (!_isValidPin(newPin)) {
-      _snack('PIN ต้อง 4–6 หลัก');
+      _snack('PIN ต้องมี 4–6 หลัก');
       return;
     }
 
@@ -446,7 +379,7 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
       setState(() => _savingPin = true);
       await AuthService.setPin(newPin);
       _clearPinFields();
-      _snack('บันทึก PIN แล้ว ✅');
+      _snack('บันทึก PIN แล้ว');
 
       final hasPin = await AuthService.hasPin();
       if (!mounted) return;
@@ -465,16 +398,13 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Clinic Admin Settings'),
+        title: const Text('ตั้งค่าผู้ดูแลคลินิก'),
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : ListView(
               padding: const EdgeInsets.all(16),
               children: [
-                // =========================
-                // ✅ CLINIC PROFILE (NEW)
-                // =========================
                 Card(
                   child: Padding(
                     padding: const EdgeInsets.all(14),
@@ -486,8 +416,6 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
                           style: TextStyle(fontWeight: FontWeight.w900),
                         ),
                         const SizedBox(height: 10),
-
-                        // Clinic Name
                         TextField(
                           controller: _clinicNameCtrl,
                           textInputAction: TextInputAction.next,
@@ -497,8 +425,6 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
                           ),
                         ),
                         const SizedBox(height: 10),
-
-                        // Clinic Address
                         TextField(
                           controller: _clinicAddressCtrl,
                           textInputAction: TextInputAction.next,
@@ -510,8 +436,6 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
                           ),
                         ),
                         const SizedBox(height: 10),
-
-                        // Clinic Phone
                         TextField(
                           controller: _phoneCtrl,
                           keyboardType: TextInputType.phone,
@@ -525,7 +449,6 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
                             border: OutlineInputBorder(),
                           ),
                         ),
-
                         const SizedBox(height: 10),
                         SizedBox(
                           width: double.infinity,
@@ -537,7 +460,8 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
                                     height: 18,
                                     width: 18,
                                     child: CircularProgressIndicator(
-                                        strokeWidth: 2),
+                                      strokeWidth: 2,
+                                    ),
                                   )
                                 : const Text('บันทึกข้อมูลคลินิก'),
                           ),
@@ -546,12 +470,7 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
                     ),
                   ),
                 ),
-
                 const SizedBox(height: 16),
-
-                // =========================
-                // ✅ OT SETTINGS NAV
-                // =========================
                 Card(
                   child: ListTile(
                     leading: const Icon(Icons.schedule_outlined),
@@ -560,18 +479,13 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
                       style: TextStyle(fontWeight: FontWeight.w900),
                     ),
                     subtitle: const Text(
-                      'กำหนดเวลาเริ่มงาน/เลิกงาน และตัวคูณ OT ของคลินิก',
+                      'กำหนดเวลาเริ่มงาน เวลาเลิกงาน และตัวคูณ OT',
                     ),
                     trailing: const Icon(Icons.chevron_right),
                     onTap: _openOtSettings,
                   ),
                 ),
-
                 const SizedBox(height: 16),
-
-                // =========================
-                // ✅ LOCATION
-                // =========================
                 Card(
                   child: Padding(
                     padding: const EdgeInsets.all(14),
@@ -602,7 +516,8 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
                                         height: 18,
                                         width: 18,
                                         child: CircularProgressIndicator(
-                                            strokeWidth: 2),
+                                          strokeWidth: 2,
+                                        ),
                                       )
                                     : const Text('ใช้ตำแหน่งปัจจุบัน'),
                               ),
@@ -613,9 +528,11 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
                                 onPressed:
                                     _savingLocation ? null : _openMapPicker,
                                 icon: const Icon(Icons.map_outlined),
-                                label: Text(hasLocation
-                                    ? 'แก้ไขบนแผนที่'
-                                    : 'ตั้งบนแผนที่'),
+                                label: Text(
+                                  hasLocation
+                                      ? 'แก้ไขบนแผนที่'
+                                      : 'ตั้งค่าบนแผนที่',
+                                ),
                               ),
                             ),
                           ],
@@ -624,12 +541,7 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
                     ),
                   ),
                 ),
-
                 const SizedBox(height: 16),
-
-                // =========================
-                // ✅ SSO
-                // =========================
                 Card(
                   child: Padding(
                     padding: const EdgeInsets.all(14),
@@ -661,7 +573,8 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
                                     height: 18,
                                     width: 18,
                                     child: CircularProgressIndicator(
-                                        strokeWidth: 2),
+                                      strokeWidth: 2,
+                                    ),
                                   )
                                 : const Text('บันทึก SSO'),
                           ),
@@ -670,12 +583,7 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
                     ),
                   ),
                 ),
-
                 const SizedBox(height: 16),
-
-                // =========================
-                // ✅ PIN
-                // =========================
                 Card(
                   child: Padding(
                     padding: const EdgeInsets.all(14),
@@ -683,7 +591,7 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          _hasPin ? 'ตั้ง/เปลี่ยน PIN' : 'ตั้ง PIN (ยังไม่มี)',
+                          _hasPin ? 'ตั้งหรือเปลี่ยน PIN' : 'ตั้ง PIN',
                           style: const TextStyle(fontWeight: FontWeight.w900),
                         ),
                         const SizedBox(height: 10),
@@ -724,7 +632,8 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
                                     height: 18,
                                     width: 18,
                                     child: CircularProgressIndicator(
-                                        strokeWidth: 2),
+                                      strokeWidth: 2,
+                                    ),
                                   )
                                 : const Text('บันทึก PIN'),
                           ),

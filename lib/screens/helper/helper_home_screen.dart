@@ -7,10 +7,10 @@
 // - เมนูสอง: งานว่าง (ตลาดงาน)
 // - เมนูสาม: งานของฉัน (Shifts + นำทาง)
 //
-// ✅ NEW:
-// - ✅ เพิ่ม "จุดสแกนนิ้วมือ" ให้ผู้ช่วย (Fingerprint ONLY)
-// - ✅ ผูก backend payroll_service: /attendance/me-preview, /attendance/check-in, /attendance/check-out
-// - ✅ helper ไม่มี staffId ก็ใช้งานได้ (principalId จาก token)
+// ✅ THIS ROUND FIX:
+// - ✅ ลบ "จุดสแกนนิ้วมือ" ออกจาก HelperHomeScreen ทั้งหมด
+// - ✅ ให้ helper ใช้จุดเช็คอิน/เช็คเอาท์จาก HomeScreen เพียงจุดเดียว
+// - ✅ ลดความซ้ำซ้อนของ flow และกันสถานะ attendance ชนกัน
 //
 // ✅ PRODUCTION CLEAN:
 // - ไม่โชว์ clinicId/userId/staffId ใน UI
@@ -29,17 +29,12 @@
 // - ✅ สมัครสำเร็จ -> refresh list แล้วขึ้น “สมัครแล้ว” ทันที
 // - ✅ กันจอแดงจาก async/context/mounted ให้จบในรอบเดียว
 //
-// ✅ UX PATCH (NEW):
+// ✅ UX PATCH:
 // - ✅ หน้ารายละเอียดงานแสดง “เบอร์โทรคลินิก” ถ้ามี
 // - ✅ เพิ่มปุ่ม “โทรคลินิก” กดโทรออกได้ทันที
 // - ✅ ถ้าไม่มีเบอร์ จะซ่อน section โทรอัตโนมัติ
-// - ✅ หน้า list งานว่าง แสดงเบอร์โทรคลินิกแบบไม่รก UI (โชว์เฉพาะเมื่อมีเบอร์)
+// - ✅ หน้า list งานว่าง แสดงเบอร์โทรคลินิกแบบไม่รก UI
 // - ✅ หน้า “งานของฉัน” เพิ่มปุ่มโทรคลินิกข้างปุ่มนำทาง
-//
-// ✅ BIOMETRIC FIX (สำคัญ):
-// - ✅ helper flow ไม่บังคับ canUseBiometric() ก่อนแล้ว
-// - ✅ ลอง verify จริงก่อน (เหมือน production flow ที่ผ่อนกว่า)
-// - ✅ ถ้า verify fail ค่อยแจ้งข้อความอ่านง่าย
 //
 
 import 'dart:convert';
@@ -49,15 +44,12 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'package:clinic_smart_staff/screens/auth/auth_gate_screen.dart';
-import 'package:clinic_smart_staff/screens/home_screen.dart';
+import 'package:clinic_smart_staff/screens/home/home_screen.dart';
 import 'package:clinic_smart_staff/screens/helper_availability_screen.dart';
 
 import 'package:clinic_smart_staff/api/api_config.dart';
 import 'package:clinic_smart_staff/api/api_client.dart';
 import 'package:clinic_smart_staff/services/auth_storage.dart';
-
-// ✅ Fingerprint only
-import 'package:clinic_smart_staff/services/biometric_service.dart';
 
 class HelperHomeScreen extends StatefulWidget {
   final String clinicId;
@@ -95,19 +87,8 @@ class _HelperHomeScreenState extends State<HelperHomeScreen> {
 
   final _authClient = ApiClient(baseUrl: ApiConfig.authBaseUrl);
 
-  // ✅ payroll client (attendance/shifts/shift-needs)
+  // ✅ payroll client (shifts/shift-needs)
   final _payroll = ApiClient(baseUrl: ApiConfig.payrollBaseUrl);
-
-  // ✅ Fingerprint only service
-  final BiometricService _bio = BiometricService();
-
-  // ✅ Attendance state (today)
-  bool _attLoading = false;
-  String _attErr = '';
-  bool _todayCheckedIn = false;
-  bool _todayCheckedOut = false;
-  String _todayWorkDate = '';
-  String _openSessionId = ''; // optional
 
   // ✅ STABILITY PATCH
   bool _disposed = false;
@@ -116,7 +97,7 @@ class _HelperHomeScreenState extends State<HelperHomeScreen> {
     setState(fn);
   }
 
-  // ✅ BottomNav state (My / Open / Logout)
+  // ✅ BottomNav state (งานของฉัน / งานว่าง / ออกจากระบบ)
   int _navIndex = 0;
 
   // ✅ กันกด nav ซ้ำซ้อน
@@ -161,37 +142,6 @@ class _HelperHomeScreenState extends State<HelperHomeScreen> {
     return s.contains('missing_profile') || s.contains('staffid');
   }
 
-  String _todayYmd() {
-    final now = DateTime.now();
-    final y = now.year.toString().padLeft(4, '0');
-    final m = now.month.toString().padLeft(2, '0');
-    final d = now.day.toString().padLeft(2, '0');
-    return '$y-$m-$d';
-  }
-
-  String _friendlyApiError(Object e) {
-    final s = e.toString().toLowerCase();
-    if (s.contains('auth_required') ||
-        s.contains('session_expired') ||
-        s.contains('unauthorized') ||
-        s.contains('401')) {
-      return 'เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่';
-    }
-    if (s.contains('forbidden') || s.contains('403')) {
-      return 'ไม่มีสิทธิ์ใช้งานเมนูนี้';
-    }
-    if (s.contains('timeout')) {
-      return 'เชื่อมต่อช้าเกินไป กรุณาลองใหม่';
-    }
-    if (s.contains('socket') ||
-        s.contains('network') ||
-        s.contains('connection') ||
-        s.contains('failed host lookup')) {
-      return 'เชื่อมต่อไม่สำเร็จ กรุณาตรวจสอบอินเทอร์เน็ตแล้วลองใหม่';
-    }
-    return 'เกิดข้อผิดพลาด กรุณาลองใหม่';
-  }
-
   Future<void> _boot() async {
     _safeSetState(() {
       _loading = true;
@@ -203,8 +153,6 @@ class _HelperHomeScreenState extends State<HelperHomeScreen> {
         await _saveStaffId(_staffId);
         if (!mounted) return;
         _safeSetState(() => _loading = false);
-
-        await _loadAttendancePreview();
         return;
       }
 
@@ -214,8 +162,6 @@ class _HelperHomeScreenState extends State<HelperHomeScreen> {
         _staffId = saved;
         if (!mounted) return;
         _safeSetState(() => _loading = false);
-
-        await _loadAttendancePreview();
         return;
       }
 
@@ -245,8 +191,6 @@ class _HelperHomeScreenState extends State<HelperHomeScreen> {
 
       if (!mounted) return;
       _safeSetState(() => _loading = false);
-
-      await _loadAttendancePreview();
     } catch (e) {
       if (!mounted) return;
 
@@ -257,8 +201,6 @@ class _HelperHomeScreenState extends State<HelperHomeScreen> {
           _err = '';
           _loading = false;
         });
-
-        await _loadAttendancePreview();
         return;
       }
 
@@ -266,8 +208,6 @@ class _HelperHomeScreenState extends State<HelperHomeScreen> {
         _err = raw;
         _loading = false;
       });
-
-      await _loadAttendancePreview();
     }
   }
 
@@ -293,11 +233,6 @@ class _HelperHomeScreenState extends State<HelperHomeScreen> {
       MaterialPageRoute(builder: (_) => const HomeScreen()),
       (route) => false,
     );
-  }
-
-  void _snack(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
   Future<void> _openAvailability() async {
@@ -343,327 +278,6 @@ class _HelperHomeScreenState extends State<HelperHomeScreen> {
     }
   }
 
-  // ============================================================
-  // ✅ Attendance for helper (Fingerprint only)
-  // ============================================================
-  Map<String, dynamic>? _asMap(dynamic v) {
-    if (v is Map<String, dynamic>) return v;
-    if (v is Map) return Map<String, dynamic>.from(v);
-    return null;
-  }
-
-  bool _asBool(dynamic v) {
-    if (v is bool) return v;
-    final s = (v ?? '').toString().toLowerCase().trim();
-    return s == 'true' || s == '1' || s == 'yes';
-  }
-
-  String _s(dynamic v) => (v ?? '').toString();
-
-  Future<void> _loadAttendancePreview() async {
-    if (_attLoading) return;
-
-    _safeSetState(() {
-      _attLoading = true;
-      _attErr = '';
-    });
-
-    try {
-      Map<String, dynamic> res;
-      try {
-        res = await _payroll.get('/attendance/me-preview', auth: true);
-      } catch (_) {
-        res = await _payroll.get('/api/attendance/me-preview', auth: true);
-      }
-
-      final root = _asMap(res) ?? <String, dynamic>{};
-      final data = _asMap(root['data']) ?? root;
-
-      final today = _todayYmd();
-
-      final workDate =
-          _s(data['workDate']).isNotEmpty ? _s(data['workDate']) : today;
-
-      bool checkedIn = _asBool(data['checkedIn'] ?? data['hasCheckedIn']);
-      bool checkedOut = _asBool(data['checkedOut'] ?? data['hasCheckedOut']);
-
-      final openSession = _asMap(data['openSession']);
-      final openId = _s(
-        data['openSessionId'] ?? data['sessionId'] ?? openSession?['_id'],
-      );
-
-      final hasOpen =
-          _asBool(data['hasOpen'] ?? data['open'] ?? (openSession != null));
-      if (hasOpen && !checkedOut) checkedIn = true;
-
-      _safeSetState(() {
-        _todayWorkDate = workDate;
-        _todayCheckedIn = checkedIn;
-        _todayCheckedOut = checkedOut;
-        _openSessionId = openId;
-        _attLoading = false;
-        _attErr = '';
-      });
-    } catch (e) {
-      _safeSetState(() {
-        _attLoading = false;
-        _attErr = _friendlyApiError(e);
-      });
-    }
-  }
-
-  // ✅ FIX: ไม่เช็ค canUseBiometric แบบเข้มก่อนแล้ว
-  // ให้ลอง verify จริงก่อนเลย
-  Future<bool> _fingerprintGate() async {
-    try {
-      final ok = await _bio.verify(
-        reason: 'ยืนยันตัวตนด้วยลายนิ้วมือเพื่อบันทึกการทำงาน',
-      );
-
-      if (!ok) {
-        _snack('ยืนยันตัวตนไม่สำเร็จ กรุณาลองใหม่');
-        return false;
-      }
-
-      return true;
-    } catch (e) {
-      debugPrint('HELPER BIO ERROR: $e');
-      _snack('ไม่สามารถใช้งานการยืนยันตัวตนได้ในขณะนี้');
-      return false;
-    }
-  }
-
-  Future<void> _helperCheckIn() async {
-    if (_attLoading) return;
-
-    if (_todayCheckedIn && !_todayCheckedOut) {
-      _snack('คุณได้เช็คอินไว้แล้ว');
-      return;
-    }
-    if (_todayCheckedIn && _todayCheckedOut) {
-      _snack('วันนี้คุณเช็คเอาท์แล้ว');
-      return;
-    }
-
-    _safeSetState(() {
-      _attLoading = true;
-      _attErr = '';
-    });
-
-    try {
-      final okBio = await _fingerprintGate();
-      if (!okBio) {
-        _safeSetState(() => _attLoading = false);
-        return;
-      }
-
-      final body = <String, dynamic>{
-        'workDate': _todayYmd(),
-        'biometricVerified': true,
-        'method': 'biometric',
-        'deviceId': '',
-      };
-
-      Map<String, dynamic> res;
-      try {
-        res = await _payroll.post(
-          '/attendance/check-in',
-          auth: true,
-          body: body,
-        );
-      } catch (_) {
-        res = await _payroll.post(
-          '/api/attendance/check-in',
-          auth: true,
-          body: body,
-        );
-      }
-
-      final root = _asMap(res) ?? <String, dynamic>{};
-      final ok = (root['ok'] is bool) ? root['ok'] as bool : true;
-      if (!ok) {
-        final msg = _s(root['message'] ?? root['error']);
-        throw Exception(msg.isEmpty ? 'check-in failed' : msg);
-      }
-
-      _snack('บันทึกเช็คอินสำเร็จ');
-      await _loadAttendancePreview();
-    } catch (e) {
-      final msg = _friendlyApiError(e);
-      _safeSetState(() {
-        _attLoading = false;
-        _attErr = msg;
-      });
-      _snack(msg);
-    } finally {
-      _safeSetState(() => _attLoading = false);
-    }
-  }
-
-  Future<void> _helperCheckOut() async {
-    if (_attLoading) return;
-
-    if (!_todayCheckedIn || _todayCheckedOut) {
-      _snack('ยังไม่มีการเช็คอินที่เปิดอยู่');
-      return;
-    }
-
-    _safeSetState(() {
-      _attLoading = true;
-      _attErr = '';
-    });
-
-    try {
-      final okBio = await _fingerprintGate();
-      if (!okBio) {
-        _safeSetState(() => _attLoading = false);
-        return;
-      }
-
-      final body = <String, dynamic>{
-        'workDate': _todayYmd(),
-        'biometricVerified': true,
-        'method': 'biometric',
-        'deviceId': '',
-      };
-
-      Map<String, dynamic> res;
-      try {
-        res = await _payroll.post(
-          '/attendance/check-out',
-          auth: true,
-          body: body,
-        );
-      } catch (_) {
-        if (_openSessionId.isNotEmpty) {
-          try {
-            res = await _payroll.post(
-              '/attendance/$_openSessionId/check-out',
-              auth: true,
-              body: body,
-            );
-          } catch (_) {
-            res = await _payroll.post(
-              '/api/attendance/check-out',
-              auth: true,
-              body: body,
-            );
-          }
-        } else {
-          res = await _payroll.post(
-            '/api/attendance/check-out',
-            auth: true,
-            body: body,
-          );
-        }
-      }
-
-      final root = _asMap(res) ?? <String, dynamic>{};
-      final ok = (root['ok'] is bool) ? root['ok'] as bool : true;
-      if (!ok) {
-        final msg = _s(root['message'] ?? root['error']);
-        throw Exception(msg.isEmpty ? 'check-out failed' : msg);
-      }
-
-      _snack('บันทึกเช็คเอาท์สำเร็จ');
-      await _loadAttendancePreview();
-    } catch (e) {
-      final msg = _friendlyApiError(e);
-      _safeSetState(() {
-        _attLoading = false;
-        _attErr = msg;
-      });
-      _snack(msg);
-    } finally {
-      _safeSetState(() => _attLoading = false);
-    }
-  }
-
-  Widget _attendanceCard() {
-    final title = 'บันทึกการทำงาน (ผู้ช่วย)';
-    final today = _todayYmd();
-
-    final statusText = _attLoading
-        ? 'กำลังอัปเดตสถานะ...'
-        : _todayCheckedIn
-            ? (_todayCheckedOut
-                ? 'วันนี้เช็คเอาท์แล้ว'
-                : 'เช็คอินแล้ว (ยังไม่เช็คเอาท์)')
-            : 'ยังไม่ได้เช็คอินวันนี้';
-
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              title,
-              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              'วันที่ $today • $statusText',
-              style: TextStyle(color: Colors.grey.shade700),
-            ),
-            const SizedBox(height: 10),
-            if (_attErr.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 10),
-                child: Text(
-                  _attErr,
-                  style: TextStyle(
-                    color: Theme.of(context).colorScheme.error,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ),
-            Row(
-              children: [
-                Expanded(
-                  child: ElevatedButton.icon(
-                    onPressed:
-                        (_attLoading || (_todayCheckedIn && !_todayCheckedOut))
-                            ? null
-                            : _helperCheckIn,
-                    icon: _attLoading
-                        ? const SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.fingerprint),
-                    label: const Text('เช็คอิน'),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed:
-                        (_attLoading || !_todayCheckedIn || _todayCheckedOut)
-                            ? null
-                            : _helperCheckOut,
-                    icon: const Icon(Icons.logout),
-                    label: const Text('เช็คเอาท์'),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            SizedBox(
-              width: double.infinity,
-              child: TextButton.icon(
-                onPressed: _attLoading ? null : _loadAttendancePreview,
-                icon: const Icon(Icons.refresh),
-                label: const Text('รีเฟรชสถานะ'),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   // -------------------- UI --------------------
   @override
   Widget build(BuildContext context) {
@@ -675,11 +289,11 @@ class _HelperHomeScreenState extends State<HelperHomeScreen> {
       child: Scaffold(
         appBar: AppBar(
           leading: IconButton(
-            tooltip: 'กลับหน้า Home',
+            tooltip: 'กลับหน้าแรก',
             icon: const Icon(Icons.home),
             onPressed: _goHome,
           ),
-          title: const Text('ผู้ช่วย'),
+          title: const Text('ผู้ช่วยของฉัน'),
           actions: [
             IconButton(
               tooltip: 'รีเฟรช',
@@ -697,9 +311,18 @@ class _HelperHomeScreenState extends State<HelperHomeScreen> {
           currentIndex: _navIndex,
           onTap: _onBottomTap,
           items: const [
-            BottomNavigationBarItem(icon: Icon(Icons.person), label: 'My'),
-            BottomNavigationBarItem(icon: Icon(Icons.work_outline), label: 'งานว่าง'),
-            BottomNavigationBarItem(icon: Icon(Icons.logout), label: 'Logout'),
+            BottomNavigationBarItem(
+              icon: Icon(Icons.person),
+              label: 'งานของฉัน',
+            ),
+            BottomNavigationBarItem(
+              icon: Icon(Icons.work_outline),
+              label: 'งานว่าง',
+            ),
+            BottomNavigationBarItem(
+              icon: Icon(Icons.logout),
+              label: 'ออกจากระบบ',
+            ),
           ],
         ),
         body: _loading
@@ -715,19 +338,51 @@ class _HelperHomeScreenState extends State<HelperHomeScreen> {
                         onRetry: _boot,
                         onHome: _goHome,
                       ),
-                    _attendanceCard(),
+                    Card(
+                      child: Padding(
+                        padding: const EdgeInsets.all(14),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'การลงเวลาทำงาน',
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w900,
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              'การเช็คอินและเช็คเอาท์ของผู้ช่วยย้ายไปใช้งานที่หน้าแรกแล้ว เพื่อให้มีจุดบันทึกเวลาทำงานเพียงจุดเดียว',
+                              style: TextStyle(color: Colors.grey.shade700),
+                            ),
+                            const SizedBox(height: 10),
+                            SizedBox(
+                              width: double.infinity,
+                              child: ElevatedButton.icon(
+                                onPressed: _goHome,
+                                icon: const Icon(Icons.home),
+                                label: const Text('กลับไปหน้าแรก'),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
                     const SizedBox(height: 10),
                     _MenuCard(
                       title: 'ตารางเวลาว่างของฉัน',
-                      subtitle: 'ประกาศและแก้ไขเวลาว่าง เพื่อให้คลินิกจองงานได้',
+                      subtitle:
+                          'ประกาศและแก้ไขเวลาว่าง เพื่อให้คลินิกเลือกจองงานได้',
                       icon: Icons.calendar_month,
                       iconColor: cs.primary,
                       onTap: _openAvailability,
                     ),
                     const SizedBox(height: 10),
                     _MenuCard(
-                      title: 'งานว่าง',
-                      subtitle: 'ดูรายการงานที่เปิดรับสมัคร',
+                      title: 'งานว่างที่เปิดรับ',
+                      subtitle:
+                          'ดูรายการงานที่เปิดรับสมัครและสมัครงานได้ทันที',
                       icon: Icons.work_outline,
                       iconColor: cs.primary,
                       onTap: () async {
@@ -737,8 +392,9 @@ class _HelperHomeScreenState extends State<HelperHomeScreen> {
                     ),
                     const SizedBox(height: 10),
                     _MenuCard(
-                      title: 'งานของฉัน',
-                      subtitle: 'ดูงานที่ได้รับแล้ว พร้อมปุ่มนำทางไปคลินิก',
+                      title: 'งานที่ได้รับของฉัน',
+                      subtitle:
+                          'ดูงานที่ได้รับแล้ว พร้อมโทรคลินิกและนำทางไปยังสถานที่ทำงาน',
                       icon: Icons.assignment_turned_in_outlined,
                       iconColor: cs.primary,
                       onTap: () async {
@@ -749,7 +405,7 @@ class _HelperHomeScreenState extends State<HelperHomeScreen> {
                     const SizedBox(height: 6),
                     if (_staffId.isEmpty)
                       const Text(
-                        'หมายเหตุ: บางบัญชีอาจแสดงข้อมูลบางส่วนไม่ครบ แต่ยังใช้งานตลาดงานและงานของฉันได้',
+                        'หมายเหตุ: บางบัญชีอาจแสดงข้อมูลบางส่วนได้ไม่ครบถ้วน แต่ยังสามารถใช้งานเมนูงานว่างและงานของฉันได้ตามปกติ',
                         style: TextStyle(color: Colors.grey, fontSize: 12),
                       ),
                   ],
@@ -814,14 +470,14 @@ class _ErrorCard extends StatelessWidget {
     }
 
     if (s.contains('missing_profile') || s.contains('staffid')) {
-      return 'ระบบกำลังอัปเดตข้อมูลบัญชีของคุณ คุณยังใช้งานเมนูได้ตามปกติ';
+      return 'ระบบกำลังอัปเดตข้อมูลบัญชีของคุณ โดยคุณยังใช้งานเมนูหลักได้ตามปกติ';
     }
 
     if (s.contains('socket') ||
         s.contains('timeout') ||
         s.contains('network') ||
         s.contains('connection')) {
-      return 'เชื่อมต่อไม่สำเร็จ กรุณาตรวจสอบอินเทอร์เน็ตแล้วลองใหม่';
+      return 'เชื่อมต่อไม่สำเร็จ กรุณาตรวจสอบอินเทอร์เน็ตแล้วลองใหม่อีกครั้ง';
     }
     return 'เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้ง';
   }
@@ -857,7 +513,7 @@ class _ErrorCard extends StatelessWidget {
                   child: OutlinedButton.icon(
                     onPressed: onHome,
                     icon: const Icon(Icons.home),
-                    label: const Text('กลับ Home'),
+                    label: const Text('กลับหน้าแรก'),
                   ),
                 ),
               ],
@@ -914,15 +570,24 @@ class _OpenNeedsScreenState extends State<OpenNeedsScreen> {
     if (resAny is Map) {
       final items1 = resAny['items'];
       if (items1 is List) {
-        return items1.whereType<Map>().map((x) => x.cast<String, dynamic>()).toList();
+        return items1
+            .whereType<Map>()
+            .map((x) => x.cast<String, dynamic>())
+            .toList();
       }
       final data = resAny['data'];
       if (data is List) {
-        return data.whereType<Map>().map((x) => x.cast<String, dynamic>()).toList();
+        return data
+            .whereType<Map>()
+            .map((x) => x.cast<String, dynamic>())
+            .toList();
       }
       if (data is Map && data['items'] is List) {
         final items2 = data['items'] as List;
-        return items2.whereType<Map>().map((x) => x.cast<String, dynamic>()).toList();
+        return items2
+            .whereType<Map>()
+            .map((x) => x.cast<String, dynamic>())
+            .toList();
       }
     }
     return [];
@@ -1009,10 +674,15 @@ class _OpenNeedsScreenState extends State<OpenNeedsScreen> {
                     children: [
                       const Text(
                         'กรอกเบอร์โทรเพื่อสมัครงาน',
-                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w900,
+                        ),
                       ),
                       const SizedBox(height: 8),
-                      const Text('กรอกเบอร์โทร 9–10 หลัก เพื่อให้คลินิกติดต่อกลับได้'),
+                      const Text(
+                        'กรอกเบอร์โทร 9–10 หลัก เพื่อให้คลินิกสามารถติดต่อกลับได้',
+                      ),
                       const SizedBox(height: 12),
                       TextField(
                         controller: ctrl,
@@ -1025,7 +695,9 @@ class _OpenNeedsScreenState extends State<OpenNeedsScreen> {
                         onSubmitted: (_) async {
                           final d = _digitsOnly(ctrl.text.trim());
                           if (!_isValidPhone(d)) {
-                            setLocal(() => err = 'เบอร์โทรต้องเป็นตัวเลข 9–10 หลัก');
+                            setLocal(
+                              () => err = 'เบอร์โทรต้องเป็นตัวเลข 9–10 หลัก',
+                            );
                             return;
                           }
                           await prefs.setString(_kApplyPhone, d);
@@ -1048,7 +720,9 @@ class _OpenNeedsScreenState extends State<OpenNeedsScreen> {
                               onPressed: () async {
                                 final d = _digitsOnly(ctrl.text.trim());
                                 if (!_isValidPhone(d)) {
-                                  setLocal(() => err = 'เบอร์โทรต้องเป็นตัวเลข 9–10 หลัก');
+                                  setLocal(
+                                    () => err = 'เบอร์โทรต้องเป็นตัวเลข 9–10 หลัก',
+                                  );
                                   return;
                                 }
                                 await prefs.setString(_kApplyPhone, d);
@@ -1125,7 +799,7 @@ class _OpenNeedsScreenState extends State<OpenNeedsScreen> {
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('สมัครไม่สำเร็จ กรุณาลองใหม่')),
+        const SnackBar(content: Text('สมัครงานไม่สำเร็จ กรุณาลองใหม่')),
       );
       rethrow;
     } finally {
@@ -1143,7 +817,7 @@ class _OpenNeedsScreenState extends State<OpenNeedsScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('งานว่าง'),
+        title: const Text('งานว่างที่เปิดรับ'),
         actions: [
           IconButton(onPressed: _load, icon: const Icon(Icons.refresh)),
         ],
@@ -1168,7 +842,7 @@ class _OpenNeedsScreenState extends State<OpenNeedsScreen> {
                           padding: const EdgeInsets.all(16),
                           children: const [
                             SizedBox(height: 30),
-                            Center(child: Text('ยังไม่มีงานว่าง')),
+                            Center(child: Text('ยังไม่มีงานว่างในขณะนี้')),
                           ],
                         )
                       : ListView.separated(
@@ -1198,7 +872,7 @@ class _OpenNeedsScreenState extends State<OpenNeedsScreen> {
                               if (date.isNotEmpty) 'วันที่ $date',
                               if (start.isNotEmpty || end.isNotEmpty)
                                 'เวลา $start - $end',
-                              if (rate != null) 'เรท ${_s(rate)} บาท/ชม.',
+                              if (rate != null) 'ค่าตอบแทน ${_s(rate)} บาท/ชม.',
                             ].join(' • ');
 
                             final subtitleLines = <String>[
@@ -1212,7 +886,7 @@ class _OpenNeedsScreenState extends State<OpenNeedsScreen> {
                                 title: Text(title),
                                 subtitle: Text(
                                   subtitleLines.isEmpty
-                                      ? 'รายละเอียดไม่ครบ'
+                                      ? 'รายละเอียดเพิ่มเติมจะแสดงเมื่อเปิดดูงาน'
                                       : subtitleLines.join('\n'),
                                 ),
                                 isThreeLine: clinicPhone.isNotEmpty,
@@ -1365,7 +1039,7 @@ class NeedDetailScreen extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(height: 10),
-                  Text('สถานที่: $clinicName'),
+                  Text('สถานที่ทำงาน: $clinicName'),
                   if (clinicAddress.isNotEmpty) ...[
                     const SizedBox(height: 4),
                     Text('ที่อยู่: $clinicAddress'),
@@ -1373,7 +1047,7 @@ class NeedDetailScreen extends StatelessWidget {
                   if (hasClinicPhone) ...[
                     const SizedBox(height: 4),
                     Text(
-                      'โทร: $clinicPhone',
+                      'เบอร์โทร: $clinicPhone',
                       style: const TextStyle(fontWeight: FontWeight.w700),
                     ),
                   ],
@@ -1381,9 +1055,9 @@ class NeedDetailScreen extends StatelessWidget {
                     'ตำแหน่ง: ${_s(need['role']).isEmpty ? 'ผู้ช่วย' : _s(need['role'])}',
                   ),
                   Text(
-                    'วัน/เวลา: ${_s(need['date'])}  ${_s(need['start'])}-${_s(need['end'])}',
+                    'วันและเวลา: ${_s(need['date'])}  ${_s(need['start'])}-${_s(need['end'])}',
                   ),
-                  Text('เรท: ${_s(need['hourlyRate'])} บาท/ชม.'),
+                  Text('ค่าตอบแทน: ${_s(need['hourlyRate'])} บาท/ชม.'),
                   if (_s(need['note']).isNotEmpty) ...[
                     const SizedBox(height: 8),
                     Text('หมายเหตุ: ${_s(need['note'])}'),
@@ -1395,7 +1069,7 @@ class NeedDetailScreen extends StatelessWidget {
                       child: OutlinedButton.icon(
                         onPressed: () => _callClinic(context, clinicPhone),
                         icon: const Icon(Icons.phone),
-                        label: const Text('โทรคลินิก'),
+                        label: const Text('โทรหาคลินิก'),
                       ),
                     ),
                   ],
@@ -1423,7 +1097,9 @@ class NeedDetailScreen extends StatelessWidget {
                             ? const SizedBox(
                                 width: 18,
                                 height: 18,
-                                child: CircularProgressIndicator(strokeWidth: 2),
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
                               )
                             : const Icon(Icons.send),
                         label: Text(applying ? 'กำลังสมัคร...' : 'สมัครงานนี้'),
@@ -1479,15 +1155,24 @@ class _MyShiftsScreenState extends State<MyShiftsScreen> {
     if (resAny is Map) {
       final v = resAny['items'];
       if (v is List) {
-        return v.whereType<Map>().map((x) => x.cast<String, dynamic>()).toList();
+        return v
+            .whereType<Map>()
+            .map((x) => x.cast<String, dynamic>())
+            .toList();
       }
       final data = resAny['data'];
       if (data is List) {
-        return data.whereType<Map>().map((x) => x.cast<String, dynamic>()).toList();
+        return data
+            .whereType<Map>()
+            .map((x) => x.cast<String, dynamic>())
+            .toList();
       }
       if (data is Map && data['items'] is List) {
         final items2 = data['items'] as List;
-        return items2.whereType<Map>().map((x) => x.cast<String, dynamic>()).toList();
+        return items2
+            .whereType<Map>()
+            .map((x) => x.cast<String, dynamic>())
+            .toList();
       }
     }
     return [];
@@ -1501,6 +1186,20 @@ class _MyShiftsScreenState extends State<MyShiftsScreen> {
     final s = v.toString().trim();
     if (s.isEmpty) return null;
     return double.tryParse(s);
+  }
+
+  String _statusThai(String raw) {
+    final s = raw.trim().toLowerCase();
+    if (s.isEmpty) return 'นัดหมายแล้ว';
+    if (s == 'scheduled') return 'นัดหมายแล้ว';
+    if (s == 'completed') return 'เสร็จสิ้น';
+    if (s == 'cancelled') return 'ยกเลิก';
+    if (s == 'approved') return 'อนุมัติแล้ว';
+    if (s == 'pending') return 'รอดำเนินการ';
+    if (s == 'rejected') return 'ไม่ผ่านการอนุมัติ';
+    if (s == 'open') return 'เปิดรับอยู่';
+    if (s == 'closed') return 'ปิดแล้ว';
+    return raw;
   }
 
   String _clinicPhoneFromShift(Map<String, dynamic> it) {
@@ -1545,10 +1244,14 @@ class _MyShiftsScreenState extends State<MyShiftsScreen> {
   }
 
   String _pickTravelMode(Map<String, dynamic> it) {
-    final raw = _s(it['travelMode'] ?? it['transportMode'] ?? it['mode']).trim();
+    final raw = _s(
+      it['travelMode'] ?? it['transportMode'] ?? it['mode'],
+    ).trim();
     final m = raw.toLowerCase();
     if (m == 'w' || m == 'walk' || m == 'walking') return 'walk';
-    if (m == 'd' || m == 'drive' || m == 'driving' || m == 'car') return 'drive';
+    if (m == 'd' || m == 'drive' || m == 'driving' || m == 'car') {
+      return 'drive';
+    }
     if (m == 'transit' || m == 'public' || m == 'bus' || m == 'train') {
       return 'transit';
     }
@@ -1689,7 +1392,7 @@ class _MyShiftsScreenState extends State<MyShiftsScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('งานของฉัน'),
+        title: const Text('งานที่ได้รับของฉัน'),
         actions: [
           IconButton(
             tooltip: 'รีเฟรช',
@@ -1718,7 +1421,7 @@ class _MyShiftsScreenState extends State<MyShiftsScreen> {
                           padding: const EdgeInsets.all(16),
                           children: const [
                             SizedBox(height: 30),
-                            Center(child: Text('ยังไม่มีงานของฉัน')),
+                            Center(child: Text('ยังไม่มีงานที่ได้รับ')),
                           ],
                         )
                       : ListView.separated(
@@ -1731,18 +1434,16 @@ class _MyShiftsScreenState extends State<MyShiftsScreen> {
                             final date = _s(it['date']);
                             final start = _s(it['start']);
                             final end = _s(it['end']);
-                            final status = _s(it['status']).isEmpty
-                                ? 'scheduled'
-                                : _s(it['status']);
+                            final status = _statusThai(_s(it['status']));
                             final note =
-                                _s(it['note']).isEmpty ? 'Shift' : _s(it['note']);
+                                _s(it['note']).isEmpty ? 'กะงาน' : _s(it['note']);
                             final rate = _s(it['hourlyRate']);
 
                             final sub = [
                               if (date.isNotEmpty) 'วันที่ $date',
                               if (start.isNotEmpty || end.isNotEmpty)
                                 'เวลา $start - $end',
-                              if (rate.isNotEmpty) 'เรท ${rate} บาท/ชม.',
+                              if (rate.isNotEmpty) 'ค่าตอบแทน $rate บาท/ชม.',
                               'สถานะ $status',
                             ].join(' • ');
 
@@ -1758,7 +1459,7 @@ class _MyShiftsScreenState extends State<MyShiftsScreen> {
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
                                     IconButton(
-                                      tooltip: 'โทรคลินิก',
+                                      tooltip: 'โทรหาคลินิก',
                                       icon: const Icon(Icons.phone),
                                       onPressed: () => _callClinicFromShift(it),
                                     ),
