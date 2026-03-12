@@ -13,9 +13,6 @@ import 'package:clinic_smart_staff/screens/clinic/clinic_availabilities_screen.d
 import 'package:clinic_smart_staff/screens/clinic/clinic_attendance_approval_screen.dart';
 import 'package:clinic_smart_staff/screens/clinic/clinic_attendance_settings_screen.dart';
 
-// ✅ Attendance dashboard
-import 'package:clinic_smart_staff/screens/admin/attendance_dashboard_screen.dart';
-
 // Auth / services
 import 'package:clinic_smart_staff/services/auth_service.dart';
 
@@ -169,15 +166,6 @@ class _ClinicHomeScreenState extends State<ClinicHomeScreen> {
       context,
       MaterialPageRoute(
         builder: (_) => const ClinicAttendanceSettingsScreen(),
-      ),
-    );
-  }
-
-  Future<void> _openAttendanceAnalytics() async {
-    await Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => const AttendanceDashboardScreen(),
       ),
     );
   }
@@ -379,22 +367,16 @@ class _ClinicHomeScreenState extends State<ClinicHomeScreen> {
           ),
           _menuCard(
             icon: Icons.approval_outlined,
-            title: 'อนุมัติคำขอเวลาเข้า-ออกงาน',
+            title: 'อนุมัติคำขอ Attendance',
             subtitle: 'อนุมัติหรือปฏิเสธคำขอแก้ไขเวลาเข้า-ออกงาน',
             onTap: _openAttendanceApproval,
           ),
           _menuCard(
             icon: Icons.schedule_outlined,
-            title: 'ตั้งค่ากฎเวลาเข้า-ออกงาน',
+            title: 'ตั้งค่าเวลาเปิด-ปิดคลินิก',
             subtitle:
                 'กำหนดเวลาเข้า-ออกงานปกติและกติกา attendance ของแต่ละวัน',
             onTap: _openAttendanceSettings,
-          ),
-          _menuCard(
-            icon: Icons.analytics_outlined,
-            title: 'สถิติการเข้า-ออกงาน',
-            subtitle: 'ดูภาพรวมการเข้า-ออกงาน มาสาย OT และพนักงานเสี่ยง',
-            onTap: _openAttendanceAnalytics,
           ),
           _menuCard(
             icon: Icons.verified_outlined,
