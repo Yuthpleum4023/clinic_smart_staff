@@ -8,6 +8,9 @@ const {
 
 const ctrl = require("../controllers/attendanceController");
 
+// ✅ NEW: analytics controller
+const analytics = require("../controllers/attendanceAnalyticsController");
+
 // ======================================
 // Roles
 // ======================================
@@ -31,7 +34,7 @@ router.post(
 );
 
 // -------------------------------
-// CHECK-OUT (recommended)
+// CHECK-OUT
 // -------------------------------
 router.post(
   "/check-out",
@@ -128,6 +131,26 @@ router.post(
   auth,
   requireRole(ADMIN_ROLES),
   ctrl.rejectManualRequest
+);
+
+// =====================================================
+// 📊 ATTENDANCE ANALYTICS (ADMIN / HR DASHBOARD)
+// =====================================================
+
+// clinic attendance analytics
+router.get(
+  "/analytics/clinic",
+  auth,
+  requireRole(ADMIN_ROLES),
+  analytics.clinicAnalytics
+);
+
+// staff attendance analytics
+router.get(
+  "/analytics/staff/:principalId",
+  auth,
+  requireRole(ADMIN_ROLES),
+  analytics.staffAnalytics
 );
 
 module.exports = router;

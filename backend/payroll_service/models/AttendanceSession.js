@@ -23,6 +23,11 @@ const mongoose = require("mongoose");
  * - reasonCode / reasonText
  * - policy snapshot เพื่อให้คำนวณย้อนหลังได้แม้ admin เปลี่ยน policy ภายหลัง
  * - manual request fields สำหรับ approve/reject โดยคลินิก
+ *
+ * ✅ SECURITY EXTENSIONS
+ * - suspiciousFlags
+ * - riskScore
+ * - securityMeta
  */
 
 const AttendanceSessionSchema = new mongoose.Schema(
@@ -171,6 +176,32 @@ const AttendanceSessionSchema = new mongoose.Schema(
     outLng: { type: Number, default: null },
 
     // ======================================================
+    // Security / Anti-cheat
+    // ======================================================
+    suspiciousFlags: {
+      type: [String],
+      default: [],
+      index: true,
+    },
+
+    riskScore: {
+      type: Number,
+      default: 0,
+      index: true,
+    },
+
+    securityMeta: {
+      inDistanceMeters: { type: Number, default: null },
+      outDistanceMeters: { type: Number, default: null },
+
+      inLocationSource: { type: String, default: "" },
+      outLocationSource: { type: String, default: "" },
+
+      inMocked: { type: Boolean, default: false },
+      outMocked: { type: Boolean, default: false },
+    },
+
+    // ======================================================
     // Schedule / policy snapshot of that day
     // IMPORTANT:
     // เก็บ snapshot ตอน check-in เพื่อกัน policy เปลี่ยนย้อนหลัง
@@ -317,6 +348,16 @@ AttendanceSessionSchema.index(
 AttendanceSessionSchema.index(
   { clinicId: 1, leftEarly: 1, workDate: -1 },
   { name: "idx_clinic_left_early_workdate" }
+);
+
+// security / anti-cheat review
+AttendanceSessionSchema.index(
+  { clinicId: 1, riskScore: -1, workDate: -1 },
+  { name: "idx_clinic_riskscore_workdate" }
+);
+AttendanceSessionSchema.index(
+  { clinicId: 1, suspiciousFlags: 1, workDate: -1 },
+  { name: "idx_clinic_suspiciousflags_workdate" }
 );
 
 // reason filters

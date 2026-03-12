@@ -33,6 +33,11 @@ function clampMinutes(m) {
   return Number.isFinite(x) ? x : 0;
 }
 
+function clampRisk(v) {
+  const x = Math.max(0, Math.floor(Number(v || 0)));
+  return Math.min(100, Number.isFinite(x) ? x : 0);
+}
+
 function monthKeyFromYmd(workDate) {
   const d = s(workDate);
   return isYmd(d) ? d.slice(0, 7) : "";
@@ -126,6 +131,139 @@ function buildCodeResponse(status, code, message, extra = {}) {
       ...extra,
     },
   };
+}
+
+// ======================================================
+// security helpers
+// ======================================================
+function truthyBool(v) {
+  if (v === true) return true;
+  const t = s(v).toLowerCase();
+  return t === "true" || t === "1" || t === "yes";
+}
+
+function getLocationSource(req, prefix = "in") {
+  return (
+    s(req.body?.[`${prefix}LocationSource`]) ||
+    s(req.body?.locationSource) ||
+    s(req.body?.gpsProvider) ||
+    ""
+  );
+}
+
+function isMockLocation(req, prefix = "in") {
+  return (
+    truthyBool(req.body?.[`${prefix}Mocked`]) ||
+    truthyBool(req.body?.isMocked) ||
+    truthyBool(req.body?.mockLocation) ||
+    truthyBool(req.body?.isMockLocation)
+  );
+}
+
+function ensureSecurityFields(session) {
+  if (!Array.isArray(session.suspiciousFlags)) {
+    session.suspiciousFlags = [];
+  }
+  if (!session.securityMeta || typeof session.securityMeta !== "object") {
+    session.securityMeta = {
+      inDistanceMeters: null,
+      outDistanceMeters: null,
+      inLocationSource: "",
+      outLocationSource: "",
+      inMocked: false,
+      outMocked: false,
+    };
+  }
+  if (!Number.isFinite(Number(session.riskScore))) {
+    session.riskScore = 0;
+  }
+}
+
+function addSuspiciousFlag(session, flag, risk = 0) {
+  ensureSecurityFields(session);
+  const f = s(flag);
+  if (!f) return;
+
+  if (!session.suspiciousFlags.includes(f)) {
+    session.suspiciousFlags.push(f);
+  }
+  session.riskScore = clampRisk(Number(session.riskScore || 0) + clampRisk(risk));
+}
+
+function setLocationSecurityMeta({
+  session,
+  phase, // "in" | "out"
+  distanceMeters = null,
+  locationSource = "",
+  mocked = false,
+}) {
+  ensureSecurityFields(session);
+
+  if (phase === "in") {
+    session.securityMeta.inDistanceMeters = Number.isFinite(distanceMeters)
+      ? Math.round(distanceMeters)
+      : null;
+    session.securityMeta.inLocationSource = s(locationSource);
+    session.securityMeta.inMocked = !!mocked;
+  } else {
+    session.securityMeta.outDistanceMeters = Number.isFinite(distanceMeters)
+      ? Math.round(distanceMeters)
+      : null;
+    session.securityMeta.outLocationSource = s(locationSource);
+    session.securityMeta.outMocked = !!mocked;
+  }
+}
+
+function maybeFlagDistanceRisk(session, distanceMeters, allowedRadius) {
+  if (!Number.isFinite(distanceMeters) || !Number.isFinite(allowedRadius)) return;
+
+  const ratio = distanceMeters / Math.max(1, allowedRadius);
+
+  if (ratio >= 0.9 && ratio <= 1) {
+    addSuspiciousFlag(session, "NEAR_GEOFENCE_EDGE", 5);
+  }
+
+  if (distanceMeters > allowedRadius) {
+    addSuspiciousFlag(session, "OUTSIDE_ALLOWED_RADIUS", 40);
+  }
+}
+
+function detectCheckoutRiskFlags({
+  session,
+  policy,
+  shift,
+  checkOutAt,
+  role,
+  workDate,
+}) {
+  const flags = [];
+  const rules = attendanceRuleDefaults(policy);
+  const worked = clampMinutes(computeWorkedMinutes(session.checkInAt, checkOutAt));
+
+  if (worked > 0 && worked < Math.max(10, rules.minMinutesBeforeCheckout)) {
+    flags.push({ code: "VERY_SHORT_SESSION", risk: 25 });
+  }
+
+  const earlyMinutes = detectLeftEarlyMinutes({
+    shift,
+    checkOutAt,
+    toleranceMinutes:
+      clampMinutes(session.leaveEarlyToleranceMinutes) ||
+      clampMinutes(policy.leaveEarlyToleranceMinutes || 0),
+    role,
+    policy,
+    workDate,
+  });
+
+  if (earlyMinutes >= 30) {
+    flags.push({ code: "SUSPICIOUS_EARLY_CHECKOUT", risk: 20 });
+  }
+
+  if (clampMinutes(session.otMinutes) >= 300) {
+    flags.push({ code: "UNUSUAL_HIGH_OT", risk: 15 });
+  }
+
+  return flags;
 }
 
 // ======================================================
@@ -857,6 +995,16 @@ function buildSessionBaseForCreate({
     reasonText: s(req.body?.reasonText),
     manualReason: s(req.body?.note),
     policyVersion: Number(policy.version || 0),
+    suspiciousFlags: [],
+    riskScore: 0,
+    securityMeta: {
+      inDistanceMeters: null,
+      outDistanceMeters: null,
+      inLocationSource: getLocationSource(req, "in"),
+      outLocationSource: getLocationSource(req, "out"),
+      inMocked: isMockLocation(req, "in"),
+      outMocked: isMockLocation(req, "out"),
+    },
     ...snapshot,
   };
 }
@@ -1105,6 +1253,8 @@ async function recalcSessionByTimes({ session, policy, shift }) {
   const rules = attendanceRuleDefaults(policy);
   const role = inferRoleFromSession(session);
 
+  ensureSecurityFields(session);
+
   session.lateMinutes =
     role === "helper" ? computeLateMinutes(policy, shift, session.checkInAt) : 0;
 
@@ -1133,6 +1283,7 @@ async function recalcSessionByTimes({ session, policy, shift }) {
       session.abnormalReasonCode = "LEFT_EARLY";
       session.abnormalReasonText =
         "Employee checked out before allowed end time";
+      addSuspiciousFlag(session, "LEFT_EARLY", 10);
     } else if (s(session.abnormalReasonCode) === "LEFT_EARLY") {
       session.abnormal = false;
       session.abnormalReasonCode = "";
@@ -1147,6 +1298,7 @@ async function recalcSessionByTimes({ session, policy, shift }) {
       session.abnormalReasonCode = "CHECKOUT_TOO_FAST";
       session.abnormalReasonText =
         "Worked time is below minimum before checkout";
+      addSuspiciousFlag(session, "CHECKOUT_TOO_FAST", 30);
     }
   } else {
     session.workedMinutes = 0;
@@ -1156,6 +1308,7 @@ async function recalcSessionByTimes({ session, policy, shift }) {
   }
 
   session.policyVersion = Number(policy.version || session.policyVersion || 0);
+  session.riskScore = clampRisk(session.riskScore);
 }
 
 // ======================================================
@@ -1335,6 +1488,8 @@ async function checkIn(req, res) {
 
     const lat = n(req.body?.lat, null);
     const lng = n(req.body?.lng, null);
+    const inLocationSource = getLocationSource(req, "in");
+    const inMocked = isMockLocation(req, "in");
 
     if (!shift) {
       shift = await loadShiftForSession({
@@ -1346,9 +1501,18 @@ async function checkIn(req, res) {
       });
     }
 
+    let inDistanceMeters = null;
     if (policy.requireLocation) {
       if (!(Number.isFinite(lat) && Number.isFinite(lng))) {
         return res.status(400).json({ ok: false, message: "Location required" });
+      }
+
+      if (inMocked) {
+        return res.status(400).json({
+          ok: false,
+          code: "FAKE_GPS_DETECTED",
+          message: "ตรวจพบตำแหน่งที่อาจไม่ถูกต้องจากอุปกรณ์",
+        });
       }
 
       const refLat = shift?.clinicLat;
@@ -1356,6 +1520,7 @@ async function checkIn(req, res) {
 
       if (Number.isFinite(refLat) && Number.isFinite(refLng)) {
         const dist = haversineMeters(refLat, refLng, lat, lng);
+        inDistanceMeters = dist;
         const radius = Number(policy.geoRadiusMeters || 200);
         if (dist > radius) {
           return res.status(400).json({
@@ -1490,8 +1655,36 @@ async function checkIn(req, res) {
       manualReason: s(req.body?.note),
       lateMinutes,
       policyVersion: Number(policy.version || 0),
+      suspiciousFlags: [],
+      riskScore: 0,
+      securityMeta: {
+        inDistanceMeters: Number.isFinite(inDistanceMeters)
+          ? Math.round(inDistanceMeters)
+          : null,
+        outDistanceMeters: null,
+        inLocationSource,
+        outLocationSource: "",
+        inMocked,
+        outMocked: false,
+      },
       ...snapshot,
     });
+
+    ensureSecurityFields(created);
+
+    if (lateMinutes > 0) {
+      addSuspiciousFlag(created, "LATE_CHECKIN", 5);
+    }
+    if (inMocked) {
+      addSuspiciousFlag(created, "MOCK_LOCATION_IN", 50);
+    }
+    maybeFlagDistanceRisk(
+      created,
+      Number.isFinite(inDistanceMeters) ? inDistanceMeters : null,
+      Number(policy.geoRadiusMeters || 200)
+    );
+
+    await created.save();
 
     return res.status(201).json({
       ok: true,
@@ -1619,6 +1812,8 @@ async function checkOut(req, res) {
 
     const lat = n(req.body?.lat, null);
     const lng = n(req.body?.lng, null);
+    const outLocationSource = getLocationSource(req, "out");
+    const outMocked = isMockLocation(req, "out");
 
     const shift = await loadShiftForSession({
       clinicId: effectiveClinicId,
@@ -1628,9 +1823,18 @@ async function checkOut(req, res) {
       shiftId: session.shiftId,
     });
 
+    let outDistanceMeters = null;
     if (policy.requireLocation) {
       if (!(Number.isFinite(lat) && Number.isFinite(lng))) {
         return res.status(400).json({ ok: false, message: "Location required" });
+      }
+
+      if (outMocked) {
+        return res.status(400).json({
+          ok: false,
+          code: "FAKE_GPS_DETECTED",
+          message: "ตรวจพบตำแหน่งที่อาจไม่ถูกต้องจากอุปกรณ์",
+        });
       }
 
       const refLat = shift?.clinicLat;
@@ -1638,6 +1842,7 @@ async function checkOut(req, res) {
 
       if (Number.isFinite(refLat) && Number.isFinite(refLng)) {
         const dist = haversineMeters(refLat, refLng, lat, lng);
+        outDistanceMeters = dist;
         const radius = Number(policy.geoRadiusMeters || 200);
         if (dist > radius) {
           return res.status(400).json({
@@ -1732,6 +1937,8 @@ async function checkOut(req, res) {
       return res.status(out.status).json(out.body);
     }
 
+    ensureSecurityFields(session);
+
     session.checkOutAt = checkOutAt;
     session.status = "closed";
     session.checkOutMethod = method;
@@ -1749,10 +1956,53 @@ async function checkOut(req, res) {
       session.manualReason = s(req.body?.note);
     }
 
+    setLocationSecurityMeta({
+      session,
+      phase: "out",
+      distanceMeters: Number.isFinite(outDistanceMeters) ? outDistanceMeters : null,
+      locationSource: outLocationSource,
+      mocked: outMocked,
+    });
+
+    if (outMocked) {
+      addSuspiciousFlag(session, "MOCK_LOCATION_OUT", 50);
+    }
+    maybeFlagDistanceRisk(
+      session,
+      Number.isFinite(outDistanceMeters) ? outDistanceMeters : null,
+      Number(policy.geoRadiusMeters || 200)
+    );
+
     await recalcSessionByTimes({ session, policy, shift });
+
+    if (isEarlyCheckout) {
+      session.abnormal = true;
+      session.abnormalReasonCode = "EARLY_CHECKOUT";
+      session.abnormalReasonText =
+        "Employee checked out before scheduled end time with reason";
+      addSuspiciousFlag(session, "EARLY_CHECKOUT", 10);
+    }
+
+    const riskFlags = detectCheckoutRiskFlags({
+      session,
+      policy,
+      shift,
+      checkOutAt,
+      role: sessionRole,
+      workDate: s(session.workDate),
+    });
+
+    for (const item of riskFlags) {
+      addSuspiciousFlag(session, item.code, item.risk);
+    }
+
+    session.riskScore = clampRisk(session.riskScore);
+
     await session.save();
 
     const otMeta = await syncOvertimeForSession({ session, policy, shift });
+
+    await session.save();
 
     return res.json({
       ok: true,
@@ -2124,11 +2374,28 @@ async function listMyManualRequests(req, res) {
       .lean();
 
     const policy = await getOrCreatePolicy(effectiveClinicId, userId || principalId);
+
+    const normalizedItems = items.map((x) => {
+      if (!Array.isArray(x.suspiciousFlags)) x.suspiciousFlags = [];
+      if (!x.securityMeta) {
+        x.securityMeta = {
+          inDistanceMeters: null,
+          outDistanceMeters: null,
+          inLocationSource: "",
+          outLocationSource: "",
+          inMocked: false,
+          outMocked: false,
+        };
+      }
+      x.riskScore = clampRisk(x.riskScore || 0);
+      return x;
+    });
+
     const normalizedFilter = normalizeApprovalFilter(approvalStatus);
 
     return res.json({
       ok: true,
-      items,
+      items: normalizedItems,
       filter: {
         view:
           normalizedFilter === "history"
@@ -2183,11 +2450,28 @@ async function listClinicManualRequests(req, res) {
       .lean();
 
     const policy = await getOrCreatePolicy(clinicId, actorUserId);
+
+    const normalizedItems = items.map((x) => {
+      if (!Array.isArray(x.suspiciousFlags)) x.suspiciousFlags = [];
+      if (!x.securityMeta) {
+        x.securityMeta = {
+          inDistanceMeters: null,
+          outDistanceMeters: null,
+          inLocationSource: "",
+          outLocationSource: "",
+          inMocked: false,
+          outMocked: false,
+        };
+      }
+      x.riskScore = clampRisk(x.riskScore || 0);
+      return x;
+    });
+
     const normalizedFilter = normalizeApprovalFilter(approvalStatus) || "pending";
 
     return res.json({
       ok: true,
-      items,
+      items: normalizedItems,
       filter: {
         view: normalizedFilter === "pending" ? "queue" : "history",
         approvalStatus: normalizedFilter,
@@ -2409,6 +2693,13 @@ async function rejectManualRequest(req, res) {
       session.abnormal = false;
       session.abnormalReasonCode = "";
       session.abnormalReasonText = "";
+      session.suspiciousFlags = [];
+      session.riskScore = 0;
+      if (session.securityMeta) {
+        session.securityMeta.outDistanceMeters = null;
+        session.securityMeta.outLocationSource = "";
+        session.securityMeta.outMocked = false;
+      }
     }
 
     await session.save();
@@ -2466,9 +2757,25 @@ async function listMySessions(req, res) {
       .lean();
     const policy = await getOrCreatePolicy(effectiveClinicId, userId || principalId);
 
+    const normalizedItems = items.map((x) => {
+      if (!Array.isArray(x.suspiciousFlags)) x.suspiciousFlags = [];
+      if (!x.securityMeta) {
+        x.securityMeta = {
+          inDistanceMeters: null,
+          outDistanceMeters: null,
+          inLocationSource: "",
+          outLocationSource: "",
+          inMocked: false,
+          outMocked: false,
+        };
+      }
+      x.riskScore = clampRisk(x.riskScore || 0);
+      return x;
+    });
+
     return res.json({
       ok: true,
-      items,
+      items: normalizedItems,
       policy: buildPublicPolicy(policy),
     });
   } catch (e) {
@@ -2516,9 +2823,25 @@ async function listClinicSessions(req, res) {
       .lean();
     const policy = await getOrCreatePolicy(clinicId, s(req.user?.userId));
 
+    const normalizedItems = items.map((x) => {
+      if (!Array.isArray(x.suspiciousFlags)) x.suspiciousFlags = [];
+      if (!x.securityMeta) {
+        x.securityMeta = {
+          inDistanceMeters: null,
+          outDistanceMeters: null,
+          inLocationSource: "",
+          outLocationSource: "",
+          inMocked: false,
+          outMocked: false,
+        };
+      }
+      x.riskScore = clampRisk(x.riskScore || 0);
+      return x;
+    });
+
     return res.json({
       ok: true,
-      items,
+      items: normalizedItems,
       policy: buildPublicPolicy(policy, workDate),
     });
   } catch (e) {
@@ -2564,14 +2887,30 @@ async function myDayPreview(req, res) {
       .sort({ checkInAt: -1, createdAt: -1 })
       .lean();
 
+    const normalizedSessions = sessions.map((x) => {
+      if (!Array.isArray(x.suspiciousFlags)) x.suspiciousFlags = [];
+      if (!x.securityMeta) {
+        x.securityMeta = {
+          inDistanceMeters: null,
+          outDistanceMeters: null,
+          inLocationSource: "",
+          outLocationSource: "",
+          inMocked: false,
+          outMocked: false,
+        };
+      }
+      x.riskScore = clampRisk(x.riskScore || 0);
+      return x;
+    });
+
     const openSession =
-      sessions.find((x) => s(x.status).toLowerCase() === "open") || null;
+      normalizedSessions.find((x) => s(x.status).toLowerCase() === "open") || null;
 
     const pendingManualSession =
-      sessions.find((x) => s(x.status).toLowerCase() === "pending_manual") ||
+      normalizedSessions.find((x) => s(x.status).toLowerCase() === "pending_manual") ||
       null;
 
-    const closedSessions = sessions.filter(
+    const closedSessions = normalizedSessions.filter(
       (x) => s(x.status).toLowerCase() === "closed"
     );
 
@@ -2598,6 +2937,16 @@ async function myDayPreview(req, res) {
 
     const otMinutesApproved = approvedOt.reduce(
       (sum, x) => sum + clampMinutes(x.minutes),
+      0
+    );
+
+    const suspiciousCount = normalizedSessions.reduce(
+      (sum, x) => sum + (Array.isArray(x.suspiciousFlags) && x.suspiciousFlags.length > 0 ? 1 : 0),
+      0
+    );
+
+    const totalRiskScore = normalizedSessions.reduce(
+      (sum, x) => sum + clampRisk(x.riskScore || 0),
       0
     );
 
@@ -2684,8 +3033,10 @@ async function myDayPreview(req, res) {
         normalPay,
         otPay,
         totalPay: normalPay + otPay,
+        suspiciousCount,
+        totalRiskScore,
       },
-      sessions,
+      sessions: normalizedSessions,
       approvedOtRecords: approvedOt,
       runtime: {
         role,
