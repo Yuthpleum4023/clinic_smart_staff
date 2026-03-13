@@ -1,14 +1,16 @@
-// server.js (score_service) — FULL FILE (SAFE + FIXED BODY PARSER + REQUEST/BODY LOG)
+// server.js (score_service) — FULL FILE
 // -----------------------------------------------------------------------------
-// ✅ Adds / Ensures:
-// - ✅ express.json() + express.urlencoded() BEFORE routes (แก้ req.body ว่าง/400)
-// - ✅ Request logger (เห็นทุก request ใน Render Live tail)
-// - ✅ Body preview logger (เฉพาะ method ที่มี body)
-// - ✅ /health
-// - ✅ /events -> routes/eventRoutes
-// - ✅ /score  -> routes/scoreRoutes
-// - ✅ 404 handler (เห็น path ที่ยิงผิด)
-// - ✅ Error handler (กันพังเงียบ)
+// ✅ Includes:
+// - express.json() + express.urlencoded() BEFORE routes
+// - Request logger
+// - Body preview logger
+// - /health
+// - /events -> routes/eventRoutes
+// - /score  -> routes/scoreRoutes
+// - /      -> routes/helperRoutes        ✅ NEW (global helper trust routes)
+// - /      -> routes/recommendRoutes     ✅ OPTIONAL/ENABLED
+// - 404 handler
+// - Error handler
 // -----------------------------------------------------------------------------
 
 require("dotenv").config();
@@ -24,14 +26,13 @@ const app = express();
 app.use(cors({ origin: "*", credentials: false }));
 
 // -----------------------------------------------------------------------------
-// ✅ BODY PARSERS (MUST be before routes)
-// - แก้ปัญหา req.body เป็น {} / undefined -> 400 ทันที
+// BODY PARSERS
 // -----------------------------------------------------------------------------
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 
 // -----------------------------------------------------------------------------
-// ✅ REQUEST LOGGER (สำคัญมากสำหรับ Render Live tail)
+// REQUEST LOGGER
 // -----------------------------------------------------------------------------
 app.use((req, res, next) => {
   const start = Date.now();
@@ -42,13 +43,10 @@ app.use((req, res, next) => {
 
   console.log(`➡️ ${req.method} ${req.originalUrl}`, { ip });
 
-  // ✅ Log content-type (ช่วย debug body parse)
   const ct = req.headers["content-type"];
   if (ct) console.log("   ↳ content-type:", ct);
 
-  // ✅ Log body preview for POST/PUT/PATCH (หลัง express.json แล้ว)
   if (["POST", "PUT", "PATCH"].includes(req.method)) {
-    // ระวังข้อมูลส่วนตัว: log แบบย่อ + ตัด token ออก
     const safeBody = { ...(req.body || {}) };
     if (safeBody.password) safeBody.password = "***";
     if (safeBody.token) safeBody.token = "***";
@@ -66,27 +64,43 @@ app.use((req, res, next) => {
 });
 
 // -----------------------------------------------------------------------------
-// health
+// HEALTH
 // -----------------------------------------------------------------------------
 app.get("/health", (req, res) => {
   res.json({ ok: true, service: "score_service" });
 });
 
 // -----------------------------------------------------------------------------
-// ✅ routes
+// ROUTES
 // -----------------------------------------------------------------------------
+const eventRoutes = require("./routes/eventRoutes");
+const scoreRoutes = require("./routes/scoreRoutes");
+
+// ✅ NEW: Global helper trust routes
+const helperRoutes = require("./routes/helperRoutes");
+
+// ✅ Existing recommendation routes
+const recommendRoutes = require("./routes/recommendRoutes");
+
 // Events: POST /events/attendance
-app.use("/events", require("./routes/eventRoutes"));
+app.use("/events", eventRoutes);
 
-// Score routes (และอาจมี /score/events/attendance ด้วย ขึ้นกับไฟล์ของท่าน)
-app.use("/score", require("./routes/scoreRoutes"));
+// Score routes
+app.use("/score", scoreRoutes);
 
-// ❗ ถ้าโปรเจกต์คุณ “ไม่มีไฟล์” 2 อันนี้ ให้ปิดไว้ก่อน ไม่งั้น service จะล้ม
-// app.use("/staff", require("./routes/staffRoutes"));
-// app.use("/", require("./routes/recommendRoutes"));
+// ✅ Global helper search + trust score
+// expected endpoints:
+// - GET /helpers/search?q=...
+// - GET /helpers/:userId/score
+app.use("/", helperRoutes);
+
+// ✅ Recommendation routes
+// expected endpoint:
+// - GET /recommendations?clinicId=...
+app.use("/", recommendRoutes);
 
 // -----------------------------------------------------------------------------
-// ✅ 404 handler (เห็นชัดว่า client ยิง path อะไรมา)
+// 404 HANDLER
 // -----------------------------------------------------------------------------
 app.use((req, res) => {
   res.status(404).json({
@@ -98,10 +112,13 @@ app.use((req, res) => {
 });
 
 // -----------------------------------------------------------------------------
-// ✅ error handler (กันพังเงียบ)
+// ERROR HANDLER
 // -----------------------------------------------------------------------------
 app.use((err, req, res, next) => {
   console.error("❌ Unhandled error:", err);
+
+  if (res.headersSent) return next(err);
+
   res.status(500).json({
     ok: false,
     error: "INTERNAL_SERVER_ERROR",

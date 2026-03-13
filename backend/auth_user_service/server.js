@@ -1,4 +1,4 @@
-// server.js (CommonJS) - FINAL / DEBUG+SAFE (AUTH + INVITES + TAX PROFILES + INTERNAL TAX + STAFF SEARCH)
+// server.js (CommonJS) - FINAL / DEBUG+SAFE (AUTH + INVITES + TAX PROFILES + INTERNAL TAX + STAFF SEARCH + GLOBAL HELPER SEARCH)
 
 const express = require("express");
 const mongoose = require("mongoose");
@@ -19,7 +19,7 @@ app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true }));
 
 // ===================================================
-// Request Logger (ดูได้ทันทีว่า request ค้างตรงไหน)
+// Request Logger
 // ===================================================
 app.use((req, res, next) => {
   const start = Date.now();
@@ -48,10 +48,9 @@ app.use((req, res, next) => {
 });
 
 // ===================================================
-// Safety Timeout (กัน request หมุนค้าง)
+// Safety Timeout
 // ===================================================
 app.use((req, res, next) => {
-  // ✅ 15s เหมาะกับ production มากกว่า 10s (Atlas/Cold start)
   res.setTimeout(15000, () => {
     if (!res.headersSent) {
       console.log(
@@ -67,6 +66,7 @@ app.use((req, res, next) => {
 // Health Check
 // ===================================================
 const BOOT_AT = Date.now();
+
 app.get("/health", (req, res) => {
   const uptimeSec = Math.floor((Date.now() - BOOT_AT) / 1000);
   res.json({
@@ -84,33 +84,40 @@ const authRoutes = require("./routes/authRoutes");
 const inviteRoutes = require("./routes/inviteRoutes");
 const taxProfileRoutes = require("./routes/taxProfileRoutes");
 
-// ✅ NEW: INTERNAL TAX ROUTES (🔥 ตัวฆ่า 500 ตอนปิดงวด)
+// INTERNAL TAX
 const payrollTaxRoutes = require("./routes/payrollTaxRoutes");
 
-// ✅ NEW: STAFF SEARCH ROUTES (ทาง B)
+// STAFF SEARCH (internal clinic staff)
 const staffRoutes = require("./routes/staffRoutes");
 
-// AUTH (no prefix)
+// ⭐ NEW: GLOBAL HELPER MARKETPLACE
+const helperRoutes = require("./routes/helperRoutes");
+
+// AUTH
 app.use("/", authRoutes);
 
 // INVITES
 app.use("/invites", inviteRoutes);
 
-// TAX PROFILES / PREVIEW TAX
+// TAX PROFILES
 app.use("/users", taxProfileRoutes);
 
-// ✅ INTERNAL TAX (สำคัญมาก)
+// INTERNAL TAX
 app.use("/", payrollTaxRoutes);
 
-// ✅ Staff Search (สำคัญสำหรับ TrustScore UX)
+// STAFF SEARCH
 app.use("/staff", staffRoutes);
 
+// ⭐ GLOBAL HELPER SEARCH
+app.use("/", helperRoutes);
+
 // ===================================================
-// Global Error Handler (กัน throw แล้วค้าง)
+// Global Error Handler
 // ===================================================
 app.use((err, req, res, next) => {
   console.error(`❌ [${req._rid || "noid"}] ERROR:`, err);
   if (res.headersSent) return next(err);
+
   res.status(500).json({
     message: err.message || "Internal Server Error",
   });
@@ -120,17 +127,16 @@ app.use((err, req, res, next) => {
 // MongoDB
 // ===================================================
 const MONGO_URI = process.env.MONGO_URI;
+
 if (!MONGO_URI) {
   console.error("❌ MONGO_URI is missing in .env");
   process.exit(1);
 }
 
-// ✅ ลด warning/พฤติกรรม query แปลก ๆ และทำให้ predictable
 mongoose.set("strictQuery", true);
 
 mongoose
   .connect(MONGO_URI, {
-    // ✅ กัน DNS/Handshake ช้าใน production
     serverSelectionTimeoutMS: 10000,
     connectTimeoutMS: 10000,
     socketTimeoutMS: 20000,
@@ -159,7 +165,6 @@ process.on("uncaughtException", (err) => {
 // ===================================================
 const server = http.createServer(app);
 
-// ✅ ให้สัมพันธ์กับ res.setTimeout(15s) และกัน connection ค้าง
 server.headersTimeout = 20000;
 server.requestTimeout = 20000;
 
