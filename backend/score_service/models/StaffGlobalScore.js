@@ -1,32 +1,26 @@
 const mongoose = require("mongoose");
 
-const TrustScoreSchema = new mongoose.Schema(
+const StaffGlobalScoreSchema = new mongoose.Schema(
   {
-    // =========================
-    // IDENTIFIERS
-    // =========================
     staffId: {
       type: String,
       required: true,
-      trim: true,
+      unique: true,
       index: true,
+      trim: true,
     },
 
-    clinicId: {
-      type: String,
-      required: true,
-      trim: true,
-      index: true,
-    },
-
-    // =========================
-    // SCORE CORE
-    // =========================
-    trustScore: {
+    globalTrustScore: {
       type: Number,
       default: 80,
       min: 0,
       max: 100,
+    },
+
+    clinicCount: {
+      type: Number,
+      default: 0,
+      min: 0,
     },
 
     totalShifts: {
@@ -59,9 +53,6 @@ const TrustScoreSchema = new mongoose.Schema(
       min: 0,
     },
 
-    // =========================
-    // LEVEL
-    // =========================
     level: {
       type: String,
       default: "unknown",
@@ -79,14 +70,6 @@ const TrustScoreSchema = new mongoose.Schema(
       default: null,
     },
 
-    // =========================
-    // META
-    // =========================
-    lastNoShowAt: {
-      type: Date,
-      default: null,
-    },
-
     flags: {
       type: [String],
       default: [],
@@ -100,13 +83,4 @@ const TrustScoreSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-/**
- * IMPORTANT FOR SAAS
- * staff 1 คน สามารถมีคะแนนแยกหลาย clinic ได้
- */
-TrustScoreSchema.index(
-  { staffId: 1, clinicId: 1 },
-  { unique: true }
-);
-
-module.exports = mongoose.model("TrustScore", TrustScoreSchema);
+module.exports = mongoose.model("StaffGlobalScore", StaffGlobalScoreSchema);

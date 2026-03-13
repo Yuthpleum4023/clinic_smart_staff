@@ -5,7 +5,7 @@ const auth = require("../middleware/authMiddleware");
 const ctrl = require("../controllers/scoreController");
 
 // ----------------------------------------------------
-// ✅ helper (CRITICAL)
+// helper
 // ----------------------------------------------------
 function validateStaffId(staffId, res) {
   const sid = String(staffId || "").trim();
@@ -27,12 +27,7 @@ function validateStaffId(staffId, res) {
 }
 
 // ----------------------------------------------------
-// ✅ GET /staff/search?q=...&limit=20
-// ----------------------------------------------------
-router.get("/staff/search", auth, ctrl.searchStaff);
-
-// ----------------------------------------------------
-// ✅ GET /staff/:staffId/score
+// GET /score/staff/:staffId/score
 // ----------------------------------------------------
 router.get("/staff/:staffId/score", auth, (req, res, next) => {
   const sid = validateStaffId(req.params.staffId, res);
@@ -43,7 +38,8 @@ router.get("/staff/:staffId/score", auth, (req, res, next) => {
 });
 
 // ----------------------------------------------------
-// ✅ GET /trustscore?staffId=xxx
+// Backward compatibility
+// GET /score/trustscore?staffId=...
 // ----------------------------------------------------
 router.get("/trustscore", auth, (req, res, next) => {
   const sid = validateStaffId(req.query.staffId, res);
@@ -54,7 +50,8 @@ router.get("/trustscore", auth, (req, res, next) => {
 });
 
 // ----------------------------------------------------
-// ✅ GET /trustscore/:staffId
+// Backward compatibility
+// GET /score/trustscore/:staffId
 // ----------------------------------------------------
 router.get("/trustscore/:staffId", auth, (req, res, next) => {
   const sid = validateStaffId(req.params.staffId, res);
@@ -65,7 +62,7 @@ router.get("/trustscore/:staffId", auth, (req, res, next) => {
 });
 
 // ----------------------------------------------------
-// ✅ POST /events/attendance
+// POST /score/events/attendance
 // ----------------------------------------------------
 router.post("/events/attendance", auth, (req, res, next) => {
   const sid = validateStaffId(req.body.staffId, res);

@@ -8,7 +8,7 @@ const BASE_SCORE = 80;
 const SCORE_RULES = {
   completed: +1,
   late: -2,
-  cancelled_early: -5, // ✅ match schema
+  cancelled_early: -5,
   no_show: -25,
 };
 
@@ -19,6 +19,10 @@ function clamp(n, a, b) {
   return Math.max(a, Math.min(b, n));
 }
 
+function normStr(v) {
+  return String(v || "").trim();
+}
+
 function normStatus(s) {
   return String(s || "").trim().toLowerCase();
 }
@@ -27,22 +31,22 @@ function normStatus(s) {
 function normalizeIncomingStatus(s) {
   const v = normStatus(s);
 
-  // accept old/alias values
   if (v === "cancelled" || v === "cancel" || v === "canceled") {
-    return "cancelled_early"; // ✅ map old cancel -> cancelled_early
+    return "cancelled_early";
   }
-  if (v === "canceled_early" || v === "cancel_early") return "cancelled_early";
+  if (v === "canceled_early" || v === "cancel_early") {
+    return "cancelled_early";
+  }
 
   return v;
 }
 
 // ======================================================
-// ✅ NEW: score -> level
+// ✅ score -> level
 // ======================================================
 function scoreToLevel(score) {
   const s = Number(score || 0);
 
-  // ปรับ threshold ได้ทีหลังง่ายมาก
   if (s >= 90) return { level: "excellent", label: "ยอดเยี่ยม" };
   if (s >= 75) return { level: "good", label: "ดีมาก" };
   if (s >= 60) return { level: "normal", label: "ปกติ" };
@@ -57,53 +61,55 @@ function updateLevel(scoreDoc) {
   return scoreDoc;
 }
 
-function ensureScoreDefaults(scoreDoc) {
+function ensureScoreDefaults(scoreDoc, clinicId = "") {
+  scoreDoc.staffId = normStr(scoreDoc.staffId);
+  scoreDoc.clinicId = normStr(scoreDoc.clinicId || clinicId);
+
   scoreDoc.totalShifts = Number(scoreDoc.totalShifts || 0);
   scoreDoc.completed = Number(scoreDoc.completed || 0);
   scoreDoc.late = Number(scoreDoc.late || 0);
   scoreDoc.noShow = Number(scoreDoc.noShow || 0);
-
-  // ✅ model ของท่านใช้ cancelledEarly
   scoreDoc.cancelledEarly = Number(scoreDoc.cancelledEarly || 0);
 
   scoreDoc.flags = Array.isArray(scoreDoc.flags) ? scoreDoc.flags : [];
   scoreDoc.badges = Array.isArray(scoreDoc.badges) ? scoreDoc.badges : [];
 
-  if (typeof scoreDoc.trustScore !== "number") scoreDoc.trustScore = BASE_SCORE;
+  if (typeof scoreDoc.trustScore !== "number") {
+    scoreDoc.trustScore = BASE_SCORE;
+  }
 
-  // ✅ defaults for new fields
-  scoreDoc.level = (scoreDoc.level || "unknown").toString();
-  scoreDoc.levelLabel = (scoreDoc.levelLabel || "ยังไม่มีข้อมูล").toString();
+  scoreDoc.level = normStr(scoreDoc.level || "unknown") || "unknown";
+  scoreDoc.levelLabel =
+      normStr(scoreDoc.levelLabel || "ยังไม่มีข้อมูล") || "ยังไม่มีข้อมูล";
   scoreDoc.levelUpdatedAt = scoreDoc.levelUpdatedAt || null;
+  scoreDoc.lastNoShowAt = scoreDoc.lastNoShowAt || null;
 
-  // ✅ keep level in sync even for old docs
   updateLevel(scoreDoc);
 
   return scoreDoc;
 }
 
 function applyRules(scoreDoc, { status, minutesLate, occurredAt }) {
-  ensureScoreDefaults(scoreDoc);
+  ensureScoreDefaults(scoreDoc, scoreDoc.clinicId);
 
   const delta = SCORE_RULES[status] ?? 0;
 
   // ✅ late extra penalty (optional MVP rule)
   let finalDelta = delta;
-  if (status === "late" && Number(minutesLate || 0) > 30) finalDelta -= 1;
+  if (status === "late" && Number(minutesLate || 0) > 30) {
+    finalDelta -= 1;
+  }
 
   scoreDoc.totalShifts += 1;
 
   if (status === "completed") scoreDoc.completed += 1;
   if (status === "late") scoreDoc.late += 1;
-
-  // ✅ cancelled_early -> count into cancelledEarly (ตาม model ใหม่)
   if (status === "cancelled_early") scoreDoc.cancelledEarly += 1;
 
   if (status === "no_show") {
     scoreDoc.noShow += 1;
     scoreDoc.lastNoShowAt = occurredAt;
 
-    // ✅ set flag
     const flags = new Set(scoreDoc.flags);
     flags.add("NO_SHOW_30D");
     scoreDoc.flags = Array.from(flags);
@@ -115,12 +121,14 @@ function applyRules(scoreDoc, { status, minutesLate, occurredAt }) {
   const badges = new Set(scoreDoc.badges);
   const highlyReliable = scoreDoc.noShow === 0 && scoreDoc.totalShifts >= 10;
 
-  if (highlyReliable) badges.add("HIGHLY_RELIABLE");
-  else badges.delete("HIGHLY_RELIABLE");
+  if (highlyReliable) {
+    badges.add("HIGHLY_RELIABLE");
+  } else {
+    badges.delete("HIGHLY_RELIABLE");
+  }
 
   scoreDoc.badges = Array.from(badges);
 
-  // ✅ NEW: update derived level after score change
   updateLevel(scoreDoc);
 
   return { scoreDoc, delta: finalDelta };
@@ -131,22 +139,22 @@ async function postAttendanceEvent(req, res) {
   try {
     // ✅ Allow either:
     // - Internal service call (X-Internal-Key -> middleware sets req.internal=true)
-    // - Admin user JWT
-    const { role } = req.user || {};
+    // - Admin/system JWT
+    const role = normStr(req.user?.role).toLowerCase();
     const isInternal = req.internal === true || role === "system";
 
-    if (!(isInternal || role === "admin")) {
+    if (!(isInternal || role === "admin" || role === "clinic_admin")) {
       return res.status(403).json({ message: "Forbidden" });
     }
 
-    const {
-      clinicId,
-      staffId,
-      shiftId = "",
-      status,
-      minutesLate = 0,
-      occurredAt,
-    } = req.body || {};
+    const body = req.body || {};
+
+    const clinicId = normStr(body.clinicId || req.user?.clinicId);
+    const staffId = normStr(body.staffId);
+    const shiftId = normStr(body.shiftId);
+    const status = body.status;
+    const minutesLate = Number(body.minutesLate || 0);
+    const occurredAt = body.occurredAt;
 
     if (!clinicId || !staffId || !status || !occurredAt) {
       return res.status(400).json({
@@ -156,7 +164,6 @@ async function postAttendanceEvent(req, res) {
       });
     }
 
-    // ✅ normalize incoming status (supports old clients)
     const st = normalizeIncomingStatus(status);
 
     if (!ALLOWED_STATUSES.includes(st)) {
@@ -173,23 +180,24 @@ async function postAttendanceEvent(req, res) {
       return res.status(400).json({ message: "occurredAt is invalid date" });
     }
 
-    const minsLate = Number(minutesLate || 0);
-
-    // ✅ save event (status MUST match schema enum)
+    // ✅ save event
     const event = await AttendanceEvent.create({
       clinicId,
       staffId,
       shiftId,
       status: st,
-      minutesLate: minsLate,
+      minutesLate,
       occurredAt: occ,
     });
 
-    // ✅ upsert trustscore
-    let scoreDoc = await TrustScore.findOne({ staffId });
+    // ✅ SaaS FIX: find by clinicId + staffId
+    let scoreDoc = await TrustScore.findOne({ staffId, clinicId });
+
+    // ✅ auto create by clinic + staff
     if (!scoreDoc) {
       scoreDoc = await TrustScore.create({
         staffId,
+        clinicId,
         trustScore: BASE_SCORE,
         totalShifts: 0,
         completed: 0,
@@ -205,9 +213,11 @@ async function postAttendanceEvent(req, res) {
       });
     }
 
+    ensureScoreDefaults(scoreDoc, clinicId);
+
     const { delta } = applyRules(scoreDoc, {
       status: st,
-      minutesLate: minsLate,
+      minutesLate,
       occurredAt: occ,
     });
 
@@ -215,11 +225,39 @@ async function postAttendanceEvent(req, res) {
 
     return res.json({
       ok: true,
-      applied: { status: st, delta },
+      applied: {
+        clinicId,
+        staffId,
+        status: st,
+        delta,
+      },
       event,
-      score: scoreDoc, // ✅ now includes level/label
+      score: {
+        staffId: scoreDoc.staffId,
+        clinicId: scoreDoc.clinicId,
+        trustScore: scoreDoc.trustScore,
+        totalShifts: scoreDoc.totalShifts,
+        completed: scoreDoc.completed,
+        late: scoreDoc.late,
+        noShow: scoreDoc.noShow,
+        cancelledEarly: scoreDoc.cancelledEarly,
+        level: scoreDoc.level,
+        levelLabel: scoreDoc.levelLabel,
+        levelUpdatedAt: scoreDoc.levelUpdatedAt,
+        lastNoShowAt: scoreDoc.lastNoShowAt,
+        flags: scoreDoc.flags || [],
+        badges: scoreDoc.badges || [],
+      },
     });
   } catch (e) {
+    // ✅ duplicate key guard for unique {staffId, clinicId}
+    if (e && e.code === 11000) {
+      return res.status(409).json({
+        message: "TrustScore for this clinic/staff already exists",
+        error: e.message || String(e),
+      });
+    }
+
     return res.status(500).json({
       message: "postAttendanceEvent failed",
       error: e.message || String(e),
