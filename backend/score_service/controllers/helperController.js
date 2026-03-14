@@ -9,6 +9,14 @@ function n(v, fallback = 0) {
   return Number.isFinite(x) ? x : fallback;
 }
 
+function asArray(v) {
+  return Array.isArray(v) ? v : [];
+}
+
+function asObj(v) {
+  return v && typeof v === "object" ? v : {};
+}
+
 function authBase() {
   return s(
     process.env.AUTH_USER_SERVICE_URL ||
@@ -51,12 +59,18 @@ function normalizeStats(doc) {
 function toScorePayload(doc) {
   if (!doc) {
     return {
-      trustScore: null,
+      trustScore: 80,
       flags: [],
       badges: [],
-      stats: null,
-      level: "",
-      levelLabel: "",
+      stats: {
+        totalShifts: 0,
+        completed: 0,
+        late: 0,
+        noShow: 0,
+        cancelledEarly: 0,
+      },
+      level: "unknown",
+      levelLabel: "ยังไม่มีข้อมูล",
       fullName: "",
       name: "",
       phone: "",
@@ -64,6 +78,7 @@ function toScorePayload(doc) {
       userId: "",
       principalId: "",
       staffId: "",
+      updatedAt: null,
     };
   }
 
@@ -103,26 +118,89 @@ function isBetterDoc(nextDoc, currentDoc) {
   return nextTime > currentTime;
 }
 
-function mergeHelperWithScore(user, scoreDoc) {
-  const userId = s(user.userId || scoreDoc?.userId);
-  const staffId = s(user.staffId || scoreDoc?.staffId);
+function pickRole(user = {}, scoreDoc = null) {
+  const direct = s(user.role);
+  if (direct) return direct;
+
+  const activeRole = s(user.activeRole);
+  if (activeRole) return activeRole;
+
+  const roles = asArray(user.roles).map((x) => s(x)).filter(Boolean);
+  if (roles.length > 0) return roles[0];
+
+  const scoreRole = s(scoreDoc?.role);
+  if (scoreRole) return scoreRole;
+
+  return "helper";
+}
+
+function normalizeAuthUser(raw) {
+  const u = asObj(raw);
+  const profile = asObj(u.profile);
+  const user = asObj(u.user);
+
+  const userId =
+    s(u.userId) ||
+    s(u.id) ||
+    s(u._id) ||
+    s(user.userId) ||
+    s(user.id) ||
+    s(user._id);
+
+  const staffId =
+    s(u.staffId) ||
+    s(profile.staffId) ||
+    s(user.staffId);
 
   const fullName =
-    s(user.fullName) || s(user.name) || s(scoreDoc?.fullName) || s(scoreDoc?.name);
+    s(u.fullName) ||
+    s(u.name) ||
+    s(profile.fullName) ||
+    s(profile.name) ||
+    s(user.fullName) ||
+    s(user.name);
 
-  const phone = s(user.phone) || s(scoreDoc?.phone);
-  const role = s(user.role) || s(scoreDoc?.role) || "helper";
+  const phone =
+    s(u.phone) ||
+    s(profile.phone) ||
+    s(user.phone);
 
   return {
-    ...user,
+    ...u,
     userId,
     staffId,
     fullName,
-    name: s(user.name) || s(scoreDoc?.name),
+    name: s(u.name) || s(profile.name) || s(user.name) || fullName,
     phone,
-    role,
+    role: pickRole(u),
+  };
+}
+
+function mergeHelperWithScore(user, scoreDoc) {
+  const normalizedUser = normalizeAuthUser(user);
+
+  const userId = s(normalizedUser.userId || scoreDoc?.userId);
+  const staffId = s(normalizedUser.staffId || scoreDoc?.staffId);
+
+  const fullName =
+    s(normalizedUser.fullName) ||
+    s(normalizedUser.name) ||
+    s(scoreDoc?.fullName) ||
+    s(scoreDoc?.name);
+
+  const phone = s(normalizedUser.phone) || s(scoreDoc?.phone);
+  const role = pickRole(normalizedUser, scoreDoc);
+
+  return {
+    ...normalizedUser,
     ...toScorePayload(scoreDoc),
+
+    // force identity/profile fields to stay populated
+    userId,
+    principalId: s(scoreDoc?.principalId) || userId,
+    staffId,
     fullName,
+    name: s(normalizedUser.name) || s(scoreDoc?.name) || fullName,
     phone,
     role,
   };
@@ -173,7 +251,8 @@ async function searchHelpers(req, res) {
       );
     }
 
-    const items = Array.isArray(payload.items) ? payload.items : [];
+    const rawItems = Array.isArray(payload.items) ? payload.items : [];
+    const items = rawItems.map(normalizeAuthUser);
 
     const userIds = items.map((x) => s(x.userId)).filter(Boolean);
     const staffIds = items.map((x) => s(x.staffId)).filter(Boolean);
