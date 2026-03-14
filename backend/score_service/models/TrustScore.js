@@ -20,6 +20,48 @@ const TrustScoreSchema = new mongoose.Schema(
     },
 
     // =========================
+    // HELPER IDENTITY (NEW)
+    // =========================
+    userId: {
+      type: String,
+      default: "",
+      trim: true,
+      index: true,
+    },
+
+    principalId: {
+      type: String,
+      default: "",
+      trim: true,
+      index: true,
+    },
+
+    fullName: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+
+    name: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+
+    phone: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+
+    role: {
+      type: String,
+      default: "helper",
+      trim: true,
+      index: true,
+    },
+
+    // =========================
     // SCORE CORE
     // =========================
     trustScore: {
@@ -27,6 +69,7 @@ const TrustScoreSchema = new mongoose.Schema(
       default: 80,
       min: 0,
       max: 100,
+      index: true,
     },
 
     totalShifts: {
@@ -108,5 +151,12 @@ TrustScoreSchema.index(
   { staffId: 1, clinicId: 1 },
   { unique: true }
 );
+
+/**
+ * INDEXES FOR MARKETPLACE
+ */
+TrustScoreSchema.index({ userId: 1, updatedAt: -1 });
+TrustScoreSchema.index({ principalId: 1, updatedAt: -1 });
+TrustScoreSchema.index({ trustScore: -1, updatedAt: -1 });
 
 module.exports = mongoose.model("TrustScore", TrustScoreSchema);

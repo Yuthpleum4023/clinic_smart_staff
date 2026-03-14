@@ -62,11 +62,53 @@ function applyDerivedFields(doc) {
   return doc;
 }
 
+function syncIdentity(doc, identity = {}) {
+  if (!doc) return false;
+
+  let changed = false;
+
+  const next = {
+    userId: normStr(identity.userId),
+    principalId: normStr(identity.principalId),
+    fullName: normStr(identity.fullName),
+    name: normStr(identity.name),
+    phone: normStr(identity.phone),
+    role: normStr(identity.role || "helper") || "helper",
+  };
+
+  const fields = ["userId", "principalId", "fullName", "name", "phone", "role"];
+
+  for (const key of fields) {
+    const incoming = next[key];
+    const current = normStr(doc[key]);
+
+    if (incoming && incoming !== current) {
+      doc[key] = incoming;
+      changed = true;
+    }
+  }
+
+  if (!normStr(doc.role)) {
+    doc.role = "helper";
+    changed = true;
+  }
+
+  return changed;
+}
+
 function buildScoreResponse(doc) {
   return {
     ok: true,
     staffId: normStr(doc.staffId),
     clinicId: normStr(doc.clinicId),
+
+    // ✅ marketplace identity
+    userId: normStr(doc.userId),
+    principalId: normStr(doc.principalId),
+    fullName: normStr(doc.fullName),
+    name: normStr(doc.name),
+    phone: normStr(doc.phone),
+    role: normStr(doc.role || "helper"),
 
     trustScore: toNum(doc.trustScore, BASE_SCORE),
 
@@ -93,13 +135,22 @@ function buildScoreResponse(doc) {
   };
 }
 
-async function findOrCreateTrustScore({ staffId, clinicId }) {
+async function findOrCreateTrustScore({ staffId, clinicId, identity = {} }) {
   let doc = await TrustScore.findOne({ staffId, clinicId });
 
   if (!doc) {
     doc = await TrustScore.create({
       staffId,
       clinicId,
+
+      // ✅ NEW: identity snapshot for helper marketplace
+      userId: normStr(identity.userId),
+      principalId: normStr(identity.principalId),
+      fullName: normStr(identity.fullName),
+      name: normStr(identity.name),
+      phone: normStr(identity.phone),
+      role: normStr(identity.role || "helper") || "helper",
+
       trustScore: BASE_SCORE,
       totalShifts: 0,
       completed: 0,
@@ -154,6 +205,41 @@ async function findOrCreateTrustScore({ staffId, clinicId }) {
 
   if (!Array.isArray(doc.badges)) {
     doc.badges = [];
+    changed = true;
+  }
+
+  // ✅ NEW: ensure new identity fields exist
+  if (doc.userId === undefined || doc.userId === null) {
+    doc.userId = "";
+    changed = true;
+  }
+
+  if (doc.principalId === undefined || doc.principalId === null) {
+    doc.principalId = "";
+    changed = true;
+  }
+
+  if (doc.fullName === undefined || doc.fullName === null) {
+    doc.fullName = "";
+    changed = true;
+  }
+
+  if (doc.name === undefined || doc.name === null) {
+    doc.name = "";
+    changed = true;
+  }
+
+  if (doc.phone === undefined || doc.phone === null) {
+    doc.phone = "";
+    changed = true;
+  }
+
+  if (doc.role === undefined || doc.role === null || !normStr(doc.role)) {
+    doc.role = "helper";
+    changed = true;
+  }
+
+  if (syncIdentity(doc, identity)) {
     changed = true;
   }
 
@@ -214,6 +300,16 @@ async function postAttendanceEvent(req, res) {
     const status = normalizeStatus(req.body?.status);
     const minutesLate = toNum(req.body?.minutesLate, 0);
 
+    // ✅ NEW: optional identity snapshot for marketplace
+    const identity = {
+      userId: req.body?.userId,
+      principalId: req.body?.principalId,
+      fullName: req.body?.fullName,
+      name: req.body?.name,
+      phone: req.body?.phone,
+      role: req.body?.role,
+    };
+
     if (!staffId) {
       return res.status(400).json({ message: "staffId is required" });
     }
@@ -238,7 +334,14 @@ async function postAttendanceEvent(req, res) {
       occurredAt: new Date(),
     });
 
-    const doc = await findOrCreateTrustScore({ staffId, clinicId });
+    const doc = await findOrCreateTrustScore({
+      staffId,
+      clinicId,
+      identity,
+    });
+
+    // ✅ sync identity again in case existing doc received new snapshot now
+    syncIdentity(doc, identity);
 
     const delta = SCORE_RULES[status];
     doc.trustScore = clamp(toNum(doc.trustScore, BASE_SCORE) + delta, 0, 100);

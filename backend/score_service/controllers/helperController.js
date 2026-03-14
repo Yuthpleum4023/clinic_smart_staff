@@ -1,4 +1,3 @@
-// backend/score_service/controllers/helperController.js
 const TrustScore = require("../models/TrustScore");
 
 function s(v) {
@@ -11,7 +10,10 @@ function n(v, fallback = 0) {
 }
 
 function authBase() {
-  return s(process.env.AUTH_USER_SERVICE_URL || "https://auth-user-service-afwu.onrender.com").replace(/\/+$/, "");
+  return s(
+    process.env.AUTH_USER_SERVICE_URL ||
+      "https://auth-user-service-afwu.onrender.com"
+  ).replace(/\/+$/, "");
 }
 
 function internalKey() {
@@ -55,16 +57,74 @@ function toScorePayload(doc) {
       stats: null,
       level: "",
       levelLabel: "",
+      fullName: "",
+      name: "",
+      phone: "",
+      role: "",
+      userId: "",
+      principalId: "",
+      staffId: "",
     };
   }
 
   return {
+    userId: s(doc.userId),
+    principalId: s(doc.principalId),
+    staffId: s(doc.staffId),
+    fullName: s(doc.fullName),
+    name: s(doc.name),
+    phone: s(doc.phone),
+    role: s(doc.role),
+
     trustScore: n(doc.trustScore, 80),
     flags: Array.isArray(doc.flags) ? doc.flags : [],
     badges: Array.isArray(doc.badges) ? doc.badges : [],
     stats: normalizeStats(doc),
     level: s(doc.level),
     levelLabel: s(doc.levelLabel),
+    updatedAt: doc.updatedAt || null,
+  };
+}
+
+function isBetterDoc(nextDoc, currentDoc) {
+  if (!currentDoc) return true;
+  if (!nextDoc) return false;
+
+  const nextScore = n(nextDoc.trustScore, 0);
+  const currentScore = n(currentDoc.trustScore, 0);
+
+  if (nextScore !== currentScore) {
+    return nextScore > currentScore;
+  }
+
+  const nextTime = new Date(nextDoc.updatedAt || 0).getTime();
+  const currentTime = new Date(currentDoc.updatedAt || 0).getTime();
+
+  return nextTime > currentTime;
+}
+
+function mergeHelperWithScore(user, scoreDoc) {
+  const userId = s(user.userId || scoreDoc?.userId);
+  const staffId = s(user.staffId || scoreDoc?.staffId);
+
+  const fullName =
+    s(user.fullName) || s(user.name) || s(scoreDoc?.fullName) || s(scoreDoc?.name);
+
+  const phone = s(user.phone) || s(scoreDoc?.phone);
+  const role = s(user.role) || s(scoreDoc?.role) || "helper";
+
+  return {
+    ...user,
+    userId,
+    staffId,
+    fullName,
+    name: s(user.name) || s(scoreDoc?.name),
+    phone,
+    role,
+    ...toScorePayload(scoreDoc),
+    fullName,
+    phone,
+    role,
   };
 }
 
@@ -126,7 +186,27 @@ async function searchHelpers(req, res) {
       or.length > 0
         ? await TrustScore.find({ $or: or })
             .select(
-              "userId staffId trustScore totalShifts completed late noShow cancelledEarly cancelled flags badges level levelLabel updatedAt"
+              [
+                "userId",
+                "principalId",
+                "staffId",
+                "fullName",
+                "name",
+                "phone",
+                "role",
+                "trustScore",
+                "totalShifts",
+                "completed",
+                "late",
+                "noShow",
+                "cancelledEarly",
+                "cancelled",
+                "flags",
+                "badges",
+                "level",
+                "levelLabel",
+                "updatedAt",
+              ].join(" ")
             )
             .lean()
         : [];
@@ -138,8 +218,19 @@ async function searchHelpers(req, res) {
       const userId = s(d.userId);
       const staffId = s(d.staffId);
 
-      if (userId && !byUserId.has(userId)) byUserId.set(userId, d);
-      if (staffId && !byStaffId.has(staffId)) byStaffId.set(staffId, d);
+      if (userId) {
+        const current = byUserId.get(userId);
+        if (isBetterDoc(d, current)) {
+          byUserId.set(userId, d);
+        }
+      }
+
+      if (staffId) {
+        const current = byStaffId.get(staffId);
+        if (isBetterDoc(d, current)) {
+          byStaffId.set(staffId, d);
+        }
+      }
     }
 
     const results = items.map((u) => {
@@ -151,10 +242,7 @@ async function searchHelpers(req, res) {
         (staffId ? byStaffId.get(staffId) : null) ||
         null;
 
-      return {
-        ...u,
-        ...toScorePayload(scoreDoc),
-      };
+      return mergeHelperWithScore(u, scoreDoc);
     });
 
     return res.json({
@@ -179,16 +267,47 @@ async function getHelperScoreByUserId(req, res) {
       return res.status(400).json({ message: "userId required" });
     }
 
-    const doc = await TrustScore.findOne({ userId })
+    const docs = await TrustScore.find({ userId })
       .select(
-        "userId staffId trustScore totalShifts completed late noShow cancelledEarly cancelled flags badges level levelLabel updatedAt"
+        [
+          "userId",
+          "principalId",
+          "staffId",
+          "fullName",
+          "name",
+          "phone",
+          "role",
+          "trustScore",
+          "totalShifts",
+          "completed",
+          "late",
+          "noShow",
+          "cancelledEarly",
+          "cancelled",
+          "flags",
+          "badges",
+          "level",
+          "levelLabel",
+          "updatedAt",
+        ].join(" ")
       )
       .lean();
 
-    if (!doc) {
+    let bestDoc = null;
+    for (const d of docs) {
+      if (isBetterDoc(d, bestDoc)) {
+        bestDoc = d;
+      }
+    }
+
+    if (!bestDoc) {
       return res.json({
         ok: true,
         userId,
+        fullName: "",
+        name: "",
+        phone: "",
+        role: "helper",
         trustScore: 80,
         flags: [],
         badges: [],
@@ -207,7 +326,7 @@ async function getHelperScoreByUserId(req, res) {
     return res.json({
       ok: true,
       userId,
-      ...toScorePayload(doc),
+      ...toScorePayload(bestDoc),
     });
   } catch (e) {
     return res.status(500).json({

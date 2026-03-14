@@ -61,9 +61,38 @@ function updateLevel(scoreDoc) {
   return scoreDoc;
 }
 
+// ✅ NEW: sync helper identity snapshot for marketplace
+function syncIdentity(scoreDoc, identity = {}) {
+  if (!scoreDoc) return scoreDoc;
+
+  const userId = normStr(identity.userId);
+  const principalId = normStr(identity.principalId);
+  const fullName = normStr(identity.fullName);
+  const name = normStr(identity.name);
+  const phone = normStr(identity.phone);
+  const role = normStr(identity.role);
+
+  if (userId) scoreDoc.userId = userId;
+  if (principalId) scoreDoc.principalId = principalId;
+  if (fullName) scoreDoc.fullName = fullName;
+  if (name) scoreDoc.name = name;
+  if (phone) scoreDoc.phone = phone;
+  if (role) scoreDoc.role = role;
+
+  return scoreDoc;
+}
+
 function ensureScoreDefaults(scoreDoc, clinicId = "") {
   scoreDoc.staffId = normStr(scoreDoc.staffId);
   scoreDoc.clinicId = normStr(scoreDoc.clinicId || clinicId);
+
+  // ✅ NEW: marketplace identity defaults
+  scoreDoc.userId = normStr(scoreDoc.userId);
+  scoreDoc.principalId = normStr(scoreDoc.principalId);
+  scoreDoc.fullName = normStr(scoreDoc.fullName);
+  scoreDoc.name = normStr(scoreDoc.name);
+  scoreDoc.phone = normStr(scoreDoc.phone);
+  scoreDoc.role = normStr(scoreDoc.role || "helper") || "helper";
 
   scoreDoc.totalShifts = Number(scoreDoc.totalShifts || 0);
   scoreDoc.completed = Number(scoreDoc.completed || 0);
@@ -80,7 +109,7 @@ function ensureScoreDefaults(scoreDoc, clinicId = "") {
 
   scoreDoc.level = normStr(scoreDoc.level || "unknown") || "unknown";
   scoreDoc.levelLabel =
-      normStr(scoreDoc.levelLabel || "ยังไม่มีข้อมูล") || "ยังไม่มีข้อมูล";
+    normStr(scoreDoc.levelLabel || "ยังไม่มีข้อมูล") || "ยังไม่มีข้อมูล";
   scoreDoc.levelUpdatedAt = scoreDoc.levelUpdatedAt || null;
   scoreDoc.lastNoShowAt = scoreDoc.lastNoShowAt || null;
 
@@ -156,6 +185,16 @@ async function postAttendanceEvent(req, res) {
     const minutesLate = Number(body.minutesLate || 0);
     const occurredAt = body.occurredAt;
 
+    // ✅ NEW: identity snapshot (optional, but important for marketplace)
+    const identity = {
+      userId: body.userId,
+      principalId: body.principalId,
+      fullName: body.fullName,
+      name: body.name,
+      phone: body.phone,
+      role: body.role,
+    };
+
     if (!clinicId || !staffId || !status || !occurredAt) {
       return res.status(400).json({
         message: "clinicId, staffId, status, occurredAt required",
@@ -198,6 +237,15 @@ async function postAttendanceEvent(req, res) {
       scoreDoc = await TrustScore.create({
         staffId,
         clinicId,
+
+        // ✅ NEW identity snapshot
+        userId: normStr(identity.userId),
+        principalId: normStr(identity.principalId),
+        fullName: normStr(identity.fullName),
+        name: normStr(identity.name),
+        phone: normStr(identity.phone),
+        role: normStr(identity.role || "helper") || "helper",
+
         trustScore: BASE_SCORE,
         totalShifts: 0,
         completed: 0,
@@ -214,6 +262,9 @@ async function postAttendanceEvent(req, res) {
     }
 
     ensureScoreDefaults(scoreDoc, clinicId);
+
+    // ✅ NEW: keep old docs updated when new identity comes in
+    syncIdentity(scoreDoc, identity);
 
     const { delta } = applyRules(scoreDoc, {
       status: st,
@@ -235,6 +286,15 @@ async function postAttendanceEvent(req, res) {
       score: {
         staffId: scoreDoc.staffId,
         clinicId: scoreDoc.clinicId,
+
+        // ✅ NEW identity fields
+        userId: scoreDoc.userId || "",
+        principalId: scoreDoc.principalId || "",
+        fullName: scoreDoc.fullName || "",
+        name: scoreDoc.name || "",
+        phone: scoreDoc.phone || "",
+        role: scoreDoc.role || "helper",
+
         trustScore: scoreDoc.trustScore,
         totalShifts: scoreDoc.totalShifts,
         completed: scoreDoc.completed,

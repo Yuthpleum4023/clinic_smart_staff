@@ -9,6 +9,110 @@ const {
 } = require("../utils/staffClient");
 
 // ======================================================
+// TRUST SCORE EVENT CLIENT
+// ======================================================
+function getScoreServiceBaseUrl() {
+  return s(process.env.SCORE_SERVICE_URL).replace(/\/+$/, "");
+}
+
+function getScoreServiceInternalKey() {
+  return (
+    s(process.env.SCORE_SERVICE_INTERNAL_KEY) ||
+    s(process.env.INTERNAL_SERVICE_KEY)
+  );
+}
+
+async function postTrustScoreEvent(payload) {
+  try {
+    const base = getScoreServiceBaseUrl();
+    if (!base) {
+      console.log("⚠️ Missing SCORE_SERVICE_URL");
+      return;
+    }
+
+    const internalKey = getScoreServiceInternalKey();
+    if (!internalKey) {
+      console.log("⚠️ Missing SCORE_SERVICE_INTERNAL_KEY / INTERNAL_SERVICE_KEY");
+      return;
+    }
+
+    const url = `${base}/events/attendance`;
+
+    const r = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-internal-key": internalKey,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!r.ok) {
+      const txt = await r.text().catch(() => "");
+      console.log("⚠️ score_service error:", txt || `HTTP ${r.status}`);
+    }
+  } catch (e) {
+    console.log("⚠️ score_service call failed:", e.message);
+  }
+}
+
+async function buildTrustScorePayloadFromSession(session) {
+  if (!session) return null;
+
+  const clinicId = s(session.clinicId);
+  const staffId = s(session.staffId);
+
+  // score_service schema ตอนนี้ยัง require staffId
+  if (!clinicId || !staffId) return null;
+
+  const ownerUserId = s(session.userId) || "";
+  let emp = null;
+
+  if (ownerUserId) {
+    try {
+      emp = await getEmployeeByUserId(ownerUserId);
+    } catch (_) {
+      emp = null;
+    }
+  }
+
+  let status = "completed";
+
+  // ออกก่อนเวลาให้แรงกว่า late
+  if (Number(session.lateMinutes || 0) > 0) {
+    status = "late";
+  }
+
+  if (Number(session.leftEarlyMinutes || 0) > 0) {
+    status = "cancelled_early";
+  }
+
+  return {
+    clinicId,
+    staffId,
+    userId: ownerUserId,
+    principalId: s(session.principalId),
+    fullName: s(emp?.fullName || emp?.name || ""),
+    name: s(emp?.name || emp?.fullName || ""),
+    phone: s(emp?.phone || ""),
+    role: s(session.staffId) ? "employee" : "helper",
+    status,
+    minutesLate: Number(session.lateMinutes || 0),
+    occurredAt: new Date().toISOString(),
+  };
+}
+
+async function maybePostTrustScoreFromSession(session) {
+  try {
+    const payload = await buildTrustScorePayloadFromSession(session);
+    if (!payload) return;
+    await postTrustScoreEvent(payload);
+  } catch (e) {
+    console.log("⚠️ trust score event failed:", e.message);
+  }
+}
+
+// ======================================================
 // basic helpers
 // ======================================================
 function s(v) {
@@ -2004,6 +2108,11 @@ async function checkOut(req, res) {
 
     await session.save();
 
+    // ============================================
+    // SEND EVENT TO TRUST SCORE SERVICE
+    // ============================================
+    await maybePostTrustScoreFromSession(session);
+
     return res.json({
       ok: true,
       session,
@@ -2610,6 +2719,13 @@ async function approveManualRequest(req, res) {
 
     const otMeta = await syncOvertimeForSession({ session, policy, shift });
     await session.save();
+
+    // ============================================
+    // SEND EVENT TO TRUST SCORE SERVICE
+    // ============================================
+    if (s(session.status) === "closed") {
+      await maybePostTrustScoreFromSession(session);
+    }
 
     return res.json({
       ok: true,
