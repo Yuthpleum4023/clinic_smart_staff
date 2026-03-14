@@ -136,14 +136,16 @@ function buildScoreResponse(doc) {
 }
 
 async function findOrCreateTrustScore({ staffId, clinicId, identity = {} }) {
-  let doc = await TrustScore.findOne({ staffId, clinicId });
+  const safeClinicId = normStr(clinicId || "global") || "global";
+
+  let doc = await TrustScore.findOne({ staffId, clinicId: safeClinicId });
 
   if (!doc) {
     doc = await TrustScore.create({
       staffId,
-      clinicId,
+      clinicId: safeClinicId,
 
-      // ✅ NEW: identity snapshot for helper marketplace
+      // ✅ identity snapshot for helper marketplace
       userId: normStr(identity.userId),
       principalId: normStr(identity.principalId),
       fullName: normStr(identity.fullName),
@@ -167,6 +169,11 @@ async function findOrCreateTrustScore({ staffId, clinicId, identity = {} }) {
   }
 
   let changed = false;
+
+  if (doc.clinicId === undefined || doc.clinicId === null || !normStr(doc.clinicId)) {
+    doc.clinicId = safeClinicId;
+    changed = true;
+  }
 
   if (doc.trustScore === undefined || doc.trustScore === null) {
     doc.trustScore = BASE_SCORE;
@@ -208,7 +215,7 @@ async function findOrCreateTrustScore({ staffId, clinicId, identity = {} }) {
     changed = true;
   }
 
-  // ✅ NEW: ensure new identity fields exist
+  // ✅ ensure new identity fields exist
   if (doc.userId === undefined || doc.userId === null) {
     doc.userId = "";
     changed = true;
@@ -267,14 +274,10 @@ async function findOrCreateTrustScore({ staffId, clinicId, identity = {} }) {
 async function getStaffScore(req, res) {
   try {
     const staffId = normStr(req.params.staffId);
-    const clinicId = normStr(req.query.clinicId || req.user?.clinicId);
+    const clinicId = normStr(req.query.clinicId || req.user?.clinicId || "global") || "global";
 
     if (!staffId) {
       return res.status(400).json({ message: "staffId is required" });
-    }
-
-    if (!clinicId) {
-      return res.status(400).json({ message: "clinicId is required" });
     }
 
     const doc = await findOrCreateTrustScore({ staffId, clinicId });
@@ -294,13 +297,13 @@ async function getStaffScore(req, res) {
 // ----------------------------------------------------
 async function postAttendanceEvent(req, res) {
   try {
-    const clinicId = normStr(req.body?.clinicId);
+    const clinicId = normStr(req.body?.clinicId || "global") || "global";
     const staffId = normStr(req.body?.staffId);
     const shiftId = normStr(req.body?.shiftId);
     const status = normalizeStatus(req.body?.status);
     const minutesLate = toNum(req.body?.minutesLate, 0);
 
-    // ✅ NEW: optional identity snapshot for marketplace
+    // ✅ optional identity snapshot for marketplace
     const identity = {
       userId: req.body?.userId,
       principalId: req.body?.principalId,
@@ -312,10 +315,6 @@ async function postAttendanceEvent(req, res) {
 
     if (!staffId) {
       return res.status(400).json({ message: "staffId is required" });
-    }
-
-    if (!clinicId) {
-      return res.status(400).json({ message: "clinicId is required" });
     }
 
     if (!Object.prototype.hasOwnProperty.call(SCORE_RULES, status)) {

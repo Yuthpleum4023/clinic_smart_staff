@@ -14,7 +14,7 @@ const TrustScoreSchema = new mongoose.Schema(
 
     clinicId: {
       type: String,
-      required: true,
+      default: "global",
       trim: true,
       index: true,
     },
