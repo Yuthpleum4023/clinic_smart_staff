@@ -1,12 +1,15 @@
 // lib/services/settings_service.dart
 //
-// ✅ FULL FILE — SettingsService (SSO + PIN + Clinic Location + Contact Phone + Sync to Backend)
-// - เก็บ SSO% + Edit PIN เหมือนเดิม
-// - ✅ เพิ่ม: Clinic Contact Phone (local prefs)
-// - เก็บพิกัดคลินิกลงเครื่อง (lat/lng)
-// - sync พิกัดขึ้น backend (PATCH /clinics/me/location)
-//   ใช้ baseUrl: ApiConfig.payrollBaseUrl (ส่งมาจาก screen)
+// ✅ FULL FILE — SettingsService
+// - SSO + PIN
+// - Clinic Contact Phone
+// - ✅ Clinic Location (local + sync)
+// - ✅ Helper Location (local + sync)
 // - PRODUCTION SAFE: timeout + error ชัด
+//
+// NOTE:
+// - ฝั่ง clinic ใช้ path เดิมได้ เช่น /clinics/me/location หรือ /users/me/location
+// - ฝั่ง helper แนะนำใช้ /users/me/location
 //
 
 import 'dart:convert';
@@ -22,9 +25,13 @@ class SettingService {
   static const String _ssoKey = 'settings_sso_percent';
   static const String _editPinKey = 'edit_pin';
 
-  // ✅ location keys
+  // ✅ clinic location keys
   static const String _clinicLatKey = 'clinic_location_lat';
   static const String _clinicLngKey = 'clinic_location_lng';
+
+  // ✅ helper location keys
+  static const String _helperLatKey = 'helper_location_lat';
+  static const String _helperLngKey = 'helper_location_lng';
 
   // ✅ clinic contact phone key
   static const String _clinicContactPhoneKey = 'clinic_contact_phone';
@@ -90,8 +97,6 @@ class SettingService {
 
   static Future<void> saveClinicContactPhone(String phone) async {
     final p = phone.trim();
-    // ไม่บังคับ format แข็งใน service (ให้ UI validate ได้)
-    // แต่กัน null/empty และกันเก็บค่าแปลก ๆ แบบ "null"
     if (p.isEmpty || p == 'null') return;
 
     final prefs = await SharedPreferences.getInstance();
@@ -106,7 +111,7 @@ class SettingService {
   // ============================================================
   // ✅ Clinic Location (Local)
   // ============================================================
-  static Future<ClinicLocation?> loadClinicLocation() async {
+  static Future<AppLocation?> loadClinicLocation() async {
     final prefs = await SharedPreferences.getInstance();
     final lat = prefs.getDouble(_clinicLatKey);
     final lng = prefs.getDouble(_clinicLngKey);
@@ -114,7 +119,7 @@ class SettingService {
     if (lat == null || lng == null) return null;
     if (lat == 0 && lng == 0) return null;
 
-    return ClinicLocation(lat: lat, lng: lng);
+    return AppLocation(lat: lat, lng: lng);
   }
 
   static Future<void> saveClinicLocation({
@@ -133,10 +138,36 @@ class SettingService {
   }
 
   // ============================================================
-  // ✅ Sync clinic location to backend
-  // - PATCH {baseUrl}{path}
-  // - default path: /clinics/me/location
-  // - body: { lat, lng }
+  // ✅ Helper Location (Local)
+  // ============================================================
+  static Future<AppLocation?> loadHelperLocation() async {
+    final prefs = await SharedPreferences.getInstance();
+    final lat = prefs.getDouble(_helperLatKey);
+    final lng = prefs.getDouble(_helperLngKey);
+
+    if (lat == null || lng == null) return null;
+    if (lat == 0 && lng == 0) return null;
+
+    return AppLocation(lat: lat, lng: lng);
+  }
+
+  static Future<void> saveHelperLocation({
+    required double lat,
+    required double lng,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(_helperLatKey, lat);
+    await prefs.setDouble(_helperLngKey, lng);
+  }
+
+  static Future<void> clearHelperLocation() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_helperLatKey);
+    await prefs.remove(_helperLngKey);
+  }
+
+  // ============================================================
+  // Shared HTTP helpers
   // ============================================================
   static Uri _u(String baseUrl, String path) {
     final b = baseUrl.trim().replaceAll(RegExp(r'\/+$'), '');
@@ -144,13 +175,12 @@ class SettingService {
     return Uri.parse('$b$p');
   }
 
-  static Future<http.Response> syncClinicLocationToBackend({
+  static Future<http.Response> _syncLocationToBackend({
     required String baseUrl,
     required String token,
-    required ClinicLocation location,
-    String path = '/clinics/me/location',
+    required AppLocation location,
+    required String path,
   }) async {
-    // ✅ ถ้า token ว่าง/ไม่ใช่ JWT ให้หยุดเลย กัน jwt malformed
     final t = token.trim();
     if (t.isEmpty || t.split('.').length != 3) {
       throw Exception('token malformed (กรุณา login ใหม่)');
@@ -179,11 +209,27 @@ class SettingService {
   }
 
   // ============================================================
-  // ✅ Convenience: sync using AuthStorage (optional)
+  // ✅ Sync clinic location to backend
+  // - PATCH {baseUrl}{path}
+  // - default path: /clinics/me/location
   // ============================================================
+  static Future<http.Response> syncClinicLocationToBackend({
+    required String baseUrl,
+    required String token,
+    required AppLocation location,
+    String path = '/clinics/me/location',
+  }) async {
+    return _syncLocationToBackend(
+      baseUrl: baseUrl,
+      token: token,
+      location: location,
+      path: path,
+    );
+  }
+
   static Future<http.Response> syncClinicLocationWithStoredToken({
     required String baseUrl,
-    required ClinicLocation location,
+    required AppLocation location,
     String path = '/clinics/me/location',
   }) async {
     final token = await AuthStorage.getToken();
@@ -197,21 +243,69 @@ class SettingService {
       path: path,
     );
   }
+
+  // ============================================================
+  // ✅ Sync helper location to backend
+  // - PATCH {baseUrl}{path}
+  // - default path: /users/me/location
+  // ============================================================
+  static Future<http.Response> syncHelperLocationToBackend({
+    required String baseUrl,
+    required String token,
+    required AppLocation location,
+    String path = '/users/me/location',
+  }) async {
+    return _syncLocationToBackend(
+      baseUrl: baseUrl,
+      token: token,
+      location: location,
+      path: path,
+    );
+  }
+
+  static Future<http.Response> syncHelperLocationWithStoredToken({
+    required String baseUrl,
+    required AppLocation location,
+    String path = '/users/me/location',
+  }) async {
+    final token = await AuthStorage.getToken();
+    if (token == null || token.isEmpty) {
+      throw Exception('no token (กรุณา login ก่อน)');
+    }
+    return syncHelperLocationToBackend(
+      baseUrl: baseUrl,
+      token: token,
+      location: location,
+      path: path,
+    );
+  }
 }
 
 // ============================================================
-// ✅ Model: ClinicLocation (ใช้ร่วมกับ LocationSettingsScreen)
+// ✅ Model: AppLocation (กลาง ใช้ได้ทั้ง clinic + helper)
 // ============================================================
-class ClinicLocation {
+class AppLocation {
   final double lat;
   final double lng;
 
-  const ClinicLocation({required this.lat, required this.lng});
+  const AppLocation({
+    required this.lat,
+    required this.lng,
+  });
 
-  Map<String, dynamic> toJson() => {'lat': lat, 'lng': lng};
+  Map<String, dynamic> toJson() => {
+        'lat': lat,
+        'lng': lng,
+      };
 
-  factory ClinicLocation.fromJson(Map<String, dynamic> j) => ClinicLocation(
+  factory AppLocation.fromJson(Map<String, dynamic> j) => AppLocation(
         lat: (j['lat'] as num?)?.toDouble() ?? 0,
         lng: (j['lng'] as num?)?.toDouble() ?? 0,
       );
 }
+
+// ============================================================
+// ✅ Backward-compatible alias
+// โค้ดเก่าที่ใช้ ClinicLocation จะยังใช้ได้
+// ============================================================
+typedef ClinicLocation = AppLocation;

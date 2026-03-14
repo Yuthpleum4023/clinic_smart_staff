@@ -6,6 +6,7 @@
 // - เมนูแรก: ผู้ช่วยประกาศเวลาว่าง -> เข้า HelperAvailabilityScreen
 // - เมนูสอง: งานว่าง (ตลาดงาน)
 // - เมนูสาม: งานของฉัน (Shifts + นำทาง)
+// - ✅ NEW: ตั้งพิกัดของฉัน -> เข้า HelperLocationSettingsScreen
 //
 // ✅ THIS ROUND FIX:
 // - ✅ ลบ "จุดสแกนนิ้วมือ" ออกจาก HelperHomeScreen ทั้งหมด
@@ -36,6 +37,9 @@
 // - ✅ หน้า list งานว่าง แสดงเบอร์โทรคลินิกแบบไม่รก UI
 // - ✅ หน้า “งานของฉัน” เพิ่มปุ่มโทรคลินิกข้างปุ่มนำทาง
 //
+// ✅ NEW UX:
+// - ✅ เพิ่มเมนู “ตั้งพิกัดของฉัน” สำหรับผู้ช่วย
+//
 
 import 'dart:convert';
 
@@ -46,6 +50,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:clinic_smart_staff/screens/auth/auth_gate_screen.dart';
 import 'package:clinic_smart_staff/screens/home/home_screen.dart';
 import 'package:clinic_smart_staff/screens/helper_availability_screen.dart';
+import 'package:clinic_smart_staff/screens/helper/helper_location_settings_screen.dart';
 
 import 'package:clinic_smart_staff/api/api_config.dart';
 import 'package:clinic_smart_staff/api/api_client.dart';
@@ -243,6 +248,16 @@ class _HelperHomeScreenState extends State<HelperHomeScreen> {
     );
   }
 
+  Future<void> _openHelperLocationSettings() async {
+    debugPrint('[UI] tap: helper location');
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => const HelperLocationSettingsScreen(),
+      ),
+    );
+  }
+
   Future<void> _openOpenNeeds() async {
     debugPrint('[UI] tap: bottom/open needs');
     await Navigator.push(
@@ -401,6 +416,14 @@ class _HelperHomeScreenState extends State<HelperHomeScreen> {
                         debugPrint('[UI] tap: my shifts');
                         await _openMyShifts();
                       },
+                    ),
+                    const SizedBox(height: 10),
+                    _MenuCard(
+                      title: 'ตั้งพิกัดของฉัน',
+                      subtitle: 'ใช้สำหรับค้นหางานใกล้ตัวคุณและคำนวณระยะจากคลินิก',
+                      icon: Icons.my_location,
+                      iconColor: cs.primary,
+                      onTap: _openHelperLocationSettings,
                     ),
                     const SizedBox(height: 6),
                     if (_staffId.isEmpty)
