@@ -17,6 +17,10 @@ function asObj(v) {
   return v && typeof v === "object" ? v : {};
 }
 
+function escapeRegex(v) {
+  return String(v || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function authBase() {
   return s(
     process.env.AUTH_USER_SERVICE_URL ||
@@ -147,10 +151,7 @@ function normalizeAuthUser(raw) {
     s(user.id) ||
     s(user._id);
 
-  const staffId =
-    s(u.staffId) ||
-    s(profile.staffId) ||
-    s(user.staffId);
+  const staffId = s(u.staffId) || s(profile.staffId) || s(user.staffId);
 
   const fullName =
     s(u.fullName) ||
@@ -160,10 +161,7 @@ function normalizeAuthUser(raw) {
     s(user.fullName) ||
     s(user.name);
 
-  const phone =
-    s(u.phone) ||
-    s(profile.phone) ||
-    s(user.phone);
+  const phone = s(u.phone) || s(profile.phone) || s(user.phone);
 
   return {
     ...u,
@@ -195,7 +193,6 @@ function mergeHelperWithScore(user, scoreDoc) {
     ...normalizedUser,
     ...toScorePayload(scoreDoc),
 
-    // force identity/profile fields to stay populated
     userId,
     principalId: s(scoreDoc?.principalId) || userId,
     staffId,
@@ -206,6 +203,108 @@ function mergeHelperWithScore(user, scoreDoc) {
   };
 }
 
+function buildScoreMaps(scoreDocs) {
+  const byUserId = new Map();
+  const byStaffId = new Map();
+
+  for (const d of scoreDocs) {
+    const userId = s(d.userId);
+    const staffId = s(d.staffId);
+
+    if (userId) {
+      const current = byUserId.get(userId);
+      if (isBetterDoc(d, current)) {
+        byUserId.set(userId, d);
+      }
+    }
+
+    if (staffId) {
+      const current = byStaffId.get(staffId);
+      if (isBetterDoc(d, current)) {
+        byStaffId.set(staffId, d);
+      }
+    }
+  }
+
+  return { byUserId, byStaffId };
+}
+
+async function searchTrustScoreFallback(q, limit) {
+  const query = s(q);
+  if (!query) return [];
+
+  const regex = new RegExp(escapeRegex(query), "i");
+
+  const docs = await TrustScore.find({
+    $or: [
+      { fullName: regex },
+      { name: regex },
+      { phone: regex },
+      { userId: regex },
+      { staffId: regex },
+    ],
+  })
+    .select(
+      [
+        "userId",
+        "principalId",
+        "staffId",
+        "fullName",
+        "name",
+        "phone",
+        "role",
+        "trustScore",
+        "totalShifts",
+        "completed",
+        "late",
+        "noShow",
+        "cancelledEarly",
+        "cancelled",
+        "flags",
+        "badges",
+        "level",
+        "levelLabel",
+        "updatedAt",
+      ].join(" ")
+    )
+    .sort({ trustScore: -1, updatedAt: -1 })
+    .limit(limit)
+    .lean();
+
+  const dedup = new Map();
+
+  for (const d of docs) {
+    const key = s(d.userId) || s(d.staffId) || s(d.principalId);
+    if (!key) continue;
+
+    const current = dedup.get(key);
+    if (isBetterDoc(d, current)) {
+      dedup.set(key, d);
+    }
+  }
+
+  return Array.from(dedup.values()).map((d) => {
+    const payload = toScorePayload(d);
+    return {
+      userId: payload.userId,
+      principalId: payload.principalId,
+      staffId: payload.staffId,
+      fullName: payload.fullName,
+      name: payload.name || payload.fullName,
+      phone: payload.phone,
+      role: payload.role || "helper",
+      trustScore: payload.trustScore,
+      flags: payload.flags,
+      badges: payload.badges,
+      stats: payload.stats,
+      level: payload.level,
+      levelLabel: payload.levelLabel,
+      updatedAt: payload.updatedAt,
+      source: "trustscore_fallback",
+    };
+  });
+}
+
 async function searchHelpers(req, res) {
   try {
     const q = s(req.query.q);
@@ -214,6 +313,16 @@ async function searchHelpers(req, res) {
       Math.max(Number.isFinite(limitRaw) ? limitRaw : 20, 1),
       50
     );
+
+    if (!q) {
+      return res.json({
+        ok: true,
+        q,
+        count: 0,
+        source: "empty_query",
+        items: [],
+      });
+    }
 
     const base = authBase();
     const key = internalKey();
@@ -243,7 +352,23 @@ async function searchHelpers(req, res) {
       lastErr = r;
     }
 
+    // ---------------------------------------------------
+    // ✅ Fallback on auth rate-limit / unavailable
+    // ---------------------------------------------------
     if (!payload) {
+      const fallbackItems = await searchTrustScoreFallback(q, limit);
+
+      if (fallbackItems.length > 0) {
+        return res.json({
+          ok: true,
+          q,
+          count: fallbackItems.length,
+          source: "trustscore_fallback_after_auth_error",
+          fallbackReason: lastErr?.status || 500,
+          items: fallbackItems,
+        });
+      }
+
       return res.status(lastErr?.status || 500).json(
         lastErr?.data || {
           message: "helper search failed",
@@ -290,29 +415,9 @@ async function searchHelpers(req, res) {
             .lean()
         : [];
 
-    const byUserId = new Map();
-    const byStaffId = new Map();
+    const { byUserId, byStaffId } = buildScoreMaps(scoreDocs);
 
-    for (const d of scoreDocs) {
-      const userId = s(d.userId);
-      const staffId = s(d.staffId);
-
-      if (userId) {
-        const current = byUserId.get(userId);
-        if (isBetterDoc(d, current)) {
-          byUserId.set(userId, d);
-        }
-      }
-
-      if (staffId) {
-        const current = byStaffId.get(staffId);
-        if (isBetterDoc(d, current)) {
-          byStaffId.set(staffId, d);
-        }
-      }
-    }
-
-    const results = items.map((u) => {
+    let results = items.map((u) => {
       const userId = s(u.userId);
       const staffId = s(u.staffId);
 
@@ -323,6 +428,22 @@ async function searchHelpers(req, res) {
 
       return mergeHelperWithScore(u, scoreDoc);
     });
+
+    // ---------------------------------------------------
+    // ✅ ถ้า auth สำเร็จแต่ไม่เจออะไรเลย ลอง fallback ด้วย
+    // ---------------------------------------------------
+    if (results.length === 0) {
+      const fallbackItems = await searchTrustScoreFallback(q, limit);
+      if (fallbackItems.length > 0) {
+        return res.json({
+          ok: true,
+          q,
+          count: fallbackItems.length,
+          source: "trustscore_fallback_after_empty_auth_result",
+          items: fallbackItems,
+        });
+      }
+    }
 
     return res.json({
       ok: true,
