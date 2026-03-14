@@ -10,14 +10,34 @@ const ClinicSchema = new mongoose.Schema(
     phone: { type: String, default: "" },
     address: { type: String, default: "" },
 
+    // -----------------------------
+    // 📍 Location (ใช้คำนวณระยะ)
+    // -----------------------------
     lat: { type: Number, default: null },
     lng: { type: Number, default: null },
 
-    // ✅ NEW — SaaS Branding (Monogram Logo System)
-    brandAbbr: { type: String, default: "" },      // เช่น MC
-    brandColor: { type: String, default: "" },     // เช่น #6D28D9
+    // เขต/อำเภอ
+    district: { type: String, default: "" },
+
+    // จังหวัด
+    province: { type: String, default: "" },
+
+    // label พร้อมใช้โชว์ UI เช่น "ถลาง, ภูเก็ต"
+    locationLabel: { type: String, default: "" },
+
+    // -----------------------------
+    // 🎨 SaaS Branding
+    // -----------------------------
+    brandAbbr: { type: String, default: "" },   // เช่น MC
+    brandColor: { type: String, default: "" },  // เช่น #6D28D9
   },
   { timestamps: true }
 );
+
+// -----------------------------
+// Index
+// -----------------------------
+ClinicSchema.index({ clinicId: 1 });
+ClinicSchema.index({ lat: 1, lng: 1 });
 
 module.exports = mongoose.model("Clinic", ClinicSchema);

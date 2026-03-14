@@ -1,26 +1,18 @@
 // controllers/shiftNeedController.js
 //
-// ✅ FULL FILE (LONG-TERM FIX + DURABLE HELPER WITHOUT staffId):
-// - createNeed: auto-copy clinic meta from clinics by clinicId (token) + allow override
-// - listOpenNeeds: ALWAYS prefer clinics collection meta (backfill & override) for old needs
-// - listClinicNeeds: ALSO backfill & override (admin list หน้าคลินิกจะไม่ติด Leena House)
-// - applyNeed: ✅ helper สมัครได้แม้ staffId ว่าง (ใช้ userId เป็นหลัก) + phone digits 9-10
-//   ✅ FIX 500: ApplicantSchema.staffId required=true -> helper จะใช้ userId เป็น staffId แทน (stable)
-// - approveApplicant: ✅ อนุมัติได้ทั้งแบบ staffId หรือ userId และสร้าง Shift แบบยั่งยืน:
-//     - Shift.helperUserId = applicant.userId (สำคัญสุด)
-//     - Shift.staffId = applicant.staffId || applicant.userId (เพื่อผ่าน schema required)
-// - no breaking change: employee/admin flow เดิมยังใช้ staffId ได้ตามปกติ
+// ✅ FULL FILE (LONG-TERM FIX + DURABLE HELPER WITHOUT staffId)
+// ✅ PATCH NEW (STORE READY):
+// - enrich clinicDistrict / clinicProvince / clinicLocationLabel
+// - listOpenNeeds รองรับ helperLat/helperLng จาก query เพื่อคำนวณ distanceKm / distanceText
+// - ถ้าไม่มี helperLat/helperLng ก็ยังคืน clinicLocationLabel ได้
 //
-// ✅ EXTRA DURABLE FIX:
-// - ป้องกัน 500 กรณี need.applicants ไม่มี field / ไม่ใช่ array (legacy docs)
-// - ทำให้ .some() และ .push() ปลอดภัยทุกเคส
+// helper call example:
+//   GET /shift-needs/open?helperLat=7.0084&helperLng=100.4747
 //
-// หมายเหตุ: ถ้าไม่มี models/Clinic.js ก็ยังทำงานได้ (จะไม่ enrich)
 
 const ShiftNeed = require("../models/ShiftNeed");
 const Shift = require("../models/Shift");
 
-// ✅ OPTIONAL: ถ้ามี models/Clinic.js จะดึงพิกัด/ชื่อ/โทร/ที่อยู่คลินิกมาเติมให้อัตโนมัติ
 let Clinic = null;
 try {
   Clinic = require("../models/Clinic");
@@ -31,8 +23,9 @@ try {
 // ---------------- helpers ----------------
 function normalizeRoles(r) {
   if (!r) return [];
-  if (Array.isArray(r))
+  if (Array.isArray(r)) {
     return r.map((x) => String(x || "").trim()).filter(Boolean);
+  }
   return [String(r || "").trim()].filter(Boolean);
 }
 
@@ -61,14 +54,10 @@ function getClinicId(req) {
   return (req.user?.clinicId || "").toString().trim();
 }
 
-// ✅ IMPORTANT (DURABLE):
-// - staffId ใช้เฉพาะ employee/admin flow ที่มี staffId จริง
-// - ห้าม fallback เป็น userId อีกแล้ว (มันทำให้ data ปน role และทำให้ approve/apply ตรรกะเพี้ยน)
 function getStaffIdStrict(req) {
   return (req.user?.staffId || "").toString().trim();
 }
 
-// ✅ helper identity ต้องใช้ userId เป็นหลัก (มีแน่นอนจาก /me และ token)
 function getUserId(req) {
   return (
     (req.user?.userId || req.user?.id || req.user?._id || "").toString().trim()
@@ -81,7 +70,6 @@ function bad(msg, code = 400) {
   throw err;
 }
 
-// ✅ phone helpers
 function normalizePhone(raw) {
   return String(raw || "")
     .trim()
@@ -94,7 +82,6 @@ function validatePhoneDigits(phoneDigits) {
   return true;
 }
 
-// ✅ clinic meta helpers
 function s(v) {
   return (v ?? "").toString().trim();
 }
@@ -116,15 +103,94 @@ function isValidLatLng(lat, lng) {
   return true;
 }
 
-// ✅ NEW: legacy-safe applicants array
 function ensureApplicantsArray(doc) {
-  // รองรับทั้ง mongoose doc และ plain object (เผื่ออนาคต)
   if (!doc) return [];
   if (Array.isArray(doc.applicants)) return doc.applicants;
-
-  // ถ้า applicants เป็น null/undefined/ชนิดอื่น → ทำให้เป็น array
   doc.applicants = [];
   return doc.applicants;
+}
+
+function buildLocationLabel({ district = "", province = "", address = "" } = {}) {
+  const d = s(district);
+  const p = s(province);
+  const a = s(address);
+
+  if (d && p) return `${d}, ${p}`;
+  if (p) return p;
+  if (d) return d;
+  if (a) return a;
+  return "";
+}
+
+function toRad(v) {
+  return (v * Math.PI) / 180;
+}
+
+function distanceKmBetween(lat1, lng1, lat2, lng2) {
+  const aLat = numOrNull(lat1);
+  const aLng = numOrNull(lng1);
+  const bLat = numOrNull(lat2);
+  const bLng = numOrNull(lng2);
+
+  if (
+    !isValidLatLng(aLat, aLng) ||
+    !isValidLatLng(bLat, bLng)
+  ) {
+    return null;
+  }
+
+  const R = 6371;
+  const dLat = toRad(bLat - aLat);
+  const dLng = toRad(bLng - aLng);
+
+  const x =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(aLat)) *
+      Math.cos(toRad(bLat)) *
+      Math.sin(dLng / 2) *
+      Math.sin(dLng / 2);
+
+  const c = 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
+  const km = R * c;
+
+  if (!Number.isFinite(km)) return null;
+  return km;
+}
+
+function roundDistanceKm(km) {
+  if (km === null || km === undefined || !Number.isFinite(Number(km))) {
+    return null;
+  }
+  const n = Number(km);
+  if (n < 10) return Math.round(n * 10) / 10;
+  return Math.round(n);
+}
+
+function formatDistanceKm(km) {
+  const rounded = roundDistanceKm(km);
+  if (rounded === null) return "";
+  if (rounded < 10) return `${rounded.toFixed(1)} กม.`;
+  return `${Math.round(rounded)} กม.`;
+}
+
+function getHelperQueryLatLng(req) {
+  const lat =
+    numOrNull(req.query?.helperLat) ??
+    numOrNull(req.query?.lat) ??
+    numOrNull(req.user?.lat) ??
+    numOrNull(req.user?.latitude);
+
+  const lng =
+    numOrNull(req.query?.helperLng) ??
+    numOrNull(req.query?.lng) ??
+    numOrNull(req.user?.lng) ??
+    numOrNull(req.user?.longitude);
+
+  if (!isValidLatLng(lat, lng)) {
+    return { helperLat: null, helperLng: null };
+  }
+
+  return { helperLat: lat, helperLng: lng };
 }
 
 function pickClinicMetaFromNeed(needDoc) {
@@ -137,6 +203,20 @@ function pickClinicMetaFromNeed(needDoc) {
   const clinicAddress = s(
     n.clinicAddress || n.address || n.locationAddress || n.fullAddress
   );
+
+  const clinicDistrict = s(
+    n.clinicDistrict || n.district || n.area || n.amphoe
+  );
+  const clinicProvince = s(
+    n.clinicProvince || n.province || n.changwat || n.state
+  );
+  const clinicLocationLabel = s(
+    n.clinicLocationLabel || n.locationLabel
+  ) || buildLocationLabel({
+    district: clinicDistrict,
+    province: clinicProvince,
+    address: clinicAddress,
+  });
 
   const lat =
     numOrNull(n.clinicLat) ??
@@ -162,10 +242,12 @@ function pickClinicMetaFromNeed(needDoc) {
     clinicName,
     clinicPhone,
     clinicAddress,
+    clinicDistrict,
+    clinicProvince,
+    clinicLocationLabel,
   };
 }
 
-// ✅ load clinic meta (single)
 async function loadClinicMetaByClinicId(clinicId) {
   if (!Clinic) {
     return {
@@ -174,6 +256,9 @@ async function loadClinicMetaByClinicId(clinicId) {
       clinicName: "",
       clinicPhone: "",
       clinicAddress: "",
+      clinicDistrict: "",
+      clinicProvince: "",
+      clinicLocationLabel: "",
     };
   }
 
@@ -185,6 +270,9 @@ async function loadClinicMetaByClinicId(clinicId) {
       clinicName: "",
       clinicPhone: "",
       clinicAddress: "",
+      clinicDistrict: "",
+      clinicProvince: "",
+      clinicLocationLabel: "",
     };
   }
 
@@ -196,22 +284,32 @@ async function loadClinicMetaByClinicId(clinicId) {
       clinicName: "",
       clinicPhone: "",
       clinicAddress: "",
+      clinicDistrict: "",
+      clinicProvince: "",
+      clinicLocationLabel: "",
     };
   }
 
   const lat0 = numOrNull(c.lat);
   const lng0 = numOrNull(c.lng);
+  const district = s(c.district);
+  const province = s(c.province);
+  const address = s(c.address);
 
   return {
     clinicLat: isValidLatLng(lat0, lng0) ? lat0 : null,
     clinicLng: isValidLatLng(lat0, lng0) ? lng0 : null,
     clinicName: s(c.name),
     clinicPhone: s(c.phone),
-    clinicAddress: s(c.address),
+    clinicAddress: address,
+    clinicDistrict: district,
+    clinicProvince: province,
+    clinicLocationLabel:
+      s(c.locationLabel) ||
+      buildLocationLabel({ district, province, address }),
   };
 }
 
-// ✅ load clinic meta (batch) for listOpenNeeds/listClinicNeeds
 async function loadClinicMapByClinicIds(ids = []) {
   if (!Clinic) return new Map();
 
@@ -220,69 +318,85 @@ async function loadClinicMapByClinicIds(ids = []) {
 
   const rows = await Clinic.find({ clinicId: { $in: clean } }).lean();
   const m = new Map();
+
   for (const r of rows || []) {
     const lat0 = numOrNull(r.lat);
     const lng0 = numOrNull(r.lng);
+    const district = s(r.district);
+    const province = s(r.province);
+    const address = s(r.address);
 
     m.set(s(r.clinicId), {
       clinicLat: isValidLatLng(lat0, lng0) ? lat0 : null,
       clinicLng: isValidLatLng(lat0, lng0) ? lng0 : null,
       clinicName: s(r.name),
       clinicPhone: s(r.phone),
-      clinicAddress: s(r.address),
+      clinicAddress: address,
+      clinicDistrict: district,
+      clinicProvince: province,
+      clinicLocationLabel:
+        s(r.locationLabel) ||
+        buildLocationLabel({ district, province, address }),
     });
   }
   return m;
 }
 
-// ✅ merge rule (IMPORTANT):
-// - prefer clinic meta from clinics collection when it exists (long-term fix for "Leena House stuck")
 function mergeClinicMeta({ needMeta, clinicMeta }) {
   const out = { ...needMeta };
 
-  // lat/lng: prefer need if valid, else clinic
   if (!isValidLatLng(numOrNull(out.clinicLat), numOrNull(out.clinicLng))) {
     out.clinicLat = clinicMeta?.clinicLat ?? null;
     out.clinicLng = clinicMeta?.clinicLng ?? null;
   }
 
-  // name/phone/address: prefer clinic if it has non-empty value
   const cName = s(clinicMeta?.clinicName);
   const cPhone = s(clinicMeta?.clinicPhone);
   const cAddr = s(clinicMeta?.clinicAddress);
+  const cDistrict = s(clinicMeta?.clinicDistrict);
+  const cProvince = s(clinicMeta?.clinicProvince);
+  const cLocationLabel = s(clinicMeta?.clinicLocationLabel);
 
   if (cName) out.clinicName = cName;
   if (cPhone) out.clinicPhone = cPhone;
   if (cAddr) out.clinicAddress = cAddr;
+  if (cDistrict) out.clinicDistrict = cDistrict;
+  if (cProvince) out.clinicProvince = cProvince;
+  if (cLocationLabel) out.clinicLocationLabel = cLocationLabel;
 
-  // ensure string
   out.clinicName = s(out.clinicName);
   out.clinicPhone = s(out.clinicPhone);
   out.clinicAddress = s(out.clinicAddress);
+  out.clinicDistrict = s(out.clinicDistrict);
+  out.clinicProvince = s(out.clinicProvince);
+  out.clinicLocationLabel =
+    s(out.clinicLocationLabel) ||
+    buildLocationLabel({
+      district: out.clinicDistrict,
+      province: out.clinicProvince,
+      address: out.clinicAddress,
+    });
 
   return out;
 }
 
-// ✅ applicant identity helpers (DURABLE)
 function applicantMatches(app, { staffId, userId }) {
   const aStaff = s(app?.staffId);
   const aUser = s(app?.userId);
 
-  // helper: match by userId
   if (userId && aUser && aUser === userId) return true;
-
-  // employee: match by staffId
   if (staffId && aStaff && aStaff === staffId) return true;
 
   return false;
 }
 
 function pickApplicantKey(app) {
-  // ใช้ userId เป็นหลัก (ยั่งยืน) ถ้าไม่มีค่อย fallback staffId
   const uid = s(app?.userId);
   if (uid) return { kind: "userId", value: uid };
+
   const sid = s(app?.staffId);
   if (sid) return { kind: "staffId", value: sid };
+
   return { kind: "none", value: "" };
 }
 
@@ -304,12 +418,14 @@ async function createNeed(req, res) {
       requiredCount = 1,
       note = "",
 
-      // optional override
       clinicLat,
       clinicLng,
       clinicName,
       clinicPhone,
       clinicAddress,
+      clinicDistrict,
+      clinicProvince,
+      clinicLocationLabel,
     } = req.body || {};
 
     if (!date || !start || !end) bad("date/start/end required");
@@ -318,13 +434,24 @@ async function createNeed(req, res) {
 
     const auto = await loadClinicMetaByClinicId(clinicId);
 
-    // lat/lng: override > auto
     let lat = numOrNull(clinicLat);
     let lng = numOrNull(clinicLng);
     if (!isValidLatLng(lat, lng)) {
       lat = auto.clinicLat;
       lng = auto.clinicLng;
     }
+
+    const districtText = s(clinicDistrict) || auto.clinicDistrict;
+    const provinceText = s(clinicProvince) || auto.clinicProvince;
+    const addressText = s(clinicAddress) || auto.clinicAddress;
+    const locationLabelText =
+      s(clinicLocationLabel) ||
+      auto.clinicLocationLabel ||
+      buildLocationLabel({
+        district: districtText,
+        province: provinceText,
+        address: addressText,
+      });
 
     const need = await ShiftNeed.create({
       clinicId,
@@ -342,10 +469,12 @@ async function createNeed(req, res) {
       clinicLat: isValidLatLng(lat, lng) ? lat : null,
       clinicLng: isValidLatLng(lat, lng) ? lng : null,
 
-      // name/phone/address: override (if non-empty) else auto
       clinicName: s(clinicName) || auto.clinicName,
       clinicPhone: s(clinicPhone) || auto.clinicPhone,
-      clinicAddress: s(clinicAddress) || auto.clinicAddress,
+      clinicAddress: addressText,
+      clinicDistrict: districtText,
+      clinicProvince: provinceText,
+      clinicLocationLabel: locationLabelText,
     });
 
     return res.status(201).json({ need });
@@ -370,7 +499,6 @@ async function listClinicNeeds(req, res) {
 
     const items = await ShiftNeed.find(q).sort({ createdAt: -1 }).lean();
 
-    // ✅ LONG-TERM FIX: override clinic meta from clinics (so old needs won't show Leena House)
     let clinicMap = new Map();
     if (Clinic && (items || []).length) {
       const clinicIds = (items || []).map((x) => s(x.clinicId)).filter(Boolean);
@@ -389,10 +517,16 @@ async function listClinicNeeds(req, res) {
         clinicName: merged.clinicName || "",
         clinicPhone: merged.clinicPhone || "",
         clinicAddress: merged.clinicAddress || "",
+        clinicDistrict: merged.clinicDistrict || "",
+        clinicProvince: merged.clinicProvince || "",
+        clinicLocationLabel: merged.clinicLocationLabel || "",
         clinic: {
           name: merged.clinicName || "",
           phone: merged.clinicPhone || "",
           address: merged.clinicAddress || "",
+          district: merged.clinicDistrict || "",
+          province: merged.clinicProvince || "",
+          locationLabel: merged.clinicLocationLabel || "",
           location: {
             lat: merged.clinicLat ?? null,
             lng: merged.clinicLng ?? null,
@@ -410,17 +544,17 @@ async function listClinicNeeds(req, res) {
   }
 }
 
-// ---------------- public (auth): list open needs ----------------
+// ---------------- public/auth: list open needs ----------------
 async function listOpenNeeds(req, res) {
   try {
-    // ✅ staffId อาจว่างได้ใน helper
     const staffId = getStaffIdStrict(req);
     const userId = getUserId(req);
+
+    const { helperLat, helperLng } = getHelperQueryLatLng(req);
 
     const q = { status: "open" };
     const items = await ShiftNeed.find(q).sort({ date: 1, start: 1 }).lean();
 
-    // ✅ FIX: backfill clinic meta from clinics
     let clinicMap = new Map();
     if (Clinic && (items || []).length) {
       const clinicIds = (items || []).map((x) => s(x.clinicId)).filter(Boolean);
@@ -428,7 +562,6 @@ async function listOpenNeeds(req, res) {
     }
 
     const enriched = (items || []).map((n) => {
-      // ✅ legacy-safe: applicants may be missing/not array
       const applicants = Array.isArray(n.applicants) ? n.applicants : [];
 
       const applied = applicants.some((a) =>
@@ -437,9 +570,11 @@ async function listOpenNeeds(req, res) {
 
       const needMeta = pickClinicMetaFromNeed(n);
       const clinicMeta = clinicMap.get(s(n.clinicId)) || null;
-
-      // ✅ IMPORTANT: merged prefers clinics meta for name/phone/address (fix stuck data)
       const merged = mergeClinicMeta({ needMeta, clinicMeta });
+
+      const distanceKm = isValidLatLng(helperLat, helperLng)
+        ? distanceKmBetween(helperLat, helperLng, merged.clinicLat, merged.clinicLng)
+        : null;
 
       return {
         ...n,
@@ -450,11 +585,19 @@ async function listOpenNeeds(req, res) {
         clinicName: merged.clinicName || "",
         clinicPhone: merged.clinicPhone || "",
         clinicAddress: merged.clinicAddress || "",
+        clinicDistrict: merged.clinicDistrict || "",
+        clinicProvince: merged.clinicProvince || "",
+        clinicLocationLabel: merged.clinicLocationLabel || "",
+        distanceKm: roundDistanceKm(distanceKm),
+        distanceText: formatDistanceKm(distanceKm),
 
         clinic: {
           name: merged.clinicName || "",
           phone: merged.clinicPhone || "",
           address: merged.clinicAddress || "",
+          district: merged.clinicDistrict || "",
+          province: merged.clinicProvince || "",
+          locationLabel: merged.clinicLocationLabel || "",
           location: {
             lat: merged.clinicLat ?? null,
             lng: merged.clinicLng ?? null,
@@ -478,14 +621,13 @@ async function applyNeed(req, res) {
     mustRoleAny(req, ["employee", "helper", "staff"]);
 
     const role = s(req.user?.role);
-    const staffId = getStaffIdStrict(req); // อาจว่างใน helper
-    const userId = getUserId(req); // ต้องมี (โดยเฉพาะ helper)
+    const staffId = getStaffIdStrict(req);
+    const userId = getUserId(req);
 
     if (role === "helper" && !userId) {
       bad("missing userId in token", 400);
     }
     if (role !== "helper" && !staffId) {
-      // employee/staff ต้องมี staffId
       bad("missing staffId in token", 400);
     }
 
@@ -494,7 +636,6 @@ async function applyNeed(req, res) {
     if (!need) bad("need not found", 404);
     if (need.status !== "open") bad("need is not open", 400);
 
-    // ✅ FIX 500: ensure applicants is array for legacy docs
     const applicants = ensureApplicantsArray(need);
 
     const already = applicants.some((a) =>
@@ -507,8 +648,6 @@ async function applyNeed(req, res) {
       bad("phone required (9-10 digits)", 400);
     }
 
-    // ✅ FIX 500 (Mongoose required staffId in ApplicantSchema):
-    // helper: ใช้ userId เป็น staffId แทน (stable/unique)
     const staffIdForApplicant =
       staffId || (role === "helper" ? userId : "");
 
@@ -516,9 +655,6 @@ async function applyNeed(req, res) {
       bad("missing applicant identity", 400);
     }
 
-    // ✅ DURABLE applicant schema:
-    // - helper: userId เป็นหลัก, staffId ใช้ userId เพื่อผ่าน schema
-    // - employee: staffId เป็นหลัก, userId เก็บไว้ด้วยได้
     applicants.push({
       staffId: staffIdForApplicant,
       userId: userId || "",
@@ -549,10 +685,7 @@ async function listApplicants(req, res) {
     if (!need) bad("need not found", 404);
     if (need.clinicId !== clinicId) bad("forbidden", 403);
 
-    // ✅ legacy-safe (ถ้า doc เก่าไม่มี applicants)
     const applicants = Array.isArray(need.applicants) ? need.applicants : [];
-
-    // ✅ return as-is (มีทั้ง staffId/userId)
     return res.json({ applicants });
   } catch (e) {
     return res.status(e.statusCode || 500).json({
@@ -571,7 +704,6 @@ async function approveApplicant(req, res) {
 
     const id = (req.params.id || "").toString();
 
-    // ✅ DURABLE: รองรับ approve ได้ทั้ง staffId หรือ userId
     const staff = s(req.body?.staffId);
     const uid = s(req.body?.userId);
 
@@ -582,7 +714,6 @@ async function approveApplicant(req, res) {
     if (need.clinicId !== clinicId) bad("forbidden", 403);
     if (need.status !== "open") bad("need is not open", 400);
 
-    // ✅ FIX 500: ensure applicants is array for legacy docs
     const applicants = ensureApplicantsArray(need);
 
     const a = applicants.find((x) =>
@@ -592,7 +723,6 @@ async function approveApplicant(req, res) {
 
     const key = pickApplicantKey(a);
 
-    // ✅ mark statuses (approved vs rejected)
     need.applicants = applicants.map((x) => {
       const xo = x?.toObject ? x.toObject() : x;
       const k2 = pickApplicantKey(xo);
@@ -613,18 +743,14 @@ async function approveApplicant(req, res) {
       ? await loadClinicMetaByClinicId(need.clinicId)
       : null;
 
-    // ✅ IMPORTANT: merged prefers clinic meta for name/phone/address
     const merged = mergeClinicMeta({ needMeta, clinicMeta });
 
-    // ✅ DURABLE SHIFT CREATE:
-    // - helperUserId = applicant.userId (หัวใจของความยั่งยืน)
-    // - staffId required by schema -> ใช้ applicant.staffId ถ้ามี ไม่งั้นใช้ applicant.userId (unique)
     const applicantUserId = s(a.userId);
     const applicantStaffId = s(a.staffId);
 
     const shift = await Shift.create({
       clinicId: need.clinicId,
-      staffId: applicantStaffId || applicantUserId || staff || uid, // ✅ must not be empty
+      staffId: applicantStaffId || applicantUserId || staff || uid,
       helperUserId: applicantUserId || "",
 
       date: need.date,
@@ -645,12 +771,14 @@ async function approveApplicant(req, res) {
       need.status = "filled";
     }
 
-    // ✅ optional: persist back to need to clean old docs
     need.clinicLat = merged.clinicLat ?? null;
     need.clinicLng = merged.clinicLng ?? null;
     need.clinicName = s(merged.clinicName);
     need.clinicPhone = s(merged.clinicPhone);
     need.clinicAddress = s(merged.clinicAddress);
+    need.clinicDistrict = s(merged.clinicDistrict);
+    need.clinicProvince = s(merged.clinicProvince);
+    need.clinicLocationLabel = s(merged.clinicLocationLabel);
 
     await need.save();
 

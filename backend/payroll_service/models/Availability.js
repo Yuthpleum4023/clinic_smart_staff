@@ -11,6 +11,18 @@ const AvailabilitySchema = new mongoose.Schema(
     fullName: { type: String, default: "" },
     phone: { type: String, default: "" },
 
+    // ✅ snapshot location ของผู้ช่วยตอนประกาศเวลาว่าง
+    // ใช้คำนวณระยะ helper <-> clinic และโชว์ใน UI
+    lat: { type: Number, default: null },
+    lng: { type: Number, default: null },
+
+    district: { type: String, default: "" },
+    province: { type: String, default: "" },
+    address: { type: String, default: "" },
+
+    // เช่น "หาดใหญ่, สงขลา"
+    locationLabel: { type: String, default: "" },
+
     // ตารางว่าง
     date: { type: String, required: true, index: true }, // "YYYY-MM-DD"
     start: { type: String, required: true }, // "09:00"
@@ -40,8 +52,8 @@ const AvailabilitySchema = new mongoose.Schema(
     bookedHourlyRate: { type: Number, default: 0 },
 
     // =========================================================
-    // ✅ NEW: clinic clear (ให้คลินิก “เคลียร์” รายการที่จองแล้วออกจากหน้าคลินิก)
-    // - ไม่ทำให้กลับไป open (กันคนอื่นเห็นซ้ำ)
+    // ✅ clinic clear
+    // - ไม่ทำให้กลับไป open
     // - แค่ซ่อนออกจาก /availabilities/booked
     // =========================================================
     clinicClearedAt: { type: Date, default: null, index: true },
@@ -56,7 +68,7 @@ AvailabilitySchema.index({ staffId: 1, date: 1 });
 // query รายการที่ถูกจองแล้ว + เรียงตามวัน/เวลา
 AvailabilitySchema.index({ bookedByClinicId: 1, date: 1, start: 1 });
 
-// ✅ NEW: query booked ของคลินิกที่ “ยังไม่เคลียร์”
+// ✅ query booked ของคลินิกที่ “ยังไม่เคลียร์”
 AvailabilitySchema.index({
   bookedByClinicId: 1,
   status: 1,

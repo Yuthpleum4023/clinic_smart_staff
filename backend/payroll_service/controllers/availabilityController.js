@@ -3,13 +3,14 @@
 const mongoose = require("mongoose");
 const Availability = require("../models/Availability");
 const Shift = require("../models/Shift");
-const Clinic = require("../models/Clinic"); // ✅ NEW: ดึงข้อมูลคลินิกจาก Mongo
+const Clinic = require("../models/Clinic");
 
 // ---------------- helpers ----------------
 function normalizeRoles(r) {
   if (!r) return [];
-  if (Array.isArray(r))
+  if (Array.isArray(r)) {
     return r.map((x) => String(x || "").trim()).filter(Boolean);
+  }
   return [String(r || "").trim()].filter(Boolean);
 }
 
@@ -18,6 +19,7 @@ function mustRoleAny(req, roles = []) {
   const want = (roles || [])
     .map((x) => String(x || "").trim().toLowerCase())
     .filter(Boolean);
+
   const ok = have.some((x) => want.includes(x));
   if (!ok) {
     const err = new Error("forbidden");
@@ -46,7 +48,6 @@ function bad(msg, code = 400) {
   throw err;
 }
 
-// ✅ เดิม: ต้องมี staffId เท่านั้น
 function getStaffIdStrict(req) {
   return s(req.user?.staffId);
 }
@@ -59,8 +60,7 @@ function getClinicIdStrict(req) {
   return s(req.user?.clinicId);
 }
 
-// ✅ NEW: ระยะยาว — helper token บางแบบไม่มี staffId
-// ใช้ staffId ถ้ามี ไม่งั้น fallback เป็น userId
+// helper token บางแบบไม่มี staffId
 function getActorId(req) {
   const staffId = getStaffIdStrict(req);
   if (staffId) return staffId;
@@ -114,8 +114,9 @@ function normalizeRoleValue(x) {
     v === "assistant" ||
     v === "ผู้ช่วย" ||
     v === "dental assistant"
-  )
+  ) {
     return "ผู้ช่วย";
+  }
   return s(x);
 }
 
@@ -136,14 +137,106 @@ function toNumOrNull(v) {
   return Number.isNaN(n) ? null : n;
 }
 
+function buildLocationLabel({ district = "", province = "", address = "" } = {}) {
+  const d = s(district);
+  const p = s(province);
+  const a = s(address);
+
+  if (d && p) return `${d}, ${p}`;
+  if (p) return p;
+  if (d) return d;
+  if (a) return a;
+  return "";
+}
+
+function toRad(v) {
+  return (v * Math.PI) / 180;
+}
+
+function distanceKmBetween(lat1, lng1, lat2, lng2) {
+  const aLat = toNumOrNull(lat1);
+  const aLng = toNumOrNull(lng1);
+  const bLat = toNumOrNull(lat2);
+  const bLng = toNumOrNull(lng2);
+
+  if (
+    aLat === null ||
+    aLng === null ||
+    bLat === null ||
+    bLng === null
+  ) {
+    return null;
+  }
+
+  const R = 6371;
+  const dLat = toRad(bLat - aLat);
+  const dLng = toRad(bLng - aLng);
+
+  const x =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(aLat)) *
+      Math.cos(toRad(bLat)) *
+      Math.sin(dLng / 2) *
+      Math.sin(dLng / 2);
+
+  const c = 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
+  const km = R * c;
+
+  if (!Number.isFinite(km)) return null;
+  return km;
+}
+
+function roundDistanceKm(km) {
+  if (km === null || km === undefined || !Number.isFinite(Number(km))) {
+    return null;
+  }
+  const n = Number(km);
+  if (n < 10) return Math.round(n * 10) / 10;
+  return Math.round(n);
+}
+
+function formatDistanceKm(km) {
+  const rounded = roundDistanceKm(km);
+  if (rounded === null) return "";
+  if (rounded < 10) return `${rounded.toFixed(1)} กม.`;
+  return `${Math.round(rounded)} กม.`;
+}
+
+async function getClinicContext(req) {
+  const clinicId = getClinicIdStrict(req);
+  if (!clinicId) return null;
+
+  const clinic = await Clinic.findOne({ clinicId }).lean();
+  if (!clinic) return null;
+
+  const district = s(clinic?.district);
+  const province = s(clinic?.province);
+  const address = s(clinic?.address);
+
+  return {
+    clinicId: s(clinic?.clinicId),
+    name: s(clinic?.name),
+    phone: s(clinic?.phone),
+    address,
+    lat: toNumOrNull(clinic?.lat),
+    lng: toNumOrNull(clinic?.lng),
+    district,
+    province,
+    locationLabel:
+      s(clinic?.locationLabel) ||
+      buildLocationLabel({ district, province, address }),
+  };
+}
+
 // ---------------- staff/helper: create mine ----------------
 async function createAvailability(req, res) {
   try {
     mustRoleAny(req, ["employee", "helper", "staff"]);
 
-    // ✅ FIX: ใช้ actorId (staffId ถ้ามี / userId ถ้าไม่มี)
     const actorId = getActorId(req);
-    if (!actorId) bad("missing identity in token (staffId/userId required)", 400);
+    if (!actorId) {
+      bad("missing identity in token (staffId/userId required)", 400);
+    }
 
     const userId = getUserId(req);
 
@@ -155,6 +248,12 @@ async function createAvailability(req, res) {
       note = "",
       fullName: _fullNameBody = "",
       phone: _phoneBody = "",
+      lat = null,
+      lng = null,
+      district = "",
+      province = "",
+      address = "",
+      locationLabel = "",
     } = req.body || {};
 
     if (!isYMD(date)) bad("date required (YYYY-MM-DD)");
@@ -168,8 +267,20 @@ async function createAvailability(req, res) {
     const fullName = getFullName(req, req.body);
     const phone = getPhone(req, req.body);
 
+    const latNum = toNumOrNull(lat);
+    const lngNum = toNumOrNull(lng);
+    const districtText = s(district);
+    const provinceText = s(province);
+    const addressText = s(address);
+    const locationLabelText =
+      s(locationLabel) ||
+      buildLocationLabel({
+        district: districtText,
+        province: provinceText,
+        address: addressText,
+      });
+
     const sameDay = await Availability.find({
-      // ✅ FIX: query ด้วย actorId
       staffId: actorId,
       date: s(date),
       status: { $ne: "cancelled" },
@@ -178,6 +289,7 @@ async function createAvailability(req, res) {
     const hit = (sameDay || []).find((it) =>
       overlaps(it.start, it.end, start, end)
     );
+
     if (hit) {
       return res.status(409).json({
         ok: false,
@@ -187,18 +299,24 @@ async function createAvailability(req, res) {
     }
 
     const doc = await Availability.create({
-      // ✅ FIX: เก็บ staffId เป็น actorId (fallback userId ได้)
       staffId: actorId,
-
       userId: userId || "",
+
+      fullName: s(fullName),
+      phone: s(phone),
+
+      lat: latNum,
+      lng: lngNum,
+      district: districtText,
+      province: provinceText,
+      address: addressText,
+      locationLabel: locationLabelText,
+
       date: s(date),
       start: s(start),
       end: s(end),
       role: s(role) || "ผู้ช่วย",
       note: s(note),
-
-      fullName: s(fullName),
-      phone: s(phone),
 
       status: "open",
       bookedByClinicId: "",
@@ -225,9 +343,10 @@ async function listMyAvailabilities(req, res) {
   try {
     mustRoleAny(req, ["employee", "helper", "staff"]);
 
-    // ✅ FIX: ใช้ actorId (staffId ถ้ามี / userId ถ้าไม่มี)
     const actorId = getActorId(req);
-    if (!actorId) bad("missing identity in token (staffId/userId required)", 400);
+    if (!actorId) {
+      bad("missing identity in token (staffId/userId required)", 400);
+    }
 
     const status = s(req.query.status);
     const q = { staffId: actorId };
@@ -235,7 +354,6 @@ async function listMyAvailabilities(req, res) {
 
     const items = await Availability.find(q).sort({ date: 1, start: 1 }).lean();
 
-    // ✅ ENRICH booked clinic meta (เหมือนเดิม)
     const bookedClinicIds = Array.from(
       new Set(
         (items || [])
@@ -265,13 +383,37 @@ async function listMyAvailabilities(req, res) {
       const cid = s(it.bookedByClinicId);
       const c = clinicMap[cid];
 
+      const clinicDistrict = s(c?.district);
+      const clinicProvince = s(c?.province);
+      const clinicAddress = s(c?.address);
+
+      const bookedClinicLocationLabel =
+        s(c?.locationLabel) ||
+        buildLocationLabel({
+          district: clinicDistrict,
+          province: clinicProvince,
+          address: clinicAddress,
+        });
+
+      const distanceKm = distanceKmBetween(
+        it?.lat,
+        it?.lng,
+        c?.lat,
+        c?.lng
+      );
+
       return {
         ...it,
         bookedClinicName: s(c?.name),
         bookedClinicPhone: s(c?.phone),
-        bookedClinicAddress: s(c?.address),
-        bookedClinicLat: c?.lat ?? null,
-        bookedClinicLng: c?.lng ?? null,
+        bookedClinicAddress: clinicAddress,
+        bookedClinicLat: toNumOrNull(c?.lat),
+        bookedClinicLng: toNumOrNull(c?.lng),
+        bookedClinicDistrict: clinicDistrict,
+        bookedClinicProvince: clinicProvince,
+        bookedClinicLocationLabel: bookedClinicLocationLabel,
+        bookedClinicDistanceKm: roundDistanceKm(distanceKm),
+        bookedClinicDistanceText: formatDistanceKm(distanceKm),
       };
     });
 
@@ -289,9 +431,10 @@ async function cancelAvailability(req, res) {
   try {
     mustRoleAny(req, ["employee", "helper", "staff"]);
 
-    // ✅ FIX: ใช้ actorId (staffId ถ้ามี / userId ถ้าไม่มี)
     const actorId = getActorId(req);
-    if (!actorId) bad("missing identity in token (staffId/userId required)", 400);
+    if (!actorId) {
+      bad("missing identity in token (staffId/userId required)", 400);
+    }
 
     const id = s(req.params.id);
     if (!id) bad("missing id");
@@ -300,7 +443,6 @@ async function cancelAvailability(req, res) {
     const doc = await Availability.findById(id);
     if (!doc) bad("availability not found", 404);
 
-    // ✅ FIX: ownership เทียบ actorId
     if (s(doc.staffId) !== actorId) bad("forbidden", 403);
 
     doc.status = "cancelled";
@@ -348,8 +490,43 @@ async function listOpenAvailabilities(req, res) {
 
     if (roleRaw) q.role = normalizeRoleValue(roleRaw);
 
+    const clinicCtx = await getClinicContext(req);
     const items = await Availability.find(q).sort({ date: 1, start: 1 }).lean();
-    return res.json({ ok: true, items });
+
+    const enriched = (items || []).map((it) => {
+      const itemLocationLabel =
+        s(it.locationLabel) ||
+        buildLocationLabel({
+          district: it?.district,
+          province: it?.province,
+          address: it?.address,
+        });
+
+      const distanceKm = clinicCtx
+        ? distanceKmBetween(clinicCtx.lat, clinicCtx.lng, it?.lat, it?.lng)
+        : null;
+
+      return {
+        ...it,
+        locationLabel: itemLocationLabel,
+        distanceKm: roundDistanceKm(distanceKm),
+        distanceText: formatDistanceKm(distanceKm),
+      };
+    });
+
+    return res.json({
+      ok: true,
+      clinic: clinicCtx
+        ? {
+            clinicId: clinicCtx.clinicId,
+            name: clinicCtx.name,
+            locationLabel: clinicCtx.locationLabel,
+            lat: clinicCtx.lat,
+            lng: clinicCtx.lng,
+          }
+        : null,
+      items: enriched,
+    });
   } catch (e) {
     return res.status(e.statusCode || 500).json({
       message: "listOpenAvailabilities failed",
@@ -359,7 +536,7 @@ async function listOpenAvailabilities(req, res) {
 }
 
 // =====================================================
-// ✅ clinic admin list booked
+// clinic admin list booked
 // =====================================================
 async function listBookedAvailabilities(req, res) {
   try {
@@ -398,7 +575,7 @@ async function listBookedAvailabilities(req, res) {
 }
 
 // =====================================================
-// ✅ clinic admin clear booked item
+// clinic admin clear booked item
 // =====================================================
 async function clearBookedAvailability(req, res) {
   try {
@@ -439,7 +616,7 @@ async function clearBookedAvailability(req, res) {
 }
 
 // =====================================================
-// ✅ booking (เหมือนเดิม)
+// booking
 // =====================================================
 async function bookAvailability(req, res) {
   try {
