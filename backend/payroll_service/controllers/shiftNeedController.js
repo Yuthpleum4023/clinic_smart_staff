@@ -4,7 +4,8 @@
 // ✅ PATCH NEW (STORE READY):
 // - enrich clinicDistrict / clinicProvince / clinicLocationLabel
 // - listOpenNeeds รองรับ helperLat/helperLng จาก query เพื่อคำนวณ distanceKm / distanceText
-// - ถ้าไม่มี helperLat/helperLng ก็ยังคืน clinicLocationLabel ได้
+// - ✅ NEW: sort nearest first
+// - ✅ NEW: isNearby / nearbyLabel
 //
 // helper call example:
 //   GET /shift-needs/open?helperLat=7.0084&helperLng=100.4747
@@ -132,10 +133,7 @@ function distanceKmBetween(lat1, lng1, lat2, lng2) {
   const bLat = numOrNull(lat2);
   const bLng = numOrNull(lng2);
 
-  if (
-    !isValidLatLng(aLat, aLng) ||
-    !isValidLatLng(bLat, bLng)
-  ) {
+  if (!isValidLatLng(aLat, aLng) || !isValidLatLng(bLat, bLng)) {
     return null;
   }
 
@@ -210,13 +208,13 @@ function pickClinicMetaFromNeed(needDoc) {
   const clinicProvince = s(
     n.clinicProvince || n.province || n.changwat || n.state
   );
-  const clinicLocationLabel = s(
-    n.clinicLocationLabel || n.locationLabel
-  ) || buildLocationLabel({
-    district: clinicDistrict,
-    province: clinicProvince,
-    address: clinicAddress,
-  });
+  const clinicLocationLabel =
+    s(n.clinicLocationLabel || n.locationLabel) ||
+    buildLocationLabel({
+      district: clinicDistrict,
+      province: clinicProvince,
+      address: clinicAddress,
+    });
 
   const lat =
     numOrNull(n.clinicLat) ??
@@ -551,9 +549,10 @@ async function listOpenNeeds(req, res) {
     const userId = getUserId(req);
 
     const { helperLat, helperLng } = getHelperQueryLatLng(req);
+    const hasHelperLocation = isValidLatLng(helperLat, helperLng);
 
     const q = { status: "open" };
-    const items = await ShiftNeed.find(q).sort({ date: 1, start: 1 }).lean();
+    const items = await ShiftNeed.find(q).lean();
 
     let clinicMap = new Map();
     if (Clinic && (items || []).length) {
@@ -572,9 +571,22 @@ async function listOpenNeeds(req, res) {
       const clinicMeta = clinicMap.get(s(n.clinicId)) || null;
       const merged = mergeClinicMeta({ needMeta, clinicMeta });
 
-      const distanceKm = isValidLatLng(helperLat, helperLng)
-        ? distanceKmBetween(helperLat, helperLng, merged.clinicLat, merged.clinicLng)
+      const rawDistanceKm = hasHelperLocation
+        ? distanceKmBetween(
+            helperLat,
+            helperLng,
+            merged.clinicLat,
+            merged.clinicLng
+          )
         : null;
+
+      const distanceKm = roundDistanceKm(rawDistanceKm);
+      const distanceText = formatDistanceKm(rawDistanceKm);
+
+      const isNearby =
+        typeof distanceKm === "number" && Number.isFinite(distanceKm)
+          ? distanceKm <= 5
+          : false;
 
       return {
         ...n,
@@ -588,8 +600,11 @@ async function listOpenNeeds(req, res) {
         clinicDistrict: merged.clinicDistrict || "",
         clinicProvince: merged.clinicProvince || "",
         clinicLocationLabel: merged.clinicLocationLabel || "",
-        distanceKm: roundDistanceKm(distanceKm),
-        distanceText: formatDistanceKm(distanceKm),
+
+        distanceKm,
+        distanceText,
+        isNearby,
+        nearbyLabel: isNearby ? "ใกล้คุณ" : "",
 
         clinic: {
           name: merged.clinicName || "",
@@ -604,6 +619,33 @@ async function listOpenNeeds(req, res) {
           },
         },
       };
+    });
+
+    enriched.sort((a, b) => {
+      const aDist = numOrNull(a.distanceKm);
+      const bDist = numOrNull(b.distanceKm);
+
+      const aHas = typeof aDist === "number" && Number.isFinite(aDist);
+      const bHas = typeof bDist === "number" && Number.isFinite(bDist);
+
+      if (aHas && bHas) {
+        if (aDist !== bDist) return aDist - bDist;
+      }
+
+      if (aHas && !bHas) return -1;
+      if (!aHas && bHas) return 1;
+
+      const aDate = s(a.date);
+      const bDate = s(b.date);
+      if (aDate !== bDate) return aDate.localeCompare(bDate);
+
+      const aStart = s(a.start);
+      const bStart = s(b.start);
+      if (aStart !== bStart) return aStart.localeCompare(bStart);
+
+      const aCreated = s(a.createdAt);
+      const bCreated = s(b.createdAt);
+      return bCreated.localeCompare(aCreated);
     });
 
     return res.json({ items: enriched });
