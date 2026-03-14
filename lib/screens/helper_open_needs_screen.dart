@@ -45,6 +45,14 @@ class _HelperOpenNeedsScreenState extends State<HelperOpenNeedsScreen> {
     return double.tryParse('${v ?? ''}') ?? fallback;
   }
 
+  double? _dNull(dynamic v) {
+    if (v == null) return null;
+    if (v is num) return v.toDouble();
+    final t = '$v'.trim();
+    if (t.isEmpty) return null;
+    return double.tryParse(t);
+  }
+
   bool _b(dynamic v) {
     if (v is bool) return v;
     final s = _s(v).toLowerCase();
@@ -90,6 +98,85 @@ class _HelperOpenNeedsScreenState extends State<HelperOpenNeedsScreen> {
     return urgent || priority == 'urgent' || type == 'urgent';
   }
 
+  String _firstNonEmpty(List<dynamic> values) {
+    for (final v in values) {
+      final t = _s(v);
+      if (t.isNotEmpty && t.toLowerCase() != 'null') return t;
+    }
+    return '';
+  }
+
+  String _distanceText(Map<String, dynamic> m) {
+    final explicit = _s(
+      m['distanceText'] ??
+          m['clinicDistanceText'] ??
+          m['distance_text'] ??
+          m['distance'],
+    );
+    if (explicit.isNotEmpty) return explicit;
+
+    final kmRaw = m['distanceKm'] ?? m['clinicDistanceKm'] ?? m['distance_km'];
+    if (kmRaw == null) return '';
+
+    final km = _d(kmRaw, -1);
+    if (km < 0) return '';
+    if (km < 10) return '${km.toStringAsFixed(1)} กม.';
+    return '${km.round()} กม.';
+  }
+
+  String _locationLabel(Map<String, dynamic> m) {
+    final district = _firstNonEmpty([
+      m['clinicDistrict'],
+      m['district'],
+      m['amphoe'],
+      m['area'],
+      m['subDistrict'],
+    ]);
+
+    final province = _firstNonEmpty([
+      m['clinicProvince'],
+      m['province'],
+      m['changwat'],
+      m['state'],
+    ]);
+
+    final explicit = _firstNonEmpty([
+      m['clinicLocationLabel'],
+      m['locationLabel'],
+      m['location_label'],
+    ]);
+
+    final address = _firstNonEmpty([
+      m['clinicAddress'],
+      m['address'],
+      m['formattedAddress'],
+      m['displayAddress'],
+    ]);
+
+    if (explicit.isNotEmpty) return explicit;
+    if (district.isNotEmpty && province.isNotEmpty) {
+      return '$district, $province';
+    }
+    if (province.isNotEmpty) return province;
+    if (district.isNotEmpty) return district;
+    if (address.isNotEmpty) return address;
+    return '';
+  }
+
+  String _locationDistanceLine(Map<String, dynamic> m) {
+    final loc = _locationLabel(m);
+    final dist = _distanceText(m);
+
+    if (loc.isNotEmpty && dist.isNotEmpty) {
+      return '$loc • ห่างจากคุณ $dist';
+    }
+    if (dist.isNotEmpty) {
+      return 'ห่างจากคุณ $dist';
+    }
+    if (loc.isNotEmpty) return loc;
+    return '';
+  }
+
   void _snack(String msg) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -108,16 +195,167 @@ class _HelperOpenNeedsScreenState extends State<HelperOpenNeedsScreen> {
     return token;
   }
 
-  Uri _u(String path) {
+  Uri _u(String path, {Map<String, dynamic>? query}) {
     final base = ApiConfig.payrollBaseUrl.replaceAll(RegExp(r'\/+$'), '');
     final p = path.startsWith('/') ? path : '/$path';
-    return Uri.parse('$base$p');
+    final uri = Uri.parse('$base$p');
+
+    if (query == null || query.isEmpty) return uri;
+
+    final qp = <String, String>{};
+    query.forEach((key, value) {
+      if (value == null) return;
+      final text = '$value'.trim();
+      if (text.isEmpty) return;
+      qp[key] = text;
+    });
+
+    return uri.replace(queryParameters: qp.isEmpty ? null : qp);
   }
 
   Map<String, String> _headers(String token) => {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer $token',
       };
+
+  Future<Map<String, dynamic>> _readLocationSnapshot() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    String? readString(List<String> keys) {
+      for (final k in keys) {
+        final v = prefs.getString(k);
+        if (v != null && v.trim().isNotEmpty && v.trim() != 'null') {
+          return v.trim();
+        }
+      }
+      return null;
+    }
+
+    double? readDouble(List<String> keys) {
+      for (final k in keys) {
+        final dv = prefs.getDouble(k);
+        if (dv != null) return dv;
+
+        final sv = prefs.getString(k);
+        final parsed = _dNull(sv);
+        if (parsed != null) return parsed;
+
+        final iv = prefs.getInt(k);
+        if (iv != null) return iv.toDouble();
+      }
+      return null;
+    }
+
+    Map<String, dynamic> parseJsonString(String raw) {
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is Map) {
+          return Map<String, dynamic>.from(decoded);
+        }
+      } catch (_) {}
+      return {};
+    }
+
+    final rawMap = <String, dynamic>{};
+
+    const mapKeys = [
+      'userLocation',
+      'selectedLocation',
+      'helperLocation',
+      'currentLocation',
+      'locationSnapshot',
+      'profileLocation',
+      'sellerLocation',
+      'clinicLocation',
+    ];
+
+    for (final k in mapKeys) {
+      final raw = prefs.getString(k);
+      if (raw != null && raw.trim().isNotEmpty) {
+        rawMap.addAll(parseJsonString(raw));
+      }
+    }
+
+    final lat = readDouble([
+          'lat',
+          'latitude',
+          'userLat',
+          'currentLat',
+          'selectedLat',
+          'helperLat',
+          'profileLat',
+        ]) ??
+        _dNull(rawMap['lat']) ??
+        _dNull(rawMap['latitude']);
+
+    final lng = readDouble([
+          'lng',
+          'lon',
+          'longitude',
+          'userLng',
+          'currentLng',
+          'selectedLng',
+          'helperLng',
+          'profileLng',
+        ]) ??
+        _dNull(rawMap['lng']) ??
+        _dNull(rawMap['lon']) ??
+        _dNull(rawMap['longitude']);
+
+    return {
+      'lat': lat,
+      'lng': lng,
+      'district': _firstNonEmpty([
+        readString([
+          'district',
+          'currentDistrict',
+          'selectedDistrict',
+          'helperDistrict',
+          'profileDistrict',
+        ]),
+        rawMap['district']?.toString(),
+        rawMap['subDistrict']?.toString(),
+        rawMap['amphoe']?.toString(),
+        rawMap['area']?.toString(),
+      ]),
+      'province': _firstNonEmpty([
+        readString([
+          'province',
+          'currentProvince',
+          'selectedProvince',
+          'helperProvince',
+          'profileProvince',
+        ]),
+        rawMap['province']?.toString(),
+        rawMap['changwat']?.toString(),
+        rawMap['state']?.toString(),
+      ]),
+      'address': _firstNonEmpty([
+        readString([
+          'address',
+          'currentAddress',
+          'selectedAddress',
+          'helperAddress',
+          'profileAddress',
+          'formattedAddress',
+        ]),
+        rawMap['address']?.toString(),
+        rawMap['formattedAddress']?.toString(),
+        rawMap['displayName']?.toString(),
+        rawMap['label']?.toString(),
+      ]),
+      'locationLabel': _firstNonEmpty([
+        readString([
+          'locationLabel',
+          'currentLocationLabel',
+          'selectedLocationLabel',
+          'helperLocationLabel',
+          'profileLocationLabel',
+        ]),
+        rawMap['locationLabel']?.toString(),
+      ]),
+    };
+  }
 
   Future<void> _load() async {
     _safeSetState(() {
@@ -129,8 +367,18 @@ class _HelperOpenNeedsScreenState extends State<HelperOpenNeedsScreen> {
       final token = await _getToken();
       if (token == null) throw Exception();
 
+      final loc = await _readLocationSnapshot();
+      final lat = _dNull(loc['lat']);
+      final lng = _dNull(loc['lng']);
+
+      final query = <String, dynamic>{};
+      if (lat != null && lng != null) {
+        query['helperLat'] = lat.toString();
+        query['helperLng'] = lng.toString();
+      }
+
       final res = await http
-          .get(_u('/shift-needs/open'), headers: _headers(token))
+          .get(_u('/shift-needs/open', query: query), headers: _headers(token))
           .timeout(const Duration(seconds: 12));
 
       if (res.statusCode != 200) {
@@ -319,7 +567,8 @@ class _HelperOpenNeedsScreenState extends State<HelperOpenNeedsScreen> {
 
   Widget _jobCard(Map<String, dynamic> m) {
     final id = _s(m['_id']);
-    final title = _s(m['title']).isNotEmpty ? _s(m['title']) : 'งานว่างจากคลินิก';
+    final title =
+        _s(m['title']).isNotEmpty ? _s(m['title']) : 'งานว่างจากคลินิก';
 
     final role = _s(m['role']).isNotEmpty ? _s(m['role']) : _s(m['position']);
     final clinicName = _s(m['clinicName']).isNotEmpty
@@ -341,6 +590,7 @@ class _HelperOpenNeedsScreenState extends State<HelperOpenNeedsScreen> {
     final applied = m['_applied'] == true;
     final acting = _actingId == id;
     final urgent = _isUrgent(m);
+    final locationDistanceLine = _locationDistanceLine(m);
 
     return Card(
       margin: const EdgeInsets.fromLTRB(12, 10, 12, 0),
@@ -391,6 +641,12 @@ class _HelperOpenNeedsScreenState extends State<HelperOpenNeedsScreen> {
                 ),
               ),
             ],
+            if (locationDistanceLine.isNotEmpty)
+              _metaRow(
+                Icons.location_on_outlined,
+                locationDistanceLine,
+                color: Colors.purple.shade700,
+              ),
             if (role.isNotEmpty) _metaRow(Icons.badge_outlined, role),
             if (date.isNotEmpty)
               _metaRow(Icons.calendar_month_outlined, _formatDateThai(date)),
@@ -415,9 +671,8 @@ class _HelperOpenNeedsScreenState extends State<HelperOpenNeedsScreen> {
             SizedBox(
               width: double.infinity,
               child: FilledButton.icon(
-                onPressed: (applied || acting || id.isEmpty)
-                    ? null
-                    : () => _apply(id),
+                onPressed:
+                    (applied || acting || id.isEmpty) ? null : () => _apply(id),
                 icon: acting
                     ? const SizedBox(
                         width: 16,
@@ -437,13 +692,6 @@ class _HelperOpenNeedsScreenState extends State<HelperOpenNeedsScreen> {
           ],
         ),
       ),
-    );
-  }
-
-  Widget _skeletonCard() {
-    return const Card(
-      margin: EdgeInsets.fromLTRB(12, 10, 12, 0),
-      child: SizedBox(height: 150),
     );
   }
 

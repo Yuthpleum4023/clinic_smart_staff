@@ -4,17 +4,20 @@
 // - รองรับ key หลายชื่อ
 // - ไม่เอา userId มาแทน staffId
 // - ✅ role
-// - ✅ NEW: bookedNote / shiftId / bookedHourlyRate
-// - ✅ NEW: bookedByClinicId + clinic contact (for helper to see who booked)
-// - ✅ มีทั้ง fromMap และ fromJson (กันไฟล์อื่นแดง)
+// - ✅ bookedNote / shiftId / bookedHourlyRate
+// - ✅ bookedByClinicId + clinic contact
+// - ✅ NEW: helper location snapshot
+// - ✅ NEW: distance for clinic-side list
+// - ✅ NEW: booked clinic location + distance for helper-side detail
+// - ✅ มีทั้ง fromMap และ fromJson
 //
 
 class Availability {
   final String id;
 
-  final String staffId;   // ผู้ช่วย
-  final String userId;    // user ของผู้ช่วย (optional)
-  final String clinicId;  // อาจว่าง (บางระบบไม่ใช้)
+  final String staffId; // ผู้ช่วย
+  final String userId; // user ของผู้ช่วย (optional)
+  final String clinicId; // อาจว่าง (บางระบบไม่ใช้)
 
   final String fullName;
   final String phone;
@@ -28,20 +31,39 @@ class Availability {
   final String note;
   final String status;
 
+  // ✅ helper location snapshot
+  final num? lat;
+  final num? lng;
+  final String district;
+  final String province;
+  final String address;
+  final String locationLabel;
+
+  // ✅ clinic-side distance (เวลาคลินิกดูรายการ availability)
+  final num? distanceKm;
+  final String distanceText;
+
   // ✅ BOOKING
   final String bookedNote;
   final String shiftId;
   final num bookedHourlyRate;
 
-  // ✅ NEW: who booked (clinicId from booking)
+  // ✅ who booked
   final String bookedByClinicId;
 
-  // ✅ NEW: clinic contact (optional; backend may enrich)
+  // ✅ clinic contact (backend may enrich)
   final String clinicName;
   final String clinicPhone;
   final String clinicAddress;
   final num? clinicLat;
   final num? clinicLng;
+
+  // ✅ booked clinic location + distance (เวลาผู้ช่วยดู availability ของตัวเอง)
+  final String bookedClinicDistrict;
+  final String bookedClinicProvince;
+  final String bookedClinicLocationLabel;
+  final num? bookedClinicDistanceKm;
+  final String bookedClinicDistanceText;
 
   final Map<String, dynamic> raw;
 
@@ -58,6 +80,14 @@ class Availability {
     required this.end,
     required this.note,
     required this.status,
+    required this.lat,
+    required this.lng,
+    required this.district,
+    required this.province,
+    required this.address,
+    required this.locationLabel,
+    required this.distanceKm,
+    required this.distanceText,
     required this.bookedNote,
     required this.shiftId,
     required this.bookedHourlyRate,
@@ -67,6 +97,11 @@ class Availability {
     required this.clinicAddress,
     required this.clinicLat,
     required this.clinicLng,
+    required this.bookedClinicDistrict,
+    required this.bookedClinicProvince,
+    required this.bookedClinicLocationLabel,
+    required this.bookedClinicDistanceKm,
+    required this.bookedClinicDistanceText,
     required this.raw,
   });
 
@@ -86,8 +121,27 @@ class Availability {
     return num.tryParse(t);
   }
 
-  // ✅ ใช้ได้ทั้งเดิมและใหม่
-  factory Availability.fromMap(Map<String, dynamic> m) => Availability.fromJson(m);
+  static String _buildLocationLabel({
+    dynamic district,
+    dynamic province,
+    dynamic address,
+    dynamic fallback,
+  }) {
+    final d = _s(district);
+    final p = _s(province);
+    final a = _s(address);
+    final f = _s(fallback);
+
+    if (f.isNotEmpty) return f;
+    if (d.isNotEmpty && p.isNotEmpty) return '$d, $p';
+    if (p.isNotEmpty) return p;
+    if (d.isNotEmpty) return d;
+    if (a.isNotEmpty) return a;
+    return '';
+  }
+
+  factory Availability.fromMap(Map<String, dynamic> m) =>
+      Availability.fromJson(m);
 
   factory Availability.fromJson(Map<String, dynamic> m) {
     final id = _s(m['_id'] ?? m['id']);
@@ -110,21 +164,54 @@ class Availability {
     final note = _s(m['note'] ?? m['remark'] ?? m['comment']);
     final status = _s(m['status'] ?? m['state'] ?? 'open');
 
+    // ✅ helper location snapshot
+    final lat = _nNull(m['lat'] ?? m['helperLat']);
+    final lng = _nNull(m['lng'] ?? m['helperLng']);
+    final district = _s(m['district'] ?? m['helperDistrict']);
+    final province = _s(m['province'] ?? m['helperProvince']);
+    final address = _s(m['address'] ?? m['helperAddress']);
+    final locationLabel = _buildLocationLabel(
+      district: district,
+      province: province,
+      address: address,
+      fallback: m['locationLabel'],
+    );
+
+    // ✅ clinic-side distance
+    final distanceKm = _nNull(m['distanceKm']);
+    final distanceText = _s(m['distanceText']);
+
     // ✅ BOOKING FIELDS
     final bookedNote = _s(m['bookedNote'] ?? m['bookingNote']);
     final shiftId = _s(m['shiftId'] ?? m['shift_id']);
     final bookedHourlyRate = _n0(m['bookedHourlyRate'] ?? m['hourlyRate']);
 
     // ✅ who booked
-    final bookedByClinicId = _s(m['bookedByClinicId'] ?? m['bookedClinicId'] ?? m['clinicBookedBy']);
+    final bookedByClinicId =
+        _s(m['bookedByClinicId'] ?? m['bookedClinicId'] ?? m['clinicBookedBy']);
 
-    // ✅ clinic contact (backend may attach)
-    // รองรับทั้ง key แบบ availability และแบบ shift
+    // ✅ clinic contact
     final clinicName = _s(m['clinicName'] ?? m['bookedClinicName']);
     final clinicPhone = _s(m['clinicPhone'] ?? m['bookedClinicPhone']);
     final clinicAddress = _s(m['clinicAddress'] ?? m['bookedClinicAddress']);
     final clinicLat = _nNull(m['clinicLat'] ?? m['bookedClinicLat']);
     final clinicLng = _nNull(m['clinicLng'] ?? m['bookedClinicLng']);
+
+    // ✅ booked clinic location + distance
+    final bookedClinicDistrict =
+        _s(m['bookedClinicDistrict'] ?? m['clinicDistrict']);
+    final bookedClinicProvince =
+        _s(m['bookedClinicProvince'] ?? m['clinicProvince']);
+    final bookedClinicLocationLabel = _buildLocationLabel(
+      district: bookedClinicDistrict,
+      province: bookedClinicProvince,
+      address: clinicAddress,
+      fallback: m['bookedClinicLocationLabel'] ?? m['clinicLocationLabel'],
+    );
+    final bookedClinicDistanceKm =
+        _nNull(m['bookedClinicDistanceKm'] ?? m['clinicDistanceKm']);
+    final bookedClinicDistanceText =
+        _s(m['bookedClinicDistanceText'] ?? m['clinicDistanceText']);
 
     return Availability(
       id: id,
@@ -139,6 +226,14 @@ class Availability {
       end: end,
       note: note,
       status: status,
+      lat: lat,
+      lng: lng,
+      district: district,
+      province: province,
+      address: address,
+      locationLabel: locationLabel,
+      distanceKm: distanceKm,
+      distanceText: distanceText,
       bookedNote: bookedNote,
       shiftId: shiftId,
       bookedHourlyRate: bookedHourlyRate,
@@ -148,11 +243,49 @@ class Availability {
       clinicAddress: clinicAddress,
       clinicLat: clinicLat,
       clinicLng: clinicLng,
+      bookedClinicDistrict: bookedClinicDistrict,
+      bookedClinicProvince: bookedClinicProvince,
+      bookedClinicLocationLabel: bookedClinicLocationLabel,
+      bookedClinicDistanceKm: bookedClinicDistanceKm,
+      bookedClinicDistanceText: bookedClinicDistanceText,
       raw: Map<String, dynamic>.from(m),
     );
   }
 
   bool get isBooked => status.toLowerCase().trim() == 'booked';
+
+  bool get isOpen => status.toLowerCase().trim().isEmpty ||
+      status.toLowerCase().trim() == 'open';
+
+  bool get isCancelled => status.toLowerCase().trim() == 'cancelled';
+
+  bool get hasHelperLocation =>
+      locationLabel.isNotEmpty ||
+      district.isNotEmpty ||
+      province.isNotEmpty ||
+      address.isNotEmpty ||
+      lat != null ||
+      lng != null;
+
+  bool get hasClinicDistance =>
+      bookedClinicDistanceText.isNotEmpty || bookedClinicDistanceKm != null;
+
+  String get helperLocationText {
+    if (locationLabel.isNotEmpty) return locationLabel;
+    if (district.isNotEmpty && province.isNotEmpty) {
+      return '$district, $province';
+    }
+    if (province.isNotEmpty) return province;
+    if (district.isNotEmpty) return district;
+    if (address.isNotEmpty) return address;
+    return '';
+  }
+
+  String get clinicLocationText {
+    if (bookedClinicLocationLabel.isNotEmpty) return bookedClinicLocationLabel;
+    if (clinicAddress.isNotEmpty) return clinicAddress;
+    return '';
+  }
 
   Map<String, dynamic> toCreatePayload() {
     return <String, dynamic>{
@@ -160,7 +293,13 @@ class Availability {
       'start': start,
       'end': end,
       'note': note,
-      // 'role': role, // เปิดถ้า backend ต้องใช้
+      if (role.trim().isNotEmpty) 'role': role,
+      if (lat != null) 'lat': lat,
+      if (lng != null) 'lng': lng,
+      if (district.trim().isNotEmpty) 'district': district,
+      if (province.trim().isNotEmpty) 'province': province,
+      if (address.trim().isNotEmpty) 'address': address,
+      if (locationLabel.trim().isNotEmpty) 'locationLabel': locationLabel,
     };
   }
 }

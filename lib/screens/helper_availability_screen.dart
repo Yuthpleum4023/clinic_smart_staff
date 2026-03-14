@@ -11,6 +11,11 @@
 // - ✅ กัน push ซ้อน (double tap / tap รัว) ด้วย lock
 // - ✅ เหลือปุ่มเดียว “ดูรายละเอียด”
 //
+// ✅ PATCH NEW (STORE READY):
+// - ✅ ตอนประกาศเวลาว่าง พยายามแนบ location snapshot ไป backend
+// - ✅ ไม่เพิ่ม package ใหม่
+// - ✅ ถ้าไม่มี location ในเครื่อง ยังประกาศได้ตามปกติ
+//
 // ✅ ไม่เพิ่ม package ใหม่
 
 import 'dart:convert';
@@ -68,12 +73,180 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
 
   String _s(dynamic v) => (v ?? '').toString().trim();
 
+  double? _toDoubleOrNull(dynamic v) {
+    if (v == null) return null;
+    if (v is num) return v.toDouble();
+    final t = '$v'.trim();
+    if (t.isEmpty) return null;
+    return double.tryParse(t);
+  }
+
   bool _isBooked(Availability a) => a.status.trim().toLowerCase() == 'booked';
   bool _isCancelled(Availability a) =>
       a.status.trim().toLowerCase() == 'cancelled';
   bool _isOpen(Availability a) {
     final st = a.status.trim().toLowerCase();
     return st.isEmpty || st == 'open';
+  }
+
+  String _firstNonEmpty(List<String?> values) {
+    for (final v in values) {
+      final t = _s(v);
+      if (t.isNotEmpty && t.toLowerCase() != 'null') return t;
+    }
+    return '';
+  }
+
+  Future<Map<String, dynamic>> _readLocationSnapshot() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    String? readString(List<String> keys) {
+      for (final k in keys) {
+        final v = prefs.getString(k);
+        if (v != null && v.trim().isNotEmpty && v.trim() != 'null') {
+          return v.trim();
+        }
+      }
+      return null;
+    }
+
+    double? readDouble(List<String> keys) {
+      for (final k in keys) {
+        final dv = prefs.getDouble(k);
+        if (dv != null) return dv;
+
+        final sv = prefs.getString(k);
+        final parsed = _toDoubleOrNull(sv);
+        if (parsed != null) return parsed;
+
+        final iv = prefs.getInt(k);
+        if (iv != null) return iv.toDouble();
+      }
+      return null;
+    }
+
+    Map<String, dynamic> parseJsonString(String raw) {
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is Map) {
+          return Map<String, dynamic>.from(decoded);
+        }
+      } catch (_) {}
+      return {};
+    }
+
+    final rawMap = <String, dynamic>{};
+
+    // พยายามอ่าน location จาก json blob ที่อาจเคยถูกเก็บไว้
+    const mapKeys = [
+      'userLocation',
+      'selectedLocation',
+      'helperLocation',
+      'currentLocation',
+      'locationSnapshot',
+      'profileLocation',
+      'sellerLocation',
+      'clinicLocation',
+    ];
+
+    for (final k in mapKeys) {
+      final raw = prefs.getString(k);
+      if (raw != null && raw.trim().isNotEmpty) {
+        rawMap.addAll(parseJsonString(raw));
+      }
+    }
+
+    final lat = readDouble([
+          'lat',
+          'latitude',
+          'userLat',
+          'currentLat',
+          'selectedLat',
+          'helperLat',
+          'profileLat',
+        ]) ??
+        _toDoubleOrNull(rawMap['lat']) ??
+        _toDoubleOrNull(rawMap['latitude']);
+
+    final lng = readDouble([
+          'lng',
+          'lon',
+          'longitude',
+          'userLng',
+          'currentLng',
+          'selectedLng',
+          'helperLng',
+          'profileLng',
+        ]) ??
+        _toDoubleOrNull(rawMap['lng']) ??
+        _toDoubleOrNull(rawMap['lon']) ??
+        _toDoubleOrNull(rawMap['longitude']);
+
+    final district = _firstNonEmpty([
+      readString([
+        'district',
+        'currentDistrict',
+        'selectedDistrict',
+        'helperDistrict',
+        'profileDistrict',
+      ]),
+      rawMap['district']?.toString(),
+      rawMap['subDistrict']?.toString(),
+      rawMap['amphoe']?.toString(),
+      rawMap['area']?.toString(),
+    ]);
+
+    final province = _firstNonEmpty([
+      readString([
+        'province',
+        'currentProvince',
+        'selectedProvince',
+        'helperProvince',
+        'profileProvince',
+      ]),
+      rawMap['province']?.toString(),
+      rawMap['changwat']?.toString(),
+      rawMap['state']?.toString(),
+    ]);
+
+    final address = _firstNonEmpty([
+      readString([
+        'address',
+        'currentAddress',
+        'selectedAddress',
+        'helperAddress',
+        'profileAddress',
+        'formattedAddress',
+      ]),
+      rawMap['address']?.toString(),
+      rawMap['formattedAddress']?.toString(),
+      rawMap['displayName']?.toString(),
+      rawMap['label']?.toString(),
+    ]);
+
+    final locationLabel = _firstNonEmpty([
+      readString([
+        'locationLabel',
+        'currentLocationLabel',
+        'selectedLocationLabel',
+        'helperLocationLabel',
+        'profileLocationLabel',
+      ]),
+      rawMap['locationLabel']?.toString(),
+      if (district.isNotEmpty && province.isNotEmpty) '$district, $province',
+      if (province.isNotEmpty) province,
+      if (district.isNotEmpty) district,
+      if (address.isNotEmpty) address,
+    ]);
+
+    return {
+      'lat': lat,
+      'lng': lng,
+      'district': district,
+      'province': province,
+      'address': address,
+      'locationLabel': locationLabel,
+    };
   }
 
   // ---------- load ----------
@@ -126,7 +299,6 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
       if (!mounted) return;
       setState(() => _loading = false);
 
-      // ✅ Commercial: ไม่โชว์รายละเอียดเทคนิคยาว ๆ
       final msg = e.toString();
       final friendly = (msg.contains('เข้าสู่ระบบ') || msg.contains('login'))
           ? 'กรุณาเข้าสู่ระบบใหม่'
@@ -187,7 +359,6 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
     );
   }
 
-  // ✅ เปิด detail แบบกันซ้อน
   Future<void> _openDetail(Availability a) async {
     if (_pushingDetail) return;
     _pushingDetail = true;
@@ -290,7 +461,6 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
                     style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
                   ),
                   const SizedBox(height: 12),
-
                   Row(
                     children: [
                       Expanded(
@@ -322,9 +492,7 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
                       ),
                     ],
                   ),
-
                   const SizedBox(height: 12),
-
                   TextField(
                     controller: roleCtrl,
                     textInputAction: TextInputAction.next,
@@ -342,9 +510,7 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
                       hintText: 'เช่น ว่างเฉพาะงานใกล้บ้าน / ขอพักกลางวัน 1 ชม.',
                     ),
                   ),
-
                   const SizedBox(height: 14),
-
                   Row(
                     children: [
                       Expanded(
@@ -362,7 +528,8 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
                                 pickedEnd == null) {
                               ScaffoldMessenger.of(context).showSnackBar(
                                 const SnackBar(
-                                    content: Text('กรุณาเลือกวันที่/เวลาให้ครบ')),
+                                  content: Text('กรุณาเลือกวันที่/เวลาให้ครบ'),
+                                ),
                               );
                               return;
                             }
@@ -372,7 +539,8 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
                             if (_timeToMin(end) <= _timeToMin(start)) {
                               ScaffoldMessenger.of(context).showSnackBar(
                                 const SnackBar(
-                                    content: Text('เวลาจบต้องมากกว่าเวลาเริ่ม')),
+                                  content: Text('เวลาจบต้องมากกว่าเวลาเริ่ม'),
+                                ),
                               );
                               return;
                             }
@@ -401,11 +569,17 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
       },
     );
 
-    if (ok != true) return;
+    if (ok != true) {
+      roleCtrl.dispose();
+      noteCtrl.dispose();
+      return;
+    }
 
     try {
       final token = await _getToken();
       if (token == null) throw Exception('กรุณาเข้าสู่ระบบใหม่');
+
+      final location = await _readLocationSnapshot();
 
       final date =
           '${pickedDate!.year}-${_two(pickedDate!.month)}-${_two(pickedDate!.day)}';
@@ -421,8 +595,21 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
 
       final role = roleCtrl.text.trim();
       if (role.isNotEmpty) {
-        payload['role'] = role; // ถ้า backend ไม่ใช้ก็ไม่เป็นไร
+        payload['role'] = role;
       }
+
+      if (location['lat'] != null) payload['lat'] = location['lat'];
+      if (location['lng'] != null) payload['lng'] = location['lng'];
+
+      final district = _s(location['district']);
+      final province = _s(location['province']);
+      final address = _s(location['address']);
+      final locationLabel = _s(location['locationLabel']);
+
+      if (district.isNotEmpty) payload['district'] = district;
+      if (province.isNotEmpty) payload['province'] = province;
+      if (address.isNotEmpty) payload['address'] = address;
+      if (locationLabel.isNotEmpty) payload['locationLabel'] = locationLabel;
 
       final resp = await http.post(
         _u('/availabilities'),
@@ -446,7 +633,14 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
       }
 
       if (!mounted) return;
-      _snack('✅ ประกาศเวลาว่างแล้ว');
+
+      if (_s(location['locationLabel']).isEmpty &&
+          location['lat'] == null &&
+          location['lng'] == null) {
+        _snack('✅ ประกาศเวลาว่างแล้ว');
+      } else {
+        _snack('✅ ประกาศเวลาว่างแล้ว พร้อมตำแหน่ง');
+      }
 
       setState(() => _tab = 0);
       await _load();
@@ -477,14 +671,11 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
           ),
         ],
       ),
-
-      // ✅ ปุ่มประกาศเวลาว่าง
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _loading ? null : _createAvailability,
         icon: const Icon(Icons.add),
         label: const Text('ประกาศเวลาว่าง'),
       ),
-
       body: Column(
         children: [
           Padding(
@@ -509,7 +700,8 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
                     color: cs.surface,
                     borderRadius: BorderRadius.circular(14),
                     border: Border.all(
-                        color: cs.outlineVariant.withOpacity(0.5)),
+                      color: cs.outlineVariant.withOpacity(0.5),
+                    ),
                   ),
                   child: Row(
                     children: [
@@ -524,7 +716,6 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
             ),
           ),
           const SizedBox(height: 4),
-
           Expanded(
             child: _loading
                 ? const Center(child: CircularProgressIndicator())
@@ -538,8 +729,7 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
                             ],
                           )
                         : ListView.builder(
-                            padding:
-                                const EdgeInsets.fromLTRB(12, 6, 12, 16),
+                            padding: const EdgeInsets.fromLTRB(12, 6, 12, 16),
                             itemCount: items.length,
                             itemBuilder: (_, i) {
                               final a = items[i];
@@ -551,7 +741,6 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
                               final clinicName = _s(a.clinicName);
                               final clinicPhone = _s(a.clinicPhone);
 
-                              // ✅ Commercial: ไม่โชว์รหัส/ID
                               final clinicPreview = () {
                                 if (!_isBooked(a)) return '';
                                 if (clinicName.isNotEmpty) return clinicName;
@@ -564,8 +753,8 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
                                 child: Card(
                                   margin: const EdgeInsets.only(bottom: 10),
                                   child: Padding(
-                                    padding: const EdgeInsets.fromLTRB(
-                                        14, 12, 14, 12),
+                                    padding:
+                                        const EdgeInsets.fromLTRB(14, 12, 14, 12),
                                     child: Column(
                                       crossAxisAlignment:
                                           CrossAxisAlignment.start,
@@ -592,8 +781,10 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
                                           runSpacing: 8,
                                           children: [
                                             if (_s(a.role).isNotEmpty)
-                                              _chip('ตำแหน่ง: ${_s(a.role)}',
-                                                  cs.primary),
+                                              _chip(
+                                                'ตำแหน่ง: ${_s(a.role)}',
+                                                cs.primary,
+                                              ),
                                             if (_s(a.shiftId).isNotEmpty)
                                               _chip('สร้างงานแล้ว', Colors.green),
                                             if (a.bookedHourlyRate > 0)
@@ -608,7 +799,8 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
                                           Text(
                                             'คลินิกที่จอง: $clinicPreview',
                                             style: const TextStyle(
-                                                fontWeight: FontWeight.w800),
+                                              fontWeight: FontWeight.w800,
+                                            ),
                                           ),
                                           if (clinicPhone.isNotEmpty)
                                             Text('โทร: $clinicPhone'),
@@ -618,8 +810,8 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
                                           Text(
                                             'หมายเหตุของฉัน: ${_s(a.note)}',
                                             style: TextStyle(
-                                              color: cs.onSurface
-                                                  .withOpacity(0.7),
+                                              color:
+                                                  cs.onSurface.withOpacity(0.7),
                                             ),
                                           ),
                                         ],
@@ -628,23 +820,22 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
                                           Text(
                                             'หมายเหตุจากคลินิก: ${_s(a.bookedNote)}',
                                             style: TextStyle(
-                                              color: cs.onSurface
-                                                  .withOpacity(0.7),
+                                              color:
+                                                  cs.onSurface.withOpacity(0.7),
                                             ),
                                           ),
                                         ],
                                         const SizedBox(height: 12),
-
                                         SizedBox(
                                           width: double.infinity,
                                           child: ElevatedButton.icon(
                                             onPressed: _pushingDetail
                                                 ? null
                                                 : () => _openDetail(a),
-                                            icon: const Icon(Icons
-                                                .chevron_right_rounded),
-                                            label:
-                                                const Text('ดูรายละเอียด'),
+                                            icon: const Icon(
+                                              Icons.chevron_right_rounded,
+                                            ),
+                                            label: const Text('ดูรายละเอียด'),
                                           ),
                                         ),
                                       ],

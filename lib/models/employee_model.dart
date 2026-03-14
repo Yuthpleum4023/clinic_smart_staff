@@ -3,6 +3,12 @@
 // รองรับ Full-time + Part-time + OT
 // ✅ HARDENED: staffId fallback + robust parsing
 // ✅ PATCH: robust numeric parsing for OT multiplier / absentDays / salary fields
+// ✅ NEW: linkedUserId รองรับการเชื่อม employee ↔ user account
+// ✅ UPDATED:
+// - รองรับ staffId จริงจาก backend staff_service (Mongo _id string)
+// - ไม่บังคับ prefix stf_ อีกแล้ว
+// - รองรับทั้ง monthlySalary/hourlyRate และ baseSalary/hourlyWage
+// - รองรับ employmentType ทั้ง fulltime/fullTime และ parttime/partTime
 // ============================================================
 
 class OTEntry {
@@ -65,16 +71,15 @@ class OTEntry {
   }
 }
 
-// ============================================================
-// EmployeeModel
-// ============================================================
-
 class EmployeeModel {
-  /// record id ในเครื่อง/ระบบเดิม
   final String id;
 
-  /// payroll_service ต้องใช้ staffId = stf_...
+  /// staff_service / payroll_service ใช้ employee master id จริง
+  /// อาจเป็น Mongo _id string หรือ legacy stf_...
   final String staffId;
+
+  /// ใช้เชื่อม employee record กับ user account จริง
+  final String linkedUserId;
 
   final String employeeCode;
   final String firstName;
@@ -92,46 +97,59 @@ class EmployeeModel {
   EmployeeModel({
     required this.id,
     String staffId = '',
+    this.linkedUserId = '',
     this.employeeCode = '',
     required this.firstName,
     required this.lastName,
     required this.position,
-    this.employmentType = 'fulltime',
+    String employmentType = 'fulltime',
     this.baseSalary = 0.0,
     this.bonus = 0.0,
     this.absentDays = 0,
     this.hourlyWage = 0.0,
     this.otEntries = const [],
-  }) : staffId = _normalizeStaffId(staffId, id);
+  })  : staffId = _normalizeStaffId(staffId, id),
+        employmentType = _normalizeEmploymentType(employmentType);
 
   static String _normalizeStaffId(String raw, String fallbackId) {
     final s = raw.trim();
-    if (s.startsWith('stf_')) return s;
+    if (s.isNotEmpty) return s;
 
     final fid = fallbackId.trim();
-    if (fid.startsWith('stf_')) return fid;
+    if (fid.isNotEmpty) return fid;
 
-    if (fid.isNotEmpty) return 'stf_$fid';
     return '';
+  }
+
+  static String _normalizeEmploymentType(String raw) {
+    final t = raw.trim().toLowerCase();
+    if (t == 'parttime' || t == 'part-time' || t == 'part_time') {
+      return 'parttime';
+    }
+    return 'fulltime';
   }
 
   static double _toDouble(dynamic v, [double fallback = 0.0]) {
     if (v is num) return v.toDouble();
-    final x = double.tryParse('${v ?? ''}');
+    final raw = '${v ?? ''}'.replaceAll(',', '').trim();
+    final x = double.tryParse(raw);
     return x ?? fallback;
   }
 
   static int _toInt(dynamic v, [int fallback = 0]) {
     if (v is int) return v;
     if (v is num) return v.toInt();
-    final x = int.tryParse('${v ?? ''}');
+    final raw = '${v ?? ''}'.trim();
+    final x = int.tryParse(raw);
     return x ?? fallback;
   }
 
-  String get fullName => '$firstName $lastName';
+  String get fullName => '$firstName $lastName'.trim();
 
   bool get isPartTime => employmentType.toLowerCase().trim() == 'parttime';
   bool get isFullTime => !isPartTime;
+
+  bool get isLinkedUser => linkedUserId.trim().isNotEmpty;
 
   static const double ssoMaxBaseSalary = 17500.0;
   static const double ssoMaxEmployeeMonthly = 875.0;
@@ -213,6 +231,7 @@ class EmployeeModel {
   EmployeeModel copyWith({
     String? id,
     String? staffId,
+    String? linkedUserId,
     String? employeeCode,
     String? firstName,
     String? lastName,
@@ -228,6 +247,7 @@ class EmployeeModel {
     return EmployeeModel(
       id: nextId,
       staffId: staffId ?? this.staffId,
+      linkedUserId: linkedUserId ?? this.linkedUserId,
       employeeCode: employeeCode ?? this.employeeCode,
       firstName: firstName ?? this.firstName,
       lastName: lastName ?? this.lastName,
@@ -245,6 +265,7 @@ class EmployeeModel {
     return {
       'id': id,
       'staffId': staffId,
+      'linkedUserId': linkedUserId,
       'employeeCode': employeeCode,
       'firstName': firstName,
       'lastName': lastName,
@@ -263,7 +284,6 @@ class EmployeeModel {
 
     final id = s(map['id']).isNotEmpty ? s(map['id']) : s(map['_id']);
 
-    String rawStaffId = '';
     final candidates = <String>[
       s(map['staffId']),
       s(map['staffID']),
@@ -273,18 +293,11 @@ class EmployeeModel {
       s(map['employee_id']),
       s(map['principalId']),
       s(map['principal_id']),
+      s(map['_id']),
+      s(map['id']),
     ].where((x) => x.isNotEmpty).toList();
 
-    for (final c in candidates) {
-      if (c.startsWith('stf_')) {
-        rawStaffId = c;
-        break;
-      }
-    }
-
-    if (rawStaffId.isEmpty && candidates.isNotEmpty) {
-      rawStaffId = candidates.first;
-    }
+    final rawStaffId = candidates.isNotEmpty ? candidates.first : '';
 
     final rawOt = map['otEntries'];
     List<OTEntry> ots = [];
@@ -295,22 +308,32 @@ class EmployeeModel {
           .toList();
     }
 
-    final typeRaw =
-        (map['employmentType'] ?? 'fulltime').toString().toLowerCase().trim();
-    final type = (typeRaw == 'parttime') ? 'parttime' : 'fulltime';
+    final linkedCandidates = <String>[
+      s(map['linkedUserId']),
+      s(map['linked_user_id']),
+      s(map['userId']),
+      s(map['userID']),
+      s(map['user_id']),
+      s(map['authUserId']),
+      s(map['auth_user_id']),
+    ].where((x) => x.isNotEmpty).toList();
+
+    final linkedUserId =
+        linkedCandidates.isNotEmpty ? linkedCandidates.first : '';
 
     return EmployeeModel(
       id: id,
       staffId: rawStaffId,
+      linkedUserId: linkedUserId,
       employeeCode: s(map['employeeCode']),
       firstName: s(map['firstName']),
       lastName: s(map['lastName']),
       position: s(map['position']).isNotEmpty ? s(map['position']) : 'Staff',
-      employmentType: type,
-      baseSalary: _toDouble(map['baseSalary']),
+      employmentType: s(map['employmentType']),
+      baseSalary: _toDouble(map['baseSalary'] ?? map['monthlySalary']),
       bonus: _toDouble(map['bonus']),
       absentDays: _toInt(map['absentDays']),
-      hourlyWage: _toDouble(map['hourlyWage']),
+      hourlyWage: _toDouble(map['hourlyWage'] ?? map['hourlyRate']),
       otEntries: ots,
     );
   }

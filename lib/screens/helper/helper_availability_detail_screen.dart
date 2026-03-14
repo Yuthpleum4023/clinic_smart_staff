@@ -7,6 +7,12 @@
 // - 🔥 นำทางทันที (google.navigation)
 // - Copy เบอร์/ที่อยู่ ได้
 //
+// ✅ PATCH NEW (STORE READY)
+// - ✅ รองรับ bookedClinicLocationLabel
+// - ✅ รองรับ bookedClinicDistanceText / bookedClinicDistanceKm
+// - ✅ แสดง "ห่างจากคุณ X กม."
+// - ✅ fallback ดีเมื่อไม่มี location/distance
+//
 // ✅ FIX RED:
 // - model ของท่าน clinicLat/clinicLng เป็น num? -> แปลงเป็น double? ด้วย toDouble()
 
@@ -21,10 +27,10 @@ class HelperAvailabilityDetailScreen extends StatelessWidget {
   const HelperAvailabilityDetailScreen({super.key, required this.a});
 
   String _s(String v) => v.trim().isEmpty ? '-' : v.trim();
+  String _raw(dynamic v) => (v ?? '').toString().trim();
 
   bool get _isBooked => a.status.toLowerCase().trim() == 'booked';
 
-  // ✅ model: num? -> UI: double?
   double? get _lat => a.clinicLat?.toDouble();
   double? get _lng => a.clinicLng?.toDouble();
 
@@ -36,12 +42,10 @@ class HelperAvailabilityDetailScreen extends StatelessWidget {
   }
 
   Uri _navUri() {
-    // google.navigation works best on Android with Google Maps installed
     return Uri.parse('google.navigation:q=$_lat,$_lng');
   }
 
   Uri _webDirUri() {
-    // fallback (works everywhere)
     return Uri.parse(
       'https://www.google.com/maps/dir/?api=1&destination=$_lat,$_lng&travelmode=driving',
     );
@@ -49,6 +53,53 @@ class HelperAvailabilityDetailScreen extends StatelessWidget {
 
   Uri _telUri(String phone) {
     return Uri.parse('tel:${phone.replaceAll(RegExp(r'[^0-9+]'), '')}');
+  }
+
+  String get _clinicLocationLabel {
+    final v = _raw(a.bookedClinicLocationLabel);
+    if (v.isNotEmpty) return v;
+
+    final fromClinicAddress = _raw(a.clinicLocationText);
+    if (fromClinicAddress.isNotEmpty) return fromClinicAddress;
+
+    final district = _raw(a.bookedClinicDistrict);
+    final province = _raw(a.bookedClinicProvince);
+    if (district.isNotEmpty && province.isNotEmpty) return '$district, $province';
+    if (province.isNotEmpty) return province;
+    if (district.isNotEmpty) return district;
+
+    final clinicAddr = _raw(a.clinicAddress);
+    if (clinicAddr.isNotEmpty) return clinicAddr;
+
+    return '';
+  }
+
+  String get _clinicDistanceText {
+    final t = _raw(a.bookedClinicDistanceText);
+    if (t.isNotEmpty) return t;
+
+    final km = a.bookedClinicDistanceKm;
+    if (km == null) return '';
+
+    final n = km.toDouble();
+    if (n < 10) return '${n.toStringAsFixed(1)} กม.';
+    return '${n.round()} กม.';
+  }
+
+  String get _clinicLocationDistanceLine {
+    final loc = _clinicLocationLabel;
+    final dist = _clinicDistanceText;
+
+    if (loc.isNotEmpty && dist.isNotEmpty) {
+      return '$loc • ห่างจากคุณ $dist';
+    }
+    if (dist.isNotEmpty) {
+      return 'ห่างจากคุณ $dist';
+    }
+    if (loc.isNotEmpty) {
+      return loc;
+    }
+    return '';
   }
 
   Future<void> _copy(BuildContext context, String text, String okMsg) async {
@@ -75,20 +126,30 @@ class HelperAvailabilityDetailScreen extends StatelessWidget {
     }
   }
 
+  Widget _sectionTitle(String text) {
+    return Text(
+      text,
+      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
 
     final dateLine = '${_s(a.date)} • ${_s(a.start)}-${_s(a.end)}';
 
-    final clinicName = a.clinicName.trim();
-    final clinicPhone = a.clinicPhone.trim();
-    final clinicAddr = a.clinicAddress.trim();
+    final clinicName = _raw(a.clinicName);
+    final clinicPhone = _raw(a.clinicPhone);
+    final clinicAddr = _raw(a.clinicAddress);
+    final clinicLocationDistanceLine = _clinicLocationDistanceLine;
 
     final maps = _mapsUrl();
 
-    final hasClinicMeta =
-        clinicName.isNotEmpty || clinicPhone.isNotEmpty || clinicAddr.isNotEmpty;
+    final hasClinicMeta = clinicName.isNotEmpty ||
+        clinicPhone.isNotEmpty ||
+        clinicAddr.isNotEmpty ||
+        clinicLocationDistanceLine.isNotEmpty;
 
     return Scaffold(
       appBar: AppBar(
@@ -97,7 +158,6 @@ class HelperAvailabilityDetailScreen extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.fromLTRB(14, 14, 14, 24),
         children: [
-          // ================= BASIC INFO =================
           Card(
             child: Padding(
               padding: const EdgeInsets.all(14),
@@ -142,22 +202,15 @@ class HelperAvailabilityDetailScreen extends StatelessWidget {
               ),
             ),
           ),
-
           const SizedBox(height: 14),
-
-          // ================= CLINIC INFO =================
           Card(
             child: Padding(
               padding: const EdgeInsets.all(14),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text(
-                    'ข้อมูลคลินิก',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
-                  ),
+                  _sectionTitle('ข้อมูลคลินิก'),
                   const SizedBox(height: 10),
-
                   if (!_isBooked)
                     Text(
                       'รายการนี้ยังไม่ได้ถูกจอง',
@@ -173,6 +226,10 @@ class HelperAvailabilityDetailScreen extends StatelessWidget {
                       _row('ชื่อ', clinicName),
                       const SizedBox(height: 6),
                     ],
+                    if (clinicLocationDistanceLine.isNotEmpty) ...[
+                      _row('ตำแหน่ง', clinicLocationDistanceLine),
+                      const SizedBox(height: 6),
+                    ],
                     if (clinicPhone.isNotEmpty) ...[
                       _row('โทร', clinicPhone),
                       const SizedBox(height: 6),
@@ -182,13 +239,10 @@ class HelperAvailabilityDetailScreen extends StatelessWidget {
                       const SizedBox(height: 6),
                     ],
                     if (_hasLocation) ...[
-                      _row('ตำแหน่งบนแผนที่', 'พร้อมใช้งาน'),
+                      _row('แผนที่', 'พร้อมใช้งาน'),
                       const SizedBox(height: 6),
                     ],
-
                     const SizedBox(height: 14),
-
-                    // 🔥 POWER ACTIONS (เฉพาะเมื่อมีข้อมูล)
                     Wrap(
                       spacing: 10,
                       runSpacing: 10,
@@ -200,7 +254,6 @@ class HelperAvailabilityDetailScreen extends StatelessWidget {
                             icon: const Icon(Icons.call),
                             label: const Text('โทรเลย'),
                           ),
-
                         if (_hasLocation)
                           FilledButton.icon(
                             onPressed: () =>
@@ -208,7 +261,6 @@ class HelperAvailabilityDetailScreen extends StatelessWidget {
                             icon: const Icon(Icons.navigation),
                             label: const Text('นำทาง'),
                           ),
-
                         if (_hasLocation)
                           OutlinedButton.icon(
                             onPressed: () => _launchExternal(
@@ -218,8 +270,6 @@ class HelperAvailabilityDetailScreen extends StatelessWidget {
                             icon: const Icon(Icons.map),
                             label: const Text('เปิดแผนที่'),
                           ),
-
-                        // fallback เผื่อบางเครื่องเปิด google.navigation ไม่ได้
                         if (_hasLocation)
                           OutlinedButton.icon(
                             onPressed: () =>
@@ -227,7 +277,6 @@ class HelperAvailabilityDetailScreen extends StatelessWidget {
                             icon: const Icon(Icons.directions),
                             label: const Text('เส้นทาง (สำรอง)'),
                           ),
-
                         if (clinicPhone.isNotEmpty)
                           OutlinedButton.icon(
                             onPressed: () =>
@@ -235,7 +284,6 @@ class HelperAvailabilityDetailScreen extends StatelessWidget {
                             icon: const Icon(Icons.copy),
                             label: const Text('คัดลอกเบอร์'),
                           ),
-
                         if (clinicAddr.isNotEmpty)
                           OutlinedButton.icon(
                             onPressed: () =>
@@ -245,7 +293,6 @@ class HelperAvailabilityDetailScreen extends StatelessWidget {
                           ),
                       ],
                     ),
-
                     if (_hasLocation) ...[
                       const SizedBox(height: 10),
                       Text(
@@ -289,7 +336,11 @@ class HelperAvailabilityDetailScreen extends StatelessWidget {
       ),
       child: Text(
         text,
-        style: TextStyle(fontWeight: FontWeight.w900, color: c, fontSize: 12),
+        style: TextStyle(
+          fontWeight: FontWeight.w900,
+          color: c,
+          fontSize: 12,
+        ),
       ),
     );
   }

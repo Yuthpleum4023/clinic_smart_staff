@@ -1,17 +1,35 @@
 // lib/screens/edit_employee_screen.dart
 //
-// ✅ FULL FILE (COPY-PASTE READY) — FIXED (from your real file)
-// - ✅ กันหน้าแดง: ถ้า TextInputAction.newline -> ต้องใช้ TextInputType.multiline
-// - ✅ ช่องข้อความ = multiline แบบ "พิมพ์ธรรมดา" เห็นบรรทัดอื่นได้
-// - ✅ ช่องตัวเลข = บรรทัดเดียว + done
-// - ✅ กันคีย์บอร์ดบัง: AnimatedPadding + SingleChildScrollView
-// - ✅ pop กลับพร้อม EmployeeModel(updated)
-// - ✅ กัน pop ซ้ำ / timing ชน animation (_dependents.isEmpty)
+// ✅ FULL FILE (COPY-PASTE READY)
+// ✅ BACKEND-READY (HYBRID SAFE)
+// - อัปเดต staff_service สำหรับ field ที่ backend รองรับจริง
+// - cache local ต่อสำหรับ field legacy ที่แอปยังใช้
+// - ไม่ลบ otEntries เดิม
+// - ไม่แตะ manual OT backend records
+//
+// ✅ BACKEND FIELDS:
+// - userId
+// - fullName
+// - employmentType => fullTime / partTime
+// - monthlySalary
+// - hourlyRate
+//
+// ✅ LOCAL LEGACY FIELDS (ยังเก็บต่อใน EmployeeModel/StorageService):
+// - position
+// - bonus
+// - absentDays
+// - otEntries
+//
+// ✅ IMPORTANT:
+// - staffId จริง = employee record id จาก backend (Mongo _id / backend staffId)
+// - ใช้ PUT/PATCH ไป staff_service ด้วย employee id
 //
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'package:clinic_smart_staff/api/api_client.dart';
+import 'package:clinic_smart_staff/api/api_config.dart';
 import 'package:clinic_smart_staff/models/employee_model.dart';
 import 'package:clinic_smart_staff/services/storage_service.dart';
 
@@ -28,6 +46,7 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
   late TextEditingController firstNameCtrl;
   late TextEditingController lastNameCtrl;
   late TextEditingController positionCtrl;
+  late TextEditingController linkedUserIdCtrl;
 
   // Full-time fields
   late TextEditingController baseSalaryCtrl;
@@ -41,12 +60,11 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
 
   bool _isSaving = false;
   bool _dirty = false;
-
-  // ✅ FIX: กัน pop ซ้ำ / timing ชน animation
   bool _isPopping = false;
 
-  // employment type
   late String employmentType; // 'fulltime' | 'parttime'
+
+  ApiClient get _staffClient => ApiClient(baseUrl: ApiConfig.staffBaseUrl);
 
   @override
   void initState() {
@@ -59,12 +77,15 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
     firstNameCtrl = TextEditingController(text: e.firstName);
     lastNameCtrl = TextEditingController(text: e.lastName);
     positionCtrl = TextEditingController(text: e.position);
+    linkedUserIdCtrl = TextEditingController(text: e.linkedUserId);
 
-    baseSalaryCtrl = TextEditingController(text: e.baseSalary.toStringAsFixed(0));
+    baseSalaryCtrl =
+        TextEditingController(text: e.baseSalary.toStringAsFixed(0));
     bonusCtrl = TextEditingController(text: e.bonus.toStringAsFixed(0));
     absentDaysCtrl = TextEditingController(text: e.absentDays.toString());
 
-    hourlyWageCtrl = TextEditingController(text: e.hourlyWage.toStringAsFixed(0));
+    hourlyWageCtrl =
+        TextEditingController(text: e.hourlyWage.toStringAsFixed(0));
 
     void markDirty() {
       if (!_dirty && mounted) setState(() => _dirty = true);
@@ -74,6 +95,7 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
       firstNameCtrl,
       lastNameCtrl,
       positionCtrl,
+      linkedUserIdCtrl,
       baseSalaryCtrl,
       bonusCtrl,
       absentDaysCtrl,
@@ -88,6 +110,7 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
     firstNameCtrl.dispose();
     lastNameCtrl.dispose();
     positionCtrl.dispose();
+    linkedUserIdCtrl.dispose();
     baseSalaryCtrl.dispose();
     bonusCtrl.dispose();
     absentDaysCtrl.dispose();
@@ -95,7 +118,6 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
     super.dispose();
   }
 
-  // -------------------- Parsers --------------------
   double _toDouble(String s) {
     final cleaned = s.trim().replaceAll(',', '');
     return double.tryParse(cleaned) ?? 0.0;
@@ -106,7 +128,23 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
     return int.tryParse(cleaned) ?? 0;
   }
 
-  // ✅ FIX: safe pop หลังเฟรม (กัน _dependents.isEmpty)
+  String _cleanLinkedUserId(String s) {
+    return s.trim();
+  }
+
+  String _fullName() {
+    final parts = [
+      firstNameCtrl.text.trim(),
+      lastNameCtrl.text.trim(),
+    ].where((e) => e.isNotEmpty).toList();
+
+    return parts.join(' ').trim();
+  }
+
+  String _backendEmploymentType() {
+    return employmentType == 'parttime' ? 'partTime' : 'fullTime';
+  }
+
   void _safePop<T extends Object?>([T? result]) {
     if (!mounted) return;
     if (_isPopping) return;
@@ -118,8 +156,7 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
     });
   }
 
-  // -------------------- Validation --------------------
-  String? _validate() {
+  String? _validateSync() {
     final fn = firstNameCtrl.text.trim();
     final ln = lastNameCtrl.text.trim();
     final pos = positionCtrl.text.trim();
@@ -146,66 +183,153 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
     return null;
   }
 
+  Future<String?> _validateAsync() async {
+    final syncErr = _validateSync();
+    if (syncErr != null) return syncErr;
+
+    final linkedUserId = _cleanLinkedUserId(linkedUserIdCtrl.text);
+    if (linkedUserId.isNotEmpty) {
+      final duplicated = await StorageService.existsLinkedUserId(
+        linkedUserId,
+        exceptEmployeeId: widget.employee.id,
+      );
+      if (duplicated) {
+        return 'User ID นี้ถูกผูกกับพนักงานคนอื่นแล้ว';
+      }
+    }
+
+    return null;
+  }
+
+  Future<Map<String, dynamic>> _updateEmployeeOnBackend(
+    String employeeId,
+    Map<String, dynamic> body,
+  ) async {
+    Object? lastError;
+
+    final candidates = <String>[
+      '/api/employees/$employeeId',
+      '/employees/$employeeId',
+    ];
+
+    for (final path in candidates) {
+      try {
+        return await _staffClient.put(
+          path,
+          auth: true,
+          body: body,
+        );
+      } catch (e) {
+        lastError = e;
+      }
+    }
+
+    throw Exception(lastError?.toString() ?? 'UPDATE_EMPLOYEE_FAILED');
+  }
+
+  Map<String, dynamic> _extractEmployeeFromResponse(Map<String, dynamic> res) {
+    final dynamic employee = res['employee'];
+    if (employee is Map<String, dynamic>) return employee;
+    if (employee is Map) return Map<String, dynamic>.from(employee);
+
+    final dynamic data = res['data'];
+    if (data is Map<String, dynamic>) return data;
+    if (data is Map) return Map<String, dynamic>.from(data);
+
+    return res;
+  }
+
+  EmployeeModel _mergeUpdatedModel(Map<String, dynamic> raw) {
+    String s(dynamic v) => (v ?? '').toString().trim();
+    double d(dynamic v) => double.tryParse(s(v).replaceAll(',', '')) ?? 0;
+
+    final backendStaffId =
+        s(raw['staffId']).isNotEmpty ? s(raw['staffId']) : s(raw['_id']);
+
+    final backendUserId =
+        s(raw['userId']).isNotEmpty ? s(raw['userId']) : _cleanLinkedUserId(linkedUserIdCtrl.text);
+
+    final isParttime = s(raw['employmentType']).toLowerCase() == 'parttime';
+
+    return widget.employee.copyWith(
+      id: backendStaffId.isNotEmpty ? backendStaffId : widget.employee.id,
+      staffId: backendStaffId.isNotEmpty ? backendStaffId : widget.employee.staffId,
+      linkedUserId: backendUserId,
+      firstName: firstNameCtrl.text.trim(),
+      lastName: lastNameCtrl.text.trim(),
+      position: positionCtrl.text.trim(),
+      employmentType: isParttime ? 'parttime' : 'fulltime',
+      baseSalary: isParttime ? 0.0 : d(raw['monthlySalary']),
+      hourlyWage: isParttime ? d(raw['hourlyRate']) : 0.0,
+      bonus: _toDouble(bonusCtrl.text),
+      absentDays: employmentType == 'fulltime' ? _toInt(absentDaysCtrl.text) : 0,
+      otEntries: widget.employee.otEntries,
+    );
+  }
+
   Future<void> _save() async {
     if (_isSaving) return;
 
     FocusScope.of(context).unfocus();
-
-    final err = _validate();
-    if (err != null) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
-      return;
-    }
-
     setState(() => _isSaving = true);
 
-    // ✅ keep OT history
-    final keepOtEntries = widget.employee.otEntries;
+    try {
+      final err = await _validateAsync();
+      if (err != null) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(err)),
+        );
+        setState(() => _isSaving = false);
+        return;
+      }
 
-    final updated = widget.employee.copyWith(
-      firstName: firstNameCtrl.text.trim(),
-      lastName: lastNameCtrl.text.trim(),
-      position: positionCtrl.text.trim(),
-      employmentType: employmentType,
+      final fullName = _fullName();
+      final userId = _cleanLinkedUserId(linkedUserIdCtrl.text);
+      final employeeId = widget.employee.staffId.trim().isNotEmpty
+          ? widget.employee.staffId.trim()
+          : widget.employee.id.trim();
 
-      // Full-time
-      baseSalary: employmentType == 'fulltime' ? _toDouble(baseSalaryCtrl.text) : 0.0,
-      absentDays: employmentType == 'fulltime' ? _toInt(absentDaysCtrl.text) : 0,
+      if (employeeId.isEmpty) {
+        throw Exception('ไม่พบ employee id สำหรับอัปเดต backend');
+      }
 
-      // Shared
-      bonus: _toDouble(bonusCtrl.text),
+      final body = <String, dynamic>{
+        'fullName': fullName,
+        'employmentType': _backendEmploymentType(),
+        'userId': userId,
+      };
 
-      // Part-time
-      hourlyWage: employmentType == 'parttime' ? _toDouble(hourlyWageCtrl.text) : 0.0,
+      if (employmentType == 'fulltime') {
+        body['monthlySalary'] = _toDouble(baseSalaryCtrl.text);
+      } else {
+        body['hourlyRate'] = _toDouble(hourlyWageCtrl.text);
+      }
 
-      // ✅ keep OT
-      otEntries: keepOtEntries,
-    );
+      final updatedRes = await _updateEmployeeOnBackend(employeeId, body);
+      final updatedRaw = _extractEmployeeFromResponse(updatedRes);
+      final updated = _mergeUpdatedModel(updatedRaw);
 
-    final all = await StorageService.loadEmployees();
-    final idx = all.indexWhere((x) => x.id == updated.id);
+      await StorageService.updateEmployeeById(updated.id, updated);
 
-    final next = List<EmployeeModel>.from(all);
-    if (idx >= 0) {
-      next[idx] = updated;
-    } else {
-      next.add(updated);
+      if (!mounted) return;
+      setState(() {
+        _isSaving = false;
+        _dirty = false;
+      });
+
+      _safePop<EmployeeModel>(updated);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isSaving = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('บันทึกไม่สำเร็จ: $e')),
+      );
     }
-
-    await StorageService.saveEmployees(next);
-
-    if (!mounted) return;
-    setState(() {
-      _isSaving = false;
-      _dirty = false;
-    });
-
-    _safePop<EmployeeModel>(updated);
   }
 
-  // -------------------- UI helpers --------------------
-  final _moneyFormatter = FilteringTextInputFormatter.allow(RegExp(r'[0-9,\.]'));
+  final _moneyFormatter =
+      FilteringTextInputFormatter.allow(RegExp(r'[0-9,\.]'));
   final _intFormatter = FilteringTextInputFormatter.digitsOnly;
 
   bool _isNumericType(TextInputType t) {
@@ -213,7 +337,6 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
         t == const TextInputType.numberWithOptions(decimal: true);
   }
 
-  // ✅ FIX แดง + ให้พิมพ์ “ธรรมดา” เห็นบรรทัดอื่นได้
   Widget _field(
     String label,
     TextEditingController c, {
@@ -232,18 +355,17 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
         enabled: enabled,
         keyboardType: effectiveKeyboardType,
         inputFormatters: formatters,
-
-        // ✅ สำคัญ: กัน assert
         minLines: 1,
         maxLines: isNumeric ? 1 : null,
-        textInputAction: isNumeric ? TextInputAction.done : TextInputAction.newline,
-
+        textInputAction:
+            isNumeric ? TextInputAction.done : TextInputAction.newline,
         style: const TextStyle(fontSize: 16, height: 1.4),
         decoration: InputDecoration(
           labelText: label,
           hintText: hint,
           border: const OutlineInputBorder(),
-          contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
         ),
       ),
     );
@@ -256,7 +378,9 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('ยังไม่ได้บันทึก'),
-        content: const Text('คุณแก้ไขข้อมูลแล้ว แต่ยังไม่ได้กดบันทึก ต้องการออกเลยไหม?'),
+        content: const Text(
+          'คุณแก้ไขข้อมูลแล้ว แต่ยังไม่ได้กดบันทึก ต้องการออกเลยไหม?',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
@@ -279,7 +403,6 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
       employmentType = nextType;
       _dirty = true;
 
-      // UX ตามไฟล์จริงของท่าน: ไม่ยัด "0" แบบบังคับ
       if (employmentType == 'fulltime') {
         if (absentDaysCtrl.text.trim().isEmpty) absentDaysCtrl.text = '0';
       }
@@ -292,7 +415,10 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('ประเภทพนักงาน', style: TextStyle(fontWeight: FontWeight.w700)),
+          const Text(
+            'ประเภทพนักงาน',
+            style: TextStyle(fontWeight: FontWeight.w700),
+          ),
           const SizedBox(height: 8),
           SegmentedButton<String>(
             segments: const [
@@ -349,9 +475,12 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
                   _field('ชื่อ', firstNameCtrl),
                   _field('นามสกุล', lastNameCtrl),
                   _field('ตำแหน่ง', positionCtrl),
-
+                  _field(
+                    'User ID (ถ้ามี)',
+                    linkedUserIdCtrl,
+                    hint: 'เช่น usr_xxxxx',
+                  ),
                   _typeSelector(),
-
                   if (!isParttime) ...[
                     _field(
                       'เงินเดือนพื้นฐาน',
@@ -368,7 +497,6 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
                       hint: 'เช่น 0',
                     ),
                   ],
-
                   if (isParttime) ...[
                     _field(
                       'ค่าจ้าง/ชั่วโมง (บาท/ชม.)',
@@ -378,7 +506,6 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
                       hint: 'เช่น 120',
                     ),
                   ],
-
                   _field(
                     'โบนัส/ค่าคอมมิชชั่น',
                     bonusCtrl,
@@ -386,7 +513,6 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
                     formatters: [_moneyFormatter],
                     hint: 'เช่น 0 หรือ 1500',
                   ),
-
                   const SizedBox(height: 8),
                   SizedBox(
                     width: double.infinity,

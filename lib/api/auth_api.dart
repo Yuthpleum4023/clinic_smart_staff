@@ -1,9 +1,12 @@
 // lib/api/auth_api.dart
 //
-// ✅ FINAL (ROBUST) + ✅ MULTI-ROLE READY
+// ✅ FINAL / HARDENED + ✅ MULTI-ROLE READY
 // - login รองรับ activeRole (optional)
 // - เพิ่ม switchRole() -> POST /switch-role (auth required)
 // - me() cache app_clinic_id/app_user_id/app_role + app_active_role/app_roles
+// - ✅ FIX STALE PREFS:
+//   - ถ้า /me ไม่มี clinicId / userId / role -> remove ค่าเก่า
+//   - กัน user ใหม่ไปใช้ context ของ user เก่า
 //
 
 import 'dart:convert';
@@ -16,31 +19,31 @@ import 'package:clinic_smart_staff/services/auth_storage.dart';
 class AuthApi {
   static const String _loginPath = '/login';
   static const String _mePath = '/me';
-
-  // ✅ NEW: switch role endpoint (ตาม backend ที่ท่านทำไว้)
   static const String _switchRolePath = '/switch-role';
 
   static const Duration _timeout = Duration(seconds: 15);
 
-  static Uri _url(String path) => Uri.parse('${ApiConfig.authBaseUrl}$path');
+  static Uri _url(String path) {
+    final base = ApiConfig.authBaseUrl.replaceAll(RegExp(r'\/+$'), '');
+    final p = path.startsWith('/') ? path : '/$path';
+    return Uri.parse('$base$p');
+  }
 
-  // ✅ Shared prefs keys (pattern เดียวทั้งแอป)
   static const String _kClinicId = 'app_clinic_id';
   static const String _kUserId = 'app_user_id';
-
-  // legacy: หน้าต่าง ๆ ยังอ่าน app_role อยู่
   static const String _kRole = 'app_role';
-
-  // ✅ NEW: multi-role cache
   static const String _kActiveRole = 'app_active_role';
   static const String _kRolesJson = 'app_roles_json';
 
   static const List<String> _tokenKeys = [
+    'auth_token',
     'jwtToken',
     'token',
     'authToken',
     'userToken',
     'jwt_token',
+    'accessToken',
+    'access_token',
   ];
 
   static String _pickString(dynamic v) {
@@ -51,8 +54,7 @@ class AuthApi {
 
   static String _pickToken(dynamic data) {
     if (data is! Map) return '';
-    final t = _pickString(data['token'] ?? data['jwt']);
-    return t;
+    return _pickString(data['token'] ?? data['jwt']);
   }
 
   static Map<String, dynamic> _asMap(dynamic v) {
@@ -61,7 +63,6 @@ class AuthApi {
     throw Exception('Response is not a JSON object');
   }
 
-  // ✅ เซฟ token ให้ครบทุก key ที่หน้าอื่น ๆ ใช้หา
   static Future<void> _saveTokenEverywhere(String token) async {
     await AuthStorage.saveToken(token);
 
@@ -71,10 +72,11 @@ class AuthApi {
     }
   }
 
-  // ✅ Sync token จาก prefs -> AuthStorage เผื่อกรณีมี token ใน prefs แต่ storage ว่าง
   static Future<String?> _getTokenRobust() async {
     final t = await AuthStorage.getToken();
-    if (t != null && t.trim().isNotEmpty && t != 'null') return t.trim();
+    if (t != null && t.trim().isNotEmpty && t != 'null') {
+      return t.trim();
+    }
 
     final prefs = await SharedPreferences.getInstance();
     for (final k in _tokenKeys) {
@@ -87,9 +89,6 @@ class AuthApi {
     return null;
   }
 
-  // ------------------------------
-  // Extract app context from /me
-  // ------------------------------
   static String _extractClinicId(Map<String, dynamic> me) {
     final direct = _pickString(me['clinicId']);
     if (direct.isNotEmpty) return direct;
@@ -134,8 +133,6 @@ class AuthApi {
     return '';
   }
 
-  // ✅ IMPORTANT (Multi-role):
-  // prefer activeRole > role > roles[0]
   static String _extractRole(Map<String, dynamic> me) {
     final ar = _pickString(me['activeRole']);
     if (ar.isNotEmpty) return ar;
@@ -147,56 +144,76 @@ class AuthApi {
     if (roles is List && roles.isNotEmpty) {
       return _pickString(roles.first);
     }
+
     return '';
   }
 
   static List<String> _extractRoles(Map<String, dynamic> me) {
-    final roles = me['roles'];
-    if (roles is List) {
-      return roles.map((e) => _pickString(e)).where((e) => e.isNotEmpty).toList();
+    final rawRoles = me['roles'];
+    if (rawRoles is List) {
+      final list = rawRoles
+          .map((e) => _pickString(e))
+          .where((e) => e.isNotEmpty)
+          .toSet()
+          .toList();
+
+      if (list.isNotEmpty) return list;
     }
-    // fallback: ถ้าไม่มี roles แต่มี role เดียว
-    final single = _pickString(me['role']);
-    if (single.isNotEmpty) return [single];
-    return [];
+
+    final active = _pickString(me['activeRole']);
+    final role = _pickString(me['role']);
+
+    final out = <String>{};
+    if (active.isNotEmpty) out.add(active);
+    if (role.isNotEmpty) out.add(role);
+
+    return out.toList();
+  }
+
+  static Future<void> _setOrRemoveString(
+    SharedPreferences prefs,
+    String key,
+    String value,
+  ) async {
+    if (value.trim().isNotEmpty) {
+      await prefs.setString(key, value.trim());
+    } else {
+      await prefs.remove(key);
+    }
   }
 
   static Future<void> _cacheAppContextFromMe(Map<String, dynamic> me) async {
     final clinicId = _extractClinicId(me);
     final userId = _extractUserId(me);
     final role = _extractRole(me);
-
     final roles = _extractRoles(me);
-    final activeRole = _pickString(me['activeRole']).isNotEmpty ? _pickString(me['activeRole']) : role;
+
+    final explicitActiveRole = _pickString(me['activeRole']);
+    final activeRole =
+        explicitActiveRole.isNotEmpty ? explicitActiveRole : role;
 
     final prefs = await SharedPreferences.getInstance();
 
-    if (clinicId.isNotEmpty) await prefs.setString(_kClinicId, clinicId);
-    if (userId.isNotEmpty) await prefs.setString(_kUserId, userId);
+    await _setOrRemoveString(prefs, _kClinicId, clinicId);
+    await _setOrRemoveString(prefs, _kUserId, userId);
+    await _setOrRemoveString(prefs, _kRole, role);
+    await _setOrRemoveString(prefs, _kActiveRole, activeRole);
 
-    // legacy consumers
-    if (role.isNotEmpty) await prefs.setString(_kRole, role);
-
-    // ✅ multi-role cache
-    if (activeRole.isNotEmpty) await prefs.setString(_kActiveRole, activeRole);
     await prefs.setString(_kRolesJson, jsonEncode(roles));
   }
 
-  /// Login แล้ว save token
-  /// ✅ NEW: ส่ง activeRole ได้ (optional)
   static Future<Map<String, dynamic>> login({
     required String email,
     required String password,
-    String? activeRole, // ✅ NEW
+    String? activeRole,
   }) async {
-    final body = {
+    final body = <String, dynamic>{
       'emailOrPhone': email,
       'email': email,
       'identifier': email,
       'password': password,
     };
 
-    // ✅ backend รองรับ body.activeRole ตามที่ท่านแก้ไว้
     if (activeRole != null && activeRole.trim().isNotEmpty) {
       body['activeRole'] = activeRole.trim();
     }
@@ -222,11 +239,9 @@ class AuthApi {
 
     await _saveTokenEverywhere(token);
 
-    // ✅ ดึง /me ต่อทันที เพื่อ cache app_context ให้พร้อมใช้
     return await me();
   }
 
-  /// ✅ NEW: Switch role แล้วออก token ใหม่
   static Future<Map<String, dynamic>> switchRole({
     required String activeRole,
   }) async {
@@ -253,22 +268,23 @@ class AuthApi {
 
     final data = json.decode(res.body);
     final newToken = _pickToken(data);
+
     if (newToken.isEmpty) {
       throw Exception('switchRole ok but token missing');
     }
 
     await _saveTokenEverywhere(newToken);
 
-    // response บางทีส่ง {user:{...}} ให้ unify เป็น me map
     final map = _asMap(data);
     final Map<String, dynamic> meMap =
-        (map['user'] is Map) ? (map['user'] as Map).cast<String, dynamic>() : map;
+        (map['user'] is Map)
+            ? (map['user'] as Map).cast<String, dynamic>()
+            : map;
 
     await _cacheAppContextFromMe(meMap);
     return meMap;
   }
 
-  /// ดึงข้อมูลผู้ใช้จาก token
   static Future<Map<String, dynamic>> me() async {
     final token = await _getTokenRobust();
     if (token == null || token.trim().isEmpty) {
@@ -295,7 +311,9 @@ class AuthApi {
     final map = _asMap(data);
 
     final Map<String, dynamic> me =
-        (map['user'] is Map) ? (map['user'] as Map).cast<String, dynamic>() : map;
+        (map['user'] is Map)
+            ? (map['user'] as Map).cast<String, dynamic>()
+            : map;
 
     await _cacheAppContextFromMe(me);
     return me;

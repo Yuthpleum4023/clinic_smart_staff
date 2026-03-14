@@ -1,15 +1,11 @@
 // lib/screens/auth/auth_gate_screen.dart
 //
-// ✅ FINAL / STABLE — Multi-role READY (NO UNKNOWN ROUTES)
-// - ใช้ AuthApi.me()
-// - save clinicId,userId,role + ✅ activeRole + ✅ roles[] ลง prefs (กันฟีเจอร์หาย)
+// ✅ FINAL / HARDENED — Multi-role READY + NO STALE PREFS
+// - ใช้ AuthApi.me() เป็น source หลัก
+// - ไม่ fallback ไป loadFromPrefs() เมื่อ /me ไม่ครบ
+// - clear context เก่าเมื่อ session/use context ไม่สมบูรณ์
 // - redirect ครั้งเดียว
-// - ✅ Named Routes ONLY
-// - ✅ navigate หลังเฟรม กัน build scope crash
-//
-// IMPORTANT:
-// - ไม่อ้าง AppRoutes.helperHome/clinicHome เพื่อกันแดง (เพราะบางโปรเจกต์ไม่มี)
-// - เดินทางไป AppRoutes.home เสมอ แล้วให้ HomeScreen แยก flow ตาม role เอง
+// - Named Routes ONLY
 //
 
 import 'dart:convert';
@@ -20,8 +16,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:clinic_smart_staff/api/auth_api.dart';
 import 'package:clinic_smart_staff/services/auth_storage.dart';
 import 'package:clinic_smart_staff/app/app_context_resolver.dart';
-
-// ✅ route names จาก main.dart
 import 'package:clinic_smart_staff/main.dart';
 
 class AuthGateScreen extends StatefulWidget {
@@ -34,7 +28,9 @@ class AuthGateScreen extends StatefulWidget {
 class _AuthGateScreenState extends State<AuthGateScreen> {
   bool _navigated = false;
 
-  // prefs keys (เพิ่มเอง ไม่ชนของเดิม)
+  static const String _kClinicId = 'app_clinic_id';
+  static const String _kUserId = 'app_user_id';
+  static const String _kRole = 'app_role';
   static const String _kActiveRole = 'app_active_role';
   static const String _kRolesJson = 'app_roles_json';
 
@@ -44,9 +40,6 @@ class _AuthGateScreenState extends State<AuthGateScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) => _boot());
   }
 
-  // ------------------------------
-  // Helpers
-  // ------------------------------
   String _pickString(dynamic v) {
     final s = (v ?? '').toString().trim();
     if (s.isEmpty || s == 'null') return '';
@@ -103,8 +96,6 @@ class _AuthGateScreenState extends State<AuthGateScreen> {
     return '';
   }
 
-  /// ✅ IMPORTANT (multi-role):
-  /// priority: activeRole > role > roles[0]
   String _extractEffectiveRole(Map<String, dynamic> me) {
     final a = _pickString(me['activeRole']);
     if (a.isNotEmpty) return a;
@@ -127,7 +118,7 @@ class _AuthGateScreenState extends State<AuthGateScreen> {
 
     final set = <String>{};
     for (final r in roles) {
-      set.add(r);
+      if (r.isNotEmpty) set.add(r);
     }
     if (legacy.isNotEmpty) set.add(legacy);
     if (active.isNotEmpty) set.add(active);
@@ -135,9 +126,29 @@ class _AuthGateScreenState extends State<AuthGateScreen> {
     return set.toList();
   }
 
-  // ----------------------------------------------------------
-  // Navigation helpers (Named Routes ONLY)
-  // ----------------------------------------------------------
+  Future<void> _clearContextPrefs() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_kClinicId);
+    await prefs.remove(_kUserId);
+    await prefs.remove(_kRole);
+    await prefs.remove(_kActiveRole);
+    await prefs.setString(_kRolesJson, jsonEncode(const <String>[]));
+  }
+
+  Future<void> _hardClearSession() async {
+    try {
+      await AuthStorage.clearToken();
+    } catch (_) {}
+
+    try {
+      await AppContextResolver.clear();
+    } catch (_) {}
+
+    try {
+      await _clearContextPrefs();
+    } catch (_) {}
+  }
+
   void _scheduleNamedNav(String routeName) {
     if (_navigated || !mounted) return;
     _navigated = true;
@@ -158,67 +169,66 @@ class _AuthGateScreenState extends State<AuthGateScreen> {
     if (_navigated) return;
 
     try {
-      // 1) มี token ไหม
       final token = await AuthStorage.getToken();
       if (!mounted) return;
 
       if (token == null || token.trim().isEmpty) {
+        await _hardClearSession();
+        if (!mounted) return;
         _goLogin();
         return;
       }
 
-      // 2) ยิง /me
       final dynamic rawMe = await AuthApi.me();
       if (!mounted) return;
 
-      // 3) normalize + save context (กันฟีเจอร์หาย)
-      Map<String, dynamic> me;
-      if (rawMe is Map) {
-        me = Map<String, dynamic>.from(rawMe);
-      } else {
-        // fallback โหลดจาก prefs
-        await AppContextResolver.loadFromPrefs();
+      if (rawMe is! Map) {
+        await _hardClearSession();
         if (!mounted) return;
-        _goHome();
+        _goLogin();
         return;
       }
 
+      final me = Map<String, dynamic>.from(rawMe);
+
       final clinicId = _extractClinicId(me);
       final userId = _extractUserId(me);
-
       final effectiveRole = _extractEffectiveRole(me);
       final rolesAll = _extractRolesAll(me);
 
-      // ✅ save to AppContextResolver (ของเดิม)
-      if (clinicId.isNotEmpty && userId.isNotEmpty) {
-        await AppContextResolver.save(
-          clinicId: clinicId,
-          userId: userId,
-          role: effectiveRole,
-        );
-      } else {
-        await AppContextResolver.loadFromPrefs();
+      // ✅ สำคัญ: ถ้า context สำคัญไม่ครบ ห้ามใช้ prefs เก่า
+      if (clinicId.isEmpty || userId.isEmpty) {
+        await _hardClearSession();
+        if (!mounted) return;
+        _goLogin();
+        return;
       }
-      if (!mounted) return;
 
-      // ✅ save extra multi-role info
+      await AppContextResolver.save(
+        clinicId: clinicId,
+        userId: userId,
+        role: effectiveRole,
+      );
+
       final prefs = await SharedPreferences.getInstance();
+
+      await prefs.setString(_kClinicId, clinicId);
+      await prefs.setString(_kUserId, userId);
+
       if (effectiveRole.isNotEmpty) {
+        await prefs.setString(_kRole, effectiveRole);
         await prefs.setString(_kActiveRole, effectiveRole);
+      } else {
+        await prefs.remove(_kRole);
+        await prefs.remove(_kActiveRole);
       }
+
       await prefs.setString(_kRolesJson, jsonEncode(rolesAll));
 
-      // 4) ไป home เสมอ แล้วให้ HomeScreen ตัดสินใจตาม role
+      if (!mounted) return;
       _goHome();
     } catch (_) {
-      // error = logout
-      try {
-        await AuthStorage.clearToken();
-      } catch (_) {}
-      try {
-        await AppContextResolver.clear();
-      } catch (_) {}
-
+      await _hardClearSession();
       if (!mounted) return;
       _goLogin();
     }

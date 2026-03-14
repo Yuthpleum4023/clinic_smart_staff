@@ -8,12 +8,14 @@
 // - ✅ เก็บข้อความเชิง debug / tech ออกจาก UI
 // - ✅ รองรับ Part-time work hours
 // - ✅ PDF ไทยด้วย NotoSansThai
+// - ✅ NEW: fallback local รองรับ 2 flow ภาษีจริง
+//   - ไม่หักภาษี
+//   - หักภาษี ณ ที่จ่าย
+// - ✅ UPDATED:
+//   - ไม่บังคับ employeeId/staffId ต้องเป็น stf_...
+//   - ใช้ ApiConfig.payrollBaseUrl
+//   - OT fallback query ผูกกับ employee ที่กำลังดูจริง
 //
-// IMPORTANT:
-// - backend employeeId in payroll_service = staffId (stf_...)
-// - endpoints:
-//   GET /payroll-close/close-month/:employeeId/:month
-//   GET /overtime/my?month=yyyy-MM&status=approved
 
 import 'dart:convert';
 
@@ -25,7 +27,9 @@ import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../api/api_config.dart';
 import '../models/employee_model.dart';
+import '../services/auth_storage.dart';
 import '../utils/payroll_calculator.dart';
 
 class _WorkHourEntryLite {
@@ -184,8 +188,9 @@ class PayslipPreviewScreen extends StatefulWidget {
 
 class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
   static const String _ssoKey = 'settings_sso_percent';
-  static const String _payrollBaseUrl =
-      'https://payroll-service-808t.onrender.com';
+
+  String get _payrollBaseUrl =>
+      ApiConfig.payrollBaseUrl.replaceAll(RegExp(r'\/+$'), '');
 
   static const int _workDaysPerMonth = 26;
   static const int _hoursPerDay = 8;
@@ -223,6 +228,10 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
   pw.Font? _pdfFontRegular;
   pw.Font? _pdfFontBold;
 
+  // ✅ tax mode จาก prefs รายพนักงาน
+  String _employeeTaxMode = 'none'; // none | withholding
+  double _employeeWithholdingPercent = 0.0;
+
   @override
   void initState() {
     super.initState();
@@ -242,6 +251,10 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
 
   String _monthKey(DateTime d) =>
       '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}';
+
+  String get _employeeTaxModeKey => 'employee_tax_mode_${widget.emp.id}';
+  String get _employeeWithholdingPercentKey =>
+      'employee_withholding_percent_${widget.emp.id}';
 
   List<DateTime> _buildMonthList({int back = 36, int forward = 0}) {
     final now = DateTime.now();
@@ -355,6 +368,10 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
     final prefs = await SharedPreferences.getInstance();
     final sso = prefs.getDouble(_ssoKey) ?? 5.0;
 
+    final rawTaxMode = (prefs.getString(_employeeTaxModeKey) ?? 'none').trim();
+    final withholdingPercent =
+        prefs.getDouble(_employeeWithholdingPercentKey) ?? 3.0;
+
     double partHours = 0.0;
     final partEntriesMonth = <_WorkHourEntryLite>[];
 
@@ -387,10 +404,19 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
       _ssoPercent = sso;
       _parttimeRegularHours = partHours;
       _parttimeWorkEntriesOfMonth = partEntriesMonth;
+      _employeeTaxMode =
+          rawTaxMode == 'withholding' ? 'withholding' : 'none';
+      _employeeWithholdingPercent =
+          withholdingPercent < 0 ? 0.0 : withholdingPercent;
     });
   }
 
   Future<String> _getTokenRobust() async {
+    try {
+      final t = await AuthStorage.getToken();
+      if (t != null && t.trim().isNotEmpty) return t.trim();
+    } catch (_) {}
+
     final prefs = await SharedPreferences.getInstance();
     for (final k in _tokenKeys) {
       final v = (prefs.getString(k) ?? '').trim();
@@ -406,6 +432,28 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
       if (v.isNotEmpty && v.toLowerCase() != 'null') return v;
     }
     return '';
+  }
+
+  String _resolveLinkedUserId() {
+    final candidates = <String>[
+      widget.emp.linkedUserId.trim(),
+      tryGetString(() => (widget.emp as dynamic).userId),
+      tryGetString(() => (widget.emp as dynamic).user_id),
+      tryGetString(() => (widget.emp as dynamic).linked_user_id),
+    ].where((e) => e.isNotEmpty).toList();
+
+    for (final c in candidates) {
+      if (c.isNotEmpty) return c;
+    }
+    return '';
+  }
+
+  String tryGetString(dynamic Function() getter) {
+    try {
+      return (getter() ?? '').toString().trim();
+    } catch (_) {
+      return '';
+    }
   }
 
   Future<void> _loadClinicBrand() async {
@@ -429,23 +477,20 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
     } catch (_) {}
   }
 
-  bool _isStaffId(String v) => v.trim().startsWith('stf_');
+  bool _hasPayrollEmployeeId(String v) => v.trim().isNotEmpty;
 
   String? _safeStaffIdForPayrollOrNull() {
     final candidates = <String>[
       widget.emp.staffId.trim(),
       widget.emp.id.trim(),
-    ];
+      tryGetString(() => (widget.emp as dynamic).employeeId),
+      tryGetString(() => (widget.emp as dynamic).staffID),
+      tryGetString(() => (widget.emp as dynamic).staff_id),
+    ].where((e) => e.isNotEmpty).toList();
 
     for (final c in candidates) {
-      if (_isStaffId(c)) return c;
+      if (_hasPayrollEmployeeId(c)) return c;
     }
-
-    try {
-      final v = (widget.emp as dynamic).employeeId;
-      final s = (v ?? '').toString().trim();
-      if (_isStaffId(s)) return s;
-    } catch (_) {}
 
     return null;
   }
@@ -517,15 +562,38 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
       'Content-Type': 'application/json',
     };
 
-    final candidates = <Uri>[
-      Uri.parse('$_payrollBaseUrl/overtime/my?month=$monthKey&status=approved'),
-      Uri.parse(
-        '$_payrollBaseUrl/api/overtime/my?month=$monthKey&status=approved',
-      ),
+    final linkedUserId = _resolveLinkedUserId();
+    final staffId = _safeStaffIdForPayrollOrNull();
+
+    final candidatePaths = <String>[
+      if (linkedUserId.isNotEmpty)
+        '/overtime?month=$monthKey&linkedUserId=${Uri.encodeQueryComponent(linkedUserId)}&status=approved',
+      if (linkedUserId.isNotEmpty)
+        '/overtime?month=$monthKey&employeeUserId=${Uri.encodeQueryComponent(linkedUserId)}&status=approved',
+      if (linkedUserId.isNotEmpty)
+        '/overtime?month=$monthKey&userId=${Uri.encodeQueryComponent(linkedUserId)}&status=approved',
+      if (staffId != null && staffId.isNotEmpty)
+        '/overtime?month=$monthKey&staffId=${Uri.encodeQueryComponent(staffId)}&status=approved',
+      if (staffId != null && staffId.isNotEmpty)
+        '/overtime?month=$monthKey&principalId=${Uri.encodeQueryComponent(staffId)}&status=approved',
+      '/overtime/my?month=$monthKey&status=approved',
+
+      if (linkedUserId.isNotEmpty)
+        '/api/overtime?month=$monthKey&linkedUserId=${Uri.encodeQueryComponent(linkedUserId)}&status=approved',
+      if (linkedUserId.isNotEmpty)
+        '/api/overtime?month=$monthKey&employeeUserId=${Uri.encodeQueryComponent(linkedUserId)}&status=approved',
+      if (linkedUserId.isNotEmpty)
+        '/api/overtime?month=$monthKey&userId=${Uri.encodeQueryComponent(linkedUserId)}&status=approved',
+      if (staffId != null && staffId.isNotEmpty)
+        '/api/overtime?month=$monthKey&staffId=${Uri.encodeQueryComponent(staffId)}&status=approved',
+      if (staffId != null && staffId.isNotEmpty)
+        '/api/overtime?month=$monthKey&principalId=${Uri.encodeQueryComponent(staffId)}&status=approved',
+      '/api/overtime/my?month=$monthKey&status=approved',
     ];
 
-    for (final u in candidates) {
+    for (final path in candidatePaths) {
       try {
+        final u = Uri.parse('$_payrollBaseUrl$path');
         final resp =
             await http.get(u, headers: headers).timeout(const Duration(seconds: 15));
         if (resp.statusCode == 404) continue;
@@ -536,7 +604,11 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
 
         final m = Map<String, dynamic>.from(decoded);
 
-        final itemsAny = m['items'];
+        final itemsAny = m['items'] ??
+            m['rows'] ??
+            m['data'] ??
+            (m['result'] is Map ? (m['result'] as Map)['items'] : null);
+
         if (itemsAny is List) {
           int minutesSum = 0;
           double weightedHours = 0.0;
@@ -546,9 +618,11 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
             if (it is! Map) continue;
             final row = Map<String, dynamic>.from(it);
 
-            final minutes = (row['minutes'] is num)
-                ? (row['minutes'] as num).toInt()
-                : int.tryParse('${row['minutes']}') ?? 0;
+            final minutes = (row['approvedMinutes'] is num)
+                ? (row['approvedMinutes'] as num).toInt()
+                : (row['minutes'] is num)
+                    ? (row['minutes'] as num).toInt()
+                    : int.tryParse('${row['approvedMinutes'] ?? row['minutes']}') ?? 0;
 
             final mul = (row['multiplier'] is num)
                 ? (row['multiplier'] as num).toDouble()
@@ -627,6 +701,20 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
     return minutes > 0 || weighted > 0 || count > 0;
   }
 
+  double _fallbackWithholdingTax(double grossMonthly) {
+    if (_employeeTaxMode != 'withholding') return 0.0;
+    final pct = _employeeWithholdingPercent;
+    if (pct <= 0) return 0.0;
+    return grossMonthly * (pct / 100.0);
+  }
+
+  String _fallbackSourceLabel() {
+    if (_employeeTaxMode == 'withholding') {
+      return 'ประมาณการ (หัก ณ ที่จ่าย ${_employeeWithholdingPercent.toStringAsFixed(2)}%)';
+    }
+    return 'ประมาณการ (ไม่หักภาษี)';
+  }
+
   Future<void> _loadRemoteClosedMonthOrFallback() async {
     final token = await _getTokenRobust();
     final monthKey = _monthKey(_selectedMonth);
@@ -635,7 +723,7 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
     Map<String, dynamic>? row;
     final staffId = _safeStaffIdForPayrollOrNull();
 
-    if (token.isNotEmpty && staffId != null) {
+    if (token.isNotEmpty && staffId != null && staffId.isNotEmpty) {
       row = await _fetchClosedMonth(
         token: token,
         employeeId: staffId,
@@ -703,7 +791,10 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
         ? (local.regularPay + local.bonus + otPayFinal)
         : (local.monthlyBaseSalary + local.bonus + otPayFinal);
 
+    final withheldTaxLocal = _fallbackWithholdingTax(grossLocalWithOverride);
+
     final netLocalWithOverride = (grossLocalWithOverride -
+            withheldTaxLocal -
             local.socialSecurity -
             local.absentDeduction)
         .clamp(0.0, double.infinity);
@@ -719,12 +810,12 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
         otherAllowance: 0,
         otherDeduction: 0,
         grossMonthly: grossLocalWithOverride,
-        withheldTaxMonthly: 0,
+        withheldTaxMonthly: withheldTaxLocal,
         ssoEmployeeMonthly: local.socialSecurity,
         pvdEmployeeMonthly: 0,
         netPay: netLocalWithOverride,
         fromBackend: false,
-        sourceLabel: 'ประมาณการ',
+        sourceLabel: _fallbackSourceLabel(),
         otApprovedMinutes: approvedMinutes,
         otApprovedWeightedHours: weightedHours,
         otApprovedCount: approvedCount,

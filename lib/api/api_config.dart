@@ -1,70 +1,75 @@
 // lib/api/api_config.dart
 //
-// ✅ FINAL — RENDER PRODUCTION CONFIG (FORCE_PROD supported)
-// - PROD → ยิง Render 100%
-// - DEV → ยิงเข้า Mac LAN ได้
-// - รองรับ auth / payroll / score / staff
+// ============================================================
+// API CONFIG (FINAL CLEAN VERSION)
+// รองรับ:
+// - Render Production
+// - Local DEV
+// - Helper Marketplace
+// - TrustScore
+// - Payroll
+// - Attendance / OT
 //
-// ✅ NEW:
-// - รัน debug แต่ให้ยิง Render ได้ด้วย:
-//   flutter run --dart-define=FORCE_PROD=true
-//
+// Run production mode from debug:
+// flutter run --dart-define=FORCE_PROD=true
+// ============================================================
 
 class ApiConfig {
-  // =========================
-  // ENV switch
-  // =========================
+  // ============================================================
+  // ENV SWITCH
+  // ============================================================
 
-  /// ✅ FORCE PROD even in debug (set by CLI)
+  /// บังคับใช้ PROD แม้รัน debug
   static const bool forceProd = bool.fromEnvironment(
     'FORCE_PROD',
     defaultValue: false,
   );
 
-  /// ✅ true only in release mode (flutter build --release)
+  /// true เฉพาะตอน build release
   static const bool _isRelease = bool.fromEnvironment(
     'dart.vm.product',
     defaultValue: false,
   );
 
-  /// ✅ final prod flag
+  /// สถานะ production
   static bool get isProd => forceProd || _isRelease;
 
-  // =========================
-  // DEV HOST (LAN IP ของ Mac)
-  // =========================
+  // ============================================================
+  // DEV HOST (Mac LAN IP)
+  // ============================================================
+
   static const String _devHost = String.fromEnvironment(
     'DEV_HOST',
     defaultValue: '192.168.1.38',
   );
 
-  // =========================
-  // Base URLs
-  // =========================
+  // ============================================================
+  // BASE URLS
+  // ============================================================
 
-  /// ✅ AUTH USER SERVICE (3101)
+  /// AUTH USER SERVICE
   static String get authBaseUrl => isProd
       ? 'https://auth-user-service-afwu.onrender.com'
       : 'http://$_devHost:3101';
 
-  /// ✅ PAYROLL SERVICE (3102)
+  /// PAYROLL SERVICE
   static String get payrollBaseUrl => isProd
       ? 'https://payroll-service-808t.onrender.com'
       : 'http://$_devHost:3102';
 
-  /// ✅ SCORE SERVICE (3103)
+  /// SCORE SERVICE
   static String get scoreBaseUrl => isProd
       ? 'https://score-service-rrng.onrender.com'
       : 'http://$_devHost:3103';
 
-  /// ✅ STAFF SERVICE (3104)
+  /// STAFF SERVICE
   static String get staffBaseUrl => isProd
       ? 'https://staff-service-xg6p.onrender.com'
       : 'http://$_devHost:3104';
 
-  // =========================
-  // Debug Helpers (สำคัญมาก)
-  // =========================
+  // ============================================================
+  // DEBUG HELPERS
+  // ============================================================
 
   static String get debugAuth =>
       'AUTH → $authBaseUrl (isProd=$isProd forceProd=$forceProd release=$_isRelease)';
@@ -85,56 +90,72 @@ class ApiConfig {
       '$debugScore\n'
       '$debugStaff';
 
-  // =========================
-  // Auth endpoints
-  // =========================
-  static const String me = '/me';
-  static const String login = '/login';
+  // ============================================================
+  // AUTH ENDPOINTS
+  // ============================================================
 
-  // =========================
-  // Shift / Payroll endpoints
-  // =========================
+  static const String login = '/login';
+  static const String me = '/me';
+
+  // ============================================================
+  // SHIFT / PAYROLL
+  // ============================================================
+
   static const String shifts = '/shifts';
   static String shiftStatus(String id) => '/shifts/$id/status';
 
-  // ✅ Payroll close / tax / slip (เพิ่มไว้ให้ OT โผล่ในสลิปชัวร์)
-  // NOTE: ชื่อ path อาจจะตรงกับที่คุณใช้จริงอยู่แล้วใน service อื่น
-  //       ถ้าคุณมีชื่อ path อื่น เดี๋ยวเราจะ map ให้ตรงในไฟล์ api/service ถัดไป
   static const String payrollTax = '/payroll/tax';
   static const String payrollClose = '/payroll/close';
+
   static const String payslipPreview = '/payslip/preview';
   static const String payslipDownload = '/payslip/download';
 
-  // =========================
-  // Attendance / OT endpoints (เพิ่มไว้ใช้คู่กับ fingerprint)
-  // =========================
-  // attendance: check-in / check-out / sessions
+  // ============================================================
+  // ATTENDANCE
+  // ============================================================
+
   static const String attendanceCheckIn = '/attendance/check-in';
   static const String attendanceCheckOut = '/attendance/check-out';
   static const String attendanceMySessions = '/attendance/my-sessions';
 
-  // overtime: approve / list
-  static const String overtimeMy = '/overtime/my';
-  static String overtimeApprove(String overtimeId) => '/overtime/$overtimeId/approve';
+  // ============================================================
+  // OVERTIME
+  // ============================================================
 
-  // =========================
-  // Score endpoints
-  // =========================
+  static const String overtimeMy = '/overtime/my';
+  static String overtimeApprove(String id) => '/overtime/$id/approve';
+
+  // ============================================================
+  // TRUST SCORE
+  // ============================================================
+
   static String staffScore(String staffId) => '/score/staff/$staffId/score';
 
   static const String trustScore = '/score/trustscore';
 
-  // ✅ FIX: eventRoutes mount เป็น /events -> POST /events/attendance
   static const String attendanceEvent = '/events/attendance';
 
-  // =========================
-  // Staff endpoints
-  // =========================
+  // ============================================================
+  // STAFF SERVICE
+  // ============================================================
+
   static const String staffSearch = '/staff/search';
 
-  // ✅ NEW: staff dropdown (โดยตรงจาก staff_service)
   static const String staffDropdown = '/api/employees/dropdown';
 
-  // ✅ NEW: staff dropdown ผ่าน payroll_service proxy (ถ้าคุณทำ proxy ไว้แล้ว)
   static const String staffDropdownProxy = '/api/staff/dropdown';
+
+  // ============================================================
+  // HELPER MARKETPLACE
+  // ============================================================
+
+  /// Global helper search
+  static const String helperSearch = '/helpers/search';
+
+  /// Helper trust score
+  static String helperScoreByUserId(String userId) =>
+      '/helpers/$userId/score';
+
+  /// Helper recommendations
+  static const String helperRecommendations = '/recommendations';
 }

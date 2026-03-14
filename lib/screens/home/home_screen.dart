@@ -49,6 +49,11 @@
 // - unfocus ก่อนปิด dialog
 // - ไม่ dispose TextEditingController ทันทีขณะ overlay กำลังปิด
 // - กันกดยืนยันซ้ำใน dialog
+//
+// ✅ PATCH (CLINIC -> HELPER MARKETPLACE -> TRUST SCORE)
+// - เพิ่ม import HelperMarketplaceScreen
+// - คลินิกสามารถเปิด marketplace เพื่อเลือก helper
+// - หลังเลือก helper แล้วเปิด TrustScoreLookupScreen พร้อม initialHelper ได้ทันที
 
 import 'dart:async';
 import 'dart:convert';
@@ -70,6 +75,7 @@ import 'package:clinic_smart_staff/app/app_context_resolver.dart';
 
 import 'package:clinic_smart_staff/screens/clinic/clinic_home_screen.dart';
 import 'package:clinic_smart_staff/screens/helper/helper_home_screen.dart';
+import 'package:clinic_smart_staff/screens/helper/helper_marketplace_screen.dart';
 
 import 'package:clinic_smart_staff/screens/clinic_shift_need_list_screen.dart';
 import 'package:clinic_smart_staff/screens/helper_open_needs_screen.dart';
@@ -884,6 +890,54 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  Future<void> _openHelperMarketplaceForClinicTrustScore() async {
+    _tapLog('OPEN_HELPER_MARKETPLACE_FOR_TRUSTSCORE');
+
+    if (_ctxLoading) return;
+
+    if (!_isClinic) {
+      _snack('เมนูนี้สำหรับคลินิกเท่านั้น');
+      return;
+    }
+
+    final ok = await _askClinicPinAndVerify();
+    if (ok != true) return;
+
+    if (!mounted) return;
+
+    final selected = await Navigator.push<Map<String, dynamic>>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => const HelperMarketplaceScreen(),
+      ),
+    );
+
+    if (!mounted || selected == null) return;
+
+    final helperName = ((selected['fullName'] ??
+                selected['name'] ??
+                selected['phone'] ??
+                selected['staffId'] ??
+                selected['userId'] ??
+                'ผู้ช่วย')
+            .toString())
+        .trim();
+
+    _snack('เลือก $helperName แล้ว');
+
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => TrustScoreLookupScreen(
+          initialHelper: selected,
+          initialStaffId: (selected['staffId'] ?? '').toString(),
+          initialQuery:
+              (selected['fullName'] ?? selected['name'] ?? '').toString(),
+        ),
+      ),
+    );
+  }
+
   Future<bool?> _askClinicPinAndVerify() async {
     final ctrl = TextEditingController();
     bool loading = false;
@@ -932,7 +986,9 @@ class _HomeScreenState extends State<HomeScreen> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('กรุณากรอก PIN ของคลินิกเพื่อเข้าดูคะแนนความน่าเชื่อถือ'),
+                  const Text(
+                    'กรุณากรอก PIN ของคลินิกเพื่อเข้าดูคะแนนความน่าเชื่อถือ',
+                  ),
                   const SizedBox(height: 10),
                   TextField(
                     controller: ctrl,
@@ -1966,7 +2022,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (lastRes != null) {
       final apiMsg = _extractApiMessage(lastRes);
-      _snack(apiMsg.isNotEmpty ? apiMsg : 'ไม่สามารถบันทึกเวลาเข้างานได้ กรุณาลองใหม่');
+      _snack(apiMsg.isNotEmpty
+          ? apiMsg
+          : 'ไม่สามารถบันทึกเวลาเข้างานได้ กรุณาลองใหม่');
     } else {
       _snack('ไม่สามารถเชื่อมต่อได้ กรุณาลองใหม่');
     }
@@ -2162,7 +2220,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (lastRes != null) {
       final apiMsg = _extractApiMessage(lastRes);
-      _snack(apiMsg.isNotEmpty ? apiMsg : 'ไม่สามารถบันทึกเวลาออกงานได้ กรุณาลองใหม่');
+      _snack(apiMsg.isNotEmpty
+          ? apiMsg
+          : 'ไม่สามารถบันทึกเวลาออกงานได้ กรุณาลองใหม่');
     } else {
       _snack('ไม่สามารถเชื่อมต่อได้ กรุณาลองใหม่');
     }
@@ -2650,7 +2710,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   const SizedBox(height: 6),
                   Text(
-                    'ใช้สำหรับดูข้อมูลความน่าเชื่อถือของผู้ช่วย โดยต้องยืนยัน PIN ของคลินิกก่อน',
+                    'คลินิกสามารถเปิด Helper Marketplace เพื่อเลือกผู้ช่วย แล้วไปดูคะแนนความน่าเชื่อถือได้ โดยต้องยืนยัน PIN ของคลินิกก่อน',
                     style: TextStyle(color: Colors.grey.shade700),
                   ),
                   const SizedBox(height: 10),
@@ -2660,6 +2720,15 @@ class _HomeScreenState extends State<HomeScreen> {
                       onPressed: _openTrustScoreFromHome,
                       icon: const Icon(Icons.verified),
                       label: const Text('ดูคะแนนความน่าเชื่อถือ'),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: _openHelperMarketplaceForClinicTrustScore,
+                      icon: const Icon(Icons.storefront_outlined),
+                      label: const Text('เลือกผู้ช่วยจาก Marketplace'),
                     ),
                   ),
                 ],
@@ -2746,6 +2815,14 @@ class _HomeScreenState extends State<HomeScreen> {
                   title: const Text('คะแนนความน่าเชื่อถือ'),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: _openTrustScoreFromHome,
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.storefront_outlined),
+                  title: const Text('เลือกผู้ช่วยจาก Marketplace'),
+                  subtitle: const Text('เลือกผู้ช่วยเพื่อไปดู Trust Score'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: _openHelperMarketplaceForClinicTrustScore,
                 ),
                 const Divider(height: 1),
                 ListTile(

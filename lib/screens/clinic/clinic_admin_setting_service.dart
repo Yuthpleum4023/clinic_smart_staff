@@ -13,6 +13,7 @@ import 'package:clinic_smart_staff/services/settings_service.dart';
 import 'package:clinic_smart_staff/services/auth_service.dart';
 import 'package:clinic_smart_staff/screens/location_settings_screen.dart';
 import 'package:clinic_smart_staff/screens/clinic/clinic_ot_settings_screen.dart';
+import 'package:clinic_smart_staff/services/auth_storage.dart';
 
 class ClinicAdminSettingsScreen extends StatefulWidget {
   const ClinicAdminSettingsScreen({super.key});
@@ -25,14 +26,9 @@ class ClinicAdminSettingsScreen extends StatefulWidget {
 class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
   bool _loading = true;
 
-  static const String _tokenKey = 'auth_token';
-  static const String _clinicIdKey = 'clinicId';
+  static const String _kClinicId = 'app_clinic_id';
   static const String _payrollBaseUrl =
       'https://payroll-service-808t.onrender.com';
-
-  static const String _kClinicContactPhone = 'clinic_contact_phone';
-  static const String _kClinicName = 'clinic_name';
-  static const String _kClinicAddress = 'clinic_address';
 
   final _clinicNameCtrl = TextEditingController();
   final _clinicAddressCtrl = TextEditingController();
@@ -52,6 +48,8 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
   double? _lat;
   double? _lng;
   bool _savingLocation = false;
+
+  String _currentClinicId = '';
 
   @override
   void initState() {
@@ -74,40 +72,88 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
-  Future<String> _prefGet(String k) async {
-    final prefs = await SharedPreferences.getInstance();
-    return (prefs.getString(k) ?? '').trim();
+  String _profileKey(String clinicId, String field) {
+    return 'clinic_profile_${clinicId}_$field';
   }
 
-  Future<void> _prefSet(String k, String v) async {
+  Future<String> _readClinicScoped(String clinicId, String field) async {
+    if (clinicId.trim().isEmpty) return '';
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(k, v.trim());
+    return (prefs.getString(_profileKey(clinicId, field)) ?? '').trim();
   }
 
-  Future<void> _loadProfileFromPrefs() async {
-    final name = await _prefGet(_kClinicName);
-    final addr = await _prefGet(_kClinicAddress);
-    final phone = await _prefGet(_kClinicContactPhone);
+  Future<void> _writeClinicScoped(
+    String clinicId,
+    String field,
+    String value,
+  ) async {
+    if (clinicId.trim().isEmpty) return;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_profileKey(clinicId, field), value.trim());
+  }
+
+  Future<void> _clearForm() async {
+    if (!mounted) return;
+    setState(() {
+      _clinicNameCtrl.text = '';
+      _clinicAddressCtrl.text = '';
+      _phoneCtrl.text = '';
+    });
+  }
+
+  Future<String> _getClinicId() async {
+    final prefs = await SharedPreferences.getInstance();
+    final cid = (prefs.getString(_kClinicId) ?? '').trim();
+    return cid;
+  }
+
+  Future<String> _getTokenRobust() async {
+    final t = await AuthStorage.getToken();
+    if (t != null && t.trim().isNotEmpty) return t.trim();
+
+    final prefs = await SharedPreferences.getInstance();
+    const keys = [
+      'auth_token',
+      'jwtToken',
+      'token',
+      'authToken',
+      'userToken',
+      'jwt_token',
+      'accessToken',
+      'access_token',
+    ];
+
+    for (final k in keys) {
+      final v = (prefs.getString(k) ?? '').trim();
+      if (v.isNotEmpty) return v;
+    }
+
+    return '';
+  }
+
+  Future<void> _loadProfileFromPrefs(String clinicId) async {
+    if (clinicId.trim().isEmpty) {
+      await _clearForm();
+      return;
+    }
+
+    final name = await _readClinicScoped(clinicId, 'name');
+    final addr = await _readClinicScoped(clinicId, 'address');
+    final phone = await _readClinicScoped(clinicId, 'phone');
 
     if (!mounted) return;
 
-    if (_clinicNameCtrl.text.trim().isEmpty && name.isNotEmpty) {
+    setState(() {
       _clinicNameCtrl.text = name;
-    }
-    if (_clinicAddressCtrl.text.trim().isEmpty && addr.isNotEmpty) {
       _clinicAddressCtrl.text = addr;
-    }
-    if (_phoneCtrl.text.trim().isEmpty && phone.isNotEmpty) {
       _phoneCtrl.text = phone;
-    }
+    });
   }
 
-  Future<void> _loadClinicProfileFromBackend() async {
-    final prefs = await SharedPreferences.getInstance();
-    final token = (prefs.getString(_tokenKey) ?? '').trim();
-    final clinicId = (prefs.getString(_clinicIdKey) ?? '').trim();
+  Future<void> _loadClinicProfileFromBackend(String clinicId) async {
+    final token = await _getTokenRobust();
 
-    if (token.isEmpty || clinicId.isEmpty) return;
+    if (token.isEmpty || clinicId.trim().isEmpty) return;
 
     try {
       final uri = Uri.parse('$_payrollBaseUrl/clinics/$clinicId');
@@ -128,15 +174,16 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
       final addr = (c['address'] ?? '').toString().trim();
 
       if (!mounted) return;
+
       setState(() {
-        if (name.isNotEmpty) _clinicNameCtrl.text = name;
-        if (addr.isNotEmpty) _clinicAddressCtrl.text = addr;
-        if (phone.isNotEmpty) _phoneCtrl.text = phone;
+        _clinicNameCtrl.text = name;
+        _clinicAddressCtrl.text = addr;
+        _phoneCtrl.text = phone;
       });
 
-      if (name.isNotEmpty) await _prefSet(_kClinicName, name);
-      if (addr.isNotEmpty) await _prefSet(_kClinicAddress, addr);
-      if (phone.isNotEmpty) await _prefSet(_kClinicContactPhone, phone);
+      await _writeClinicScoped(clinicId, 'name', name);
+      await _writeClinicScoped(clinicId, 'address', addr);
+      await _writeClinicScoped(clinicId, 'phone', phone);
     } catch (_) {}
   }
 
@@ -148,6 +195,12 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
 
   Future<void> _saveClinicProfile() async {
     if (_savingProfile) return;
+
+    final clinicId = _currentClinicId.trim();
+    if (clinicId.isEmpty) {
+      _snack('ไม่พบ clinicId ของบัญชีนี้ กรุณาออกจากระบบแล้วเข้าใหม่');
+      return;
+    }
 
     final name = _clinicNameCtrl.text.trim();
     final phone = _phoneCtrl.text.trim();
@@ -165,12 +218,11 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
     setState(() => _savingProfile = true);
 
     try {
-      await _prefSet(_kClinicName, name);
-      await _prefSet(_kClinicAddress, address);
-      await _prefSet(_kClinicContactPhone, phone);
+      await _writeClinicScoped(clinicId, 'name', name);
+      await _writeClinicScoped(clinicId, 'address', address);
+      await _writeClinicScoped(clinicId, 'phone', phone);
 
-      final prefs = await SharedPreferences.getInstance();
-      final token = (prefs.getString(_tokenKey) ?? '').trim();
+      final token = await _getTokenRobust();
 
       if (token.isEmpty) {
         _snack('บันทึกในเครื่องแล้ว');
@@ -212,6 +264,7 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
       final sso = await SettingService.loadSsoPercent();
       final hasPin = await AuthService.hasPin();
       final loc = await SettingService.loadClinicLocation();
+      final clinicId = await _getClinicId();
 
       if (!mounted) return;
       setState(() {
@@ -219,10 +272,15 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
         _hasPin = hasPin;
         _lat = loc?.lat;
         _lng = loc?.lng;
+        _currentClinicId = clinicId;
       });
 
-      await _loadProfileFromPrefs();
-      await _loadClinicProfileFromBackend();
+      if (clinicId.isEmpty) {
+        await _clearForm();
+      } else {
+        await _loadProfileFromPrefs(clinicId);
+        await _loadClinicProfileFromBackend(clinicId);
+      }
 
       if (!mounted) return;
       setState(() => _loading = false);
@@ -316,8 +374,7 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
 
   Future<void> _openOtSettings() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final token = (prefs.getString(_tokenKey) ?? '').trim();
+      final token = await _getTokenRobust();
 
       if (token.isEmpty) {
         _snack('เซสชันหมดอายุ กรุณาออกจากระบบแล้วเข้าสู่ระบบใหม่');

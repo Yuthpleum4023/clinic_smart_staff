@@ -42,6 +42,13 @@
 // - ปุ่มอัปเดตในการ์ดประกาศงานไม่ดูนิ่งเวลาเน็ตช้า
 // - กันกดซ้ำทั้ง AppBar refresh และ urgent refresh
 // - แสดง snackbar ระหว่างกำลังอัปเดต
+//
+// ✅ PATCH (DIALOG STABILITY)
+// - แก้จอแดง _dependents.isEmpty ตอนเช็คเอาท์ก่อนเวลา + กรอกเหตุผล
+// - ใช้ rootNavigator ตอนปิด dialog
+// - unfocus ก่อนปิด dialog
+// - ไม่ dispose TextEditingController ทันทีขณะ overlay กำลังปิด
+// - กันกดยืนยันซ้ำใน dialog
 
 import 'dart:async';
 import 'dart:convert';
@@ -163,7 +170,7 @@ class _HomeScreenState extends State<HomeScreen> {
   final LocalAuthentication _localAuth = LocalAuthentication();
   bool _bioLoading = false;
 
-  // ✅ smoother attendance UX
+  // smoother attendance UX
   _AttendanceUiPhase _attUiPhase = _AttendanceUiPhase.idle;
   String _attProgressText = '';
   bool _showSlowNetworkHint = false;
@@ -172,8 +179,9 @@ class _HomeScreenState extends State<HomeScreen> {
   bool get _attBusy => _attUiPhase != _AttendanceUiPhase.idle;
 
   String get _displayAttendanceStatusLine {
-    final base =
-        _attProgressText.trim().isNotEmpty ? _attProgressText.trim() : _attStatusLine.trim();
+    final base = _attProgressText.trim().isNotEmpty
+        ? _attProgressText.trim()
+        : _attStatusLine.trim();
 
     if (_showSlowNetworkHint) {
       if (base.isEmpty) {
@@ -211,18 +219,18 @@ class _HomeScreenState extends State<HomeScreen> {
   String _friendlyAuthError(Object e) {
     final s = e.toString().toLowerCase();
     if (s.contains('no token') || s.contains('token')) {
-      return 'เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่';
+      return 'เซสชันหมดอายุ กรุณาเข้าสู่ระบบอีกครั้ง';
     }
     if (s.contains('timeout')) {
-      return 'เชื่อมต่อช้าเกินไป กรุณาลองใหม่';
+      return 'การเชื่อมต่อใช้เวลานานเกินไป กรุณาลองใหม่';
     }
     if (s.contains('unauthorized') || s.contains('401')) {
-      return 'ไม่สามารถยืนยันตัวตนได้ กรุณาเข้าสู่ระบบใหม่';
+      return 'ไม่สามารถยืนยันตัวตนได้ กรุณาเข้าสู่ระบบอีกครั้ง';
     }
     if (s.contains('forbidden') || s.contains('403')) {
-      return 'ไม่มีสิทธิ์ใช้งานเมนูนี้';
+      return 'คุณไม่มีสิทธิ์ใช้งานเมนูนี้';
     }
-    return 'เกิดข้อผิดพลาด กรุณาลองใหม่';
+    return 'เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้ง';
   }
 
   String _todayYmd() {
@@ -396,59 +404,59 @@ class _HomeScreenState extends State<HomeScreen> {
     final otWindowEnd = _hhmm(p['otWindowEnd'], fallback: '');
 
     if (_isHelper) {
-      lines.add('ค่าจ้างของผู้ช่วยคิดจากเวลาทำงานจริง');
+      lines.add('ค่าตอบแทนของผู้ช่วยจะคำนวณตามเวลาทำงานจริง');
       if (employeeOnlyOt) {
         lines.add('ผู้ช่วยไม่มี OT แยกต่างหาก ระบบจะคำนวณตามเวลาทำงานจริง');
       }
       if (realTimeOnly) {
-        lines.add('การลงเวลาทำงานต้องทำแบบเรียลไทม์');
+        lines.add('การลงเวลาทำงานต้องบันทึกตามเวลาจริง');
       }
       if (manualNeedApproval) {
-        lines.add('หากลืมลงเวลา ต้องส่งคำขอแก้ไขเวลาและรอผู้ดูแลอนุมัติ');
+        lines.add('หากลืมลงเวลา ต้องส่งคำขอแก้ไขเวลาและรอการอนุมัติ');
       }
       if (manualReasonRequired) {
-        lines.add('การแก้ไขเวลาทำงานต้องระบุเหตุผล');
+        lines.add('การขอแก้ไขเวลาทำงานจำเป็นต้องระบุเหตุผล');
       }
       if (lockAfterClose) {
-        lines.add('เมื่อปิดงวดเงินเดือนแล้ว จะไม่สามารถแก้ไขเวลาย้อนหลังได้');
+        lines.add('เมื่อปิดรอบเงินเดือนแล้ว จะไม่สามารถแก้ไขเวลาย้อนหลังได้');
       }
       return lines;
     }
 
     if (_isEmployee) {
       if (realTimeOnly) {
-        lines.add('การลงเวลาทำงานต้องทำแบบเรียลไทม์');
+        lines.add('การลงเวลาทำงานต้องบันทึกตามเวลาจริง');
       }
       if (otWindowStart.isNotEmpty && otWindowEnd.isNotEmpty) {
-        lines.add('OT จะคิดเฉพาะช่วง $otWindowStart - $otWindowEnd');
-        lines.add('เวลานอกช่วงดังกล่าวจะไม่ถูกนับเป็น OT');
+        lines.add('ระบบจะคำนวณ OT เฉพาะช่วงเวลา $otWindowStart - $otWindowEnd');
+        lines.add('เวลานอกช่วงดังกล่าวจะไม่นับรวมเป็น OT');
       }
       if (requireOtApproval) {
-        lines.add('OT ต้องได้รับการอนุมัติก่อนจึงจะถูกนำไปคิดเงิน');
+        lines.add('OT จะนำไปคำนวณเงินได้ต่อเมื่อได้รับการอนุมัติแล้ว');
       }
       if (manualNeedApproval) {
-        lines.add('หากลืมลงเวลา ต้องส่งคำขอแก้ไขเวลาและรอผู้ดูแลอนุมัติ');
+        lines.add('หากลืมลงเวลา ต้องส่งคำขอแก้ไขเวลาและรอการอนุมัติ');
       }
       if (manualReasonRequired) {
-        lines.add('การแก้ไขเวลาทำงานต้องระบุเหตุผล');
+        lines.add('การขอแก้ไขเวลาทำงานจำเป็นต้องระบุเหตุผล');
       }
       if (lockAfterClose) {
-        lines.add('เมื่อปิดงวดเงินเดือนแล้ว จะไม่สามารถแก้ไขเวลาย้อนหลังได้');
+        lines.add('เมื่อปิดรอบเงินเดือนแล้ว จะไม่สามารถแก้ไขเวลาย้อนหลังได้');
       }
       return lines;
     }
 
     if (otWindowStart.isNotEmpty && otWindowEnd.isNotEmpty) {
-      lines.add('คลินิกตั้งช่วงเวลา OT ไว้ที่ $otWindowStart - $otWindowEnd');
+      lines.add('คลินิกกำหนดช่วงเวลา OT ไว้ที่ $otWindowStart - $otWindowEnd');
     }
     if (requireOtApproval) {
-      lines.add('OT ต้องได้รับการอนุมัติก่อนเข้าสู่ payroll');
+      lines.add('OT ต้องได้รับการอนุมัติก่อนจึงจะเข้าสู่ระบบเงินเดือน');
     }
     if (manualNeedApproval) {
-      lines.add('การแก้ไขเวลาทำงานต้องได้รับการอนุมัติ');
+      lines.add('การแก้ไขเวลาทำงานต้องผ่านการอนุมัติ');
     }
     if (lockAfterClose) {
-      lines.add('เมื่อปิดงวดเงินเดือนแล้ว จะไม่สามารถแก้ไขเวลาย้อนหลังได้');
+      lines.add('เมื่อปิดรอบเงินเดือนแล้ว จะไม่สามารถแก้ไขเวลาย้อนหลังได้');
     }
 
     return lines;
@@ -638,8 +646,8 @@ class _HomeScreenState extends State<HomeScreen> {
       setState(() {
         _policyLoading = false;
         _policyErr = (last == null)
-            ? 'เชื่อมต่อไม่สำเร็จ'
-            : 'โหลดกติกาของคลินิกไม่สำเร็จ';
+            ? 'ไม่สามารถเชื่อมต่อได้'
+            : 'ไม่สามารถโหลดเงื่อนไขของคลินิกได้';
       });
     } catch (e) {
       if (!mounted) return;
@@ -771,7 +779,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (!mounted) return;
 
     if (_activeRefreshing) {
-      _snack('กำลังอัปเดตข้อมูล...');
+      _snack('กำลังอัปเดตข้อมูล กรุณารอสักครู่');
       return;
     }
 
@@ -779,7 +787,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _activeRefreshing = true;
     });
 
-    _snack('กำลังอัปเดตข้อมูล...');
+    _snack('กำลังอัปเดตข้อมูล กรุณารอสักครู่');
 
     try {
       if (_ctxLoading || _role.trim().isEmpty) {
@@ -807,10 +815,10 @@ class _HomeScreenState extends State<HomeScreen> {
         return;
       }
 
-      _snack('อัปเดตข้อมูลล่าสุดแล้ว');
+      _snack('อัปเดตข้อมูลล่าสุดเรียบร้อยแล้ว');
     } catch (e) {
       if (!mounted) return;
-      _snack('ไม่สามารถอัปเดตข้อมูลได้ กรุณาลองใหม่');
+      _snack('ไม่สามารถอัปเดตข้อมูลได้ กรุณาลองใหม่อีกครั้ง');
     } finally {
       if (!mounted) return;
       setState(() {
@@ -821,11 +829,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _refreshUrgentCardOnly() async {
     if (_urgentLoading || _activeRefreshing) {
-      _snack('กำลังอัปเดตประกาศงาน...');
+      _snack('กำลังอัปเดตประกาศงาน กรุณารอสักครู่');
       return;
     }
 
-    _snack('กำลังอัปเดตประกาศงาน...');
+    _snack('กำลังอัปเดตประกาศงาน กรุณารอสักครู่');
     await _loadUrgentNeeds();
 
     if (!mounted) return;
@@ -835,7 +843,7 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    _snack('อัปเดตประกาศงานล่าสุดแล้ว');
+    _snack('อัปเดตประกาศงานล่าสุดเรียบร้อยแล้ว');
   }
 
   Future<void> _logout() async {
@@ -862,7 +870,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (_ctxLoading) return;
 
     if (!_isClinic) {
-      _snack('ฟีเจอร์นี้สำหรับคลินิกเท่านั้น');
+      _snack('เมนูนี้สำหรับคลินิกเท่านั้น');
       return;
     }
 
@@ -881,7 +889,7 @@ class _HomeScreenState extends State<HomeScreen> {
     bool loading = false;
     String errText = '';
 
-    return showDialog<bool>(
+    final result = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
       builder: (ctx) {
@@ -894,6 +902,8 @@ class _HomeScreenState extends State<HomeScreen> {
                 return;
               }
 
+              FocusScope.of(ctx).unfocus();
+
               setSt(() {
                 loading = true;
                 errText = '';
@@ -904,13 +914,13 @@ class _HomeScreenState extends State<HomeScreen> {
                 if (!ctx.mounted) return;
 
                 if (ok) {
-                  Navigator.pop(ctx, true);
+                  Navigator.of(ctx, rootNavigator: true).pop(true);
                 } else {
                   setSt(() => errText = 'PIN ไม่ถูกต้อง');
                 }
               } catch (_) {
                 if (!ctx.mounted) return;
-                setSt(() => errText = 'ตรวจสอบ PIN ไม่สำเร็จ');
+                setSt(() => errText = 'ไม่สามารถตรวจสอบ PIN ได้');
               } finally {
                 if (ctx.mounted) setSt(() => loading = false);
               }
@@ -922,7 +932,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('กรุณาใส่ PIN คลินิกเพื่อเข้าดู TrustScore'),
+                  const Text('กรุณากรอก PIN ของคลินิกเพื่อเข้าดูคะแนนความน่าเชื่อถือ'),
                   const SizedBox(height: 10),
                   TextField(
                     controller: ctrl,
@@ -950,7 +960,9 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               actions: [
                 TextButton(
-                  onPressed: loading ? null : () => Navigator.pop(ctx, false),
+                  onPressed: loading
+                      ? null
+                      : () => Navigator.of(ctx, rootNavigator: true).pop(false),
                   child: const Text('ยกเลิก'),
                 ),
                 FilledButton(
@@ -969,6 +981,12 @@ class _HomeScreenState extends State<HomeScreen> {
         );
       },
     );
+
+    Future<void>.delayed(const Duration(milliseconds: 300), () {
+      ctrl.dispose();
+    });
+
+    return result;
   }
 
   Future<void> _openMyClinic() async {
@@ -1050,7 +1068,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final c = code.toLowerCase().trim();
 
     if (c.contains('notenrolled')) {
-      return 'อุปกรณ์นี้ยังไม่มีลายนิ้วมือให้ใช้งาน (กรุณาตั้งค่าลายนิ้วมือในเครื่อง)';
+      return 'อุปกรณ์นี้ยังไม่ได้ตั้งค่าลายนิ้วมือ กรุณาตั้งค่าในเครื่องก่อนใช้งาน';
     }
     if (c.contains('passcodenotset')) {
       return 'กรุณาตั้งรหัสล็อกหน้าจอก่อนใช้งาน';
@@ -1059,19 +1077,19 @@ class _HomeScreenState extends State<HomeScreen> {
       return 'ระบบยืนยันตัวตนยังไม่พร้อมใช้งาน กรุณาลองใหม่';
     }
     if (c.contains('lockedout')) {
-      return 'สแกนผิดหลายครั้ง ระบบล็อกชั่วคราว — ปลดล็อกด้วยรหัสหน้าจอก่อนแล้วลองใหม่';
+      return 'สแกนผิดหลายครั้ง ระบบถูกล็อกชั่วคราว กรุณาปลดล็อกด้วยรหัสหน้าจอก่อนแล้วลองใหม่';
     }
     if (c.contains('permanentlylockedout')) {
-      return 'ระบบล็อกเพื่อความปลอดภัย — กรุณาปลดล็อกด้วยรหัสหน้าจอ/ตั้งค่าชีวมิติใหม่';
+      return 'ระบบถูกล็อกเพื่อความปลอดภัย กรุณาปลดล็อกด้วยรหัสหน้าจอ หรือตั้งค่าชีวมิติใหม่';
     }
     if (c.contains('usercanceled') || c.contains('usercancel')) {
       return 'ยกเลิกการยืนยันตัวตน';
     }
     if (c.contains('authentication_failed')) {
-      return 'ยืนยันตัวตนไม่ผ่าน กรุณาลองใหม่';
+      return 'ยืนยันตัวตนไม่สำเร็จ กรุณาลองใหม่';
     }
     if (c.contains('biometric_only_not_supported')) {
-      return 'อุปกรณ์นี้ไม่รองรับโหมดชีวมิติอย่างเดียว';
+      return 'อุปกรณ์นี้ไม่รองรับการยืนยันตัวตนแบบชีวมิติเพียงอย่างเดียว';
     }
 
     return 'ยืนยันตัวตนไม่สำเร็จ (BIO ERROR: $code)';
@@ -1108,7 +1126,7 @@ class _HomeScreenState extends State<HomeScreen> {
       }
 
       final ok = await _localAuth.authenticate(
-        localizedReason: 'ยืนยันตัวตนด้วยลายนิ้วมือเพื่อบันทึกการทำงาน',
+        localizedReason: 'ยืนยันตัวตนด้วยลายนิ้วมือเพื่อบันทึกเวลาทำงาน',
         options: const AuthenticationOptions(
           biometricOnly: true,
           stickyAuth: true,
@@ -1331,7 +1349,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
                 ElevatedButton(
                   onPressed: () => Navigator.pop(ctx, true),
-                  child: const Text('ส่งคำขอ Manual'),
+                  child: const Text('ส่งคำขอแก้ไขเวลา'),
                 ),
               ],
             );
@@ -1349,7 +1367,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
 
     if (submitted) {
-      _snack('ส่งคำขอ Manual แล้ว');
+      _snack('ส่งคำขอแก้ไขเวลาเรียบร้อยแล้ว');
     }
   }
 
@@ -1360,6 +1378,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final reasonTextCtrl = TextEditingController();
     final noteCtrl = TextEditingController();
     String err = '';
+    bool submitting = false;
 
     final result = await showDialog<Map<String, String>>(
       context: context,
@@ -1367,6 +1386,19 @@ class _HomeScreenState extends State<HomeScreen> {
       builder: (ctx) {
         return StatefulBuilder(
           builder: (ctx, setSt) {
+            void closeWithResult(Map<String, String> value) {
+              FocusScope.of(ctx).unfocus();
+              setSt(() {
+                submitting = true;
+                err = '';
+              });
+
+              Future<void>.delayed(Duration.zero, () {
+                if (!ctx.mounted) return;
+                Navigator.of(ctx, rootNavigator: true).pop(value);
+              });
+            }
+
             return AlertDialog(
               title: const Text('เช็คเอาท์ก่อนเวลา'),
               content: SingleChildScrollView(
@@ -1409,16 +1441,19 @@ class _HomeScreenState extends State<HomeScreen> {
                           child: Text('อื่น ๆ'),
                         ),
                       ],
-                      onChanged: (v) {
-                        if (v == null) return;
-                        setSt(() {
-                          selectedReasonCode = v;
-                        });
-                      },
+                      onChanged: submitting
+                          ? null
+                          : (v) {
+                              if (v == null) return;
+                              setSt(() {
+                                selectedReasonCode = v;
+                              });
+                            },
                     ),
                     const SizedBox(height: 12),
                     TextField(
                       controller: reasonTextCtrl,
+                      enabled: !submitting,
                       minLines: 2,
                       maxLines: 3,
                       decoration: const InputDecoration(
@@ -1430,6 +1465,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     const SizedBox(height: 12),
                     TextField(
                       controller: noteCtrl,
+                      enabled: !submitting,
                       minLines: 2,
                       maxLines: 3,
                       decoration: const InputDecoration(
@@ -1455,28 +1491,41 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               actions: [
                 TextButton(
-                  onPressed: () => Navigator.pop(ctx, null),
+                  onPressed: submitting
+                      ? null
+                      : () {
+                          FocusScope.of(ctx).unfocus();
+                          Navigator.of(ctx, rootNavigator: true).pop(null);
+                        },
                   child: const Text('ยกเลิก'),
                 ),
                 ElevatedButton(
-                  onPressed: () {
-                    final reasonText = reasonTextCtrl.text.trim();
-                    final note = noteCtrl.text.trim();
+                  onPressed: submitting
+                      ? null
+                      : () {
+                          final reasonText = reasonTextCtrl.text.trim();
+                          final note = noteCtrl.text.trim();
 
-                    if (reasonText.isEmpty && note.isEmpty) {
-                      setSt(() {
-                        err = 'กรุณาระบุรายละเอียดอย่างน้อย 1 ช่อง';
-                      });
-                      return;
-                    }
+                          if (reasonText.isEmpty && note.isEmpty) {
+                            setSt(() {
+                              err = 'กรุณาระบุรายละเอียดอย่างน้อย 1 ช่อง';
+                            });
+                            return;
+                          }
 
-                    Navigator.pop(ctx, {
-                      'reasonCode': selectedReasonCode,
-                      'reasonText': reasonText,
-                      'note': note,
-                    });
-                  },
-                  child: const Text('ยืนยัน'),
+                          closeWithResult({
+                            'reasonCode': selectedReasonCode,
+                            'reasonText': reasonText,
+                            'note': note,
+                          });
+                        },
+                  child: submitting
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('ยืนยัน'),
                 ),
               ],
             );
@@ -1485,8 +1534,10 @@ class _HomeScreenState extends State<HomeScreen> {
       },
     );
 
-    reasonTextCtrl.dispose();
-    noteCtrl.dispose();
+    Future<void>.delayed(const Duration(milliseconds: 300), () {
+      reasonTextCtrl.dispose();
+      noteCtrl.dispose();
+    });
 
     return result;
   }
@@ -1504,7 +1555,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     if (code == 'ATTENDANCE_ALREADY_COMPLETED') {
-      _snack('วันนี้เช็คอิน/เช็คเอาท์ครบแล้ว');
+      _snack('วันนี้คุณบันทึกเวลาเข้า-ออกครบแล้ว');
       return _AttendanceSubmitResult.alreadyDone;
     }
 
@@ -1516,16 +1567,16 @@ class _HomeScreenState extends State<HomeScreen> {
     if (code == 'CHECKOUT_TOO_FAST') {
       final msg = apiMsg.isNotEmpty
           ? apiMsg
-          : 'ยังเช็คเอาท์เร็วเกินไป กรุณารอสักครู่แล้วลองใหม่';
+          : 'ยังไม่สามารถเช็คเอาท์ได้ในขณะนี้ กรุณารอสักครู่แล้วลองใหม่';
       _snack(msg);
       return _AttendanceSubmitResult.failed;
     }
 
     if (code == 'MANUAL_REQUIRED_PREVIOUS_OPEN_SESSION') {
       await _showManualAttendanceRequiredDialog(
-        title: 'ต้องใช้การลงเวลาแบบ Manual',
+        title: 'จำเป็นต้องใช้การแก้ไขเวลา',
         message:
-            'ยังมี session วันก่อนค้างอยู่ จึงไม่สามารถสแกนเข้าใหม่ได้\n\nกรุณาส่งคำขอแก้ไขเวลาแบบ Manual เพื่อให้คลินิกอนุมัติ',
+            'ยังมีรายการลงเวลาจากวันก่อนค้างอยู่ จึงไม่สามารถเช็คอินใหม่ได้\n\nกรุณาส่งคำขอแก้ไขเวลาเพื่อให้คลินิกตรวจสอบและอนุมัติ',
         manualRequestType: 'edit_both',
         initialReasonCode: 'PREVIOUS_OPEN_SESSION',
       );
@@ -1534,9 +1585,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (code == 'MANUAL_REQUIRED_EARLY_CHECKIN') {
       await _showManualAttendanceRequiredDialog(
-        title: 'เช็คอินก่อนเวลา',
+        title: 'เช็คอินก่อนเวลางาน',
         message:
-            'การเช็คอินก่อนเวลาในกะงาน ต้องส่งคำขอแบบ Manual พร้อมเหตุผล และรอคลินิกอนุมัติ',
+            'การเช็คอินก่อนเวลางานต้องส่งคำขอแก้ไขเวลา พร้อมระบุเหตุผล และรอคลินิกอนุมัติ',
         manualRequestType: 'check_in',
         initialReasonCode: 'EARLY_CHECKIN',
       );
@@ -1545,9 +1596,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (code == 'MANUAL_REQUIRED_AFTER_CUTOFF') {
       await _showManualAttendanceRequiredDialog(
-        title: 'เลยเวลา Cut-off',
+        title: 'เกินเวลาที่กำหนด',
         message:
-            'เลยเวลา cut-off ของวันนั้นแล้ว จึงไม่สามารถสแกนเช็คเอาท์ได้\n\nกรุณาส่งคำขอแบบ Manual และรอคลินิกอนุมัติ',
+            'เลยเวลาที่กำหนดของวันนั้นแล้ว จึงไม่สามารถสแกนเช็คเอาท์ได้\n\nกรุณาส่งคำขอแก้ไขเวลาและรอคลินิกอนุมัติ',
         manualRequestType: 'forgot_checkout',
         initialReasonCode: 'FORGOT_CHECKOUT',
       );
@@ -1563,8 +1614,8 @@ class _HomeScreenState extends State<HomeScreen> {
     } else {
       _snack(
         isCheckIn
-            ? 'บันทึกเช็คอินไม่สำเร็จ กรุณาลองใหม่'
-            : 'บันทึกเช็คเอาท์ไม่สำเร็จ กรุณาลองใหม่',
+            ? 'ไม่สามารถบันทึกเวลาเข้างานได้ กรุณาลองใหม่'
+            : 'ไม่สามารถบันทึกเวลาออกงานได้ กรุณาลองใหม่',
       );
     }
     return _AttendanceSubmitResult.failed;
@@ -1576,7 +1627,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _attErr = '';
       _attCheckedIn = true;
       _attCheckedOut = false;
-      _attStatusLine = 'วันนี้เช็คอินแล้ว (ยังไม่เช็คเอาท์)';
+      _attStatusLine = 'วันนี้เช็คอินเรียบร้อยแล้ว (ยังไม่ได้เช็คเอาท์)';
     });
   }
 
@@ -1586,7 +1637,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _attErr = '';
       _attCheckedIn = true;
       _attCheckedOut = true;
-      _attStatusLine = 'วันนี้เช็คอินและเช็คเอาท์แล้ว';
+      _attStatusLine = 'วันนี้เช็คอินและเช็คเอาท์เรียบร้อยแล้ว';
     });
   }
 
@@ -1596,7 +1647,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _attErr = '';
       _attCheckedIn = true;
       if (!_attCheckedOut) {
-        _attStatusLine = 'วันนี้เช็คอินแล้ว (ยังไม่เช็คเอาท์)';
+        _attStatusLine = 'วันนี้เช็คอินเรียบร้อยแล้ว (ยังไม่ได้เช็คเอาท์)';
       }
     });
   }
@@ -1607,7 +1658,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _attErr = '';
       _attCheckedIn = true;
       _attCheckedOut = true;
-      _attStatusLine = 'วันนี้เช็คอินและเช็คเอาท์แล้ว';
+      _attStatusLine = 'วันนี้เช็คอินและเช็คเอาท์เรียบร้อยแล้ว';
     });
   }
 
@@ -1744,11 +1795,11 @@ class _HomeScreenState extends State<HomeScreen> {
             final line = msg.isNotEmpty
                 ? msg
                 : hasPendingManual
-                    ? 'วันนี้มีคำขอแก้ไขเวลา รออนุมัติ'
+                    ? 'วันนี้มีคำขอแก้ไขเวลา รอการอนุมัติ'
                     : checkedIn
                         ? (checkedOut
-                            ? 'วันนี้เช็คอินและเช็คเอาท์แล้ว'
-                            : 'วันนี้เช็คอินแล้ว (ยังไม่เช็คเอาท์)')
+                            ? 'วันนี้เช็คอินและเช็คเอาท์เรียบร้อยแล้ว'
+                            : 'วันนี้เช็คอินเรียบร้อยแล้ว (ยังไม่ได้เช็คเอาท์)')
                         : 'วันนี้ยังไม่ได้เช็คอิน';
 
             if (!mounted || seq != _attRefreshSeq) return;
@@ -1766,7 +1817,7 @@ class _HomeScreenState extends State<HomeScreen> {
             if (!mounted || seq != _attRefreshSeq) return;
             setState(() {
               _attLoading = false;
-              _attErr = 'ไม่มีสิทธิ์ใช้งานเมนูนี้';
+              _attErr = 'คุณไม่มีสิทธิ์ใช้งานเมนูนี้';
             });
             return;
           }
@@ -1795,7 +1846,7 @@ class _HomeScreenState extends State<HomeScreen> {
           if (!mounted || seq != _attRefreshSeq) return;
           setState(() {
             _attLoading = false;
-            _attErr = 'ไม่มีสิทธิ์ใช้งานเมนูนี้';
+            _attErr = 'คุณไม่มีสิทธิ์ใช้งานเมนูนี้';
           });
           return;
         }
@@ -1825,8 +1876,8 @@ class _HomeScreenState extends State<HomeScreen> {
         final checkedOut = todayOpen == null && todayDone != null;
         final line = checkedIn
             ? (checkedOut
-                ? 'วันนี้เช็คอินและเช็คเอาท์แล้ว'
-                : 'วันนี้เช็คอินแล้ว (ยังไม่เช็คเอาท์)')
+                ? 'วันนี้เช็คอินและเช็คเอาท์เรียบร้อยแล้ว'
+                : 'วันนี้เช็คอินเรียบร้อยแล้ว (ยังไม่ได้เช็คเอาท์)')
             : 'วันนี้ยังไม่ได้เช็คอิน';
 
         if (!mounted || seq != _attRefreshSeq) return;
@@ -1843,7 +1894,7 @@ class _HomeScreenState extends State<HomeScreen> {
       if (!mounted || seq != _attRefreshSeq) return;
       setState(() {
         _attLoading = false;
-        _attErr = 'เชื่อมต่อไม่สำเร็จ กรุณาลองใหม่';
+        _attErr = 'ไม่สามารถเชื่อมต่อได้ กรุณาลองใหม่';
       });
     } catch (e) {
       if (!mounted || seq != _attRefreshSeq) return;
@@ -1891,12 +1942,12 @@ class _HomeScreenState extends State<HomeScreen> {
         if (res.statusCode == 404) continue;
 
         if (res.statusCode == 401) {
-          _snack('เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่');
+          _snack('เซสชันหมดอายุ กรุณาเข้าสู่ระบบอีกครั้ง');
           return _AttendanceSubmitResult.unauthorized;
         }
 
         if (res.statusCode == 403) {
-          _snack('ไม่มีสิทธิ์เช็คอิน');
+          _snack('คุณไม่มีสิทธิ์บันทึกเวลาเข้างาน');
           return _AttendanceSubmitResult.forbidden;
         }
 
@@ -1904,7 +1955,7 @@ class _HomeScreenState extends State<HomeScreen> {
         if (apiMsg.isNotEmpty) {
           _snack(apiMsg);
         } else {
-          _snack('บันทึกเช็คอินไม่สำเร็จ กรุณาลองใหม่');
+          _snack('ไม่สามารถบันทึกเวลาเข้างานได้ กรุณาลองใหม่');
         }
         return _AttendanceSubmitResult.failed;
       } catch (e) {
@@ -1915,9 +1966,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (lastRes != null) {
       final apiMsg = _extractApiMessage(lastRes);
-      _snack(apiMsg.isNotEmpty ? apiMsg : 'บันทึกเช็คอินไม่สำเร็จ กรุณาลองใหม่');
+      _snack(apiMsg.isNotEmpty ? apiMsg : 'ไม่สามารถบันทึกเวลาเข้างานได้ กรุณาลองใหม่');
     } else {
-      _snack('เชื่อมต่อไม่สำเร็จ กรุณาลองใหม่');
+      _snack('ไม่สามารถเชื่อมต่อได้ กรุณาลองใหม่');
     }
 
     return _AttendanceSubmitResult.failed;
@@ -1980,12 +2031,12 @@ class _HomeScreenState extends State<HomeScreen> {
         }
 
         if (res.statusCode == 401) {
-          _snack('เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่');
+          _snack('เซสชันหมดอายุ กรุณาเข้าสู่ระบบอีกครั้ง');
           return _AttendanceSubmitResult.unauthorized;
         }
 
         if (res.statusCode == 403) {
-          _snack('ไม่มีสิทธิ์เช็คเอาท์');
+          _snack('คุณไม่มีสิทธิ์บันทึกเวลาออกงาน');
           return _AttendanceSubmitResult.forbidden;
         }
 
@@ -1993,7 +2044,7 @@ class _HomeScreenState extends State<HomeScreen> {
         if (apiMsg.isNotEmpty) {
           _snack(apiMsg);
         } else {
-          _snack('บันทึกเช็คเอาท์ไม่สำเร็จ กรุณาลองใหม่');
+          _snack('ไม่สามารถบันทึกเวลาออกงานได้ กรุณาลองใหม่');
         }
         return _AttendanceSubmitResult.failed;
       } catch (e) {
@@ -2022,12 +2073,12 @@ class _HomeScreenState extends State<HomeScreen> {
           if (r.statusCode == 404) continue;
 
           if (r.statusCode == 401) {
-            _snack('เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่');
+            _snack('เซสชันหมดอายุ กรุณาเข้าสู่ระบบอีกครั้ง');
             return _AttendanceSubmitResult.unauthorized;
           }
 
           if (r.statusCode == 403) {
-            _snack('ไม่มีสิทธิ์เช็คเอาท์');
+            _snack('คุณไม่มีสิทธิ์บันทึกเวลาออกงาน');
             return _AttendanceSubmitResult.forbidden;
           }
 
@@ -2049,14 +2100,13 @@ class _HomeScreenState extends State<HomeScreen> {
             }
           }
 
-          final id = (openToday?['_id'] ?? openToday?['id'] ?? '')
-              .toString()
-              .trim();
+          final id =
+              (openToday?['_id'] ?? openToday?['id'] ?? '').toString().trim();
 
           print('[ATTENDANCE][CHECKOUT] FALLBACK SESSION ID=$id');
 
           if (id.isEmpty) {
-            _snack('วันนี้ไม่พบรายการเช็คอินที่เปิดอยู่');
+            _snack('วันนี้ไม่พบรายการเช็คอินที่ยังเปิดอยู่');
             return _AttendanceSubmitResult.failed;
           }
 
@@ -2085,11 +2135,11 @@ class _HomeScreenState extends State<HomeScreen> {
             }
 
             if (r2.statusCode == 401) {
-              _snack('เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่');
+              _snack('เซสชันหมดอายุ กรุณาเข้าสู่ระบบอีกครั้ง');
               return _AttendanceSubmitResult.unauthorized;
             }
             if (r2.statusCode == 403) {
-              _snack('ไม่มีสิทธิ์เช็คเอาท์');
+              _snack('คุณไม่มีสิทธิ์บันทึกเวลาออกงาน');
               return _AttendanceSubmitResult.forbidden;
             }
             if (r2.statusCode == 404) continue;
@@ -2098,7 +2148,7 @@ class _HomeScreenState extends State<HomeScreen> {
             if (apiMsg.isNotEmpty) {
               _snack(apiMsg);
             } else {
-              _snack('บันทึกเช็คเอาท์ไม่สำเร็จ กรุณาลองใหม่');
+              _snack('ไม่สามารถบันทึกเวลาออกงานได้ กรุณาลองใหม่');
             }
             return _AttendanceSubmitResult.failed;
           }
@@ -2112,9 +2162,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (lastRes != null) {
       final apiMsg = _extractApiMessage(lastRes);
-      _snack(apiMsg.isNotEmpty ? apiMsg : 'บันทึกเช็คเอาท์ไม่สำเร็จ กรุณาลองใหม่');
+      _snack(apiMsg.isNotEmpty ? apiMsg : 'ไม่สามารถบันทึกเวลาออกงานได้ กรุณาลองใหม่');
     } else {
-      _snack('เชื่อมต่อไม่สำเร็จ กรุณาลองใหม่');
+      _snack('ไม่สามารถเชื่อมต่อได้ กรุณาลองใหม่');
     }
     return _AttendanceSubmitResult.failed;
   }
@@ -2138,12 +2188,12 @@ class _HomeScreenState extends State<HomeScreen> {
       }
 
       if (!_isAttendanceUser) {
-        _snack('เมนูนี้สำหรับพนักงาน/ผู้ช่วยเท่านั้น');
+        _snack('เมนูนี้สำหรับพนักงานหรือผู้ช่วยเท่านั้น');
         return;
       }
 
       if (!_attendancePremiumEnabled) {
-        _snack('ฟีเจอร์นี้เป็น Premium');
+        _snack('ฟีเจอร์นี้สำหรับแพ็กเกจพรีเมียม');
         return;
       }
 
@@ -2153,7 +2203,7 @@ class _HomeScreenState extends State<HomeScreen> {
       }
 
       if (_attCheckedIn && _attCheckedOut) {
-        _snack('วันนี้เช็คอิน/เช็คเอาท์ครบแล้ว');
+        _snack('วันนี้คุณบันทึกเวลาเข้า-ออกครบแล้ว');
         return;
       }
 
@@ -2175,13 +2225,13 @@ class _HomeScreenState extends State<HomeScreen> {
       );
 
       if (token == null || token.isEmpty) {
-        _snack('เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่');
+        _snack('เซสชันหมดอายุ กรุณาเข้าสู่ระบบอีกครั้ง');
         return;
       }
 
       _setAttendanceUiPhase(
         _AttendanceUiPhase.checkingInSubmit,
-        progressText: 'กำลังส่งข้อมูลไปยังระบบ',
+        progressText: 'กำลังบันทึกข้อมูล',
       );
       _startSlowNetworkHint();
 
@@ -2191,7 +2241,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
       if (result == _AttendanceSubmitResult.success) {
         _applyImmediateCheckInUi();
-        _snack('บันทึกสำเร็จ');
+        _snack('บันทึกเวลาเข้างานเรียบร้อยแล้ว');
         await _refreshAttendanceToday(silent: true);
       } else if (result == _AttendanceSubmitResult.alreadyDone) {
         _applyImmediateAlreadyCheckedInUi();
@@ -2225,17 +2275,17 @@ class _HomeScreenState extends State<HomeScreen> {
       }
 
       if (!_isAttendanceUser) {
-        _snack('เมนูนี้สำหรับพนักงาน/ผู้ช่วยเท่านั้น');
+        _snack('เมนูนี้สำหรับพนักงานหรือผู้ช่วยเท่านั้น');
         return;
       }
 
       if (!_attendancePremiumEnabled) {
-        _snack('ฟีเจอร์นี้เป็น Premium');
+        _snack('ฟีเจอร์นี้สำหรับแพ็กเกจพรีเมียม');
         return;
       }
 
       if (!_attCheckedIn) {
-        _snack('วันนี้ยังไม่ได้เช็คอิน');
+        _snack('วันนี้คุณยังไม่ได้เช็คอิน');
         return;
       }
 
@@ -2262,13 +2312,13 @@ class _HomeScreenState extends State<HomeScreen> {
       );
 
       if (token == null || token.isEmpty) {
-        _snack('เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่');
+        _snack('เซสชันหมดอายุ กรุณาเข้าสู่ระบบอีกครั้ง');
         return;
       }
 
       _setAttendanceUiPhase(
         _AttendanceUiPhase.checkingOutSubmit,
-        progressText: 'กำลังส่งข้อมูลไปยังระบบ',
+        progressText: 'กำลังบันทึกข้อมูล',
       );
       _startSlowNetworkHint();
 
@@ -2278,7 +2328,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
       if (result == _AttendanceSubmitResult.success) {
         _applyImmediateCheckOutUi();
-        _snack('บันทึกสำเร็จ');
+        _snack('บันทึกเวลาออกงานเรียบร้อยแล้ว');
         await _refreshAttendanceToday(silent: true);
       } else if (result == _AttendanceSubmitResult.alreadyDone) {
         _applyImmediateAlreadyCheckedOutUi();
@@ -2295,7 +2345,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
         _setAttendanceUiPhase(
           _AttendanceUiPhase.checkingOutSubmit,
-          progressText: 'กำลังส่งข้อมูลพร้อมเหตุผล',
+          progressText: 'กำลังบันทึกข้อมูลพร้อมเหตุผล',
           clearErr: true,
         );
         _startSlowNetworkHint();
@@ -2311,7 +2361,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
         if (retry == _AttendanceSubmitResult.success) {
           _applyImmediateCheckOutUi();
-          _snack('บันทึกสำเร็จ');
+          _snack('บันทึกเวลาออกงานเรียบร้อยแล้ว');
           await _refreshAttendanceToday(silent: true);
         } else if (retry == _AttendanceSubmitResult.alreadyDone) {
           _applyImmediateAlreadyCheckedOutUi();
@@ -2332,17 +2382,17 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (_ctxLoading) return;
     if (!_isAttendanceUser) {
-      _snack('เมนูนี้สำหรับพนักงาน/ผู้ช่วยเท่านั้น');
+      _snack('เมนูนี้สำหรับพนักงานหรือผู้ช่วยเท่านั้น');
       return;
     }
     if (!_attendancePremiumEnabled) {
-      _snack('ฟีเจอร์นี้เป็น Premium');
+      _snack('ฟีเจอร์นี้สำหรับแพ็กเกจพรีเมียม');
       return;
     }
 
     final token = await _getTokenAny();
     if (token == null || token.isEmpty) {
-      _snack('เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่');
+      _snack('เซสชันหมดอายุ กรุณาเข้าสู่ระบบอีกครั้ง');
       return;
     }
 
@@ -2428,7 +2478,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     final token = await _getTokenAny();
     if (token == null || token.isEmpty) {
-      _snack('เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่');
+      _snack('เซสชันหมดอายุ กรุณาเข้าสู่ระบบอีกครั้ง');
       return;
     }
     final staffId = _staffId.trim();
@@ -2496,12 +2546,13 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _attendancePremiumGateCard({bool compact = false}) {
     if (!_isAttendanceUser) return const SizedBox.shrink();
 
-    final title =
-        compact ? 'Premium Attendance' : 'Premium: บันทึกเวลางานด้วยลายนิ้วมือ';
+    final title = compact
+        ? 'บริการบันทึกเวลาด้วยลายนิ้วมือ'
+        : 'พรีเมียม: บันทึกเวลางานด้วยลายนิ้วมือ';
 
     final subtitle = _isHelper
-        ? 'ผู้ช่วยสามารถเช็คอิน/เช็คเอาท์ด้วยลายนิ้วมือ เพื่อให้ระบบคำนวณชั่วโมงงานจริงได้แม่นยำขึ้น'
-        : 'เช็คอิน/เช็คเอาท์ด้วยลายนิ้วมือ เพื่อให้ระบบคำนวณชั่วโมงงานและ OT ให้อัตโนมัติ';
+        ? 'ผู้ช่วยสามารถเช็คอินและเช็คเอาท์ด้วยลายนิ้วมือ เพื่อให้ระบบคำนวณชั่วโมงทำงานจริงได้แม่นยำยิ่งขึ้น'
+        : 'เช็คอินและเช็คเอาท์ด้วยลายนิ้วมือ เพื่อให้ระบบคำนวณชั่วโมงทำงานและ OT ได้อัตโนมัติ';
 
     return PremiumGateCard(
       loading: _premiumLoading || _policyLoading,
@@ -2513,9 +2564,9 @@ class _HomeScreenState extends State<HomeScreen> {
         final ok = await showDialog<bool>(
           context: context,
           builder: (ctx) => AlertDialog(
-            title: const Text('เปิดใช้งาน Premium'),
+            title: const Text('เปิดใช้งานบริการพรีเมียม'),
             content: const Text(
-              'ตอนนี้ยังเป็นโหมดทดสอบ (ยังไม่ผูกชำระเงินจริง)\nต้องการเปิด Premium Attendance ไหม?',
+              'ขณะนี้ระบบยังอยู่ในช่วงทดสอบและยังไม่เชื่อมต่อการชำระเงินจริง\nต้องการเปิดใช้งานฟีเจอร์บันทึกเวลาด้วยลายนิ้วมือหรือไม่',
             ),
             actions: [
               TextButton(
@@ -2531,7 +2582,7 @@ class _HomeScreenState extends State<HomeScreen> {
         );
         if (ok == true) {
           await _setPremiumAttendanceEnabled(true);
-          _snack('เปิดใช้งาน Premium แล้ว');
+          _snack('เปิดใช้งานบริการพรีเมียมเรียบร้อยแล้ว');
         }
       },
     );
@@ -2543,7 +2594,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     return AttendanceCard(
       title: header ??
-          (_isHelper ? 'บันทึกการทำงานวันนี้ (ผู้ช่วย)' : 'บันทึกการทำงานวันนี้'),
+          (_isHelper ? 'บันทึกเวลาทำงานวันนี้ (ผู้ช่วย)' : 'บันทึกเวลาทำงานวันนี้'),
       statusLine: _displayAttendanceStatusLine,
       errText: _attErr,
       loading: _attLoading,
@@ -2580,7 +2631,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (_ctxErr.isNotEmpty) {
       return _errorBox(
-        title: 'ไม่พร้อมใช้งาน',
+        title: 'ยังไม่พร้อมใช้งาน',
         message: _ctxErr,
         onRetry: _bootstrapContext,
       );
@@ -2594,12 +2645,12 @@ class _HomeScreenState extends State<HomeScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text(
-                    'คะเเนนความน่าเชื่อถือ ผู้ช่วย',
+                    'คะแนนความน่าเชื่อถือของผู้ช่วย',
                     style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
                   ),
                   const SizedBox(height: 6),
                   Text(
-                    'กดเพื่อดูคะแนนผู้ช่วย — ต้องยืนยัน PIN คลินิกก่อน',
+                    'ใช้สำหรับดูข้อมูลความน่าเชื่อถือของผู้ช่วย โดยต้องยืนยัน PIN ของคลินิกก่อน',
                     style: TextStyle(color: Colors.grey.shade700),
                   ),
                   const SizedBox(height: 10),
@@ -2608,7 +2659,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     child: ElevatedButton.icon(
                       onPressed: _openTrustScoreFromHome,
                       icon: const Icon(Icons.verified),
-                      label: const Text('ดู คะแนนความน่าเชื่อถือ'),
+                      label: const Text('ดูคะแนนความน่าเชื่อถือ'),
                     ),
                   ),
                 ],
@@ -2658,7 +2709,7 @@ class _HomeScreenState extends State<HomeScreen> {
       isHelper: _isHelper,
       premiumGateCard: _attendancePremiumGateCard(),
       attendanceCard: _attendanceActionCard(
-        header: _isHelper ? 'บันทึกการทำงาน (ผู้ช่วย)' : 'บันทึกการทำงาน',
+        header: _isHelper ? 'บันทึกเวลาทำงาน (ผู้ช่วย)' : 'บันทึกเวลาทำงาน',
       ),
       policyCard: _policyCard(),
       payslipCard: _employeePayslipCard(),
@@ -2673,7 +2724,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (_ctxErr.isNotEmpty) {
       return _errorBox(
-        title: 'ไม่พร้อมใช้งาน',
+        title: 'ยังไม่พร้อมใช้งาน',
         message: _ctxErr,
         onRetry: _bootstrapContext,
       );
@@ -2685,21 +2736,21 @@ class _HomeScreenState extends State<HomeScreen> {
               children: [
                 ListTile(
                   leading: const Icon(Icons.dashboard_outlined),
-                  title: const Text('My Clinic'),
+                  title: const Text('หน้าหลักคลินิกของฉัน'),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: _openMyClinic,
                 ),
                 const Divider(height: 1),
                 ListTile(
                   leading: const Icon(Icons.verified_outlined),
-                  title: const Text('TrustScore'),
+                  title: const Text('คะแนนความน่าเชื่อถือ'),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: _openTrustScoreFromHome,
                 ),
                 const Divider(height: 1),
                 ListTile(
                   leading: const Icon(Icons.payments_outlined),
-                  title: const Text('Payroll (Local)'),
+                  title: const Text('คำนวณเงินเดือน (ในเครื่อง)'),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () async {
                     _tapLog('OPEN_LOCAL_PAYROLL');
@@ -2722,14 +2773,15 @@ class _HomeScreenState extends State<HomeScreen> {
               children: [
                 ListTile(
                   leading: const Icon(Icons.person_outline),
-                  title: const Text('My (Helper)'),
+                  title: const Text('ข้อมูลของฉัน (ผู้ช่วย)'),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: _openMyHelper,
                 ),
                 const Divider(height: 1),
                 ListTile(
                   leading: const Icon(Icons.work_outline),
-                  title: const Text('งานว่าง (ตลาดงาน)'),
+                  title: const Text('งานว่าง'),
+                  subtitle: const Text('ดูประกาศงานที่เปิดรับอยู่'),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: _openHelperOpenNeeds,
                 ),
@@ -2757,7 +2809,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         .toList();
 
                     if (months.isEmpty) {
-                      _snack('ยังไม่มีงวดที่ปิด');
+                      _snack('ขณะนี้ยังไม่มีงวดเงินเดือนที่ปิดแล้ว');
                       return;
                     }
 
@@ -2771,7 +2823,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             children: [
                               const ListTile(
                                 title: Text(
-                                  'เลือกงวดที่ต้องการดู',
+                                  'เลือกงวดเงินเดือนที่ต้องการดู',
                                   style: TextStyle(fontWeight: FontWeight.w900),
                                 ),
                               ),
@@ -2870,7 +2922,7 @@ class _HomeScreenState extends State<HomeScreen> {
         title: const Text('Clinic Smart Staff'),
         actions: [
           IconButton(
-            tooltip: 'รีเฟรช',
+            tooltip: 'รีเฟรชข้อมูล',
             icon: const Icon(Icons.refresh),
             onPressed: () {
               _tapLog('APPBAR_REFRESH');
@@ -2878,7 +2930,7 @@ class _HomeScreenState extends State<HomeScreen> {
             },
           ),
           IconButton(
-            tooltip: 'อัปเดตล่าสุด',
+            tooltip: 'อัปเดตข้อมูลล่าสุด',
             icon: _activeRefreshing
                 ? const SizedBox(
                     width: 20,
@@ -2889,7 +2941,7 @@ class _HomeScreenState extends State<HomeScreen> {
             onPressed: _activeRefreshing ? null : _activeRefreshUrgent,
           ),
           IconButton(
-            tooltip: 'Logout',
+            tooltip: 'ออกจากระบบ',
             icon: const Icon(Icons.logout),
             onPressed: _logout,
           ),
@@ -2908,11 +2960,11 @@ class _HomeScreenState extends State<HomeScreen> {
         items: const [
           BottomNavigationBarItem(
             icon: Icon(Icons.home_outlined),
-            label: 'Home',
+            label: 'หน้าแรก',
           ),
           BottomNavigationBarItem(
             icon: Icon(Icons.person_outline),
-            label: 'My',
+            label: 'เมนูของฉัน',
           ),
         ],
       ),
@@ -3011,7 +3063,7 @@ class _PayslipMonthDetailScreenState extends State<_PayslipMonthDetailScreen> {
     } catch (_) {
       setState(() {
         _loading = false;
-        _err = 'ไม่สามารถโหลดข้อมูลได้ กรุณาลองใหม่';
+        _err = 'ไม่สามารถโหลดข้อมูลได้ กรุณาลองใหม่อีกครั้ง';
         _row = null;
       });
     }
@@ -3048,10 +3100,10 @@ class _PayslipMonthDetailScreenState extends State<_PayslipMonthDetailScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text('สลิปงวด ${widget.month}'),
+        title: Text('สลิปเงินเดือนงวด ${widget.month}'),
         actions: [
           IconButton(
-            tooltip: 'รีเฟรช',
+            tooltip: 'รีเฟรชข้อมูล',
             icon: const Icon(Icons.refresh),
             onPressed: _load,
           ),
@@ -3070,7 +3122,7 @@ class _PayslipMonthDetailScreenState extends State<_PayslipMonthDetailScreen> {
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             const Text(
-                              'ไม่พร้อมใช้งาน',
+                              'ยังไม่พร้อมใช้งาน',
                               style: TextStyle(fontWeight: FontWeight.w900),
                             ),
                             const SizedBox(height: 10),
@@ -3103,7 +3155,7 @@ class _PayslipMonthDetailScreenState extends State<_PayslipMonthDetailScreen> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             const Text(
-                              'สรุป',
+                              'สรุปรายการ',
                               style: TextStyle(
                                 fontSize: 16,
                                 fontWeight: FontWeight.w900,
@@ -3148,9 +3200,9 @@ class _PayslipMonthDetailScreenState extends State<_PayslipMonthDetailScreen> {
                               ),
                             ),
                             const SizedBox(height: 10),
-                            _kv('OT ที่รวมในงวดนี้', '฿${_fmtMoney(r?['otPay'])}'),
+                            _kv('ค่า OT ที่รวมในงวดนี้', '฿${_fmtMoney(r?['otPay'])}'),
                             _kv(
-                              'รวมเวลาที่อนุมัติ (นาที)',
+                              'เวลาที่อนุมัติรวม (นาที)',
                               '${(r?['otApprovedMinutes'] ?? 0)}',
                             ),
                             _kv(
@@ -3170,21 +3222,21 @@ class _PayslipMonthDetailScreenState extends State<_PayslipMonthDetailScreen> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             const Text(
-                              'องค์ประกอบรายได้',
+                              'องค์ประกอบของรายได้',
                               style: TextStyle(
                                 fontSize: 16,
                                 fontWeight: FontWeight.w900,
                               ),
                             ),
                             const SizedBox(height: 10),
-                            _kv('เงินเดือน/ฐาน', '฿${_fmtMoney(r?['grossBase'])}'),
+                            _kv('เงินเดือนหรือฐานค่าจ้าง', '฿${_fmtMoney(r?['grossBase'])}'),
                             _kv('โบนัส', '฿${_fmtMoney(r?['bonus'])}'),
                             _kv(
-                              'เงินเพิ่มอื่นๆ',
+                              'เงินเพิ่มอื่น ๆ',
                               '฿${_fmtMoney(r?['otherAllowance'])}',
                             ),
                             _kv(
-                              'หักอื่นๆ',
+                              'รายการหักอื่น ๆ',
                               '฿${_fmtMoney(r?['otherDeduction'])}',
                             ),
                           ],
@@ -3231,9 +3283,9 @@ class _LocalPayrollScreenState extends State<LocalPayrollScreen> {
 
   String _subtitle(EmployeeModel e) {
     if (_isParttime(e)) {
-      return 'Part-time • ${e.position} • ${e.hourlyWage.toStringAsFixed(0)} บาท/ชม.';
+      return 'พนักงานพาร์ตไทม์ • ${e.position} • ${e.hourlyWage.toStringAsFixed(0)} บาท/ชม.';
     }
-    return 'Full-time • ${e.position} • ฐาน ${e.baseSalary.toStringAsFixed(0)} • โบนัส ${e.bonus.toStringAsFixed(0)} • ขาด/ลา ${e.absentDays} วัน';
+    return 'พนักงานประจำ • ${e.position} • ฐาน ${e.baseSalary.toStringAsFixed(0)} บาท • โบนัส ${e.bonus.toStringAsFixed(0)} บาท • ขาด/ลา ${e.absentDays} วัน';
   }
 
   void _snack(String msg) {
@@ -3248,7 +3300,7 @@ class _LocalPayrollScreenState extends State<LocalPayrollScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('ยืนยันการลบ'),
-        content: Text('ต้องการลบ “${removed.fullName}” ใช่ไหม?'),
+        content: Text('ต้องการลบ “${removed.fullName}” ใช่หรือไม่'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
@@ -3256,7 +3308,7 @@ class _LocalPayrollScreenState extends State<LocalPayrollScreen> {
           ),
           ElevatedButton(
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('ลบ'),
+            child: const Text('ลบข้อมูล'),
           ),
         ],
       ),
@@ -3267,7 +3319,7 @@ class _LocalPayrollScreenState extends State<LocalPayrollScreen> {
     setState(() => employees.removeAt(index));
     await StorageService.saveEmployees(employees);
     await _refreshData();
-    _snack('ลบ ${removed.fullName} แล้ว');
+    _snack('ลบข้อมูลของ ${removed.fullName} เรียบร้อยแล้ว');
   }
 
   Future<void> _goAddEmployee() async {
@@ -3290,9 +3342,13 @@ class _LocalPayrollScreenState extends State<LocalPayrollScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Payroll (Local)'),
+        title: const Text('คำนวณเงินเดือน (ในเครื่อง)'),
         actions: [
-          IconButton(onPressed: _goAddEmployee, icon: const Icon(Icons.add)),
+          IconButton(
+            tooltip: 'เพิ่มพนักงาน',
+            onPressed: _goAddEmployee,
+            icon: const Icon(Icons.add),
+          ),
         ],
       ),
       body: isLoading
@@ -3343,7 +3399,7 @@ class _LocalPayrollScreenState extends State<LocalPayrollScreen> {
                             mainAxisSize: MainAxisSize.min,
                             children: [
                               IconButton(
-                                tooltip: 'ดู/พิมพ์สลิป (PDF)',
+                                tooltip: 'ดูหรือพิมพ์สลิปเงินเดือน (PDF)',
                                 icon: const Icon(
                                   Icons.picture_as_pdf,
                                   color: Colors.red,
@@ -3351,7 +3407,7 @@ class _LocalPayrollScreenState extends State<LocalPayrollScreen> {
                                 onPressed: () => _openPayslipPreview(emp),
                               ),
                               IconButton(
-                                tooltip: 'ลบพนักงาน',
+                                tooltip: 'ลบข้อมูลพนักงาน',
                                 icon: const Icon(
                                   Icons.delete,
                                   color: Colors.grey,

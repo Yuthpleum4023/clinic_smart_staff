@@ -10,11 +10,25 @@
 //   - ไม่หักภาษี
 //   - หักภาษี ณ ที่จ่าย
 // - ✅ NEW: เก็บ tax mode แยกรายพนักงานผ่าน SharedPreferences
+// - ✅ NEW: ทั้ง 2 flow ไปหน้า preview/payroll เดียวกัน
+// - ✅ NEW: แสดง linkedUserId บนหน้า detail
+// - ✅ NEW: ใช้ linkedUserId เป็น priority เวลาเรียก payroll/tax/OT เท่าที่ฝั่ง client ส่งได้
+//
+// ✅ UPDATED FOR NEW BACKEND CONTRACT:
+// - staffId จริงอาจเป็น Mongo _id string จาก staff_service
+// - ไม่บังคับ prefix stf_ อีกแล้ว
+// - payroll / OT / bulk approve / preview ใช้ staffId non-empty ได้เลย
 //
 // IMPORTANT:
 // - Manual Attendance ใหม่ให้ใช้จาก:
 //   - lib/screens/home/attendance/manual_attendance_request_screen.dart
 //   - lib/screens/clinic/clinic_attendance_approval_screen.dart
+//
+// NOTE:
+// - เวอร์ชันนี้ตั้งใจให้ COMPILE ผ่านกับ PayrollAfterTaxPreviewScreen
+//   ที่ท่านใช้อยู่
+// - linkedUserId ถูกใช้เป็น priority ในการ query/filter/body ก่อน fallback ไป staffId
+//
 
 import 'dart:convert';
 
@@ -307,10 +321,46 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       if (v != null) out['staff_id'] = v.toString();
     } catch (_) {}
 
+    try {
+      final v = (emp as dynamic).linkedUserId;
+      if (v != null) out['linkedUserId'] = v.toString();
+    } catch (_) {}
+    try {
+      final v = (emp as dynamic).linked_user_id;
+      if (v != null) out['linked_user_id'] = v.toString();
+    } catch (_) {}
+    try {
+      final v = (emp as dynamic).userId;
+      if (v != null) out['userId'] = v.toString();
+    } catch (_) {}
+    try {
+      final v = (emp as dynamic).user_id;
+      if (v != null) out['user_id'] = v.toString();
+    } catch (_) {}
+
     return out;
   }
 
-  String _resolveStaffIdForPayroll({bool strict = true}) {
+  String _resolveLinkedUserId() {
+    String pick(dynamic v) => (v ?? '').toString().trim();
+
+    final m = _empMapSafe();
+
+    final candidates = <String>[
+      pick(m['linkedUserId']),
+      pick(m['linked_user_id']),
+      pick(m['userId']),
+      pick(m['user_id']),
+      if (m['user'] is Map) pick((m['user'] as Map)['id']),
+      if (m['user'] is Map) pick((m['user'] as Map)['userId']),
+      if (m['linkedUser'] is Map) pick((m['linkedUser'] as Map)['id']),
+      if (m['linkedUser'] is Map) pick((m['linkedUser'] as Map)['userId']),
+    ].where((x) => x.isNotEmpty).toList();
+
+    return candidates.isEmpty ? '' : candidates.first;
+  }
+
+  String _resolveStaffIdForPayroll() {
     String pick(dynamic v) => (v ?? '').toString().trim();
 
     final m = _empMapSafe();
@@ -332,17 +382,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       if (m['user'] is Map) pick((m['user'] as Map)['id']),
     ].where((x) => x.isNotEmpty).toList();
 
-    if (strict) {
-      for (final c in candidates) {
-        if (c.startsWith('stf_')) return c;
-      }
-      return '';
-    }
-
-    for (final c in candidates) {
-      if (c.startsWith('stf_')) return c;
-    }
-    return candidates.isNotEmpty ? candidates.first : '';
+    return candidates.isEmpty ? '' : candidates.first;
   }
 
   Future<void> _safePopOrGoClinicHome() async {
@@ -395,13 +435,6 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       if (t2.isNotEmpty) return t2;
     } catch (_) {}
 
-    try {
-      final dynamic store = StorageService();
-      final dynamic got = await store.getToken();
-      final String? v = got?.toString().trim();
-      if (v != null && v.isNotEmpty) return v;
-    } catch (_) {}
-
     return null;
   }
 
@@ -409,6 +442,31 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer $token',
       };
+
+  Map<String, dynamic> _appendEmployeeIdentityToBody(
+    Map<String, dynamic> body, {
+    bool includeStaffId = true,
+  }) {
+    final out = Map<String, dynamic>.from(body);
+
+    final linkedUserId = _resolveLinkedUserId();
+    final staffId = _resolveStaffIdForPayroll();
+
+    if (linkedUserId.isNotEmpty) {
+      out['linkedUserId'] = linkedUserId;
+      out['employeeUserId'] = linkedUserId;
+      out['userId'] = linkedUserId;
+      out['principalUserId'] = linkedUserId;
+    }
+
+    if (includeStaffId && staffId.isNotEmpty) {
+      out['staffId'] = staffId;
+      out['employeeId'] = staffId;
+      out['principalId'] = staffId;
+    }
+
+    return out;
+  }
 
   Future<void> _loadClinicOtPolicy() async {
     if (!mounted || _disposed) return;
@@ -578,7 +636,8 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       if (token == null || token.trim().isEmpty) throw Exception('NO_TOKEN');
 
       final monthKey = _fmtMonth(selectedMonth);
-      final staffId = _resolveStaffIdForPayroll(strict: true);
+      final linkedUserId = _resolveLinkedUserId();
+      final staffId = _resolveStaffIdForPayroll();
 
       final statusParam =
           (_backendOtStatus.trim().isEmpty || _backendOtStatus == 'all')
@@ -586,11 +645,23 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
               : '&status=${Uri.encodeQueryComponent(_backendOtStatus)}';
 
       final candidates = <String>[
+        if (linkedUserId.isNotEmpty)
+          '/overtime?month=$monthKey&linkedUserId=$linkedUserId$statusParam',
+        if (linkedUserId.isNotEmpty)
+          '/overtime?month=$monthKey&employeeUserId=$linkedUserId$statusParam',
+        if (linkedUserId.isNotEmpty)
+          '/overtime?month=$monthKey&userId=$linkedUserId$statusParam',
         if (staffId.isNotEmpty)
           '/overtime?month=$monthKey&principalId=$staffId$statusParam',
         if (staffId.isNotEmpty)
           '/overtime?month=$monthKey&staffId=$staffId$statusParam',
         '/overtime/my?month=$monthKey${statusParam.isEmpty ? '' : statusParam.replaceFirst('&', '&')}',
+        if (linkedUserId.isNotEmpty)
+          '/api/overtime?month=$monthKey&linkedUserId=$linkedUserId$statusParam',
+        if (linkedUserId.isNotEmpty)
+          '/api/overtime?month=$monthKey&employeeUserId=$linkedUserId$statusParam',
+        if (linkedUserId.isNotEmpty)
+          '/api/overtime?month=$monthKey&userId=$linkedUserId$statusParam',
         if (staffId.isNotEmpty)
           '/api/overtime?month=$monthKey&principalId=$staffId$statusParam',
         if (staffId.isNotEmpty)
@@ -717,7 +788,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     required double multiplier,
   }) async {
     try {
-      if (!staffId.trim().startsWith('stf_')) return false;
+      if (staffId.trim().isEmpty) return false;
 
       final token = await _getToken();
       if (token == null || token.trim().isEmpty) return false;
@@ -725,10 +796,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       final minutes = _minutesBetween(startHHmm, endHHmm);
       if (minutes <= 0) return false;
 
-      final body = jsonEncode({
-        'staffId': staffId,
-        'principalId': staffId,
-        'employeeId': staffId,
+      final body = _appendEmployeeIdentityToBody({
         'workDate': workDate,
         'date': workDate,
         'start': startHHmm,
@@ -747,8 +815,11 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       ];
 
       for (final p in candidates) {
-        final res =
-            await http.post(_uri(p), headers: _headers(token), body: body);
+        final res = await http.post(
+          _uri(p),
+          headers: _headers(token),
+          body: jsonEncode(body),
+        );
         if (res.statusCode == 200 || res.statusCode == 201) return true;
         if (res.statusCode == 401 || res.statusCode == 403) return false;
       }
@@ -772,7 +843,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       final minutes = _minutesBetween(startHHmm, endHHmm);
       if (minutes <= 0) return false;
 
-      final body = jsonEncode({
+      final body = _appendEmployeeIdentityToBody({
         'workDate': workDate,
         'date': workDate,
         'start': startHHmm,
@@ -790,8 +861,11 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       ];
 
       for (final p in candidates) {
-        final res =
-            await http.post(_uri(p), headers: _headers(token), body: body);
+        final res = await http.post(
+          _uri(p),
+          headers: _headers(token),
+          body: jsonEncode(body),
+        );
         if (res.statusCode == 200 || res.statusCode == 201) return true;
       }
       return false;
@@ -848,13 +922,10 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       final token = await _getToken();
       if (token == null || token.trim().isEmpty) return false;
 
-      if (!staffId.startsWith('stf_')) return false;
+      if (staffId.trim().isEmpty) return false;
 
-      final body = jsonEncode({
+      final body = _appendEmployeeIdentityToBody({
         'month': month,
-        'staffId': staffId,
-        'principalId': staffId,
-        'employeeId': staffId,
       });
 
       final candidates = <String>[
@@ -863,8 +934,11 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       ];
 
       for (final p in candidates) {
-        final res =
-            await http.patch(_uri(p), headers: _headers(token), body: body);
+        final res = await http.patch(
+          _uri(p),
+          headers: _headers(token),
+          body: jsonEncode(body),
+        );
         if (res.statusCode == 200) return true;
       }
       return false;
@@ -1147,7 +1221,8 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     final prefs = await SharedPreferences.getInstance();
     final rawMode = (prefs.getString(_employeeTaxModeKey) ?? 'none').trim();
     final p =
-        prefs.getDouble(_employeeWithholdingPercentKey) ?? _defaultWithholdingPercent;
+        prefs.getDouble(_employeeWithholdingPercentKey) ??
+            _defaultWithholdingPercent;
 
     if (!mounted || _disposed) return;
     setState(() {
@@ -1211,8 +1286,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     }
 
     final pct = _getWithholdingPercent();
-    if (_taxMode == _EmployeeTaxMode.withholding &&
-        (pct <= 0 || pct > 100)) {
+    if (_taxMode == _EmployeeTaxMode.withholding && (pct <= 0 || pct > 100)) {
       _snack('กรุณาใส่อัตราหักภาษีให้ถูกต้อง');
       return;
     }
@@ -1240,60 +1314,141 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     }
   }
 
-  Future<void> _showNoTaxSummaryDialog({
-    required double grossBeforeTax,
-    required double netFinal,
-    required double otPay,
-  }) async {
-    if (!mounted || _disposed) return;
-
-    await showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('สรุปสุทธิ (ไม่หักภาษี)'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _simpleKv('เดือน', _fmtMonth(selectedMonth)),
-            _simpleKv('รายรับรวมก่อนภาษี', '${grossBeforeTax.toStringAsFixed(2)} บาท'),
-            _simpleKv('ค่า OT', '${otPay.toStringAsFixed(2)} บาท'),
-            _simpleKv('ภาษีหัก ณ ที่จ่าย', '0.00 บาท'),
-            const Divider(),
-            _simpleKv(
-              'รับสุทธิ',
-              '${netFinal.toStringAsFixed(2)} บาท',
-              bold: true,
+  Widget _taxModeCard({
+    required double totalMonthPayBeforeTax,
+    required double withholdingAmount,
+    required double netAfterTax,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'รูปแบบภาษี',
+          style: TextStyle(fontWeight: FontWeight.bold),
+        ),
+        const SizedBox(height: 10),
+        DropdownButtonFormField<_EmployeeTaxMode>(
+          value: _taxMode,
+          decoration: const InputDecoration(
+            labelText: 'เลือกการหักภาษี',
+            border: OutlineInputBorder(),
+          ),
+          items: const [
+            DropdownMenuItem(
+              value: _EmployeeTaxMode.none,
+              child: Text('ไม่หักภาษี'),
+            ),
+            DropdownMenuItem(
+              value: _EmployeeTaxMode.withholding,
+              child: Text('หักภาษี ณ ที่จ่าย'),
             ),
           ],
+          onChanged: !_isEditUnlocked
+              ? null
+              : (v) {
+                  if (v == null) return;
+                  if (!mounted || _disposed) return;
+                  setState(() => _taxMode = v);
+                },
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('ปิด'),
+        const SizedBox(height: 10),
+        if (_taxMode == _EmployeeTaxMode.withholding) ...[
+          TextField(
+            controller: withholdingPercentCtrl,
+            enabled: _isEditUnlocked && !_savingTax,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            inputFormatters: [_decimalFormatter],
+            decoration: const InputDecoration(
+              labelText: 'อัตราหักภาษี (%)',
+              hintText: 'เช่น 3.00',
+              border: OutlineInputBorder(),
+            ),
           ),
+          const SizedBox(height: 8),
         ],
-      ),
+        SizedBox(
+          width: double.infinity,
+          child: ElevatedButton(
+            onPressed: _savingTax ? null : _saveTaxSettingsFromUI,
+            child: Text(_savingTax ? 'กำลังบันทึก...' : 'บันทึกรูปแบบภาษี'),
+          ),
+        ),
+        const SizedBox(height: 10),
+        Text(
+          _taxMode == _EmployeeTaxMode.none
+              ? 'ภาษี: ไม่หัก'
+              : 'ภาษีหัก ณ ที่จ่าย: -${withholdingAmount.toStringAsFixed(2)} บาท',
+        ),
+        Text(
+          'สุทธิหลังภาษี: ${netAfterTax.toStringAsFixed(2)} บาท',
+          style: const TextStyle(
+            fontWeight: FontWeight.bold,
+            fontSize: 15,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'ฐานคำนวณสุทธิก่อนภาษี: ${totalMonthPayBeforeTax.toStringAsFixed(2)} บาท',
+          style: TextStyle(
+            fontSize: 12,
+            color: Colors.grey.shade700,
+          ),
+        ),
+        if (!_isEditUnlocked)
+          const Padding(
+            padding: EdgeInsets.only(top: 8),
+            child: Text(
+              'หมายเหตุ: ต้องปลดล็อกโหมดแก้ไขก่อนถึงจะเปลี่ยนรูปแบบภาษีได้',
+              style: TextStyle(fontSize: 12),
+            ),
+          ),
+      ],
     );
   }
 
-  Widget _simpleKv(String k, String v, {bool bold = false}) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 3),
-      child: Row(
-        children: [
-          Expanded(
-            child: Text(
-              k,
-              style: const TextStyle(fontWeight: FontWeight.w600),
+  Widget _identityCard() {
+    final linkedUserId = _resolveLinkedUserId();
+    final staffId = _resolveStaffIdForPayroll();
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'ข้อมูลการผูกบัญชี',
+              style: TextStyle(fontWeight: FontWeight.bold),
             ),
-          ),
-          Text(
-            v,
-            style: TextStyle(
-              fontWeight: bold ? FontWeight.w900 : FontWeight.w700,
+            const SizedBox(height: 10),
+            SelectableText(
+              'linkedUserId: ${linkedUserId.isEmpty ? '-' : linkedUserId}',
+              style: TextStyle(
+                fontWeight:
+                    linkedUserId.isEmpty ? FontWeight.w500 : FontWeight.w700,
+              ),
             ),
-          ),
-        ],
+            const SizedBox(height: 6),
+            SelectableText(
+              'staffId: ${staffId.isEmpty ? '-' : staffId}',
+              style: TextStyle(
+                fontWeight: staffId.isEmpty ? FontWeight.w500 : FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              linkedUserId.isNotEmpty
+                  ? 'ระบบจะใช้ linkedUserId เป็น priority เวลา query payroll / tax / OT และ fallback ไป staffId เมื่อจำเป็น'
+                  : 'ยังไม่พบ linkedUserId — ตอนนี้ระบบจะ fallback ใช้ staffId เป็นหลัก',
+              style: TextStyle(
+                fontSize: 12,
+                color: linkedUserId.isNotEmpty
+                    ? Colors.green.shade700
+                    : Colors.orange.shade700,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1306,22 +1461,6 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     required double absentDeduction,
     required double totalMonthPayBeforeTax,
   }) async {
-    final withholdingPercent = _getWithholdingPercent();
-    final withholdingAmount = _taxMode == _EmployeeTaxMode.withholding
-        ? totalMonthPayBeforeTax * (withholdingPercent / 100.0)
-        : 0.0;
-
-    final netAfterTax = totalMonthPayBeforeTax - withholdingAmount;
-
-    if (_taxMode == _EmployeeTaxMode.none) {
-      await _showNoTaxSummaryDialog(
-        grossBeforeTax: totalMonthPayBeforeTax,
-        netFinal: netAfterTax,
-        otPay: otPay,
-      );
-      return;
-    }
-
     try {
       final clinicId = await _resolveClinicId();
       if (!mounted) return;
@@ -1331,19 +1470,17 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
         return;
       }
 
-      final staffId = _resolveStaffIdForPayroll(strict: true);
-      if (staffId.isEmpty || !staffId.startsWith('stf_')) {
-        _snack(
-          'ปิดงวด/ดูหลังหักภาษีต้องมี staffId (stf_...) ของพนักงาน',
-        );
+      final staffId = _resolveStaffIdForPayroll();
+      if (staffId.isEmpty) {
+        _snack('ปิดงวด/ดูพรีวิวสลิปต้องมี staffId ของพนักงาน');
         return;
       }
 
-      Navigator.push(
+      await Navigator.push(
         context,
         MaterialPageRoute(
           builder: (_) => PayrollAfterTaxPreviewScreen(
-            grossMonthly: grossMonthlyForTax,
+            grossMonthly: totalMonthPayBeforeTax,
             year: selectedMonth.year,
             ssoEmployeeMonthly: ssoForTax,
             clinicId: clinicId,
@@ -1354,12 +1491,23 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
             otherDeduction: isParttime ? 0 : absentDeduction,
             pvdEmployeeMonthly: 0,
             closeMonth: _fmtCloseMonth(selectedMonth),
+            taxMode: _taxMode == _EmployeeTaxMode.withholding
+                ? 'withholding'
+                : 'none',
+            withholdingPercent:
+                _taxMode == _EmployeeTaxMode.withholding
+                    ? _getWithholdingPercent()
+                    : 0,
+            withholdingAmount:
+                _taxMode == _EmployeeTaxMode.withholding
+                    ? totalMonthPayBeforeTax * (_getWithholdingPercent() / 100.0)
+                    : 0,
           ),
         ),
       );
     } catch (_) {
       if (!mounted) return;
-      _snack('เปิดหน้าหลังหักภาษีไม่สำเร็จ (ลองออก/เข้าใหม่)');
+      _snack('เปิดหน้าพรีวิวสลิปไม่สำเร็จ (ลองออก/เข้าใหม่)');
     }
   }
 
@@ -1377,14 +1525,6 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     ].where((s) => s.isNotEmpty).toList();
 
     if (candidates.isNotEmpty) return candidates.first;
-
-    try {
-      final dynamic store = StorageService();
-      final dynamic got = await store.getClinicId();
-      final String? v = got?.toString().trim();
-      if (v != null && v.isNotEmpty) return v;
-    } catch (_) {}
-
     return null;
   }
 
@@ -1528,7 +1668,9 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
   }
 
   Future<void> _deleteWorkEntry(
-      int indexInMonth, List<WorkHourEntry> monthList) async {
+    int indexInMonth,
+    List<WorkHourEntry> monthList,
+  ) async {
     if (!_isEditUnlocked) {
       _snack('ต้องปลดล็อกโหมดแก้ไขก่อน');
       return;
@@ -1637,7 +1779,9 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
   }
 
   Future<void> _deleteWorkTimeEntry(
-      int indexInMonth, List<WorkTimeEntry> monthList) async {
+    int indexInMonth,
+    List<WorkTimeEntry> monthList,
+  ) async {
     if (!_isEditUnlocked) {
       _snack('ต้องปลดล็อกโหมดแก้ไขก่อน');
       return;
@@ -1718,7 +1862,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     );
 
     bool okApi = false;
-    final staffId = _resolveStaffIdForPayroll(strict: true);
+    final staffId = _resolveStaffIdForPayroll();
 
     if (staffId.isNotEmpty) {
       okApi = await _createOtManualViaApi(
@@ -1781,7 +1925,9 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
   }
 
   Future<void> _deleteOtEntryByMonthIndex(
-      int indexInMonth, List<OTEntry> monthList) async {
+    int indexInMonth,
+    List<OTEntry> monthList,
+  ) async {
     if (!_isEditUnlocked) {
       _snack('ต้องปลดล็อกโหมดแก้ไขก่อน');
       return;
@@ -1809,8 +1955,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
 
   Future<void> _saveEmployeeLocal() async {
     try {
-      final dynamic store = StorageService();
-      await store.updateEmployee(emp);
+      await StorageService.updateEmployeeById(emp.id, emp);
     } catch (_) {}
   }
 
@@ -1892,9 +2037,9 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       return;
     }
 
-    final staffId = _resolveStaffIdForPayroll(strict: true);
-    if (!staffId.startsWith('stf_')) {
-      _snack('ไม่พบ staffId (stf_...) ของพนักงานคนนี้');
+    final staffId = _resolveStaffIdForPayroll();
+    if (staffId.isEmpty) {
+      _snack('ไม่พบ staffId ของพนักงานคนนี้');
       return;
     }
 
@@ -2012,98 +2157,6 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
             child: Text(
               _otPolicyError,
               style: const TextStyle(fontSize: 12, color: Colors.orange),
-            ),
-          ),
-      ],
-    );
-  }
-
-  Widget _taxModeCard({
-    required double totalMonthPayBeforeTax,
-    required double withholdingAmount,
-    required double netAfterTax,
-  }) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text(
-          'รูปแบบภาษี',
-          style: TextStyle(fontWeight: FontWeight.bold),
-        ),
-        const SizedBox(height: 10),
-        DropdownButtonFormField<_EmployeeTaxMode>(
-          value: _taxMode,
-          decoration: const InputDecoration(
-            labelText: 'เลือกการหักภาษี',
-            border: OutlineInputBorder(),
-          ),
-          items: const [
-            DropdownMenuItem(
-              value: _EmployeeTaxMode.none,
-              child: Text('ไม่หักภาษี'),
-            ),
-            DropdownMenuItem(
-              value: _EmployeeTaxMode.withholding,
-              child: Text('หักภาษี ณ ที่จ่าย'),
-            ),
-          ],
-          onChanged: !_isEditUnlocked
-              ? null
-              : (v) {
-                  if (v == null) return;
-                  if (!mounted || _disposed) return;
-                  setState(() => _taxMode = v);
-                },
-        ),
-        const SizedBox(height: 10),
-        if (_taxMode == _EmployeeTaxMode.withholding) ...[
-          TextField(
-            controller: withholdingPercentCtrl,
-            enabled: _isEditUnlocked && !_savingTax,
-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            inputFormatters: [_decimalFormatter],
-            decoration: const InputDecoration(
-              labelText: 'อัตราหักภาษี (%)',
-              hintText: 'เช่น 3.00',
-              border: OutlineInputBorder(),
-            ),
-          ),
-          const SizedBox(height: 8),
-        ],
-        SizedBox(
-          width: double.infinity,
-          child: ElevatedButton(
-            onPressed: _savingTax ? null : _saveTaxSettingsFromUI,
-            child: Text(_savingTax ? 'กำลังบันทึก...' : 'บันทึกรูปแบบภาษี'),
-          ),
-        ),
-        const SizedBox(height: 10),
-        Text(
-          _taxMode == _EmployeeTaxMode.none
-              ? 'ภาษี: ไม่หัก'
-              : 'ภาษีหัก ณ ที่จ่าย: -${withholdingAmount.toStringAsFixed(2)} บาท',
-        ),
-        Text(
-          'สุทธิหลังภาษี: ${netAfterTax.toStringAsFixed(2)} บาท',
-          style: const TextStyle(
-            fontWeight: FontWeight.bold,
-            fontSize: 15,
-          ),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          'ฐานคำนวณสุทธิก่อนภาษี: ${totalMonthPayBeforeTax.toStringAsFixed(2)} บาท',
-          style: TextStyle(
-            fontSize: 12,
-            color: Colors.grey.shade700,
-          ),
-        ),
-        if (!_isEditUnlocked)
-          const Padding(
-            padding: EdgeInsets.only(top: 8),
-            child: Text(
-              'หมายเหตุ: ต้องปลดล็อกโหมดแก้ไขก่อนถึงจะเปลี่ยนรูปแบบภาษีได้',
-              style: TextStyle(fontSize: 12),
             ),
           ),
       ],
@@ -2240,7 +2293,8 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                   ),
                 ),
                 const SizedBox(height: 12),
-
+                _identityCard(),
+                const SizedBox(height: 12),
                 Row(
                   children: [
                     Expanded(
@@ -2259,7 +2313,6 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                   ],
                 ),
                 const SizedBox(height: 8),
-
                 Card(
                   child: Padding(
                     padding: const EdgeInsets.all(14),
@@ -2341,9 +2394,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                     ),
                   ),
                 ),
-
                 const SizedBox(height: 12),
-
                 Card(
                   child: Padding(
                     padding: const EdgeInsets.all(14),
@@ -2366,7 +2417,8 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                               TextField(
                                 controller: ssoPercentCtrl,
                                 enabled: _isEditUnlocked && !_savingSso,
-                                keyboardType: const TextInputType.numberWithOptions(
+                                keyboardType:
+                                    const TextInputType.numberWithOptions(
                                   decimal: true,
                                 ),
                                 inputFormatters: [_decimalFormatter],
@@ -2392,7 +2444,9 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                             'หักวันลา/ขาด: -${absentDeduction.toStringAsFixed(2)} บาท',
                           ),
                           const Divider(height: 18),
-                          Text('ชั่วโมง OT รวม: ${totalOtHours.toStringAsFixed(2)} ชม.'),
+                          Text(
+                            'ชั่วโมง OT รวม: ${totalOtHours.toStringAsFixed(2)} ชม.',
+                          ),
                           Text('ค่า OT รวม: ${otPay.toStringAsFixed(2)} บาท'),
                           const SizedBox(height: 10),
                           Text(
@@ -2424,7 +2478,9 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                             ),
                           Text('ค่าแรงปกติรวม: ${normalPay.toStringAsFixed(2)} บาท'),
                           const SizedBox(height: 6),
-                          Text('ชั่วโมง OT รวม: ${totalOtHours.toStringAsFixed(2)} ชม.'),
+                          Text(
+                            'ชั่วโมง OT รวม: ${totalOtHours.toStringAsFixed(2)} ชม.',
+                          ),
                           Text('ค่า OT รวม: ${otPay.toStringAsFixed(2)} บาท'),
                           const Divider(height: 18),
                           Text(
@@ -2436,23 +2492,20 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                           ),
                         ],
                         const SizedBox(height: 14),
-
                         _taxModeCard(
                           totalMonthPayBeforeTax: totalMonthPayBeforeTax,
                           withholdingAmount: withholdingAmount,
                           netAfterTax: netAfterTax,
                         ),
-
                         const SizedBox(height: 14),
-
                         SizedBox(
                           width: double.infinity,
                           child: ElevatedButton.icon(
                             icon: const Icon(Icons.receipt_long),
                             label: Text(
                               _taxMode == _EmployeeTaxMode.none
-                                  ? 'ดูสรุปสุทธิ'
-                                  : 'ดูหลังหักภาษี',
+                                  ? 'ดูพรีวิวสลิป (ไม่หักภาษี)'
+                                  : 'ดูพรีวิวสลิป / ปิดงวด',
                             ),
                             onPressed: () async {
                               await _openTaxSummaryOrPreview(
@@ -2470,9 +2523,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                     ),
                   ),
                 ),
-
                 const SizedBox(height: 12),
-
                 if (isParttime) ...[
                   Card(
                     child: Padding(
@@ -2601,8 +2652,10 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                                     'พัก ${e.breakMinutes} นาที • ${e.hours.toStringAsFixed(2)} ชม.',
                                   ),
                                   trailing: IconButton(
-                                    onPressed: () =>
-                                        _deleteWorkTimeEntry(i, monthWorkTimeEntries),
+                                    onPressed: () => _deleteWorkTimeEntry(
+                                      i,
+                                      monthWorkTimeEntries,
+                                    ),
                                     icon: const Icon(Icons.delete_outline),
                                   ),
                                 );
@@ -2638,7 +2691,6 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                   ),
                   const SizedBox(height: 12),
                 ],
-
                 Card(
                   child: Padding(
                     padding: const EdgeInsets.all(14),
@@ -2701,9 +2753,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                     ),
                   ),
                 ),
-
                 const SizedBox(height: 12),
-
                 Card(
                   child: Padding(
                     padding: const EdgeInsets.all(14),
@@ -2787,9 +2837,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                     ),
                   ),
                 ),
-
                 const SizedBox(height: 12),
-
                 Card(
                   child: Padding(
                     padding: const EdgeInsets.all(14),
