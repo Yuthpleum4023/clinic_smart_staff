@@ -1,3 +1,4 @@
+const mongoose = require("mongoose");
 const TrustScore = require("../models/TrustScore");
 
 function s(v) {
@@ -19,6 +20,16 @@ function asObj(v) {
 
 function escapeRegex(v) {
   return String(v || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function isValidStaffId(v) {
+  const x = s(v);
+  return x.startsWith("stf_") && x.length >= 6;
+}
+
+function isValidUserId(v) {
+  const x = s(v);
+  return x.startsWith("usr_") && x.length >= 6;
 }
 
 function authBase() {
@@ -87,9 +98,9 @@ function toScorePayload(doc) {
   }
 
   return {
-    userId: s(doc.userId),
+    userId: isValidUserId(doc.userId) ? s(doc.userId) : "",
     principalId: s(doc.principalId),
-    staffId: s(doc.staffId),
+    staffId: isValidStaffId(doc.staffId) ? s(doc.staffId) : "",
     fullName: s(doc.fullName),
     name: s(doc.name),
     phone: s(doc.phone),
@@ -143,7 +154,7 @@ function normalizeAuthUser(raw) {
   const profile = asObj(u.profile);
   const user = asObj(u.user);
 
-  const userId =
+  const rawUserId =
     s(u.userId) ||
     s(u.id) ||
     s(u._id) ||
@@ -151,7 +162,10 @@ function normalizeAuthUser(raw) {
     s(user.id) ||
     s(user._id);
 
-  const staffId = s(u.staffId) || s(profile.staffId) || s(user.staffId);
+  const rawStaffId =
+    s(u.staffId) ||
+    s(profile.staffId) ||
+    s(user.staffId);
 
   const fullName =
     s(u.fullName) ||
@@ -161,43 +175,51 @@ function normalizeAuthUser(raw) {
     s(user.fullName) ||
     s(user.name);
 
-  const phone = s(u.phone) || s(profile.phone) || s(user.phone);
+  const phone =
+    s(u.phone) ||
+    s(profile.phone) ||
+    s(user.phone);
 
   return {
     ...u,
-    userId,
-    staffId,
+    userId: isValidUserId(rawUserId) ? rawUserId : "",
+    staffId: isValidStaffId(rawStaffId) ? rawStaffId : "",
     fullName,
     name: s(u.name) || s(profile.name) || s(user.name) || fullName,
     phone,
     role: pickRole(u),
+    activeRole: s(u.activeRole) || s(user.activeRole),
+    roles: asArray(u.roles).length > 0 ? asArray(u.roles) : asArray(user.roles),
   };
 }
 
 function mergeHelperWithScore(user, scoreDoc) {
   const normalizedUser = normalizeAuthUser(user);
+  const scorePayload = toScorePayload(scoreDoc);
 
-  const userId = s(normalizedUser.userId || scoreDoc?.userId);
-  const staffId = s(normalizedUser.staffId || scoreDoc?.staffId);
+  const userId = normalizedUser.userId || scorePayload.userId;
+  const staffId = normalizedUser.staffId || scorePayload.staffId;
 
   const fullName =
     s(normalizedUser.fullName) ||
     s(normalizedUser.name) ||
-    s(scoreDoc?.fullName) ||
-    s(scoreDoc?.name);
+    s(scorePayload.fullName) ||
+    s(scorePayload.name);
 
-  const phone = s(normalizedUser.phone) || s(scoreDoc?.phone);
+  const phone = s(normalizedUser.phone) || s(scorePayload.phone);
   const role = pickRole(normalizedUser, scoreDoc);
 
   return {
     ...normalizedUser,
-    ...toScorePayload(scoreDoc),
+    ...scorePayload,
 
-    userId,
-    principalId: s(scoreDoc?.principalId) || userId,
-    staffId,
+    userId: isValidUserId(userId) ? userId : "",
+    principalId:
+      s(scorePayload.principalId) ||
+      (isValidUserId(userId) ? userId : ""),
+    staffId: isValidStaffId(staffId) ? staffId : "",
     fullName,
-    name: s(normalizedUser.name) || s(scoreDoc?.name) || fullName,
+    name: s(normalizedUser.name) || s(scorePayload.name) || fullName,
     phone,
     role,
   };
@@ -208,8 +230,8 @@ function buildScoreMaps(scoreDocs) {
   const byStaffId = new Map();
 
   for (const d of scoreDocs) {
-    const userId = s(d.userId);
-    const staffId = s(d.staffId);
+    const userId = isValidUserId(d.userId) ? s(d.userId) : "";
+    const staffId = isValidStaffId(d.staffId) ? s(d.staffId) : "";
 
     if (userId) {
       const current = byUserId.get(userId);
@@ -227,6 +249,109 @@ function buildScoreMaps(scoreDocs) {
   }
 
   return { byUserId, byStaffId };
+}
+
+async function loadScoreDocsByIdentity(items) {
+  const userIds = items.map((x) => s(x.userId)).filter(isValidUserId);
+  const staffIds = items.map((x) => s(x.staffId)).filter(isValidStaffId);
+
+  const or = [];
+  if (userIds.length > 0) or.push({ userId: { $in: userIds } });
+  if (staffIds.length > 0) or.push({ staffId: { $in: staffIds } });
+
+  if (or.length === 0) return [];
+
+  return TrustScore.find({ $or: or })
+    .select(
+      [
+        "userId",
+        "principalId",
+        "staffId",
+        "fullName",
+        "name",
+        "phone",
+        "role",
+        "trustScore",
+        "totalShifts",
+        "completed",
+        "late",
+        "noShow",
+        "cancelledEarly",
+        "cancelled",
+        "flags",
+        "badges",
+        "level",
+        "levelLabel",
+        "updatedAt",
+      ].join(" ")
+    )
+    .lean();
+}
+
+async function searchUsersFallback(q, limit) {
+  const db = mongoose.connection?.db;
+  if (!db) return [];
+
+  const query = s(q);
+  if (!query) return [];
+
+  const regex = new RegExp(escapeRegex(query), "i");
+
+  const docs = await db
+    .collection("users")
+    .find({
+      isActive: true,
+      $and: [
+        {
+          $or: [
+            { fullName: regex },
+            { phone: regex },
+            { userId: regex },
+            { staffId: regex },
+            { employeeCode: regex },
+          ],
+        },
+        {
+          $or: [
+            { role: { $in: ["helper", "employee"] } },
+            { activeRole: { $in: ["helper", "employee"] } },
+            { roles: { $in: ["helper", "employee"] } },
+          ],
+        },
+      ],
+    })
+    .project({
+      userId: 1,
+      staffId: 1,
+      fullName: 1,
+      phone: 1,
+      role: 1,
+      activeRole: 1,
+      roles: 1,
+      clinicId: 1,
+      email: 1,
+    })
+    .limit(limit)
+    .toArray();
+
+  const normalizedUsers = docs.map(normalizeAuthUser);
+  const scoreDocs = await loadScoreDocsByIdentity(normalizedUsers);
+  const { byUserId, byStaffId } = buildScoreMaps(scoreDocs);
+
+  return normalizedUsers.map((u) => {
+    const userId = s(u.userId);
+    const staffId = s(u.staffId);
+
+    const scoreDoc =
+      (userId ? byUserId.get(userId) : null) ||
+      (staffId ? byStaffId.get(staffId) : null) ||
+      null;
+
+    return {
+      ...mergeHelperWithScore(u, scoreDoc),
+      source: "users_fallback",
+    };
+  });
 }
 
 async function searchTrustScoreFallback(q, limit) {
@@ -274,7 +399,11 @@ async function searchTrustScoreFallback(q, limit) {
   const dedup = new Map();
 
   for (const d of docs) {
-    const key = s(d.userId) || s(d.staffId) || s(d.principalId);
+    const userId = isValidUserId(d.userId) ? s(d.userId) : "";
+    const staffId = isValidStaffId(d.staffId) ? s(d.staffId) : "";
+    const principalId = s(d.principalId);
+    const key = userId || staffId || principalId;
+
     if (!key) continue;
 
     const current = dedup.get(key);
@@ -353,19 +482,30 @@ async function searchHelpers(req, res) {
     }
 
     // ---------------------------------------------------
-    // ✅ Fallback on auth rate-limit / unavailable
+    // ✅ auth search fail -> users fallback first
     // ---------------------------------------------------
     if (!payload) {
-      const fallbackItems = await searchTrustScoreFallback(q, limit);
-
-      if (fallbackItems.length > 0) {
+      const userFallbackItems = await searchUsersFallback(q, limit);
+      if (userFallbackItems.length > 0) {
         return res.json({
           ok: true,
           q,
-          count: fallbackItems.length,
+          count: userFallbackItems.length,
+          source: "users_fallback_after_auth_error",
+          fallbackReason: lastErr?.status || 500,
+          items: userFallbackItems,
+        });
+      }
+
+      const trustFallbackItems = await searchTrustScoreFallback(q, limit);
+      if (trustFallbackItems.length > 0) {
+        return res.json({
+          ok: true,
+          q,
+          count: trustFallbackItems.length,
           source: "trustscore_fallback_after_auth_error",
           fallbackReason: lastErr?.status || 500,
-          items: fallbackItems,
+          items: trustFallbackItems,
         });
       }
 
@@ -379,45 +519,10 @@ async function searchHelpers(req, res) {
     const rawItems = Array.isArray(payload.items) ? payload.items : [];
     const items = rawItems.map(normalizeAuthUser);
 
-    const userIds = items.map((x) => s(x.userId)).filter(Boolean);
-    const staffIds = items.map((x) => s(x.staffId)).filter(Boolean);
-
-    const or = [];
-    if (userIds.length > 0) or.push({ userId: { $in: userIds } });
-    if (staffIds.length > 0) or.push({ staffId: { $in: staffIds } });
-
-    const scoreDocs =
-      or.length > 0
-        ? await TrustScore.find({ $or: or })
-            .select(
-              [
-                "userId",
-                "principalId",
-                "staffId",
-                "fullName",
-                "name",
-                "phone",
-                "role",
-                "trustScore",
-                "totalShifts",
-                "completed",
-                "late",
-                "noShow",
-                "cancelledEarly",
-                "cancelled",
-                "flags",
-                "badges",
-                "level",
-                "levelLabel",
-                "updatedAt",
-              ].join(" ")
-            )
-            .lean()
-        : [];
-
+    const scoreDocs = await loadScoreDocsByIdentity(items);
     const { byUserId, byStaffId } = buildScoreMaps(scoreDocs);
 
-    let results = items.map((u) => {
+    const results = items.map((u) => {
       const userId = s(u.userId);
       const staffId = s(u.staffId);
 
@@ -430,17 +535,28 @@ async function searchHelpers(req, res) {
     });
 
     // ---------------------------------------------------
-    // ✅ ถ้า auth สำเร็จแต่ไม่เจออะไรเลย ลอง fallback ด้วย
+    // ✅ auth success but empty result -> users fallback
     // ---------------------------------------------------
     if (results.length === 0) {
-      const fallbackItems = await searchTrustScoreFallback(q, limit);
-      if (fallbackItems.length > 0) {
+      const userFallbackItems = await searchUsersFallback(q, limit);
+      if (userFallbackItems.length > 0) {
         return res.json({
           ok: true,
           q,
-          count: fallbackItems.length,
+          count: userFallbackItems.length,
+          source: "users_fallback_after_empty_auth_result",
+          items: userFallbackItems,
+        });
+      }
+
+      const trustFallbackItems = await searchTrustScoreFallback(q, limit);
+      if (trustFallbackItems.length > 0) {
+        return res.json({
+          ok: true,
+          q,
+          count: trustFallbackItems.length,
           source: "trustscore_fallback_after_empty_auth_result",
-          items: fallbackItems,
+          items: trustFallbackItems,
         });
       }
     }
