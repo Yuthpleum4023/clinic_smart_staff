@@ -133,6 +133,61 @@ function isBetterDoc(nextDoc, currentDoc) {
   return nextTime > currentTime;
 }
 
+function isBetterItem(nextItem, currentItem) {
+  if (!currentItem) return true;
+  if (!nextItem) return false;
+
+  const nextScore = n(nextItem.trustScore, 0);
+  const currentScore = n(currentItem.trustScore, 0);
+  if (nextScore !== currentScore) return nextScore > currentScore;
+
+  const nextShifts = n(nextItem?.stats?.totalShifts, 0);
+  const currentShifts = n(currentItem?.stats?.totalShifts, 0);
+  if (nextShifts !== currentShifts) return nextShifts > currentShifts;
+
+  const nextCompleted = n(nextItem?.stats?.completed, 0);
+  const currentCompleted = n(currentItem?.stats?.completed, 0);
+  if (nextCompleted !== currentCompleted) return nextCompleted > currentCompleted;
+
+  const nextTime = new Date(nextItem.updatedAt || 0).getTime();
+  const currentTime = new Date(currentItem.updatedAt || 0).getTime();
+  return nextTime > currentTime;
+}
+
+function makeIdentityKey(item) {
+  const userId = s(item.userId);
+  if (isValidUserId(userId)) return `u:${userId}`;
+
+  const staffId = s(item.staffId);
+  if (isValidStaffId(staffId)) return `s:${staffId}`;
+
+  const phone = s(item.phone);
+  if (phone) return `p:${phone}`;
+
+  const fullName = s(item.fullName) || s(item.name);
+  if (fullName) return `n:${fullName.toLowerCase()}`;
+
+  return "";
+}
+
+function dedupeItems(items) {
+  const map = new Map();
+
+  for (const raw of Array.isArray(items) ? items : []) {
+    const item = asObj(raw);
+    const key = makeIdentityKey(item);
+
+    if (!key) continue;
+
+    const current = map.get(key);
+    if (isBetterItem(item, current)) {
+      map.set(key, item);
+    }
+  }
+
+  return Array.from(map.values());
+}
+
 function pickRole(user = {}, scoreDoc = null) {
   const direct = s(user.role);
   if (direct) return direct;
@@ -338,7 +393,7 @@ async function searchUsersFallback(q, limit) {
   const scoreDocs = await loadScoreDocsByIdentity(normalizedUsers);
   const { byUserId, byStaffId } = buildScoreMaps(scoreDocs);
 
-  return normalizedUsers.map((u) => {
+  const merged = normalizedUsers.map((u) => {
     const userId = s(u.userId);
     const staffId = s(u.staffId);
 
@@ -352,6 +407,8 @@ async function searchUsersFallback(q, limit) {
       source: "users_fallback",
     };
   });
+
+  return dedupeItems(merged);
 }
 
 async function searchTrustScoreFallback(q, limit) {
@@ -412,7 +469,7 @@ async function searchTrustScoreFallback(q, limit) {
     }
   }
 
-  return Array.from(dedup.values()).map((d) => {
+  const items = Array.from(dedup.values()).map((d) => {
     const payload = toScorePayload(d);
     return {
       userId: payload.userId,
@@ -432,6 +489,8 @@ async function searchTrustScoreFallback(q, limit) {
       source: "trustscore_fallback",
     };
   });
+
+  return dedupeItems(items);
 }
 
 async function searchHelpers(req, res) {
@@ -481,9 +540,6 @@ async function searchHelpers(req, res) {
       lastErr = r;
     }
 
-    // ---------------------------------------------------
-    // ✅ auth search fail -> users fallback first
-    // ---------------------------------------------------
     if (!payload) {
       const userFallbackItems = await searchUsersFallback(q, limit);
       if (userFallbackItems.length > 0) {
@@ -522,21 +578,20 @@ async function searchHelpers(req, res) {
     const scoreDocs = await loadScoreDocsByIdentity(items);
     const { byUserId, byStaffId } = buildScoreMaps(scoreDocs);
 
-    const results = items.map((u) => {
-      const userId = s(u.userId);
-      const staffId = s(u.staffId);
+    const results = dedupeItems(
+      items.map((u) => {
+        const userId = s(u.userId);
+        const staffId = s(u.staffId);
 
-      const scoreDoc =
-        (userId ? byUserId.get(userId) : null) ||
-        (staffId ? byStaffId.get(staffId) : null) ||
-        null;
+        const scoreDoc =
+          (userId ? byUserId.get(userId) : null) ||
+          (staffId ? byStaffId.get(staffId) : null) ||
+          null;
 
-      return mergeHelperWithScore(u, scoreDoc);
-    });
+        return mergeHelperWithScore(u, scoreDoc);
+      })
+    );
 
-    // ---------------------------------------------------
-    // ✅ auth success but empty result -> users fallback
-    // ---------------------------------------------------
     if (results.length === 0) {
       const userFallbackItems = await searchUsersFallback(q, limit);
       if (userFallbackItems.length > 0) {
