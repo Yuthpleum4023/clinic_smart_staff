@@ -1,3 +1,4 @@
+const mongoose = require("mongoose");
 const TrustScore = require("../models/TrustScore");
 
 function s(v) {
@@ -9,6 +10,30 @@ function n(v, fallback = 0) {
   return Number.isFinite(x) ? x : fallback;
 }
 
+function getUsersCollection() {
+  try {
+    return mongoose.connection.db.collection("users");
+  } catch (_) {
+    return null;
+  }
+}
+
+function chooseBetterProfile(scoreDoc = {}, userDoc = {}) {
+  return {
+    userId: s(scoreDoc.userId) || s(userDoc.userId),
+    principalId: s(scoreDoc.principalId) || s(userDoc.userId),
+    staffId: s(scoreDoc.staffId) || s(userDoc.staffId),
+    fullName: s(scoreDoc.fullName) || s(userDoc.fullName),
+    name: s(scoreDoc.name) || s(userDoc.fullName),
+    phone: s(scoreDoc.phone) || s(userDoc.phone),
+    role:
+      s(scoreDoc.role) ||
+      s(userDoc.activeRole) ||
+      s(userDoc.role) ||
+      "helper",
+  };
+}
+
 async function getRecommendations(req, res) {
   try {
     const clinicId = s(req.query.clinicId);
@@ -18,17 +43,6 @@ async function getRecommendations(req, res) {
       return res.status(400).json({ message: "clinicId required" });
     }
 
-    /**
-     * ✅ เป้าหมาย:
-     * - ตัดคนที่มี NO_SHOW_30D ออก
-     * - พยายามรวมรายการด้วย userId/principalId ก่อน
-     * - ถ้าไม่มีจริง ๆ ค่อย fallback เป็น staffId
-     * - ส่ง field ที่ Flutter ใช้โชว์ชื่อกลับไปด้วย
-     *
-     * NOTE:
-     * ถ้าเอกสาร TrustScore ยังไม่มี userId/fullName/phone
-     * response ก็จะยัง fallback เป็น staffId / ชื่อว่างอยู่
-     */
     const rows = await TrustScore.aggregate([
       {
         $match: {
@@ -38,10 +52,14 @@ async function getRecommendations(req, res) {
       {
         $addFields: {
           helperKey: {
-            $ifNull: [
+            $cond: [
+              { $gt: [{ $strLenCP: { $ifNull: ["$userId", ""] } }, 0] },
               "$userId",
               {
-                $ifNull: [
+                $cond: [
+                  {
+                    $gt: [{ $strLenCP: { $ifNull: ["$principalId", ""] } }, 0],
+                  },
                   "$principalId",
                   "$staffId",
                 ],
@@ -67,7 +85,7 @@ async function getRecommendations(req, res) {
           principalId: { $first: "$principalId" },
           staffId: { $first: "$staffId" },
 
-          // profile snapshot (ถ้ามี)
+          // profile snapshot
           fullName: { $first: "$fullName" },
           name: { $first: "$name" },
           phone: { $first: "$phone" },
@@ -82,7 +100,7 @@ async function getRecommendations(req, res) {
           level: { $first: "$level" },
           levelLabel: { $first: "$levelLabel" },
 
-          // optional stats (ถ้ามีใน model)
+          // stats
           totalShifts: { $first: "$totalShifts" },
           completed: { $first: "$completed" },
           late: { $first: "$late" },
@@ -100,24 +118,76 @@ async function getRecommendations(req, res) {
       },
     ]);
 
+    // --------------------------------------------
+    // Enrich from users collection
+    // --------------------------------------------
+    const usersCollection = getUsersCollection();
+
+    let byStaffId = new Map();
+    let byUserId = new Map();
+
+    if (usersCollection) {
+      const staffIds = rows.map((x) => s(x.staffId)).filter(Boolean);
+      const userIds = rows
+        .flatMap((x) => [s(x.userId), s(x.principalId)])
+        .filter(Boolean);
+
+      const userDocs = await usersCollection
+        .find({
+          $or: [
+            ...(staffIds.length > 0 ? [{ staffId: { $in: staffIds } }] : []),
+            ...(userIds.length > 0 ? [{ userId: { $in: userIds } }] : []),
+          ],
+        })
+        .project({
+          userId: 1,
+          staffId: 1,
+          fullName: 1,
+          phone: 1,
+          role: 1,
+          activeRole: 1,
+        })
+        .toArray();
+
+      byStaffId = new Map(
+        userDocs
+          .map((u) => [s(u.staffId), u])
+          .filter(([k]) => k.isNotEmpty),
+      );
+
+      byUserId = new Map(
+        userDocs
+          .map((u) => [s(u.userId), u])
+          .filter(([k]) => k.isNotEmpty),
+      );
+    }
+
     const recommended = rows.map((x) => {
       const trustScore = n(x.trustScore, 0);
+
+      const matchedUser =
+        byUserId.get(s(x.userId)) ||
+        byUserId.get(s(x.principalId)) ||
+        byStaffId.get(s(x.staffId)) ||
+        null;
+
+      const profile = chooseBetterProfile(x, matchedUser || {});
 
       return {
         helperKey: s(x.helperKey),
 
-        // ✅ identity
-        userId: s(x.userId),
-        principalId: s(x.principalId),
-        staffId: s(x.staffId),
+        // identity
+        userId: profile.userId,
+        principalId: profile.principalId,
+        staffId: profile.staffId,
 
-        // ✅ profile
-        fullName: s(x.fullName),
-        name: s(x.name),
-        phone: s(x.phone),
-        role: s(x.role) || "helper",
+        // profile
+        fullName: profile.fullName,
+        name: profile.name,
+        phone: profile.phone,
+        role: profile.role,
 
-        // ✅ score
+        // score
         trustScore,
         level: s(x.level) || "unknown",
         levelLabel: s(x.levelLabel) || "ยังไม่มีข้อมูล",
@@ -125,7 +195,7 @@ async function getRecommendations(req, res) {
         flags: Array.isArray(x.flags) ? x.flags : [],
         sourceClinicId: s(x.sourceClinicId),
 
-        // ✅ stats
+        // stats
         stats: {
           totalShifts: n(x.totalShifts, 0),
           completed: n(x.completed, 0),
@@ -133,7 +203,7 @@ async function getRecommendations(req, res) {
           noShow: n(x.noShow, 0),
         },
 
-        // ✅ why recommended
+        // why recommended
         reason: [
           `trustScore ${trustScore}`,
           ...(Array.isArray(x.badges) ? x.badges.slice(0, 2) : []),
