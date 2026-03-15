@@ -5,6 +5,7 @@
 // - Clinic Contact Phone
 // - ✅ Clinic Location (local + sync)
 // - ✅ Helper Location (local + sync)
+// - ✅ NEW: district / province / address / label
 // - PRODUCTION SAFE: timeout + error ชัด
 //
 // NOTE:
@@ -28,10 +29,18 @@ class SettingService {
   // ✅ clinic location keys
   static const String _clinicLatKey = 'clinic_location_lat';
   static const String _clinicLngKey = 'clinic_location_lng';
+  static const String _clinicDistrictKey = 'clinic_location_district';
+  static const String _clinicProvinceKey = 'clinic_location_province';
+  static const String _clinicAddressKey = 'clinic_location_address';
+  static const String _clinicLabelKey = 'clinic_location_label';
 
   // ✅ helper location keys
   static const String _helperLatKey = 'helper_location_lat';
   static const String _helperLngKey = 'helper_location_lng';
+  static const String _helperDistrictKey = 'helper_location_district';
+  static const String _helperProvinceKey = 'helper_location_province';
+  static const String _helperAddressKey = 'helper_location_address';
+  static const String _helperLabelKey = 'helper_location_label';
 
   // ✅ clinic contact phone key
   static const String _clinicContactPhoneKey = 'clinic_contact_phone';
@@ -119,22 +128,41 @@ class SettingService {
     if (lat == null || lng == null) return null;
     if (lat == 0 && lng == 0) return null;
 
-    return AppLocation(lat: lat, lng: lng);
+    return AppLocation(
+      lat: lat,
+      lng: lng,
+      district: (prefs.getString(_clinicDistrictKey) ?? '').trim(),
+      province: (prefs.getString(_clinicProvinceKey) ?? '').trim(),
+      address: (prefs.getString(_clinicAddressKey) ?? '').trim(),
+      label: (prefs.getString(_clinicLabelKey) ?? '').trim(),
+    );
   }
 
   static Future<void> saveClinicLocation({
     required double lat,
     required double lng,
+    String district = '',
+    String province = '',
+    String address = '',
+    String label = '',
   }) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setDouble(_clinicLatKey, lat);
     await prefs.setDouble(_clinicLngKey, lng);
+    await prefs.setString(_clinicDistrictKey, district.trim());
+    await prefs.setString(_clinicProvinceKey, province.trim());
+    await prefs.setString(_clinicAddressKey, address.trim());
+    await prefs.setString(_clinicLabelKey, label.trim());
   }
 
   static Future<void> clearClinicLocation() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_clinicLatKey);
     await prefs.remove(_clinicLngKey);
+    await prefs.remove(_clinicDistrictKey);
+    await prefs.remove(_clinicProvinceKey);
+    await prefs.remove(_clinicAddressKey);
+    await prefs.remove(_clinicLabelKey);
   }
 
   // ============================================================
@@ -148,22 +176,41 @@ class SettingService {
     if (lat == null || lng == null) return null;
     if (lat == 0 && lng == 0) return null;
 
-    return AppLocation(lat: lat, lng: lng);
+    return AppLocation(
+      lat: lat,
+      lng: lng,
+      district: (prefs.getString(_helperDistrictKey) ?? '').trim(),
+      province: (prefs.getString(_helperProvinceKey) ?? '').trim(),
+      address: (prefs.getString(_helperAddressKey) ?? '').trim(),
+      label: (prefs.getString(_helperLabelKey) ?? '').trim(),
+    );
   }
 
   static Future<void> saveHelperLocation({
     required double lat,
     required double lng,
+    String district = '',
+    String province = '',
+    String address = '',
+    String label = '',
   }) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setDouble(_helperLatKey, lat);
     await prefs.setDouble(_helperLngKey, lng);
+    await prefs.setString(_helperDistrictKey, district.trim());
+    await prefs.setString(_helperProvinceKey, province.trim());
+    await prefs.setString(_helperAddressKey, address.trim());
+    await prefs.setString(_helperLabelKey, label.trim());
   }
 
   static Future<void> clearHelperLocation() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_helperLatKey);
     await prefs.remove(_helperLngKey);
+    await prefs.remove(_helperDistrictKey);
+    await prefs.remove(_helperProvinceKey);
+    await prefs.remove(_helperAddressKey);
+    await prefs.remove(_helperLabelKey);
   }
 
   // ============================================================
@@ -191,6 +238,10 @@ class SettingService {
     final body = jsonEncode({
       'lat': location.lat,
       'lng': location.lng,
+      'district': location.district,
+      'province': location.province,
+      'address': location.address,
+      'label': location.label,
     });
 
     final res = await http
@@ -287,21 +338,55 @@ class SettingService {
 class AppLocation {
   final double lat;
   final double lng;
+  final String district;
+  final String province;
+  final String address;
+  final String label;
 
   const AppLocation({
     required this.lat,
     required this.lng,
+    this.district = '',
+    this.province = '',
+    this.address = '',
+    this.label = '',
   });
 
   Map<String, dynamic> toJson() => {
         'lat': lat,
         'lng': lng,
+        'district': district,
+        'province': province,
+        'address': address,
+        'label': label,
       };
 
   factory AppLocation.fromJson(Map<String, dynamic> j) => AppLocation(
         lat: (j['lat'] as num?)?.toDouble() ?? 0,
         lng: (j['lng'] as num?)?.toDouble() ?? 0,
+        district: (j['district'] ?? j['amphoe'] ?? '').toString().trim(),
+        province: (j['province'] ?? j['changwat'] ?? '').toString().trim(),
+        address: (j['address'] ?? j['fullAddress'] ?? '').toString().trim(),
+        label: (j['label'] ?? j['locationLabel'] ?? '').toString().trim(),
       );
+
+  AppLocation copyWith({
+    double? lat,
+    double? lng,
+    String? district,
+    String? province,
+    String? address,
+    String? label,
+  }) {
+    return AppLocation(
+      lat: lat ?? this.lat,
+      lng: lng ?? this.lng,
+      district: district ?? this.district,
+      province: province ?? this.province,
+      address: address ?? this.address,
+      label: label ?? this.label,
+    );
+  }
 }
 
 // ============================================================

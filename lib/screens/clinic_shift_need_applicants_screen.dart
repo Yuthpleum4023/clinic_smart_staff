@@ -1,20 +1,23 @@
 // lib/screens/clinic_shift_need_applicants_screen.dart
 //
-// ✅ FULL FILE (OPTION #2: รับ needStatus จากหน้า list แล้ว “ปิดรับ” ตั้งแต่เปิดหน้าได้ทันที)
-// - เพิ่ม widget.needStatus (ส่งมาจาก ClinicShiftNeedListScreen)
-// - initState: ถ้า needStatus != open => ปิดปุ่ม “รับเข้าทำงาน” ทั้งหน้า + แสดง banner
-// - ยังมี safety ชั้นสอง: ถ้า approve แล้ว backend ตอบ need is not open -> ปิดรับทันที
-// - ปุ่ม event (completed/late/no_show/cancelled_early) โชว์เฉพาะ applicant ที่ approved
-//
-// ✅ Event ตรง model AttendanceEvent:
-// - status: completed | late | no_show | cancelled_early
-// - minutesLate: number (เฉพาะ late)
-// - occurredAt: DateTime.now()
-// - clinicId, staffId, shiftId
+// ✅ FULL FILE (ENHANCED: clinic can see helper location before approve)
+// - เพิ่มแสดง อำเภอ / จังหวัด / ที่อยู่ / location label / ระยะทาง
+// - รองรับข้อมูล location ทั้งแบบ top-level และ nested location:{...}
+// - ถ้ายังไม่มีพิกัด -> แสดง “ยังไม่ได้ตั้งตำแหน่ง”
+// - ✅ NEW: รองรับ Auto Match UI
+//   - recommended
+//   - recommendReason
+//   - recommendScore
+//   - matchTier
+//   - rank
+// - ยังรักษา logic เดิมเรื่อง approve / event / need closed ครบ
 //
 // IMPORTANT:
-// - endpoint approve: POST /shift-needs/:id/approve body { staffId }
-// - endpoint attendance event: ปรับ path ใน ScoreService ให้ตรง backend ของท่าน (ค่า default ด้านล่าง)
+// - ฝั่ง backend ควรส่ง field ได้อย่างน้อยบางส่วน เช่น:
+//   district, province, address, locationLabel, distanceKm
+//   หรือ location: { lat, lng, district, province, address, label }
+// - สำหรับ auto-match:
+//   recommended, recommendReason, recommendScore, matchTier, rank
 //
 
 import 'package:flutter/material.dart';
@@ -26,7 +29,7 @@ class ClinicShiftNeedApplicantsScreen extends StatefulWidget {
   final String needId;
   final String title;
 
-  /// ✅ OPTION #2: รับสถานะ need มาจากหน้า list
+  /// ✅ รับสถานะ need มาจากหน้า list
   /// ค่าที่คาดหวัง: open / filled / cancelled
   final String needStatus;
 
@@ -66,12 +69,426 @@ class _ClinicShiftNeedApplicantsScreenState
   String _s(dynamic v) => (v ?? '').toString();
   String _norm(String s) => s.trim().toLowerCase();
 
+  double? _toDouble(dynamic v) {
+    if (v == null) return null;
+    if (v is num) return v.toDouble();
+    return double.tryParse(v.toString().trim());
+  }
+
+  int? _toInt(dynamic v) {
+    if (v == null) return null;
+    if (v is int) return v;
+    if (v is num) return v.toInt();
+    return int.tryParse(v.toString().trim());
+  }
+
+  bool _toBool(dynamic v) {
+    if (v is bool) return v;
+    final s = _norm('$v');
+    return s == 'true' || s == '1' || s == 'yes';
+  }
+
+  Map<String, dynamic> _map(dynamic v) {
+    if (v is Map) {
+      return Map<String, dynamic>.from(v);
+    }
+    return <String, dynamic>{};
+  }
+
   String _needStatusLabel(String s) {
     final v = _norm(s);
     if (v == 'open') return 'เปิดรับ';
     if (v == 'filled') return 'เต็มแล้ว';
     if (v == 'cancelled') return 'ยกเลิก';
     return s;
+  }
+
+  // =========================
+  // Location helpers
+  // =========================
+  Map<String, dynamic> _extractLocation(Map<String, dynamic> m) {
+    final loc = _map(m['location']);
+    final geo = _map(m['geo']);
+
+    final lat = _toDouble(
+      m['lat'] ??
+          m['helperLat'] ??
+          m['assistantLat'] ??
+          m['userLat'] ??
+          loc['lat'] ??
+          loc['latitude'] ??
+          geo['lat'] ??
+          geo['latitude'],
+    );
+
+    final lng = _toDouble(
+      m['lng'] ??
+          m['lon'] ??
+          m['long'] ??
+          m['longitude'] ??
+          m['helperLng'] ??
+          m['assistantLng'] ??
+          m['userLng'] ??
+          loc['lng'] ??
+          loc['longitude'] ??
+          geo['lng'] ??
+          geo['longitude'],
+    );
+
+    final district = _s(
+      m['district'] ??
+          m['helperDistrict'] ??
+          m['assistantDistrict'] ??
+          m['amphoe'] ??
+          loc['district'] ??
+          loc['amphoe'],
+    ).trim();
+
+    final province = _s(
+      m['province'] ??
+          m['helperProvince'] ??
+          m['assistantProvince'] ??
+          m['changwat'] ??
+          loc['province'] ??
+          loc['changwat'],
+    ).trim();
+
+    final address = _s(
+      m['address'] ??
+          m['fullAddress'] ??
+          m['helperAddress'] ??
+          m['assistantAddress'] ??
+          loc['address'] ??
+          loc['fullAddress'],
+    ).trim();
+
+    final label = _s(
+      m['locationLabel'] ??
+          m['label'] ??
+          m['helperLocationLabel'] ??
+          m['assistantLocationLabel'] ??
+          loc['label'] ??
+          loc['locationLabel'],
+    ).trim();
+
+    final distanceKm = _toDouble(
+      m['distanceKm'] ??
+          m['distance'] ??
+          m['helperDistanceKm'] ??
+          m['assistantDistanceKm'],
+    );
+
+    return {
+      'lat': lat,
+      'lng': lng,
+      'district': district,
+      'province': province,
+      'address': address,
+      'label': label,
+      'distanceKm': distanceKm,
+      'hasCoords': lat != null && lng != null,
+    };
+  }
+
+  String _locationHeadline(Map<String, dynamic> m) {
+    final district = _s(m['district']).trim();
+    final province = _s(m['province']).trim();
+    final label = _s(m['label']).trim();
+
+    final districtProvince = [district, province]
+        .where((e) => e.trim().isNotEmpty)
+        .join(', ');
+
+    if (districtProvince.isNotEmpty) return districtProvince;
+    if (label.isNotEmpty) return label;
+    return 'ยังไม่ได้ตั้งตำแหน่ง';
+  }
+
+  String _distanceText(double km) {
+    if (km < 1) {
+      final meters = (km * 1000).round();
+      return '$meters เมตร';
+    }
+    return '${km.toStringAsFixed(km >= 10 ? 0 : 1)} กม.';
+  }
+
+  // =========================
+  // Auto match helpers
+  // =========================
+  bool _isRecommended(Map<String, dynamic> m) {
+    return _toBool(m['recommended']);
+  }
+
+  int? _rank(Map<String, dynamic> m) {
+    return _toInt(m['rank']);
+  }
+
+  String _recommendReason(Map<String, dynamic> m) {
+    return _s(m['recommendReason']).trim();
+  }
+
+  String _matchTier(Map<String, dynamic> m) {
+    return _norm(_s(m['matchTier']));
+  }
+
+  String _recommendScoreText(Map<String, dynamic> m) {
+    final score = _toDouble(m['recommendScore']);
+    if (score == null) return '';
+    if (score == score.roundToDouble()) {
+      return score.toStringAsFixed(0);
+    }
+    return score.toStringAsFixed(1);
+  }
+
+  Color _tierColor(ColorScheme cs, String tier) {
+    switch (tier) {
+      case 'near':
+        return Colors.green.shade700;
+      case 'medium':
+        return Colors.orange.shade700;
+      case 'far':
+        return Colors.blueGrey.shade700;
+      default:
+        return cs.primary;
+    }
+  }
+
+  String _tierLabel(String tier) {
+    switch (tier) {
+      case 'near':
+        return 'ใกล้';
+      case 'medium':
+        return 'ระยะกลาง';
+      case 'far':
+        return 'ค่อนข้างไกล';
+      default:
+        return 'ยังไม่ทราบ';
+    }
+  }
+
+  Widget _infoRow({
+    required IconData icon,
+    required String text,
+    Color? color,
+    FontWeight? weight,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 16, color: color),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              text,
+              style: TextStyle(
+                color: color,
+                fontWeight: weight,
+                height: 1.25,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBadge({
+    required String text,
+    required Color bg,
+    required Color fg,
+    IconData? icon,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (icon != null) ...[
+            Icon(icon, size: 14, color: fg),
+            const SizedBox(width: 4),
+          ],
+          Text(
+            text,
+            style: TextStyle(
+              color: fg,
+              fontWeight: FontWeight.w800,
+              fontSize: 12,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _autoMatchSection(Map<String, dynamic> item, ColorScheme cs) {
+    final recommended = _isRecommended(item);
+    final rank = _rank(item);
+    final reason = _recommendReason(item);
+    final tier = _matchTier(item);
+    final scoreText = _recommendScoreText(item);
+
+    final hasAnyData = recommended ||
+        rank != null ||
+        reason.isNotEmpty ||
+        tier.isNotEmpty ||
+        scoreText.isNotEmpty;
+
+    if (!hasAnyData) return const SizedBox.shrink();
+
+    final tierColor = _tierColor(cs, tier);
+
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(top: 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: recommended
+            ? Colors.amber.withOpacity(0.12)
+            : cs.primary.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: recommended
+              ? Colors.amber.withOpacity(0.45)
+              : cs.primary.withOpacity(0.18),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              if (recommended)
+                _buildBadge(
+                  text: 'แนะนำอัตโนมัติ',
+                  bg: Colors.amber.shade100,
+                  fg: Colors.amber.shade900,
+                  icon: Icons.auto_awesome,
+                ),
+              if (rank != null)
+                _buildBadge(
+                  text: 'อันดับ #$rank',
+                  bg: cs.primary.withOpacity(0.12),
+                  fg: cs.primary,
+                  icon: Icons.leaderboard_outlined,
+                ),
+              if (tier.isNotEmpty)
+                _buildBadge(
+                  text: _tierLabel(tier),
+                  bg: tierColor.withOpacity(0.12),
+                  fg: tierColor,
+                  icon: Icons.route,
+                ),
+              if (scoreText.isNotEmpty)
+                _buildBadge(
+                  text: 'คะแนน $scoreText',
+                  bg: Colors.teal.withOpacity(0.12),
+                  fg: Colors.teal.shade800,
+                  icon: Icons.insights_outlined,
+                ),
+            ],
+          ),
+          if (reason.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            _infoRow(
+              icon: recommended ? Icons.star : Icons.info_outline,
+              text: reason,
+              color: recommended ? Colors.amber.shade900 : cs.primary,
+              weight: FontWeight.w700,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _locationSection(Map<String, dynamic> item, ColorScheme cs) {
+    final loc = _extractLocation(item);
+
+    final headline = _locationHeadline(loc);
+    final address = _s(loc['address']).trim();
+    final label = _s(loc['label']).trim();
+    final hasCoords = loc['hasCoords'] == true;
+    final distanceKm =
+        loc['distanceKm'] is double ? loc['distanceKm'] as double : null;
+
+    final district = _s(loc['district']).trim();
+    final province = _s(loc['province']).trim();
+
+    final showPlaceholder = !hasCoords &&
+        district.isEmpty &&
+        province.isEmpty &&
+        address.isEmpty &&
+        label.isEmpty;
+
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(top: 6),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: cs.surfaceContainerHighest.withOpacity(0.45),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: cs.outline.withOpacity(0.15)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'ตำแหน่งผู้ช่วย',
+            style: TextStyle(
+              fontWeight: FontWeight.w900,
+              color: cs.onSurface,
+            ),
+          ),
+          const SizedBox(height: 6),
+          if (showPlaceholder)
+            _infoRow(
+              icon: Icons.location_off,
+              text: 'ยังไม่ได้ตั้งตำแหน่ง',
+              color: cs.error,
+              weight: FontWeight.w700,
+            )
+          else ...[
+            _infoRow(
+              icon: Icons.place,
+              text: headline,
+              weight: FontWeight.w800,
+            ),
+            if (label.isNotEmpty && label != headline)
+              _infoRow(
+                icon: Icons.pin_drop_outlined,
+                text: label,
+              ),
+            if (address.isNotEmpty)
+              _infoRow(
+                icon: Icons.home_work_outlined,
+                text: address,
+              ),
+            if (distanceKm != null)
+              _infoRow(
+                icon: Icons.route,
+                text: 'ห่างจากคลินิก ${_distanceText(distanceKm)}',
+                color: cs.primary,
+                weight: FontWeight.w700,
+              ),
+            if (distanceKm == null && hasCoords)
+              _infoRow(
+                icon: Icons.my_location_outlined,
+                text: 'มีพิกัดแล้ว',
+                color: cs.primary,
+                weight: FontWeight.w700,
+              ),
+          ],
+        ],
+      ),
+    );
   }
 
   // =========================
@@ -83,7 +500,6 @@ class _ClinicShiftNeedApplicantsScreenState
       _loading = true;
       _err = '';
       _items = [];
-      // ❌ ไม่รีเซ็ต _needClosed ที่นี่ เพื่อกันกดซ้ำหลังรู้ว่า need ปิดแล้ว
     });
 
     try {
@@ -177,11 +593,9 @@ class _ClinicShiftNeedApplicantsScreenState
       final decoded = await ClinicShiftNeedService.approveApplicant(
         needId: widget.needId,
         staffId: sid,
-        // ถ้า route ท่านไม่ใช่นี้ค่อย override ใน service ได้
         pathBuilder: (id) => '/shift-needs/$id/approve',
       );
 
-      // backend ตามที่ท่านแปะ: { ok:true, shift:{...} }
       String shiftId = '';
       if (decoded is Map) {
         final shift = decoded['shift'];
@@ -193,7 +607,6 @@ class _ClinicShiftNeedApplicantsScreenState
         _shiftIdByStaff[sid] = shiftId;
       }
 
-      // ✅ mark approved ใน UI ทันที
       setState(() {
         for (var i = 0; i < _items.length; i++) {
           final m = _items[i];
@@ -203,12 +616,6 @@ class _ClinicShiftNeedApplicantsScreenState
             final newMap = Map<String, dynamic>.from(m);
             newMap['status'] = 'approved';
             _items[i] = newMap;
-          } else {
-            // backend ของท่านจะ reject คนอื่นอัตโนมัติ
-            // ถ้าท่านอยาก reflect เลย ก็เปิดบรรทัดนี้ได้:
-            // final newMap = Map<String, dynamic>.from(m);
-            // newMap['status'] = 'rejected';
-            // _items[i] = newMap;
           }
         }
       });
@@ -218,7 +625,6 @@ class _ClinicShiftNeedApplicantsScreenState
     } catch (e) {
       final msg = e.toString().toLowerCase();
 
-      // ✅ safety ชั้นสอง: ถ้า backend บอก need ปิดแล้ว -> ปิดการรับทั้งหมดในหน้านี้ทันที
       if (msg.contains('need is not open') || msg.contains('not open')) {
         setState(() {
           _needClosed = true;
@@ -235,7 +641,7 @@ class _ClinicShiftNeedApplicantsScreenState
   }
 
   // =========================
-  // Attendance Event actions (ตรง model)
+  // Attendance Event actions
   // =========================
   Future<int?> _askMinutesLate() async {
     final ctrl = TextEditingController(text: '10');
@@ -274,7 +680,7 @@ class _ClinicShiftNeedApplicantsScreenState
 
   Future<void> _postEvent({
     required String staffId,
-    required String status, // completed | late | no_show | cancelled_early
+    required String status,
     int minutesLate = 0,
   }) async {
     if (_posting) return;
@@ -288,12 +694,11 @@ class _ClinicShiftNeedApplicantsScreenState
     setState(() => _posting = true);
 
     try {
-      // ✅ ใช้ shiftId จริงถ้ามี (จากตอน approve)
       final shiftId = (_shiftIdByStaff[sid] ?? '').trim();
 
       await ScoreService.postAttendanceEvent(
         staffId: sid,
-        shiftId: shiftId, // ถ้าว่าง backend จะรับเป็น "" ได้ (ตาม model default)
+        shiftId: shiftId,
         status: status,
         minutesLate: minutesLate,
         occurredAt: DateTime.now(),
@@ -346,7 +751,6 @@ class _ClinicShiftNeedApplicantsScreenState
   void initState() {
     super.initState();
 
-    // ✅ OPTION #2: ปิดรับตั้งแต่เปิดหน้า ถ้า needStatus != open
     final st = _norm(widget.needStatus);
     if (st.isNotEmpty && st != 'open') {
       _needClosed = true;
@@ -409,7 +813,6 @@ class _ClinicShiftNeedApplicantsScreenState
                     : ListView(
                         padding: const EdgeInsets.only(bottom: 16),
                         children: [
-                          // ✅ Banner ถ้างานปิดรับแล้ว
                           if (_needClosed)
                             Container(
                               margin: const EdgeInsets.fromLTRB(12, 12, 12, 0),
@@ -442,13 +845,12 @@ class _ClinicShiftNeedApplicantsScreenState
 
                             final phone = _s(m['phone'] ?? m['tel']);
                             final note = _s(m['note']);
-                            final status = _s(m['status']); // pending/approved/rejected
+                            final status = _s(m['status']);
 
                             final approved = _isApproved(m);
                             final pending = _isPending(m);
                             final rejected = _isRejected(m);
 
-                            // ✅ รับได้เฉพาะ pending + งานยังไม่ปิด
                             final canApprove =
                                 staffId.isNotEmpty && pending && !_needClosed;
 
@@ -482,9 +884,12 @@ class _ClinicShiftNeedApplicantsScreenState
                                         ),
                                       ),
                                     ),
+
+                                    _autoMatchSection(m, cs),
+                                    _locationSection(m, cs),
+
                                     const SizedBox(height: 10),
 
-                                    // ✅ ปุ่ม “รับเข้าทำงาน” (เฉพาะ pending)
                                     if (staffId.isNotEmpty && pending && !approved && !rejected)
                                       SizedBox(
                                         width: double.infinity,
@@ -496,14 +901,15 @@ class _ClinicShiftNeedApplicantsScreenState
                                               ? const SizedBox(
                                                   height: 18,
                                                   width: 18,
-                                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                                  child: CircularProgressIndicator(
+                                                    strokeWidth: 2,
+                                                  ),
                                                 )
                                               : const Icon(Icons.check_circle),
                                           label: Text(_needClosed ? 'ปิดรับแล้ว' : 'รับเข้าทำงาน'),
                                         ),
                                       ),
 
-                                    // ✅ ปุ่ม event (โชว์เมื่อ approved เท่านั้น) — ตรง model AttendanceEvent
                                     if (staffId.isNotEmpty && approved) ...[
                                       const SizedBox(height: 10),
                                       Row(
@@ -566,12 +972,14 @@ class _ClinicShiftNeedApplicantsScreenState
 
                                     if (_posting) ...[
                                       const SizedBox(height: 10),
-                                      Row(
-                                        children: const [
+                                      const Row(
+                                        children: [
                                           SizedBox(
                                             height: 16,
                                             width: 16,
-                                            child: CircularProgressIndicator(strokeWidth: 2),
+                                            child: CircularProgressIndicator(
+                                              strokeWidth: 2,
+                                            ),
                                           ),
                                           SizedBox(width: 8),
                                           Text('กำลังบันทึกเหตุการณ์...'),

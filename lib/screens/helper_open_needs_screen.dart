@@ -2,9 +2,11 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'package:clinic_smart_staff/api/api_config.dart';
 import 'package:clinic_smart_staff/services/auth_storage.dart';
+import 'package:clinic_smart_staff/services/settings_service.dart';
 import 'package:clinic_smart_staff/widgets/apply_success_dialog.dart';
 
 class HelperOpenNeedsScreen extends StatefulWidget {
@@ -38,72 +40,15 @@ class _HelperOpenNeedsScreenState extends State<HelperOpenNeedsScreen> {
 
   String _s(dynamic v) => (v ?? '').toString().trim();
 
-  String _digitsOnly(String s) => s.replaceAll(RegExp(r'[^\d]'), '');
-
   double _d(dynamic v, [double fallback = 0]) {
     if (v is num) return v.toDouble();
     return double.tryParse('${v ?? ''}') ?? fallback;
-  }
-
-  double? _dNull(dynamic v) {
-    if (v == null) return null;
-    if (v is num) return v.toDouble();
-    final t = '$v'.trim();
-    if (t.isEmpty) return null;
-    return double.tryParse(t);
-  }
-
-  bool _b(dynamic v) {
-    if (v is bool) return v;
-    final s = _s(v).toLowerCase();
-    return s == 'true' || s == '1' || s == 'yes';
   }
 
   String _money(double n) {
     if (n <= 0) return '0';
     if (n == n.roundToDouble()) return n.toStringAsFixed(0);
     return n.toStringAsFixed(2);
-  }
-
-  String _formatDateThai(String raw) {
-    final s = raw.trim();
-    if (s.isEmpty) return '-';
-
-    final dt = DateTime.tryParse(s);
-    if (dt == null) return s;
-
-    const months = [
-      '',
-      'ม.ค.',
-      'ก.พ.',
-      'มี.ค.',
-      'เม.ย.',
-      'พ.ค.',
-      'มิ.ย.',
-      'ก.ค.',
-      'ส.ค.',
-      'ก.ย.',
-      'ต.ค.',
-      'พ.ย.',
-      'ธ.ค.',
-    ];
-    return '${dt.day} ${months[dt.month]} ${dt.year + 543}';
-  }
-
-  bool _isUrgent(Map<String, dynamic> m) {
-    final urgent = _b(m['urgent']) || _b(m['isUrgent']) || _b(m['hot']);
-    final priority = _s(m['priority']).toLowerCase();
-    final type = _s(m['type']).toLowerCase();
-
-    return urgent || priority == 'urgent' || type == 'urgent';
-  }
-
-  String _firstNonEmpty(List<dynamic> values) {
-    for (final v in values) {
-      final t = _s(v);
-      if (t.isNotEmpty && t.toLowerCase() != 'null') return t;
-    }
-    return '';
   }
 
   String _distanceText(Map<String, dynamic> m) {
@@ -120,68 +65,76 @@ class _HelperOpenNeedsScreenState extends State<HelperOpenNeedsScreen> {
 
     final km = _d(kmRaw, -1);
     if (km < 0) return '';
+    if (km < 1) return '${(km * 1000).round()} เมตร';
     if (km < 10) return '${km.toStringAsFixed(1)} กม.';
     return '${km.round()} กม.';
   }
 
-  String _locationLabel(Map<String, dynamic> m) {
-    final district = _firstNonEmpty([
-      m['clinicDistrict'],
-      m['district'],
-      m['amphoe'],
-      m['area'],
-      m['subDistrict'],
-    ]);
+  String _locationText(Map<String, dynamic> m) {
+    final district = _s(
+      m['clinicDistrict'] ?? m['district'] ?? m['amphoe'],
+    );
+    final province = _s(
+      m['clinicProvince'] ?? m['province'] ?? m['changwat'],
+    );
+    final label = _s(
+      m['clinicLocationLabel'] ?? m['locationLabel'] ?? m['label'],
+    );
 
-    final province = _firstNonEmpty([
-      m['clinicProvince'],
-      m['province'],
-      m['changwat'],
-      m['state'],
-    ]);
+    final joined = [district, province]
+        .where((e) => e.trim().isNotEmpty)
+        .join(', ');
 
-    final explicit = _firstNonEmpty([
-      m['clinicLocationLabel'],
-      m['locationLabel'],
-      m['location_label'],
-    ]);
-
-    final address = _firstNonEmpty([
-      m['clinicAddress'],
-      m['address'],
-      m['formattedAddress'],
-      m['displayAddress'],
-    ]);
-
-    if (explicit.isNotEmpty) return explicit;
-    if (district.isNotEmpty && province.isNotEmpty) {
-      return '$district, $province';
-    }
-    if (province.isNotEmpty) return province;
-    if (district.isNotEmpty) return district;
-    if (address.isNotEmpty) return address;
+    if (joined.isNotEmpty) return joined;
+    if (label.isNotEmpty) return label;
     return '';
   }
 
   String _locationDistanceLine(Map<String, dynamic> m) {
-    final loc = _locationLabel(m);
+    final location = _locationText(m);
     final dist = _distanceText(m);
 
-    if (loc.isNotEmpty && dist.isNotEmpty) {
-      return '$loc • ห่างจากคุณ $dist';
+    if (location.isNotEmpty && dist.isNotEmpty) {
+      return '📍 $location • ห่างจากคุณ $dist';
+    }
+    if (location.isNotEmpty) {
+      return '📍 $location';
     }
     if (dist.isNotEmpty) {
-      return 'ห่างจากคุณ $dist';
+      return '📍 ห่างจากคุณ $dist';
     }
-    if (loc.isNotEmpty) return loc;
     return '';
   }
 
-  void _snack(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg)),
+  String _clinicPhone(Map<String, dynamic> m) {
+    return _s(
+      m['clinicPhone'] ??
+          m['phone'] ??
+          m['contactPhone'] ??
+          m['clinic_phone'],
     );
+  }
+
+  double _hourlyRate(Map<String, dynamic> m) {
+    return _d(
+      m['hourlyRate'] ??
+          m['rate'] ??
+          m['salaryPerHour'] ??
+          m['payPerHour'] ??
+          0,
+    );
+  }
+
+  String _timeLine(Map<String, dynamic> m) {
+    final start = _s(m['start'] ?? m['startTime']);
+    final end = _s(m['end'] ?? m['endTime']);
+
+    if (start.isNotEmpty && end.isNotEmpty) {
+      return 'เวลา $start - $end';
+    }
+    if (start.isNotEmpty) return 'เริ่ม $start';
+    if (end.isNotEmpty) return 'ถึง $end';
+    return '';
   }
 
   Future<String?> _getToken() async {
@@ -210,152 +163,13 @@ class _HelperOpenNeedsScreenState extends State<HelperOpenNeedsScreen> {
       qp[key] = text;
     });
 
-    return uri.replace(queryParameters: qp.isEmpty ? null : qp);
+    return uri.replace(queryParameters: qp);
   }
 
   Map<String, String> _headers(String token) => {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer $token',
       };
-
-  Future<Map<String, dynamic>> _readLocationSnapshot() async {
-    final prefs = await SharedPreferences.getInstance();
-
-    String? readString(List<String> keys) {
-      for (final k in keys) {
-        final v = prefs.getString(k);
-        if (v != null && v.trim().isNotEmpty && v.trim() != 'null') {
-          return v.trim();
-        }
-      }
-      return null;
-    }
-
-    double? readDouble(List<String> keys) {
-      for (final k in keys) {
-        final dv = prefs.getDouble(k);
-        if (dv != null) return dv;
-
-        final sv = prefs.getString(k);
-        final parsed = _dNull(sv);
-        if (parsed != null) return parsed;
-
-        final iv = prefs.getInt(k);
-        if (iv != null) return iv.toDouble();
-      }
-      return null;
-    }
-
-    Map<String, dynamic> parseJsonString(String raw) {
-      try {
-        final decoded = jsonDecode(raw);
-        if (decoded is Map) {
-          return Map<String, dynamic>.from(decoded);
-        }
-      } catch (_) {}
-      return {};
-    }
-
-    final rawMap = <String, dynamic>{};
-
-    const mapKeys = [
-      'userLocation',
-      'selectedLocation',
-      'helperLocation',
-      'currentLocation',
-      'locationSnapshot',
-      'profileLocation',
-      'sellerLocation',
-      'clinicLocation',
-    ];
-
-    for (final k in mapKeys) {
-      final raw = prefs.getString(k);
-      if (raw != null && raw.trim().isNotEmpty) {
-        rawMap.addAll(parseJsonString(raw));
-      }
-    }
-
-    final lat = readDouble([
-          'lat',
-          'latitude',
-          'userLat',
-          'currentLat',
-          'selectedLat',
-          'helperLat',
-          'profileLat',
-        ]) ??
-        _dNull(rawMap['lat']) ??
-        _dNull(rawMap['latitude']);
-
-    final lng = readDouble([
-          'lng',
-          'lon',
-          'longitude',
-          'userLng',
-          'currentLng',
-          'selectedLng',
-          'helperLng',
-          'profileLng',
-        ]) ??
-        _dNull(rawMap['lng']) ??
-        _dNull(rawMap['lon']) ??
-        _dNull(rawMap['longitude']);
-
-    return {
-      'lat': lat,
-      'lng': lng,
-      'district': _firstNonEmpty([
-        readString([
-          'district',
-          'currentDistrict',
-          'selectedDistrict',
-          'helperDistrict',
-          'profileDistrict',
-        ]),
-        rawMap['district']?.toString(),
-        rawMap['subDistrict']?.toString(),
-        rawMap['amphoe']?.toString(),
-        rawMap['area']?.toString(),
-      ]),
-      'province': _firstNonEmpty([
-        readString([
-          'province',
-          'currentProvince',
-          'selectedProvince',
-          'helperProvince',
-          'profileProvince',
-        ]),
-        rawMap['province']?.toString(),
-        rawMap['changwat']?.toString(),
-        rawMap['state']?.toString(),
-      ]),
-      'address': _firstNonEmpty([
-        readString([
-          'address',
-          'currentAddress',
-          'selectedAddress',
-          'helperAddress',
-          'profileAddress',
-          'formattedAddress',
-        ]),
-        rawMap['address']?.toString(),
-        rawMap['formattedAddress']?.toString(),
-        rawMap['displayName']?.toString(),
-        rawMap['label']?.toString(),
-      ]),
-      'locationLabel': _firstNonEmpty([
-        readString([
-          'locationLabel',
-          'currentLocationLabel',
-          'selectedLocationLabel',
-          'helperLocationLabel',
-          'profileLocationLabel',
-        ]),
-        rawMap['locationLabel']?.toString(),
-      ]),
-    };
-  }
 
   Future<void> _load() async {
     _safeSetState(() {
@@ -365,16 +179,14 @@ class _HelperOpenNeedsScreenState extends State<HelperOpenNeedsScreen> {
 
     try {
       final token = await _getToken();
-      if (token == null) throw Exception();
+      if (token == null) throw Exception('missing token');
 
-      final loc = await _readLocationSnapshot();
-      final lat = _dNull(loc['lat']);
-      final lng = _dNull(loc['lng']);
+      final helperLoc = await SettingService.loadHelperLocation();
 
       final query = <String, dynamic>{};
-      if (lat != null && lng != null) {
-        query['helperLat'] = lat.toString();
-        query['helperLng'] = lng.toString();
+      if (helperLoc != null) {
+        query['helperLat'] = helperLoc.lat.toString();
+        query['helperLng'] = helperLoc.lng.toString();
       }
 
       final res = await http
@@ -382,7 +194,7 @@ class _HelperOpenNeedsScreenState extends State<HelperOpenNeedsScreen> {
           .timeout(const Duration(seconds: 12));
 
       if (res.statusCode != 200) {
-        throw Exception();
+        throw Exception('load failed ${res.statusCode}');
       }
 
       final data = jsonDecode(res.body);
@@ -411,7 +223,7 @@ class _HelperOpenNeedsScreenState extends State<HelperOpenNeedsScreen> {
         return StatefulBuilder(
           builder: (ctx, setSt) {
             Future<void> submit() async {
-              final p = _digitsOnly(_phoneCtrl.text);
+              final p = _phoneCtrl.text.trim();
 
               if (p.length < 9) {
                 ScaffoldMessenger.of(ctx).showSnackBar(
@@ -474,19 +286,33 @@ class _HelperOpenNeedsScreenState extends State<HelperOpenNeedsScreen> {
       _safeSetState(() => _actingId = needId);
 
       final token = await _getToken();
-      if (token == null) throw Exception();
+      if (token == null) throw Exception('missing token');
 
       final phone = await _askPhone();
-
       if (phone == null) {
         _safeSetState(() => _actingId = '');
         return;
       }
 
+      final helperLoc = await SettingService.loadHelperLocation();
+
+      final body = <String, dynamic>{
+        'phone': phone,
+      };
+
+      if (helperLoc != null) {
+        body['lat'] = helperLoc.lat;
+        body['lng'] = helperLoc.lng;
+        body['district'] = helperLoc.district;
+        body['province'] = helperLoc.province;
+        body['address'] = helperLoc.address;
+        body['label'] = helperLoc.label;
+      }
+
       final res = await http.post(
         _u('/shift-needs/$needId/apply'),
         headers: _headers(token),
-        body: jsonEncode({'phone': phone}),
+        body: jsonEncode(body),
       );
 
       if (res.statusCode == 200 || res.statusCode == 201) {
@@ -495,69 +321,73 @@ class _HelperOpenNeedsScreenState extends State<HelperOpenNeedsScreen> {
         return;
       }
 
-      if (res.statusCode == 409) {
-        _snack('สมัครแล้ว');
-        return;
-      }
+      String msg = 'สมัครงานไม่สำเร็จ';
+      try {
+        final decoded = jsonDecode(res.body);
+        if (decoded is Map && decoded['message'] != null) {
+          msg = decoded['message'].toString();
+        } else if (decoded is Map && decoded['error'] != null) {
+          msg = decoded['error'].toString();
+        }
+      } catch (_) {}
 
-      throw Exception();
-    } catch (_) {
-      _snack('สมัครงานไม่สำเร็จ');
+      throw Exception(msg);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('$e')),
+      );
     } finally {
       _safeSetState(() => _actingId = '');
     }
   }
 
-  Widget _metaRow(IconData icon, String text, {Color? color}) {
+  Future<void> _callClinic(String phone) async {
+    final clean = phone.replaceAll(RegExp(r'[^0-9+]'), '');
+    if (clean.isEmpty) return;
+
+    final uri = Uri.parse('tel:$clean');
+
+    try {
+      final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!ok && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('ไม่สามารถเปิดหน้าจอโทรออกได้')),
+        );
+      }
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('ไม่สามารถเปิดหน้าจอโทรออกได้')),
+      );
+    }
+  }
+
+  Widget _metaRow(
+    IconData icon,
+    String text, {
+    Color? color,
+    FontWeight fontWeight = FontWeight.w600,
+  }) {
     if (text.trim().isEmpty || text.trim() == '-') {
       return const SizedBox.shrink();
     }
 
     return Padding(
-      padding: const EdgeInsets.only(top: 6),
+      padding: const EdgeInsets.only(top: 8),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, size: 17, color: color ?? Colors.grey.shade700),
+          Icon(icon, size: 18, color: color ?? Colors.grey.shade700),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
               text,
               style: TextStyle(
                 color: color ?? Colors.grey.shade800,
-                fontWeight: FontWeight.w600,
+                fontWeight: fontWeight,
+                fontSize: 14,
               ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _badge({
-    required String text,
-    required Color bg,
-    required Color fg,
-    IconData? icon,
-  }) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(
-        color: bg,
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (icon != null) ...[
-            Icon(icon, size: 14, color: fg),
-            const SizedBox(width: 4),
-          ],
-          Text(
-            text,
-            style: TextStyle(
-              color: fg,
-              fontWeight: FontWeight.w800,
-              fontSize: 12,
             ),
           ),
         ],
@@ -570,113 +400,95 @@ class _HelperOpenNeedsScreenState extends State<HelperOpenNeedsScreen> {
     final title =
         _s(m['title']).isNotEmpty ? _s(m['title']) : 'งานว่างจากคลินิก';
 
-    final role = _s(m['role']).isNotEmpty ? _s(m['role']) : _s(m['position']);
-    final clinicName = _s(m['clinicName']).isNotEmpty
-        ? _s(m['clinicName'])
-        : _s(m['clinic_name']);
-
-    final date = _s(m['date']).isNotEmpty ? _s(m['date']) : _s(m['workDate']);
-    final start = _s(m['start']).isNotEmpty ? _s(m['start']) : _s(m['startTime']);
-    final end = _s(m['end']).isNotEmpty ? _s(m['end']) : _s(m['endTime']);
-
-    final hourlyRate = _d(
-      m['hourlyRate'] ??
-          m['rate'] ??
-          m['salaryPerHour'] ??
-          m['payPerHour'] ??
-          0,
-    );
+    final clinicName = _s(m['clinicName']);
+    final clinicPhone = _clinicPhone(m);
+    final hourlyRate = _hourlyRate(m);
+    final distanceLine = _locationDistanceLine(m);
+    final timeLine = _timeLine(m);
 
     final applied = m['_applied'] == true;
     final acting = _actingId == id;
-    final urgent = _isUrgent(m);
-    final locationDistanceLine = _locationDistanceLine(m);
 
     return Card(
       margin: const EdgeInsets.fromLTRB(12, 10, 12, 0),
       elevation: 1.5,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(22),
         side: BorderSide(color: Colors.purple.shade100),
       ),
       child: Padding(
-        padding: const EdgeInsets.all(14),
+        padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                _badge(
-                  text: 'เปิดรับอยู่',
-                  bg: Colors.purple.shade50,
-                  fg: Colors.purple.shade700,
-                  icon: Icons.work_outline,
-                ),
-                if (urgent)
-                  _badge(
-                    text: 'งานด่วน',
-                    bg: Colors.orange.shade50,
-                    fg: Colors.orange.shade800,
-                    icon: Icons.local_fire_department_outlined,
-                  ),
-              ],
-            ),
-            const SizedBox(height: 10),
             Text(
               title,
               style: const TextStyle(
                 fontWeight: FontWeight.w900,
-                fontSize: 18,
+                fontSize: 20,
               ),
             ),
-            if (clinicName.isNotEmpty) ...[
-              const SizedBox(height: 6),
-              Text(
-                clinicName,
-                style: TextStyle(
-                  color: Colors.grey.shade700,
-                  fontWeight: FontWeight.w700,
+            if (clinicName.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text(
+                  clinicName,
+                  style: TextStyle(
+                    color: Colors.grey.shade800,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 16,
+                  ),
                 ),
               ),
-            ],
-            if (locationDistanceLine.isNotEmpty)
+            if (distanceLine.isNotEmpty)
               _metaRow(
                 Icons.location_on_outlined,
-                locationDistanceLine,
+                distanceLine,
                 color: Colors.purple.shade700,
+                fontWeight: FontWeight.w800,
               ),
-            if (role.isNotEmpty) _metaRow(Icons.badge_outlined, role),
-            if (date.isNotEmpty)
-              _metaRow(Icons.calendar_month_outlined, _formatDateThai(date)),
-            if (start.isNotEmpty || end.isNotEmpty)
-              _metaRow(Icons.access_time, '$start - $end'),
+            if (timeLine.isNotEmpty)
+              _metaRow(
+                Icons.access_time,
+                timeLine,
+                color: Colors.deepPurple.shade700,
+                fontWeight: FontWeight.w700,
+              ),
             if (hourlyRate > 0)
               _metaRow(
                 Icons.payments_outlined,
-                '${_money(hourlyRate)} บาท/ชม.',
-                color: Colors.purple.shade700,
+                'ค่าจ้าง ${_money(hourlyRate)} บาท/ชม.',
+                color: Colors.green.shade700,
+                fontWeight: FontWeight.w800,
               ),
-            const SizedBox(height: 6),
-            Text(
-              'ค่าจ้างคิดตามเวลาทำงานจริง',
-              style: TextStyle(
-                fontSize: 12,
-                color: Colors.grey.shade600,
-                fontWeight: FontWeight.w600,
+            if (clinicPhone.isNotEmpty)
+              _metaRow(
+                Icons.phone_outlined,
+                'โทร $clinicPhone',
+                color: Colors.blueGrey.shade700,
               ),
-            ),
-            const SizedBox(height: 14),
+            const SizedBox(height: 16),
+            if (clinicPhone.isNotEmpty) ...[
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: () => _callClinic(clinicPhone),
+                  icon: const Icon(Icons.call_outlined),
+                  label: const Text('โทรถามก่อน'),
+                ),
+              ),
+              const SizedBox(height: 10),
+            ],
             SizedBox(
               width: double.infinity,
               child: FilledButton.icon(
-                onPressed:
-                    (applied || acting || id.isEmpty) ? null : () => _apply(id),
+                onPressed: (id.isEmpty || acting || applied)
+                    ? null
+                    : () => _apply(id),
                 icon: acting
                     ? const SizedBox(
-                        width: 16,
-                        height: 16,
+                        width: 18,
+                        height: 18,
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
                     : Icon(applied ? Icons.check : Icons.send),
@@ -698,33 +510,39 @@ class _HelperOpenNeedsScreenState extends State<HelperOpenNeedsScreen> {
   Widget _emptyState() {
     return ListView(
       physics: const AlwaysScrollableScrollPhysics(),
-      children: [
-        const SizedBox(height: 80),
-        Icon(Icons.work_outline, size: 70, color: Colors.grey.shade400),
-        const SizedBox(height: 14),
-        const Center(
+      children: const [
+        SizedBox(height: 140),
+        Center(
           child: Text(
-            'ยังไม่มีงานว่างตอนนี้',
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.w800,
+            'ยังไม่มีงานว่าง',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _errorState() {
+    return ListView(
+      physics: const AlwaysScrollableScrollPhysics(),
+      children: [
+        const SizedBox(height: 140),
+        Center(
+          child: Text(
+            _err,
+            style: const TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w700,
             ),
           ),
         ),
-        const SizedBox(height: 8),
-        Center(
-          child: Text(
-            'เมื่อมีคลินิกเปิดรับงาน จะขึ้นที่หน้านี้',
-            style: TextStyle(color: Colors.grey.shade700),
-          ),
-        ),
-        const SizedBox(height: 20),
+        const SizedBox(height: 12),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 24),
           child: OutlinedButton.icon(
             onPressed: _load,
             icon: const Icon(Icons.refresh),
-            label: const Text('รีเฟรช'),
+            label: const Text('ลองใหม่'),
           ),
         ),
       ],
@@ -748,42 +566,12 @@ class _HelperOpenNeedsScreenState extends State<HelperOpenNeedsScreen> {
         child: _loading
             ? ListView(
                 children: const [
-                  Card(
-                    margin: EdgeInsets.fromLTRB(12, 10, 12, 0),
-                    child: SizedBox(height: 150),
-                  ),
-                  Card(
-                    margin: EdgeInsets.fromLTRB(12, 10, 12, 0),
-                    child: SizedBox(height: 150),
-                  ),
-                  Card(
-                    margin: EdgeInsets.fromLTRB(12, 10, 12, 0),
-                    child: SizedBox(height: 150),
-                  ),
+                  SizedBox(height: 180),
+                  Center(child: CircularProgressIndicator()),
                 ],
               )
             : _err.isNotEmpty
-                ? ListView(
-                    physics: const AlwaysScrollableScrollPhysics(),
-                    children: [
-                      const SizedBox(height: 120),
-                      Center(
-                        child: Text(
-                          _err,
-                          style: const TextStyle(fontWeight: FontWeight.w700),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 24),
-                        child: OutlinedButton.icon(
-                          onPressed: _load,
-                          icon: const Icon(Icons.refresh),
-                          label: const Text('ลองใหม่'),
-                        ),
-                      ),
-                    ],
-                  )
+                ? _errorState()
                 : _items.isEmpty
                     ? _emptyState()
                     : ListView.builder(
