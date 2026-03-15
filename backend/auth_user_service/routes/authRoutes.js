@@ -1,4 +1,3 @@
-// backend/auth_user_service/routes/authRoutes.js
 const express = require("express");
 const router = express.Router();
 
@@ -16,6 +15,9 @@ router.post("/reset-password", ctrl.resetPassword);
 
 // ================= Protected =================
 router.get("/me", auth, ctrl.me);
+
+// ✅ NEW: update my location
+router.patch("/users/me/location", auth, ctrl.updateMyLocation);
 
 // ✅ NEW: Multi-role switch (ออก token ใหม่ตาม activeRole)
 router.post("/switch-role", auth, ctrl.switchRole);

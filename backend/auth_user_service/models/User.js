@@ -1,4 +1,3 @@
-// backend/auth_user_service/models/User.js
 const mongoose = require("mongoose");
 
 /**
@@ -42,6 +41,23 @@ const TaxProfileSchema = new mongoose.Schema(
     donationEducation: { type: Number, default: 0, min: 0 },
 
     updatedAt: { type: Date, default: Date.now },
+  },
+  { _id: false }
+);
+
+/**
+ * ================================
+ * ✅ Location
+ * - ใช้ได้ทั้ง helper / employee / admin
+ * - เก็บพิกัดล่าสุดของ user
+ * ================================
+ */
+const UserLocationSchema = new mongoose.Schema(
+  {
+    lat: { type: Number, default: null },
+    lng: { type: Number, default: null },
+    label: { type: String, default: "" },
+    updatedAt: { type: Date, default: null },
   },
   { _id: false }
 );
@@ -129,6 +145,23 @@ const UserSchema = new mongoose.Schema(
     fullName: { type: String, default: "" },
     employeeCode: { type: String, default: "" }, // emp_xxx (optional)
 
+    /**
+     * ================================
+     * ✅ NEW: User Location
+     * - ใช้เก็บพิกัด helper เพื่อคำนวณ nearby jobs
+     * - ใช้เก็บพิกัด admin/clinic user ได้เช่นกัน
+     * ================================
+     */
+    location: {
+      type: UserLocationSchema,
+      default: () => ({
+        lat: null,
+        lng: null,
+        label: "",
+        updatedAt: null,
+      }),
+    },
+
     isActive: { type: Boolean, default: true },
 
     /**
@@ -176,12 +209,16 @@ UserSchema.index({ clinicId: 1, roles: 1 }, { unique: false });
 // premium query helpers
 UserSchema.index({ plan: 1, premiumUntil: 1 }, { unique: false });
 
+// ✅ NEW: location lookup helpers
+UserSchema.index({ "location.lat": 1, "location.lng": 1 }, { unique: false });
+
 /**
  * ================================
  * ✅ Hooks: Backfill + Sync
  * - ทำให้เอกสารเก่า (ที่มี role อย่างเดียว) ยังทำงานได้
  * - ป้องกัน “ฟีเจอร์หาย” เพราะ activeRole/roles ไม่สัมพันธ์กัน
  * - normalize plan/premiumUntil
+ * - normalize location
  * ================================
  */
 UserSchema.pre("validate", function (next) {
@@ -222,6 +259,38 @@ UserSchema.pre("validate", function (next) {
     // 6) ถ้าไม่ใช่ premium -> premiumUntil = null (กันสับสน)
     if (this.plan !== "premium") {
       this.premiumUntil = null;
+    }
+
+    // 7) Normalize location object
+    if (!this.location || typeof this.location !== "object") {
+      this.location = {
+        lat: null,
+        lng: null,
+        label: "",
+        updatedAt: null,
+      };
+    }
+
+    const lat =
+      this.location.lat === null || this.location.lat === undefined
+        ? null
+        : Number(this.location.lat);
+
+    const lng =
+      this.location.lng === null || this.location.lng === undefined
+        ? null
+        : Number(this.location.lng);
+
+    this.location.lat = Number.isFinite(lat) ? lat : null;
+    this.location.lng = Number.isFinite(lng) ? lng : null;
+    this.location.label = String(this.location.label || "").trim();
+
+    if (
+      this.location.updatedAt &&
+      !(this.location.updatedAt instanceof Date)
+    ) {
+      const d = new Date(this.location.updatedAt);
+      this.location.updatedAt = Number.isFinite(d.getTime()) ? d : null;
     }
 
     return next();

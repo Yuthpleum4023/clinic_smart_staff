@@ -1,4 +1,3 @@
-// backend/auth_user_service/controllers/authController.js
 const bcrypt = require("bcryptjs");
 const Clinic = require("../models/Clinic");
 const User = require("../models/User");
@@ -12,8 +11,11 @@ const CLINIC_PREFIX = (process.env.CLINIC_ID_PREFIX || "cln_").toString();
 const EMP_PREFIX = (process.env.EMPLOYEE_ID_PREFIX || "emp_").toString();
 const STAFF_PREFIX = (process.env.STAFF_ID_PREFIX || "stf_").toString();
 
-const RESET_TOKEN_TTL_MINUTES = Number(process.env.RESET_TOKEN_TTL_MINUTES || 10);
-const RESET_LOG = String(process.env.RESET_LOG || "true").toLowerCase() === "true";
+const RESET_TOKEN_TTL_MINUTES = Number(
+  process.env.RESET_TOKEN_TTL_MINUTES || 10
+);
+const RESET_LOG =
+  String(process.env.RESET_LOG || "true").toLowerCase() === "true";
 
 const ROLE_ENUM = ["admin", "employee", "helper"];
 
@@ -51,6 +53,47 @@ function toDateOrNull(v) {
   if (!v) return null;
   const d = v instanceof Date ? v : new Date(v);
   return Number.isFinite(d.getTime()) ? d : null;
+}
+
+function toNumOrNull(v) {
+  if (v === null || v === undefined) return null;
+  const n = Number(v);
+  if (Number.isNaN(n)) return null;
+  if (!Number.isFinite(n)) return null;
+  return n;
+}
+
+function isValidLatLng(lat, lng) {
+  if (lat === null || lng === null) return false;
+  if (typeof lat !== "number" || typeof lng !== "number") return false;
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false;
+  if (lat < -90 || lat > 90) return false;
+  if (lng < -180 || lng > 180) return false;
+  return true;
+}
+
+function normalizeLocation(input) {
+  const lat = toNumOrNull(input?.lat) ?? toNumOrNull(input?.latitude);
+
+  const lng = toNumOrNull(input?.lng) ?? toNumOrNull(input?.longitude);
+
+  const label = normStr(input?.label || input?.locationLabel || input?.address);
+
+  if (!isValidLatLng(lat, lng)) {
+    return {
+      lat: null,
+      lng: null,
+      label,
+      updatedAt: null,
+    };
+  }
+
+  return {
+    lat,
+    lng,
+    label,
+    updatedAt: new Date(),
+  };
 }
 
 function isPremiumActive(userLike) {
@@ -140,6 +183,16 @@ function safeUser(u) {
     employeeCode: u.employeeCode || "",
     isActive: u.isActive,
 
+    // ✅ NEW: location
+    location: {
+      lat: u?.location?.lat ?? null,
+      lng: u?.location?.lng ?? null,
+      label: u?.location?.label || "",
+      updatedAt: u?.location?.updatedAt
+        ? new Date(u.location.updatedAt).toISOString()
+        : null,
+    },
+
     // ✅ plan fields (สำหรับ UI/feature gating)
     plan,
     premiumUntil: premiumUntil ? premiumUntil.toISOString() : null,
@@ -149,7 +202,8 @@ function safeUser(u) {
 
 // ✅ NEW: รวม payload token ให้เหมือนกันทุก endpoint (multi-role ready + plan)
 function makeJwtPayload(user) {
-  const mongoId = user?._id?.toString?.() || (user?._id ? String(user._id) : "");
+  const mongoId =
+    user?._id?.toString?.() || (user?._id ? String(user._id) : "");
 
   // ✅ IMPORTANT: role in token = activeRole เสมอ + roles ต้องไม่ว่าง
   const fixed = ensureRolesAndActive(user, user?.activeRole || user?.role);
@@ -174,6 +228,13 @@ function makeJwtPayload(user) {
     fullName: normStr(user?.fullName),
     phone: normStr(user?.phone),
     email: normStr(user?.email),
+
+    // ✅ NEW: location in token
+    location: {
+      lat: user?.location?.lat ?? null,
+      lng: user?.location?.lng ?? null,
+      label: normStr(user?.location?.label),
+    },
 
     // ✅ plan gating (payroll_service ใช้ตัดสิน feature ได้)
     plan,
@@ -202,7 +263,9 @@ async function ensureStaffIdIfEmployee(userDocOrLean) {
     const roles = normalizeRoles(userDocOrLean.roles);
 
     const hasEmployee =
-      legacyRole === "employee" || activeRole === "employee" || roles.includes("employee");
+      legacyRole === "employee" ||
+      activeRole === "employee" ||
+      roles.includes("employee");
 
     if (!hasEmployee) return userDocOrLean;
 
@@ -211,7 +274,10 @@ async function ensureStaffIdIfEmployee(userDocOrLean) {
 
     const newStaffId = makeId(STAFF_PREFIX, 10);
 
-    await User.updateOne({ userId: userDocOrLean.userId }, { $set: { staffId: newStaffId } });
+    await User.updateOne(
+      { userId: userDocOrLean.userId },
+      { $set: { staffId: newStaffId } }
+    );
 
     return { ...userDocOrLean, staffId: newStaffId };
   } catch {
@@ -241,7 +307,9 @@ async function login(req, res) {
     });
 
     if (!emailOrPhone || !password) {
-      return res.status(400).json({ message: "emailOrPhone and password required" });
+      return res
+        .status(400)
+        .json({ message: "emailOrPhone and password required" });
     }
 
     console.log("🔎 finding user...");
@@ -347,6 +415,67 @@ async function me(req, res) {
 }
 
 /* ======================================================
+   UPDATE MY LOCATION
+   PATCH /users/me/location
+   body: { lat, lng, label? }
+====================================================== */
+async function updateMyLocation(req, res) {
+  try {
+    const userId = req.user?.userId;
+    if (!userId) {
+      return res.status(401).json({ message: "Missing token payload" });
+    }
+
+    const location = normalizeLocation(req.body || {});
+    if (!isValidLatLng(location.lat, location.lng)) {
+      return res.status(400).json({
+        message: "lat/lng required and must be valid coordinates",
+      });
+    }
+
+    const updated = await User.findOneAndUpdate(
+      { userId },
+      {
+        $set: {
+          location: {
+            lat: location.lat,
+            lng: location.lng,
+            label: location.label || "",
+            updatedAt: new Date(),
+          },
+        },
+      },
+      {
+        new: true,
+        projection: { passwordHash: 0 },
+      }
+    ).lean();
+
+    if (!updated) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    return res.json({
+      ok: true,
+      user: safeUser(updated),
+      location: {
+        lat: updated?.location?.lat ?? null,
+        lng: updated?.location?.lng ?? null,
+        label: updated?.location?.label || "",
+        updatedAt: updated?.location?.updatedAt
+          ? new Date(updated.location.updatedAt).toISOString()
+          : null,
+      },
+    });
+  } catch (e) {
+    return res.status(500).json({
+      message: "updateMyLocation failed",
+      error: e.message,
+    });
+  }
+}
+
+/* ======================================================
    ✅ NEW: SWITCH ROLE (หลัง login)
    POST /switch-role
    body: { activeRole }
@@ -392,7 +521,13 @@ async function switchRole(req, res) {
 
     await User.updateOne(
       { userId },
-      { $set: { activeRole: fixed.activeRole, role: fixed.legacyRole, roles: fixed.roles } }
+      {
+        $set: {
+          activeRole: fixed.activeRole,
+          role: fixed.legacyRole,
+          roles: fixed.roles,
+        },
+      }
     );
 
     user = {
@@ -423,7 +558,9 @@ async function registerClinicAdmin(req, res) {
     const adminPhone = normStr(req.body?.adminPhone);
 
     if (!clinicName || !adminPassword) {
-      return res.status(400).json({ message: "clinicName and adminPassword required" });
+      return res
+        .status(400)
+        .json({ message: "clinicName and adminPassword required" });
     }
 
     const clinicId = makeId(CLINIC_PREFIX, 10);
@@ -463,7 +600,9 @@ async function registerClinicAdmin(req, res) {
       planUpdatedAt: null,
     });
 
-    const token = signToken(makeJwtPayload(user.toObject ? user.toObject() : user));
+    const token = signToken(
+      makeJwtPayload(user.toObject ? user.toObject() : user)
+    );
 
     return res.json({
       clinic: { clinicId: clinic.clinicId, name: clinic.name },
@@ -471,7 +610,9 @@ async function registerClinicAdmin(req, res) {
       token,
     });
   } catch (e) {
-    return res.status(500).json({ message: "registerClinicAdmin failed", error: e.message });
+    return res
+      .status(500)
+      .json({ message: "registerClinicAdmin failed", error: e.message });
   }
 }
 
@@ -492,13 +633,17 @@ async function registerWithInvite(req, res) {
     const phone = normStr(req.body?.phone);
 
     if (!inviteCode || !password) {
-      return res.status(400).json({ message: "inviteCode and password required" });
+      return res
+        .status(400)
+        .json({ message: "inviteCode and password required" });
     }
 
     const inv = await Invite.findOne({ inviteCode });
     if (!inv) return res.status(404).json({ message: "Invite not found" });
-    if (inv.isRevoked) return res.status(403).json({ message: "Invite revoked" });
-    if (inv.usedAt) return res.status(403).json({ message: "Invite already used" });
+    if (inv.isRevoked)
+      return res.status(403).json({ message: "Invite revoked" });
+    if (inv.usedAt)
+      return res.status(403).json({ message: "Invite already used" });
     if (inv.expiresAt && inv.expiresAt.getTime() < Date.now()) {
       return res.status(403).json({ message: "Invite expired" });
     }
@@ -512,11 +657,13 @@ async function registerWithInvite(req, res) {
     // ✅ กันสมัครซ้ำ (ช่วยลดปัญหา role/feature ไม่ขึ้นจาก user ซ้ำ)
     if (finalPhone) {
       const existed = await User.findOne({ phone: finalPhone }).lean();
-      if (existed) return res.status(409).json({ message: "Phone already registered" });
+      if (existed)
+        return res.status(409).json({ message: "Phone already registered" });
     }
     if (finalEmail) {
       const existed = await User.findOne({ email: finalEmail }).lean();
-      if (existed) return res.status(409).json({ message: "Email already registered" });
+      if (existed)
+        return res.status(409).json({ message: "Email already registered" });
     }
 
     const userId = makeId(USER_PREFIX, 10);
@@ -556,14 +703,18 @@ async function registerWithInvite(req, res) {
     inv.usedByUserId = userId;
     await inv.save();
 
-    const token = signToken(makeJwtPayload(user.toObject ? user.toObject() : user));
+    const token = signToken(
+      makeJwtPayload(user.toObject ? user.toObject() : user)
+    );
 
     return res.json({
       user: safeUser(user.toObject ? user.toObject() : user),
       token,
     });
   } catch (e) {
-    return res.status(500).json({ message: "registerWithInvite failed", error: e.message });
+    return res
+      .status(500)
+      .json({ message: "registerWithInvite failed", error: e.message });
   }
 }
 
@@ -589,7 +740,9 @@ async function forgotPassword(req, res) {
     await ResetToken.deleteMany({ userId: user.userId });
 
     const code = Math.floor(100000 + Math.random() * 900000).toString();
-    const expiresAt = new Date(Date.now() + RESET_TOKEN_TTL_MINUTES * 60 * 1000);
+    const expiresAt = new Date(
+      Date.now() + RESET_TOKEN_TTL_MINUTES * 60 * 1000
+    );
 
     await ResetToken.create({
       userId: user.userId,
@@ -603,7 +756,9 @@ async function forgotPassword(req, res) {
 
     return res.json({ ok: true });
   } catch (e) {
-    return res.status(500).json({ message: "forgotPassword failed", error: e.message });
+    return res
+      .status(500)
+      .json({ message: "forgotPassword failed", error: e.message });
   }
 }
 
@@ -622,7 +777,9 @@ async function resetPassword(req, res) {
       return res.status(400).json({ message: "invalid payload" });
     }
     if (newPassword.length < 6) {
-      return res.status(400).json({ message: "newPassword too short (>=6)" });
+      return res
+        .status(400)
+        .json({ message: "newPassword too short (>=6)" });
     }
 
     const user = await User.findOne({
@@ -649,13 +806,16 @@ async function resetPassword(req, res) {
 
     return res.json({ ok: true });
   } catch (e) {
-    return res.status(500).json({ message: "resetPassword failed", error: e.message });
+    return res
+      .status(500)
+      .json({ message: "resetPassword failed", error: e.message });
   }
 }
 
 module.exports = {
   login,
   me,
+  updateMyLocation,
   switchRole, // ✅ NEW
   registerClinicAdmin,
   registerWithInvite,
