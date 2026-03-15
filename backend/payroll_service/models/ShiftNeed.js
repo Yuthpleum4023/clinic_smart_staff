@@ -6,6 +6,9 @@ const ApplicantSchema = new mongoose.Schema(
     staffId: { type: String, required: true },
     userId: { type: String, default: "" }, // เก็บไว้ช่วย debug/trace
 
+    // ✅ NEW: ชื่อผู้สมัคร
+    fullName: { type: String, default: "" },
+
     // ✅ NEW: เบอร์โทรผู้สมัคร (เก็บเลขล้วน)
     phone: {
       type: String,
@@ -22,6 +25,17 @@ const ApplicantSchema = new mongoose.Schema(
         message: "phone must be 9-10 digits",
       },
     },
+
+    // ✅ NEW: snapshot location ตอน helper สมัครงาน
+    lat: { type: Number, default: null },
+    lng: { type: Number, default: null },
+
+    district: { type: String, default: "" },
+    province: { type: String, default: "" },
+    address: { type: String, default: "" },
+
+    // เช่น "หาดใหญ่, สงขลา"
+    locationLabel: { type: String, default: "" },
 
     appliedAt: { type: Date, default: Date.now },
     status: {
@@ -61,7 +75,7 @@ const ShiftNeedSchema = new mongoose.Schema(
     createdByUserId: { type: String, default: "" }, // admin userId
 
     // =========================================================
-    // ✅ NEW — Clinic Navigation Data (สำหรับ Helper กดนำทาง)
+    // ✅ Clinic Navigation Data (สำหรับ Helper กดนำทาง)
     // - ไม่กระทบของเดิม (ค่า default เป็น null/"" ทั้งหมด)
     // - เก็บไว้ใน need เพื่อให้ approve -> Shift.copy ไปได้ทันที
     // =========================================================
@@ -71,6 +85,11 @@ const ShiftNeedSchema = new mongoose.Schema(
     clinicName: { type: String, default: "" },
     clinicPhone: { type: String, default: "" },
     clinicAddress: { type: String, default: "" },
+
+    // ✅ NEW: clinic location text
+    clinicDistrict: { type: String, default: "" },
+    clinicProvince: { type: String, default: "" },
+    clinicLocationLabel: { type: String, default: "" },
   },
   { timestamps: true }
 );
