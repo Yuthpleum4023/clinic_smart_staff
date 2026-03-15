@@ -12,6 +12,10 @@
 // - listApplicants(): ส่ง district / province / address / locationLabel / distanceKm
 // - clinic จึงเห็นว่าผู้ช่วยอยู่ที่ไหนก่อนกด “รับเข้าทำงาน”
 //
+// ✅ PATCH NEW (BODY-FIRST APPLY LOCATION):
+// - applyNeed() อ่าน location จาก req.body ก่อน
+// - ถ้า body ไม่มี ค่อย fallback ไป req.user.location
+//
 // helper call example:
 //   GET /shift-needs/open?helperLat=7.0084&helperLng=100.4747
 //
@@ -738,7 +742,35 @@ async function applyNeed(req, res) {
       bad("missing applicant identity", 400);
     }
 
-    const location = normalizeApplicantLocationFromToken(req);
+    const tokenLocation = normalizeApplicantLocationFromToken(req);
+
+    const bodyLat = numOrNull(req.body?.lat) ?? numOrNull(req.body?.latitude);
+    const bodyLng = numOrNull(req.body?.lng) ?? numOrNull(req.body?.longitude);
+
+    const finalLat = isValidLatLng(bodyLat, bodyLng)
+      ? bodyLat
+      : tokenLocation.lat;
+    const finalLng = isValidLatLng(bodyLat, bodyLng)
+      ? bodyLng
+      : tokenLocation.lng;
+
+    const finalDistrict =
+      s(req.body?.district || req.body?.amphoe) || tokenLocation.district;
+
+    const finalProvince =
+      s(req.body?.province || req.body?.changwat) || tokenLocation.province;
+
+    const finalAddress =
+      s(req.body?.address || req.body?.fullAddress) || tokenLocation.address;
+
+    const finalLocationLabel =
+      s(req.body?.label || req.body?.locationLabel) ||
+      buildLocationLabel({
+        district: finalDistrict,
+        province: finalProvince,
+        address: finalAddress,
+      }) ||
+      tokenLocation.locationLabel;
 
     applicants.push({
       staffId: staffIdForApplicant,
@@ -748,13 +780,13 @@ async function applyNeed(req, res) {
       status: "pending",
       appliedAt: new Date(),
 
-      // ✅ snapshot location ตอนกดสมัคร
-      lat: location.lat,
-      lng: location.lng,
-      district: location.district,
-      province: location.province,
-      address: location.address,
-      locationLabel: location.locationLabel,
+      // ✅ snapshot location ตอนกดสมัคร (body-first)
+      lat: finalLat,
+      lng: finalLng,
+      district: finalDistrict,
+      province: finalProvince,
+      address: finalAddress,
+      locationLabel: finalLocationLabel,
     });
 
     await need.save();
