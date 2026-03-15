@@ -50,13 +50,21 @@ const TaxProfileSchema = new mongoose.Schema(
  * ✅ Location
  * - ใช้ได้ทั้ง helper / employee / admin
  * - เก็บพิกัดล่าสุดของ user
+ * - ✅ NEW: เก็บ district / province / address เป็น master data
  * ================================
  */
 const UserLocationSchema = new mongoose.Schema(
   {
     lat: { type: Number, default: null },
     lng: { type: Number, default: null },
+
+    district: { type: String, default: "" },
+    province: { type: String, default: "" },
+    address: { type: String, default: "" },
+
+    // เช่น "หาดใหญ่, สงขลา"
     label: { type: String, default: "" },
+
     updatedAt: { type: Date, default: null },
   },
   { _id: false }
@@ -147,9 +155,10 @@ const UserSchema = new mongoose.Schema(
 
     /**
      * ================================
-     * ✅ NEW: User Location
+     * ✅ User Location (MASTER)
      * - ใช้เก็บพิกัด helper เพื่อคำนวณ nearby jobs
      * - ใช้เก็บพิกัด admin/clinic user ได้เช่นกัน
+     * - ✅ NEW: เก็บ district / province / address ด้วย
      * ================================
      */
     location: {
@@ -157,6 +166,9 @@ const UserSchema = new mongoose.Schema(
       default: () => ({
         lat: null,
         lng: null,
+        district: "",
+        province: "",
+        address: "",
         label: "",
         updatedAt: null,
       }),
@@ -209,7 +221,7 @@ UserSchema.index({ clinicId: 1, roles: 1 }, { unique: false });
 // premium query helpers
 UserSchema.index({ plan: 1, premiumUntil: 1 }, { unique: false });
 
-// ✅ NEW: location lookup helpers
+// ✅ location lookup helpers
 UserSchema.index({ "location.lat": 1, "location.lng": 1 }, { unique: false });
 
 /**
@@ -266,6 +278,9 @@ UserSchema.pre("validate", function (next) {
       this.location = {
         lat: null,
         lng: null,
+        district: "",
+        province: "",
+        address: "",
         label: "",
         updatedAt: null,
       };
@@ -283,6 +298,10 @@ UserSchema.pre("validate", function (next) {
 
     this.location.lat = Number.isFinite(lat) ? lat : null;
     this.location.lng = Number.isFinite(lng) ? lng : null;
+
+    this.location.district = String(this.location.district || "").trim();
+    this.location.province = String(this.location.province || "").trim();
+    this.location.address = String(this.location.address || "").trim();
     this.location.label = String(this.location.label || "").trim();
 
     if (

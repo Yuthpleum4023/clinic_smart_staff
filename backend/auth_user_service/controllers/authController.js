@@ -77,12 +77,24 @@ function normalizeLocation(input) {
 
   const lng = toNumOrNull(input?.lng) ?? toNumOrNull(input?.longitude);
 
-  const label = normStr(input?.label || input?.locationLabel || input?.address);
+  const district = normStr(input?.district || input?.amphoe);
+  const province = normStr(input?.province || input?.changwat);
+  const address = normStr(input?.address || input?.fullAddress);
+
+  const label = normStr(
+    input?.label ||
+      input?.locationLabel ||
+      [district, province].filter(Boolean).join(", ") ||
+      address
+  );
 
   if (!isValidLatLng(lat, lng)) {
     return {
       lat: null,
       lng: null,
+      district,
+      province,
+      address,
       label,
       updatedAt: null,
     };
@@ -91,6 +103,9 @@ function normalizeLocation(input) {
   return {
     lat,
     lng,
+    district,
+    province,
+    address,
     label,
     updatedAt: new Date(),
   };
@@ -183,10 +198,13 @@ function safeUser(u) {
     employeeCode: u.employeeCode || "",
     isActive: u.isActive,
 
-    // ✅ NEW: location
+    // ✅ location master
     location: {
       lat: u?.location?.lat ?? null,
       lng: u?.location?.lng ?? null,
+      district: u?.location?.district || "",
+      province: u?.location?.province || "",
+      address: u?.location?.address || "",
       label: u?.location?.label || "",
       updatedAt: u?.location?.updatedAt
         ? new Date(u.location.updatedAt).toISOString()
@@ -229,10 +247,12 @@ function makeJwtPayload(user) {
     phone: normStr(user?.phone),
     email: normStr(user?.email),
 
-    // ✅ NEW: location in token
+    // ✅ location in token
     location: {
       lat: user?.location?.lat ?? null,
       lng: user?.location?.lng ?? null,
+      district: normStr(user?.location?.district),
+      province: normStr(user?.location?.province),
       label: normStr(user?.location?.label),
     },
 
@@ -417,7 +437,7 @@ async function me(req, res) {
 /* ======================================================
    UPDATE MY LOCATION
    PATCH /users/me/location
-   body: { lat, lng, label? }
+   body: { lat, lng, district?, province?, address?, label? }
 ====================================================== */
 async function updateMyLocation(req, res) {
   try {
@@ -440,6 +460,9 @@ async function updateMyLocation(req, res) {
           location: {
             lat: location.lat,
             lng: location.lng,
+            district: location.district || "",
+            province: location.province || "",
+            address: location.address || "",
             label: location.label || "",
             updatedAt: new Date(),
           },
@@ -461,6 +484,9 @@ async function updateMyLocation(req, res) {
       location: {
         lat: updated?.location?.lat ?? null,
         lng: updated?.location?.lng ?? null,
+        district: updated?.location?.district || "",
+        province: updated?.location?.province || "",
+        address: updated?.location?.address || "",
         label: updated?.location?.label || "",
         updatedAt: updated?.location?.updatedAt
           ? new Date(updated.location.updatedAt).toISOString()
