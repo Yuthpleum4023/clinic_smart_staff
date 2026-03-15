@@ -16,6 +16,12 @@
 // - applyNeed() อ่าน location จาก req.body ก่อน
 // - ถ้า body ไม่มี ค่อย fallback ไป req.user.location
 //
+// ✅ PATCH NEW (AUTO MATCH V1):
+// - listApplicants(): คำนวณ recommendScore จากระยะทาง
+// - sort ใกล้สุดก่อน
+// - mark ผู้สมัครที่ใกล้สุดเป็น recommended
+// - ส่ง recommendReason / matchTier กลับไปให้ Flutter ใช้โชว์ badge ได้
+//
 // helper call example:
 //   GET /shift-needs/open?helperLat=7.0084&helperLng=100.4747
 //
@@ -443,6 +449,57 @@ function normalizeApplicantLocationFromToken(req) {
   };
 }
 
+// ✅ AUTO MATCH V1
+function scoreDistanceKm(distanceKm) {
+  const d = numOrNull(distanceKm);
+  if (d === null) return 0;
+  if (d <= 1) return 100;
+  if (d <= 3) return 95;
+  if (d <= 5) return 90;
+  if (d <= 10) return 80;
+  if (d <= 20) return 65;
+  if (d <= 50) return 45;
+  if (d <= 100) return 25;
+  return 10;
+}
+
+function matchTierFromDistance(distanceKm) {
+  const d = numOrNull(distanceKm);
+  if (d === null) return "unknown";
+  if (d <= 5) return "near";
+  if (d <= 20) return "medium";
+  return "far";
+}
+
+function recommendReasonFromDistance(distanceKm) {
+  const d = numOrNull(distanceKm);
+  if (d === null) return "ยังไม่มีพิกัดผู้ช่วย";
+  if (d <= 5) return "อยู่ใกล้คลินิกที่สุด";
+  if (d <= 20) return "อยู่ในระยะเหมาะสม";
+  return "มีพิกัดและเป็นตัวเลือกที่ใกล้ที่สุดตอนนี้";
+}
+
+function compareApplicantsForAutoMatch(a, b) {
+  const aDist = numOrNull(a.distanceKm);
+  const bDist = numOrNull(b.distanceKm);
+
+  const aHas = typeof aDist === "number" && Number.isFinite(aDist);
+  const bHas = typeof bDist === "number" && Number.isFinite(bDist);
+
+  if (aHas && bHas) {
+    if (aDist !== bDist) return aDist - bDist;
+  }
+
+  if (aHas && !bHas) return -1;
+  if (!aHas && bHas) return 1;
+
+  const aApplied = a.appliedAt ? new Date(a.appliedAt).getTime() : 0;
+  const bApplied = b.appliedAt ? new Date(b.appliedAt).getTime() : 0;
+  if (aApplied !== bApplied) return aApplied - bApplied;
+
+  return s(a.fullName).localeCompare(s(b.fullName), "th");
+}
+
 // ---------------- admin: create need ----------------
 async function createNeed(req, res) {
   try {
@@ -819,7 +876,7 @@ async function listApplicants(req, res) {
       : null;
     const merged = mergeClinicMeta({ needMeta, clinicMeta });
 
-    const enriched = applicants.map((a) => {
+    let enriched = applicants.map((a) => {
       const row = a?.toObject ? a.toObject() : a || {};
 
       const lat = numOrNull(row.lat);
@@ -845,6 +902,10 @@ async function listApplicants(req, res) {
           ? distanceKm <= 5
           : false;
 
+      const recommendScore = scoreDistanceKm(distanceKm);
+      const matchTier = matchTierFromDistance(distanceKm);
+      const recommendReason = recommendReasonFromDistance(distanceKm);
+
       return {
         ...row,
         fullName: s(row.fullName),
@@ -862,6 +923,11 @@ async function listApplicants(req, res) {
         isNearby,
         nearbyLabel: isNearby ? "ใกล้คุณ" : "",
 
+        recommendScore,
+        recommended: false,
+        recommendReason,
+        matchTier,
+
         location: {
           lat: isValidLatLng(lat, lng) ? lat : null,
           lng: isValidLatLng(lat, lng) ? lng : null,
@@ -872,6 +938,26 @@ async function listApplicants(req, res) {
         },
       };
     });
+
+    enriched = enriched.sort(compareApplicantsForAutoMatch);
+
+    const firstRecommendedIndex = enriched.findIndex((x) => {
+      const d = numOrNull(x.distanceKm);
+      return typeof d === "number" && Number.isFinite(d);
+    });
+
+    if (firstRecommendedIndex >= 0) {
+      enriched[firstRecommendedIndex] = {
+        ...enriched[firstRecommendedIndex],
+        recommended: true,
+        recommendReason: "อยู่ใกล้คลินิกที่สุด",
+      };
+    }
+
+    enriched = enriched.map((item, index) => ({
+      ...item,
+      rank: index + 1,
+    }));
 
     return res.json({
       applicants: enriched,
