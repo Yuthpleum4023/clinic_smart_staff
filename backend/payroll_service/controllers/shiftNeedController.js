@@ -7,6 +7,11 @@
 // - ✅ NEW: sort nearest first
 // - ✅ NEW: isNearby / nearbyLabel
 //
+// ✅ PATCH NEW (APPLICANTS LOCATION SNAPSHOT):
+// - applyNeed(): snapshot helper profile/location ลง applicant
+// - listApplicants(): ส่ง district / province / address / locationLabel / distanceKm
+// - clinic จึงเห็นว่าผู้ช่วยอยู่ที่ไหนก่อนกด “รับเข้าทำงาน”
+//
 // helper call example:
 //   GET /shift-needs/open?helperLat=7.0084&helperLng=100.4747
 //
@@ -176,13 +181,17 @@ function getHelperQueryLatLng(req) {
     numOrNull(req.query?.helperLat) ??
     numOrNull(req.query?.lat) ??
     numOrNull(req.user?.lat) ??
-    numOrNull(req.user?.latitude);
+    numOrNull(req.user?.latitude) ??
+    numOrNull(req.user?.location?.lat) ??
+    numOrNull(req.user?.location?.latitude);
 
   const lng =
     numOrNull(req.query?.helperLng) ??
     numOrNull(req.query?.lng) ??
     numOrNull(req.user?.lng) ??
-    numOrNull(req.user?.longitude);
+    numOrNull(req.user?.longitude) ??
+    numOrNull(req.user?.location?.lng) ??
+    numOrNull(req.user?.location?.longitude);
 
   if (!isValidLatLng(lat, lng)) {
     return { helperLat: null, helperLng: null };
@@ -396,6 +405,38 @@ function pickApplicantKey(app) {
   if (sid) return { kind: "staffId", value: sid };
 
   return { kind: "none", value: "" };
+}
+
+function normalizeApplicantLocationFromToken(req) {
+  const loc = req.user?.location || {};
+
+  const lat =
+    numOrNull(loc?.lat) ??
+    numOrNull(loc?.latitude) ??
+    numOrNull(req.user?.lat) ??
+    numOrNull(req.user?.latitude);
+
+  const lng =
+    numOrNull(loc?.lng) ??
+    numOrNull(loc?.longitude) ??
+    numOrNull(req.user?.lng) ??
+    numOrNull(req.user?.longitude);
+
+  const district = s(loc?.district || loc?.amphoe);
+  const province = s(loc?.province || loc?.changwat);
+  const address = s(loc?.address || loc?.fullAddress);
+  const locationLabel =
+    s(loc?.label || loc?.locationLabel) ||
+    buildLocationLabel({ district, province, address });
+
+  return {
+    lat: isValidLatLng(lat, lng) ? lat : null,
+    lng: isValidLatLng(lat, lng) ? lng : null,
+    district,
+    province,
+    address,
+    locationLabel,
+  };
 }
 
 // ---------------- admin: create need ----------------
@@ -685,7 +726,7 @@ async function applyNeed(req, res) {
     );
     if (already) return res.json({ ok: true, message: "already applied" });
 
-    const phoneDigits = normalizePhone(req.body?.phone);
+    const phoneDigits = normalizePhone(req.body?.phone || req.user?.phone);
     if (!validatePhoneDigits(phoneDigits)) {
       bad("phone required (9-10 digits)", 400);
     }
@@ -697,12 +738,23 @@ async function applyNeed(req, res) {
       bad("missing applicant identity", 400);
     }
 
+    const location = normalizeApplicantLocationFromToken(req);
+
     applicants.push({
       staffId: staffIdForApplicant,
       userId: userId || "",
+      fullName: s(req.body?.fullName) || s(req.user?.fullName),
       phone: phoneDigits,
       status: "pending",
       appliedAt: new Date(),
+
+      // ✅ snapshot location ตอนกดสมัคร
+      lat: location.lat,
+      lng: location.lng,
+      district: location.district,
+      province: location.province,
+      address: location.address,
+      locationLabel: location.locationLabel,
     });
 
     await need.save();
@@ -728,7 +780,83 @@ async function listApplicants(req, res) {
     if (need.clinicId !== clinicId) bad("forbidden", 403);
 
     const applicants = Array.isArray(need.applicants) ? need.applicants : [];
-    return res.json({ applicants });
+
+    const needMeta = pickClinicMetaFromNeed(need);
+    const clinicMeta = Clinic
+      ? await loadClinicMetaByClinicId(need.clinicId)
+      : null;
+    const merged = mergeClinicMeta({ needMeta, clinicMeta });
+
+    const enriched = applicants.map((a) => {
+      const row = a?.toObject ? a.toObject() : a || {};
+
+      const lat = numOrNull(row.lat);
+      const lng = numOrNull(row.lng);
+      const district = s(row.district);
+      const province = s(row.province);
+      const address = s(row.address);
+      const locationLabel =
+        s(row.locationLabel || row.label) ||
+        buildLocationLabel({ district, province, address });
+
+      const rawDistanceKm = distanceKmBetween(
+        merged.clinicLat,
+        merged.clinicLng,
+        lat,
+        lng
+      );
+      const distanceKm = roundDistanceKm(rawDistanceKm);
+      const distanceText = formatDistanceKm(rawDistanceKm);
+
+      const isNearby =
+        typeof distanceKm === "number" && Number.isFinite(distanceKm)
+          ? distanceKm <= 5
+          : false;
+
+      return {
+        ...row,
+        fullName: s(row.fullName),
+        phone: s(row.phone),
+
+        lat: isValidLatLng(lat, lng) ? lat : null,
+        lng: isValidLatLng(lat, lng) ? lng : null,
+        district,
+        province,
+        address,
+        locationLabel,
+
+        distanceKm,
+        distanceText,
+        isNearby,
+        nearbyLabel: isNearby ? "ใกล้คุณ" : "",
+
+        location: {
+          lat: isValidLatLng(lat, lng) ? lat : null,
+          lng: isValidLatLng(lat, lng) ? lng : null,
+          district,
+          province,
+          address,
+          label: locationLabel,
+        },
+      };
+    });
+
+    return res.json({
+      applicants: enriched,
+      clinic: {
+        clinicId: need.clinicId || "",
+        name: merged.clinicName || "",
+        phone: merged.clinicPhone || "",
+        address: merged.clinicAddress || "",
+        district: merged.clinicDistrict || "",
+        province: merged.clinicProvince || "",
+        locationLabel: merged.clinicLocationLabel || "",
+        location: {
+          lat: merged.clinicLat ?? null,
+          lng: merged.clinicLng ?? null,
+        },
+      },
+    });
   } catch (e) {
     return res.status(e.statusCode || 500).json({
       message: "listApplicants failed",
