@@ -588,6 +588,22 @@ async function listOpenAvailabilities(req, res) {
       };
     });
 
+    console.log("OPEN clinicCtx =>", clinicCtx);
+    console.log(
+      "OPEN enriched preview =>",
+      (enriched || []).map((x) => ({
+        id: String(x._id || ""),
+        fullName: x.fullName,
+        lat: x.lat,
+        lng: x.lng,
+        locationLabel: x.locationLabel,
+        distanceKm: x.distanceKm,
+        distanceText: x.distanceText,
+        isNearby: x.isNearby,
+        nearbyLabel: x.nearbyLabel,
+      }))
+    );
+
     enriched.sort(compareOpenAvailabilityItems);
 
     return res.json({
