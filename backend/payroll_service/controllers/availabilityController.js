@@ -137,7 +137,11 @@ function toNumOrNull(v) {
   return Number.isNaN(n) ? null : n;
 }
 
-function buildLocationLabel({ district = "", province = "", address = "" } = {}) {
+function buildLocationLabel({
+  district = "",
+  province = "",
+  address = "",
+} = {}) {
   const d = s(district);
   const p = s(province);
   const a = s(address);
@@ -159,12 +163,7 @@ function distanceKmBetween(lat1, lng1, lat2, lng2) {
   const bLat = toNumOrNull(lat2);
   const bLng = toNumOrNull(lng2);
 
-  if (
-    aLat === null ||
-    aLng === null ||
-    bLat === null ||
-    bLng === null
-  ) {
+  if (aLat === null || aLng === null || bLat === null || bLng === null) {
     return null;
   }
 
@@ -202,6 +201,48 @@ function formatDistanceKm(km) {
   return `${Math.round(rounded)} กม.`;
 }
 
+function isNearbyDistance(distanceKm) {
+  const d = toNumOrNull(distanceKm);
+  if (d === null) return false;
+  return d <= 10;
+}
+
+function nearbyLabelFromDistance(distanceKm) {
+  return isNearbyDistance(distanceKm) ? "ใกล้คลินิก" : "";
+}
+
+function normalizeUserLocation(req) {
+  const loc = req.user?.location || {};
+
+  const lat =
+    toNumOrNull(loc?.lat) ??
+    toNumOrNull(loc?.latitude) ??
+    toNumOrNull(req.user?.lat) ??
+    toNumOrNull(req.user?.latitude);
+
+  const lng =
+    toNumOrNull(loc?.lng) ??
+    toNumOrNull(loc?.longitude) ??
+    toNumOrNull(req.user?.lng) ??
+    toNumOrNull(req.user?.longitude);
+
+  const district = s(loc?.district || loc?.amphoe);
+  const province = s(loc?.province || loc?.changwat);
+  const address = s(loc?.address || loc?.fullAddress);
+  const locationLabel =
+    s(loc?.label || loc?.locationLabel) ||
+    buildLocationLabel({ district, province, address });
+
+  return {
+    lat,
+    lng,
+    district,
+    province,
+    address,
+    locationLabel,
+  };
+}
+
 async function getClinicContext(req) {
   const clinicId = getClinicIdStrict(req);
   if (!clinicId) return null;
@@ -226,6 +267,34 @@ async function getClinicContext(req) {
       s(clinic?.locationLabel) ||
       buildLocationLabel({ district, province, address }),
   };
+}
+
+function compareOpenAvailabilityItems(a, b) {
+  const aDist = toNumOrNull(a.distanceKm);
+  const bDist = toNumOrNull(b.distanceKm);
+
+  const aHasDist = aDist !== null;
+  const bHasDist = bDist !== null;
+
+  if (aHasDist && bHasDist) {
+    if (aDist !== bDist) return aDist - bDist;
+  } else if (aHasDist && !bHasDist) {
+    return -1;
+  } else if (!aHasDist && bHasDist) {
+    return 1;
+  }
+
+  const aDate = s(a.date);
+  const bDate = s(b.date);
+  if (aDate !== bDate) return aDate.localeCompare(bDate);
+
+  const aStart = timeToMin(a.start) ?? 0;
+  const bStart = timeToMin(b.start) ?? 0;
+  if (aStart !== bStart) return aStart - bStart;
+
+  const aCreated = s(a.createdAt);
+  const bCreated = s(b.createdAt);
+  return aCreated.localeCompare(bCreated);
 }
 
 // ---------------- staff/helper: create mine ----------------
@@ -267,18 +336,24 @@ async function createAvailability(req, res) {
     const fullName = getFullName(req, req.body);
     const phone = getPhone(req, req.body);
 
-    const latNum = toNumOrNull(lat);
-    const lngNum = toNumOrNull(lng);
-    const districtText = s(district);
-    const provinceText = s(province);
-    const addressText = s(address);
+    const tokenLocation = normalizeUserLocation(req);
+
+    const latNum =
+      toNumOrNull(lat) !== null ? toNumOrNull(lat) : tokenLocation.lat;
+    const lngNum =
+      toNumOrNull(lng) !== null ? toNumOrNull(lng) : tokenLocation.lng;
+
+    const districtText = s(district) || tokenLocation.district;
+    const provinceText = s(province) || tokenLocation.province;
+    const addressText = s(address) || tokenLocation.address;
     const locationLabelText =
       s(locationLabel) ||
       buildLocationLabel({
         district: districtText,
         province: provinceText,
         address: addressText,
-      });
+      }) ||
+      tokenLocation.locationLabel;
 
     const sameDay = await Availability.find({
       staffId: actorId,
@@ -395,12 +470,7 @@ async function listMyAvailabilities(req, res) {
           address: clinicAddress,
         });
 
-      const distanceKm = distanceKmBetween(
-        it?.lat,
-        it?.lng,
-        c?.lat,
-        c?.lng
-      );
+      const distanceKm = distanceKmBetween(it?.lat, it?.lng, c?.lat, c?.lng);
 
       return {
         ...it,
@@ -502,17 +572,23 @@ async function listOpenAvailabilities(req, res) {
           address: it?.address,
         });
 
-      const distanceKm = clinicCtx
+      const rawDistanceKm = clinicCtx
         ? distanceKmBetween(clinicCtx.lat, clinicCtx.lng, it?.lat, it?.lng)
         : null;
+
+      const distanceKm = roundDistanceKm(rawDistanceKm);
 
       return {
         ...it,
         locationLabel: itemLocationLabel,
-        distanceKm: roundDistanceKm(distanceKm),
-        distanceText: formatDistanceKm(distanceKm),
+        distanceKm,
+        distanceText: formatDistanceKm(rawDistanceKm),
+        isNearby: isNearbyDistance(distanceKm),
+        nearbyLabel: nearbyLabelFromDistance(distanceKm),
       };
     });
+
+    enriched.sort(compareOpenAvailabilityItems);
 
     return res.json({
       ok: true,
