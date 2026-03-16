@@ -22,6 +22,12 @@
 // - mark ผู้สมัครที่ใกล้สุดเป็น recommended
 // - ส่ง recommendReason / matchTier กลับไปให้ Flutter ใช้โชว์ badge ได้
 //
+// ✅ PATCH NEW (BOOKING HARDENING):
+// - approveApplicant(): กัน approve ซ้ำ
+// - กันสร้าง Shift ซ้ำจาก need เดิม
+// - กัน helper/employee มี shift ชนเวลา
+// - รองรับ requiredCount มากกว่า 1
+//
 // helper call example:
 //   GET /shift-needs/open?helperLat=7.0084&helperLng=100.4747
 //
@@ -76,7 +82,9 @@ function getStaffIdStrict(req) {
 
 function getUserId(req) {
   return (
-    (req.user?.userId || req.user?.id || req.user?._id || "").toString().trim()
+    (req.user?.userId || req.user?.id || req.user?._id || "")
+      .toString()
+      .trim()
   );
 }
 
@@ -126,7 +134,11 @@ function ensureApplicantsArray(doc) {
   return doc.applicants;
 }
 
-function buildLocationLabel({ district = "", province = "", address = "" } = {}) {
+function buildLocationLabel({
+  district = "",
+  province = "",
+  address = "",
+} = {}) {
   const d = s(district);
   const p = s(province);
   const a = s(address);
@@ -500,6 +512,50 @@ function compareApplicantsForAutoMatch(a, b) {
   return s(a.fullName).localeCompare(s(b.fullName), "th");
 }
 
+// ✅ booking hardening helpers
+function timeToMin(hhmm) {
+  const parts = String(hhmm || "").trim().split(":");
+  if (parts.length !== 2) return null;
+  const h = parseInt(parts[0], 10);
+  const m = parseInt(parts[1], 10);
+  if (Number.isNaN(h) || Number.isNaN(m)) return null;
+  return h * 60 + m;
+}
+
+function overlaps(aStart, aEnd, bStart, bEnd) {
+  const a1 = timeToMin(aStart);
+  const a2 = timeToMin(aEnd);
+  const b1 = timeToMin(bStart);
+  const b2 = timeToMin(bEnd);
+
+  if ([a1, a2, b1, b2].some((x) => x === null)) return false;
+  return Math.max(a1, b1) < Math.min(a2, b2);
+}
+
+async function hasOverlappingShift({
+  staffId = "",
+  helperUserId = "",
+  date = "",
+  start = "",
+  end = "",
+}) {
+  const q = {
+    date: s(date),
+    status: { $in: ["scheduled", "completed", "late"] },
+  };
+
+  if (s(staffId)) {
+    q.staffId = s(staffId);
+  } else if (s(helperUserId)) {
+    q.helperUserId = s(helperUserId);
+  } else {
+    return false;
+  }
+
+  const rows = await Shift.find(q).lean();
+  return (rows || []).some((x) => overlaps(x.start, x.end, start, end));
+}
+
 // ---------------- admin: create need ----------------
 async function createNeed(req, res) {
   try {
@@ -792,8 +848,7 @@ async function applyNeed(req, res) {
       bad("phone required (9-10 digits)", 400);
     }
 
-    const staffIdForApplicant =
-      staffId || (role === "helper" ? userId : "");
+    const staffIdForApplicant = staffId || (role === "helper" ? userId : "");
 
     if (!staffIdForApplicant) {
       bad("missing applicant identity", 400);
@@ -1000,7 +1055,7 @@ async function approveApplicant(req, res) {
     const need = await ShiftNeed.findById(id);
     if (!need) bad("need not found", 404);
     if (need.clinicId !== clinicId) bad("forbidden", 403);
-    if (need.status !== "open") bad("need is not open", 400);
+    if (need.status !== "open") bad("need is not open", 409);
 
     const applicants = ensureApplicantsArray(need);
 
@@ -1009,20 +1064,91 @@ async function approveApplicant(req, res) {
     );
     if (!a) bad("applicant not found", 404);
 
+    if (s(a.status) && s(a.status) !== "pending") {
+      bad("applicant is not pending", 409);
+    }
+
+    const applicantUserId = s(a.userId);
+    const applicantStaffId = s(a.staffId);
+
+    const ownerOr = [
+      ...(applicantStaffId ? [{ staffId: applicantStaffId }] : []),
+      ...(applicantUserId ? [{ helperUserId: applicantUserId }] : []),
+    ];
+
+    if (!ownerOr.length) {
+      bad("applicant identity missing", 400);
+    }
+
+    // ✅ กันสร้าง shift ซ้ำจาก need เดิมสำหรับ applicant เดิม
+    const existingShiftFromNeed = await Shift.findOne({
+      shiftNeedId: String(need._id),
+      $or: ownerOr,
+    }).lean();
+
+    if (existingShiftFromNeed) {
+      return res.status(409).json({
+        message: "shift already created for this applicant",
+      });
+    }
+
+    // ✅ กันผู้ช่วย/พนักงานมี shift ชนเวลา
+    const overlap = await hasOverlappingShift({
+      staffId: applicantStaffId,
+      helperUserId: applicantUserId,
+      date: need.date,
+      start: need.start,
+      end: need.end,
+    });
+
+    if (overlap) {
+      return res.status(409).json({
+        message: "applicant already has overlapping shift",
+      });
+    }
+
+    const approvedCount = applicants.filter(
+      (x) => s(x.status).toLowerCase() === "approved"
+    ).length;
+
+    const requiredCountNum = Math.max(1, Number(need.requiredCount || 1));
+
+    if (approvedCount >= requiredCountNum) {
+      need.status = "filled";
+      await need.save();
+
+      return res.status(409).json({
+        message: "need is already filled",
+      });
+    }
+
     const key = pickApplicantKey(a);
 
+    let nextApprovedCount = 0;
     need.applicants = applicants.map((x) => {
       const xo = x?.toObject ? x.toObject() : x;
       const k2 = pickApplicantKey(xo);
 
-      const approved =
+      const isTarget =
         k2.kind !== "none" &&
         key.kind === k2.kind &&
         String(key.value) === String(k2.value);
 
+      let nextStatus = s(xo.status).toLowerCase() || "pending";
+
+      if (isTarget) {
+        nextStatus = "approved";
+      } else if (nextStatus === "approved") {
+        nextStatus = "approved";
+      } else if (requiredCountNum <= 1) {
+        nextStatus = "rejected";
+      }
+
+      if (nextStatus === "approved") nextApprovedCount += 1;
+
       return {
         ...xo,
-        status: approved ? "approved" : "rejected",
+        status: nextStatus,
       };
     });
 
@@ -1033,12 +1159,11 @@ async function approveApplicant(req, res) {
 
     const merged = mergeClinicMeta({ needMeta, clinicMeta });
 
-    const applicantUserId = s(a.userId);
-    const applicantStaffId = s(a.staffId);
-
     const shift = await Shift.create({
       clinicId: need.clinicId,
-      staffId: applicantStaffId || applicantUserId || staff || uid,
+      shiftNeedId: String(need._id),
+
+      staffId: applicantStaffId || "",
       helperUserId: applicantUserId || "",
 
       date: need.date,
@@ -1055,7 +1180,7 @@ async function approveApplicant(req, res) {
       clinicAddress: s(merged.clinicAddress),
     });
 
-    if (Number(need.requiredCount || 1) <= 1) {
+    if (nextApprovedCount >= requiredCountNum) {
       need.status = "filled";
     }
 

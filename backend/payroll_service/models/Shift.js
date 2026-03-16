@@ -9,18 +9,20 @@ const ShiftSchema = new mongoose.Schema(
      * ✅ รองรับทั้ง employee + helper
      * - employee: ใช้ staffId
      * - helper  : ใช้ helperUserId
-     *
-     * เดิม staffId required แต่จะทำให้ helper ที่ไม่มี staffId สร้าง shift ไม่ได้
-     * จึงปรับเป็น optional และไป validate รวมกับ helperUserId แทน
      */
     staffId: { type: String, default: "", index: true },
 
     /**
      * ✅ NEW (ยั่งยืน): ผูก “งานของผู้ช่วย marketplace” กับ userId โดยตรง
-     * - ช่วยแก้เคส token ไม่มี staffId
-     * - optional เพื่อ backward compatible
      */
     helperUserId: { type: String, default: "", index: true },
+
+    /**
+     * ✅ NEW:
+     * ผูก shift กลับไปที่ ShiftNeed ต้นทาง
+     * ใช้กัน approve ซ้ำ / สร้าง shift ซ้ำ
+     */
+    shiftNeedId: { type: String, default: "", index: true },
 
     date: { type: String, required: true }, // yyyy-MM-dd
     start: { type: String, required: true }, // HH:mm
@@ -39,7 +41,7 @@ const ShiftSchema = new mongoose.Schema(
     note: { type: String, default: "" },
 
     // =========================================================
-    // ✅ Clinic Navigation Data (ไม่กระทบของเดิม)
+    // ✅ Clinic Navigation Data
     // =========================================================
     clinicLat: { type: Number, default: null },
     clinicLng: { type: Number, default: null },
@@ -62,9 +64,7 @@ ShiftSchema.pre("validate", function (next) {
   const helperUserId = String(this.helperUserId || "").trim();
 
   if (!staffId && !helperUserId) {
-    return next(
-      new Error("Shift requires either staffId or helperUserId")
-    );
+    return next(new Error("Shift requires either staffId or helperUserId"));
   }
 
   next();
@@ -112,6 +112,12 @@ ShiftSchema.index(
 ShiftSchema.index(
   { clinicId: 1, helperUserId: 1, date: 1, createdAt: -1 },
   { name: "idx_shift_clinic_helper_exact_day" }
+);
+
+// ✅ NEW: กันสร้าง shift ซ้ำจาก need เดิมสำหรับ owner เดิม
+ShiftSchema.index(
+  { shiftNeedId: 1, staffId: 1, helperUserId: 1 },
+  { name: "idx_shift_need_owner" }
 );
 
 module.exports = mongoose.model("Shift", ShiftSchema);
