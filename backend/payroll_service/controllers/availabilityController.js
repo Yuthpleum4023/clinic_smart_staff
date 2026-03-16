@@ -297,6 +297,207 @@ function compareOpenAvailabilityItems(a, b) {
   return aCreated.localeCompare(bCreated);
 }
 
+// ---------------- auth user fallback ----------------
+function authBase() {
+  return s(
+    process.env.AUTH_USER_SERVICE_URL ||
+      process.env.AUTH_SERVICE_URL ||
+      "https://auth-user-service-afwu.onrender.com"
+  ).replace(/\/+$/, "");
+}
+
+function internalKey() {
+  return s(process.env.INTERNAL_KEY || process.env.INTERNAL_SERVICE_KEY);
+}
+
+async function fetchJson(url, headers = {}) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 8000);
+
+  try {
+    const res = await fetch(url, {
+      method: "GET",
+      headers,
+      signal: ctrl.signal,
+    });
+
+    const text = await res.text();
+    let data = null;
+
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch (_) {
+      data = null;
+    }
+
+    return {
+      ok: res.ok,
+      status: res.status,
+      data,
+      raw: text,
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      status: 0,
+      data: null,
+      raw: "",
+      error: e.message || String(e),
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function normalizeRemoteUserLocation(payload) {
+  const root = payload && typeof payload === "object" ? payload : {};
+  const user =
+    root.user && typeof root.user === "object"
+      ? root.user
+      : root.data && typeof root.data === "object"
+      ? root.data
+      : root;
+
+  const loc =
+    user.location && typeof user.location === "object" ? user.location : {};
+
+  const lat =
+    toNumOrNull(loc?.lat) ??
+    toNumOrNull(loc?.latitude) ??
+    toNumOrNull(user?.lat) ??
+    toNumOrNull(user?.latitude);
+
+  const lng =
+    toNumOrNull(loc?.lng) ??
+    toNumOrNull(loc?.longitude) ??
+    toNumOrNull(user?.lng) ??
+    toNumOrNull(user?.longitude);
+
+  const district = s(
+    loc?.district || loc?.amphoe || user?.district || user?.amphoe
+  );
+  const province = s(
+    loc?.province || loc?.changwat || user?.province || user?.changwat
+  );
+  const address = s(
+    loc?.address || loc?.fullAddress || user?.address || user?.fullAddress
+  );
+  const locationLabel =
+    s(loc?.label || loc?.locationLabel || user?.locationLabel) ||
+    buildLocationLabel({ district, province, address });
+
+  return {
+    lat,
+    lng,
+    district,
+    province,
+    address,
+    locationLabel,
+  };
+}
+
+function hasUsableLocation(loc) {
+  if (!loc || typeof loc !== "object") return false;
+  return (
+    toNumOrNull(loc.lat) !== null ||
+    toNumOrNull(loc.lng) !== null ||
+    s(loc.locationLabel) !== "" ||
+    s(loc.address) !== "" ||
+    s(loc.district) !== "" ||
+    s(loc.province) !== ""
+  );
+}
+
+async function fetchSingleUserLocation(userKey) {
+  const id = s(userKey);
+  if (!id) return null;
+
+  const base = authBase();
+  const key = internalKey();
+
+  const headers = {
+    Accept: "application/json",
+  };
+
+  if (key) {
+    headers["x-internal-key"] = key;
+    headers["x-service-key"] = key;
+    headers["authorization"] = `Bearer ${key}`;
+  }
+
+  const candidates = [
+    `${base}/users/${encodeURIComponent(id)}`,
+    `${base}/users/public/${encodeURIComponent(id)}`,
+    `${base}/api/users/${encodeURIComponent(id)}`,
+    `${base}/api/users/public/${encodeURIComponent(id)}`,
+  ];
+
+  for (const url of candidates) {
+    const rs = await fetchJson(url, headers);
+    if (!rs.ok || !rs.data) continue;
+
+    const loc = normalizeRemoteUserLocation(rs.data);
+    if (hasUsableLocation(loc)) return loc;
+  }
+
+  return null;
+}
+
+async function fetchUserLocationsMap(userKeys = []) {
+  const ids = Array.from(
+    new Set((userKeys || []).map((x) => s(x)).filter(Boolean))
+  );
+
+  const out = {};
+  for (const id of ids) {
+    try {
+      const loc = await fetchSingleUserLocation(id);
+      if (hasUsableLocation(loc)) {
+        out[id] = loc;
+      }
+    } catch (_) {
+      // ปล่อยผ่าน เพื่อไม่ให้ list พังทั้งหน้า
+    }
+  }
+  return out;
+}
+
+function mergeAvailabilityLocation(it, fallbackLoc) {
+  const ownLat = toNumOrNull(it?.lat);
+  const ownLng = toNumOrNull(it?.lng);
+  const ownDistrict = s(it?.district);
+  const ownProvince = s(it?.province);
+  const ownAddress = s(it?.address);
+  const ownLocationLabel =
+    s(it?.locationLabel) ||
+    buildLocationLabel({
+      district: ownDistrict,
+      province: ownProvince,
+      address: ownAddress,
+    });
+
+  const fb = fallbackLoc || {};
+
+  const lat = ownLat !== null ? ownLat : toNumOrNull(fb.lat);
+  const lng = ownLng !== null ? ownLng : toNumOrNull(fb.lng);
+  const district = ownDistrict || s(fb.district);
+  const province = ownProvince || s(fb.province);
+  const address = ownAddress || s(fb.address);
+  const locationLabel =
+    ownLocationLabel ||
+    s(fb.locationLabel) ||
+    buildLocationLabel({ district, province, address });
+
+  return {
+    lat,
+    lng,
+    district,
+    province,
+    address,
+    locationLabel,
+  };
+}
+
 // ---------------- staff/helper: create mine ----------------
 async function createAvailability(req, res) {
   try {
@@ -563,24 +764,54 @@ async function listOpenAvailabilities(req, res) {
     const clinicCtx = await getClinicContext(req);
     const items = await Availability.find(q).sort({ date: 1, start: 1 }).lean();
 
+    const fallbackUserKeys = Array.from(
+      new Set(
+        (items || [])
+          .filter((it) => {
+            const noLat = toNumOrNull(it?.lat) === null;
+            const noLng = toNumOrNull(it?.lng) === null;
+            const noLabel = s(it?.locationLabel) === "";
+            const noDistrict = s(it?.district) === "";
+            const noProvince = s(it?.province) === "";
+            const noAddress = s(it?.address) === "";
+            return noLat && noLng && noLabel && noDistrict && noProvince && noAddress;
+          })
+          .map((it) => s(it?.userId) || s(it?.staffId))
+          .filter(Boolean)
+      )
+    );
+
+    const remoteLocationMap =
+      fallbackUserKeys.length > 0
+        ? await fetchUserLocationsMap(fallbackUserKeys)
+        : {};
+
     const enriched = (items || []).map((it) => {
-      const itemLocationLabel =
-        s(it.locationLabel) ||
-        buildLocationLabel({
-          district: it?.district,
-          province: it?.province,
-          address: it?.address,
-        });
+      const lookupKey = s(it?.userId) || s(it?.staffId);
+      const mergedLoc = mergeAvailabilityLocation(
+        it,
+        remoteLocationMap[lookupKey]
+      );
 
       const rawDistanceKm = clinicCtx
-        ? distanceKmBetween(clinicCtx.lat, clinicCtx.lng, it?.lat, it?.lng)
+        ? distanceKmBetween(
+            clinicCtx.lat,
+            clinicCtx.lng,
+            mergedLoc.lat,
+            mergedLoc.lng
+          )
         : null;
 
       const distanceKm = roundDistanceKm(rawDistanceKm);
 
       return {
         ...it,
-        locationLabel: itemLocationLabel,
+        lat: mergedLoc.lat,
+        lng: mergedLoc.lng,
+        district: mergedLoc.district,
+        province: mergedLoc.province,
+        address: mergedLoc.address,
+        locationLabel: mergedLoc.locationLabel,
         distanceKm,
         distanceText: formatDistanceKm(rawDistanceKm),
         isNearby: isNearbyDistance(distanceKm),
@@ -589,10 +820,17 @@ async function listOpenAvailabilities(req, res) {
     });
 
     console.log("OPEN clinicCtx =>", clinicCtx);
+    console.log("OPEN fallback userKeys =>", fallbackUserKeys);
+    console.log(
+      "OPEN remoteLocationMap keys =>",
+      Object.keys(remoteLocationMap || {})
+    );
     console.log(
       "OPEN enriched preview =>",
       (enriched || []).map((x) => ({
         id: String(x._id || ""),
+        userId: s(x.userId),
+        staffId: s(x.staffId),
         fullName: x.fullName,
         lat: x.lat,
         lng: x.lng,
