@@ -540,12 +540,21 @@ async function resolveCreateAvailabilityLocation(req, body = {}) {
       toNumOrNull(body?.longitude) ??
       toNumOrNull(body?.location?.lng) ??
       toNumOrNull(body?.location?.longitude),
-    district: s(body?.district || body?.location?.district || body?.location?.amphoe),
-    province: s(body?.province || body?.location?.province || body?.location?.changwat),
-    address: s(body?.address || body?.location?.address || body?.location?.fullAddress),
+    district: s(
+      body?.district || body?.location?.district || body?.location?.amphoe
+    ),
+    province: s(
+      body?.province || body?.location?.province || body?.location?.changwat
+    ),
+    address: s(
+      body?.address || body?.location?.address || body?.location?.fullAddress
+    ),
     locationLabel:
-      s(body?.locationLabel || body?.location?.label || body?.location?.locationLabel) ||
-      "",
+      s(
+        body?.locationLabel ||
+          body?.location?.label ||
+          body?.location?.locationLabel
+      ) || "",
   };
 
   const mergedBodyAndToken = mergeLocationSources(bodyLocation, tokenLocation);
@@ -554,7 +563,11 @@ async function resolveCreateAvailabilityLocation(req, body = {}) {
   }
 
   const keysToTry = Array.from(
-    new Set([getUserId(req), getStaffIdStrict(req), getActorId(req)].map(s).filter(Boolean))
+    new Set(
+      [getUserId(req), getStaffIdStrict(req), getActorId(req)]
+        .map(s)
+        .filter(Boolean)
+    )
   );
 
   for (const key of keysToTry) {
@@ -565,11 +578,86 @@ async function resolveCreateAvailabilityLocation(req, body = {}) {
         return merged;
       }
     } catch (e) {
-      console.error("resolveCreateAvailabilityLocation fallback error:", e.message || String(e));
+      console.error(
+        "resolveCreateAvailabilityLocation fallback error:",
+        e.message || String(e)
+      );
     }
   }
 
   return mergedBodyAndToken;
+}
+
+async function buildEnrichedAvailabilityItems(items, clinicCtx) {
+  const safeItems = Array.isArray(items) ? items : [];
+
+  const fallbackUserKeys = Array.from(
+    new Set(
+      safeItems
+        .filter((it) => {
+          const noLat = toNumOrNull(it?.lat) === null;
+          const noLng = toNumOrNull(it?.lng) === null;
+          const noLabel = s(it?.locationLabel) === "";
+          const noDistrict = s(it?.district) === "";
+          const noProvince = s(it?.province) === "";
+          const noAddress = s(it?.address) === "";
+          return (
+            noLat &&
+            noLng &&
+            noLabel &&
+            noDistrict &&
+            noProvince &&
+            noAddress
+          );
+        })
+        .map((it) => s(it?.userId) || s(it?.staffId))
+        .filter(Boolean)
+    )
+  );
+
+  const remoteLocationMap =
+    fallbackUserKeys.length > 0
+      ? await fetchUserLocationsMap(fallbackUserKeys)
+      : {};
+
+  const enriched = safeItems.map((it) => {
+    const lookupKey = s(it?.userId) || s(it?.staffId);
+    const mergedLoc = mergeAvailabilityLocation(
+      it,
+      remoteLocationMap[lookupKey]
+    );
+
+    const rawDistanceKm = clinicCtx
+      ? distanceKmBetween(
+          clinicCtx.lat,
+          clinicCtx.lng,
+          mergedLoc.lat,
+          mergedLoc.lng
+        )
+      : null;
+
+    const distanceKm = roundDistanceKm(rawDistanceKm);
+
+    return {
+      ...it,
+      lat: mergedLoc.lat,
+      lng: mergedLoc.lng,
+      district: mergedLoc.district,
+      province: mergedLoc.province,
+      address: mergedLoc.address,
+      locationLabel: mergedLoc.locationLabel,
+      distanceKm,
+      distanceText: formatDistanceKm(rawDistanceKm),
+      isNearby: isNearbyDistance(distanceKm),
+      nearbyLabel: nearbyLabelFromDistance(distanceKm),
+    };
+  });
+
+  return {
+    fallbackUserKeys,
+    remoteLocationMap,
+    enriched,
+  };
 }
 
 // ---------------- staff/helper: create mine ----------------
@@ -605,7 +693,10 @@ async function createAvailability(req, res) {
     const fullName = getFullName(req, req.body);
     const phone = getPhone(req, req.body);
 
-    const resolvedLocation = await resolveCreateAvailabilityLocation(req, req.body);
+    const resolvedLocation = await resolveCreateAvailabilityLocation(
+      req,
+      req.body
+    );
 
     const sameDay = await Availability.find({
       staffId: actorId,
@@ -826,60 +917,8 @@ async function listOpenAvailabilities(req, res) {
     const clinicCtx = await getClinicContext(req);
     const items = await Availability.find(q).sort({ date: 1, start: 1 }).lean();
 
-    const fallbackUserKeys = Array.from(
-      new Set(
-        (items || [])
-          .filter((it) => {
-            const noLat = toNumOrNull(it?.lat) === null;
-            const noLng = toNumOrNull(it?.lng) === null;
-            const noLabel = s(it?.locationLabel) === "";
-            const noDistrict = s(it?.district) === "";
-            const noProvince = s(it?.province) === "";
-            const noAddress = s(it?.address) === "";
-            return noLat && noLng && noLabel && noDistrict && noProvince && noAddress;
-          })
-          .map((it) => s(it?.userId) || s(it?.staffId))
-          .filter(Boolean)
-      )
-    );
-
-    const remoteLocationMap =
-      fallbackUserKeys.length > 0
-        ? await fetchUserLocationsMap(fallbackUserKeys)
-        : {};
-
-    const enriched = (items || []).map((it) => {
-      const lookupKey = s(it?.userId) || s(it?.staffId);
-      const mergedLoc = mergeAvailabilityLocation(
-        it,
-        remoteLocationMap[lookupKey]
-      );
-
-      const rawDistanceKm = clinicCtx
-        ? distanceKmBetween(
-            clinicCtx.lat,
-            clinicCtx.lng,
-            mergedLoc.lat,
-            mergedLoc.lng
-          )
-        : null;
-
-      const distanceKm = roundDistanceKm(rawDistanceKm);
-
-      return {
-        ...it,
-        lat: mergedLoc.lat,
-        lng: mergedLoc.lng,
-        district: mergedLoc.district,
-        province: mergedLoc.province,
-        address: mergedLoc.address,
-        locationLabel: mergedLoc.locationLabel,
-        distanceKm,
-        distanceText: formatDistanceKm(rawDistanceKm),
-        isNearby: isNearbyDistance(distanceKm),
-        nearbyLabel: nearbyLabelFromDistance(distanceKm),
-      };
-    });
+    const { fallbackUserKeys, remoteLocationMap, enriched } =
+      await buildEnrichedAvailabilityItems(items, clinicCtx);
 
     console.log("OPEN clinicCtx =>", clinicCtx);
     console.log("OPEN fallback userKeys =>", fallbackUserKeys);
@@ -956,8 +995,48 @@ async function listBookedAvailabilities(req, res) {
       if (Object.keys(q.date).length === 0) delete q.date;
     }
 
+    const clinicCtx = await getClinicContext(req);
     const items = await Availability.find(q).sort({ date: 1, start: 1 }).lean();
-    return res.json({ ok: true, items });
+
+    const { fallbackUserKeys, remoteLocationMap, enriched } =
+      await buildEnrichedAvailabilityItems(items, clinicCtx);
+
+    console.log("BOOKED clinicCtx =>", clinicCtx);
+    console.log("BOOKED fallback userKeys =>", fallbackUserKeys);
+    console.log(
+      "BOOKED remoteLocationMap keys =>",
+      Object.keys(remoteLocationMap || {})
+    );
+    console.log(
+      "BOOKED enriched preview =>",
+      (enriched || []).map((x) => ({
+        id: String(x._id || ""),
+        userId: s(x.userId),
+        staffId: s(x.staffId),
+        fullName: x.fullName,
+        lat: x.lat,
+        lng: x.lng,
+        locationLabel: x.locationLabel,
+        distanceKm: x.distanceKm,
+        distanceText: x.distanceText,
+        isNearby: x.isNearby,
+        nearbyLabel: x.nearbyLabel,
+      }))
+    );
+
+    return res.json({
+      ok: true,
+      clinic: clinicCtx
+        ? {
+            clinicId: clinicCtx.clinicId,
+            name: clinicCtx.name,
+            locationLabel: clinicCtx.locationLabel,
+            lat: clinicCtx.lat,
+            lng: clinicCtx.lng,
+          }
+        : null,
+      items: enriched,
+    });
   } catch (e) {
     return res.status(e.statusCode || 500).json({
       message: "listBookedAvailabilities failed",
