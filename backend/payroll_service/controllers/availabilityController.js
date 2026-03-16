@@ -426,6 +426,7 @@ async function fetchSingleUserLocation(userKey) {
   }
 
   const candidates = [
+    `${base}/internal/users/${encodeURIComponent(id)}`,
     `${base}/users/${encodeURIComponent(id)}`,
     `${base}/users/public/${encodeURIComponent(id)}`,
     `${base}/api/users/${encodeURIComponent(id)}`,
@@ -498,6 +499,79 @@ function mergeAvailabilityLocation(it, fallbackLoc) {
   };
 }
 
+function mergeLocationSources(primaryLoc, fallbackLoc) {
+  const a = primaryLoc || {};
+  const b = fallbackLoc || {};
+
+  const lat =
+    toNumOrNull(a.lat) !== null ? toNumOrNull(a.lat) : toNumOrNull(b.lat);
+  const lng =
+    toNumOrNull(a.lng) !== null ? toNumOrNull(a.lng) : toNumOrNull(b.lng);
+
+  const district = s(a.district) || s(b.district);
+  const province = s(a.province) || s(b.province);
+  const address = s(a.address) || s(b.address);
+  const locationLabel =
+    s(a.locationLabel) ||
+    s(b.locationLabel) ||
+    buildLocationLabel({ district, province, address });
+
+  return {
+    lat,
+    lng,
+    district,
+    province,
+    address,
+    locationLabel,
+  };
+}
+
+async function resolveCreateAvailabilityLocation(req, body = {}) {
+  const tokenLocation = normalizeUserLocation(req);
+
+  const bodyLocation = {
+    lat:
+      toNumOrNull(body?.lat) ??
+      toNumOrNull(body?.latitude) ??
+      toNumOrNull(body?.location?.lat) ??
+      toNumOrNull(body?.location?.latitude),
+    lng:
+      toNumOrNull(body?.lng) ??
+      toNumOrNull(body?.longitude) ??
+      toNumOrNull(body?.location?.lng) ??
+      toNumOrNull(body?.location?.longitude),
+    district: s(body?.district || body?.location?.district || body?.location?.amphoe),
+    province: s(body?.province || body?.location?.province || body?.location?.changwat),
+    address: s(body?.address || body?.location?.address || body?.location?.fullAddress),
+    locationLabel:
+      s(body?.locationLabel || body?.location?.label || body?.location?.locationLabel) ||
+      "",
+  };
+
+  const mergedBodyAndToken = mergeLocationSources(bodyLocation, tokenLocation);
+  if (hasUsableLocation(mergedBodyAndToken)) {
+    return mergedBodyAndToken;
+  }
+
+  const keysToTry = Array.from(
+    new Set([getUserId(req), getStaffIdStrict(req), getActorId(req)].map(s).filter(Boolean))
+  );
+
+  for (const key of keysToTry) {
+    try {
+      const remoteLoc = await fetchSingleUserLocation(key);
+      const merged = mergeLocationSources(mergedBodyAndToken, remoteLoc);
+      if (hasUsableLocation(merged)) {
+        return merged;
+      }
+    } catch (e) {
+      console.error("resolveCreateAvailabilityLocation fallback error:", e.message || String(e));
+    }
+  }
+
+  return mergedBodyAndToken;
+}
+
 // ---------------- staff/helper: create mine ----------------
 async function createAvailability(req, res) {
   try {
@@ -518,12 +592,6 @@ async function createAvailability(req, res) {
       note = "",
       fullName: _fullNameBody = "",
       phone: _phoneBody = "",
-      lat = null,
-      lng = null,
-      district = "",
-      province = "",
-      address = "",
-      locationLabel = "",
     } = req.body || {};
 
     if (!isYMD(date)) bad("date required (YYYY-MM-DD)");
@@ -537,24 +605,7 @@ async function createAvailability(req, res) {
     const fullName = getFullName(req, req.body);
     const phone = getPhone(req, req.body);
 
-    const tokenLocation = normalizeUserLocation(req);
-
-    const latNum =
-      toNumOrNull(lat) !== null ? toNumOrNull(lat) : tokenLocation.lat;
-    const lngNum =
-      toNumOrNull(lng) !== null ? toNumOrNull(lng) : tokenLocation.lng;
-
-    const districtText = s(district) || tokenLocation.district;
-    const provinceText = s(province) || tokenLocation.province;
-    const addressText = s(address) || tokenLocation.address;
-    const locationLabelText =
-      s(locationLabel) ||
-      buildLocationLabel({
-        district: districtText,
-        province: provinceText,
-        address: addressText,
-      }) ||
-      tokenLocation.locationLabel;
+    const resolvedLocation = await resolveCreateAvailabilityLocation(req, req.body);
 
     const sameDay = await Availability.find({
       staffId: actorId,
@@ -581,12 +632,12 @@ async function createAvailability(req, res) {
       fullName: s(fullName),
       phone: s(phone),
 
-      lat: latNum,
-      lng: lngNum,
-      district: districtText,
-      province: provinceText,
-      address: addressText,
-      locationLabel: locationLabelText,
+      lat: resolvedLocation.lat,
+      lng: resolvedLocation.lng,
+      district: s(resolvedLocation.district),
+      province: s(resolvedLocation.province),
+      address: s(resolvedLocation.address),
+      locationLabel: s(resolvedLocation.locationLabel),
 
       date: s(date),
       start: s(start),
@@ -605,7 +656,18 @@ async function createAvailability(req, res) {
       clinicClearedAt: null,
     });
 
-    return res.status(201).json({ ok: true, availability: doc });
+    return res.status(201).json({
+      ok: true,
+      availability: doc,
+      locationResolved: {
+        lat: resolvedLocation.lat,
+        lng: resolvedLocation.lng,
+        district: s(resolvedLocation.district),
+        province: s(resolvedLocation.province),
+        address: s(resolvedLocation.address),
+        locationLabel: s(resolvedLocation.locationLabel),
+      },
+    });
   } catch (e) {
     return res.status(e.statusCode || 500).json({
       message: "createAvailability failed",
