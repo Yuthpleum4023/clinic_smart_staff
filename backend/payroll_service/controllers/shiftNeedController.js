@@ -22,8 +22,9 @@
 // - mark ผู้สมัครที่ใกล้สุดเป็น recommended
 // - ส่ง recommendReason / matchTier กลับไปให้ Flutter ใช้โชว์ badge ได้
 //
-// ✅ PATCH NEW (BOOKING HARDENING):
-// - approveApplicant(): กัน approve ซ้ำ
+// ✅ PATCH NEW (BOOKING HARDENING - FINAL):
+// - approveApplicant(): ใช้ Mongo transaction
+// - กัน approve ซ้ำ
 // - กันสร้าง Shift ซ้ำจาก need เดิม
 // - กัน helper/employee มี shift ชนเวลา
 // - รองรับ requiredCount มากกว่า 1
@@ -32,6 +33,7 @@
 //   GET /shift-needs/open?helperLat=7.0084&helperLng=100.4747
 //
 
+const mongoose = require("mongoose");
 const ShiftNeed = require("../models/ShiftNeed");
 const Shift = require("../models/Shift");
 
@@ -48,7 +50,11 @@ function normalizeRoles(r) {
   if (Array.isArray(r)) {
     return r.map((x) => String(x || "").trim()).filter(Boolean);
   }
-  return [String(r || "").trim()].filter(Boolean);
+  return [String(xOr(r)).trim()].filter(Boolean);
+}
+
+function xOr(v) {
+  return v == null ? "" : v;
 }
 
 function mustRoleAny(req, roles = []) {
@@ -538,6 +544,7 @@ async function hasOverlappingShift({
   date = "",
   start = "",
   end = "",
+  session = null,
 }) {
   const q = {
     date: s(date),
@@ -552,7 +559,10 @@ async function hasOverlappingShift({
     return false;
   }
 
-  const rows = await Shift.find(q).lean();
+  let query = Shift.find(q);
+  if (session) query = query.session(session);
+
+  const rows = await query.lean();
   return (rows || []).some((x) => overlaps(x.start, x.end, start, end));
 }
 
@@ -892,7 +902,6 @@ async function applyNeed(req, res) {
       status: "pending",
       appliedAt: new Date(),
 
-      // ✅ snapshot location ตอนกดสมัคร (body-first)
       lat: finalLat,
       lng: finalLng,
       district: finalDistrict,
@@ -1040,167 +1049,188 @@ async function listApplicants(req, res) {
 
 // ---------------- admin: approve applicant -> create Shift ----------------
 async function approveApplicant(req, res) {
+  let session = null;
+
   try {
     mustRole(req, ["admin"]);
     const clinicId = getClinicId(req);
     if (!clinicId) bad("missing clinicId in token", 400);
 
-    const id = (req.params.id || "").toString();
+    const id = s(req.params.id);
 
     const staff = s(req.body?.staffId);
     const uid = s(req.body?.userId);
 
     if (!staff && !uid) bad("staffId or userId required");
 
-    const need = await ShiftNeed.findById(id);
-    if (!need) bad("need not found", 404);
-    if (need.clinicId !== clinicId) bad("forbidden", 403);
-    if (need.status !== "open") bad("need is not open", 409);
+    session = await mongoose.startSession();
 
-    const applicants = ensureApplicantsArray(need);
+    let result = null;
 
-    const a = applicants.find((x) =>
-      applicantMatches(x, { staffId: staff, userId: uid })
-    );
-    if (!a) bad("applicant not found", 404);
+    await session.withTransaction(async () => {
+      const need = await ShiftNeed.findById(id).session(session);
+      if (!need) bad("need not found", 404);
+      if (need.clinicId !== clinicId) bad("forbidden", 403);
+      if (need.status !== "open") bad("need is not open", 409);
 
-    if (s(a.status) && s(a.status) !== "pending") {
-      bad("applicant is not pending", 409);
-    }
+      const applicants = ensureApplicantsArray(need);
 
-    const applicantUserId = s(a.userId);
-    const applicantStaffId = s(a.staffId);
+      const a = applicants.find((x) =>
+        applicantMatches(x, { staffId: staff, userId: uid })
+      );
+      if (!a) bad("applicant not found", 404);
 
-    const ownerOr = [
-      ...(applicantStaffId ? [{ staffId: applicantStaffId }] : []),
-      ...(applicantUserId ? [{ helperUserId: applicantUserId }] : []),
-    ];
-
-    if (!ownerOr.length) {
-      bad("applicant identity missing", 400);
-    }
-
-    // ✅ กันสร้าง shift ซ้ำจาก need เดิมสำหรับ applicant เดิม
-    const existingShiftFromNeed = await Shift.findOne({
-      shiftNeedId: String(need._id),
-      $or: ownerOr,
-    }).lean();
-
-    if (existingShiftFromNeed) {
-      return res.status(409).json({
-        message: "shift already created for this applicant",
-      });
-    }
-
-    // ✅ กันผู้ช่วย/พนักงานมี shift ชนเวลา
-    const overlap = await hasOverlappingShift({
-      staffId: applicantStaffId,
-      helperUserId: applicantUserId,
-      date: need.date,
-      start: need.start,
-      end: need.end,
-    });
-
-    if (overlap) {
-      return res.status(409).json({
-        message: "applicant already has overlapping shift",
-      });
-    }
-
-    const approvedCount = applicants.filter(
-      (x) => s(x.status).toLowerCase() === "approved"
-    ).length;
-
-    const requiredCountNum = Math.max(1, Number(need.requiredCount || 1));
-
-    if (approvedCount >= requiredCountNum) {
-      need.status = "filled";
-      await need.save();
-
-      return res.status(409).json({
-        message: "need is already filled",
-      });
-    }
-
-    const key = pickApplicantKey(a);
-
-    let nextApprovedCount = 0;
-    need.applicants = applicants.map((x) => {
-      const xo = x?.toObject ? x.toObject() : x;
-      const k2 = pickApplicantKey(xo);
-
-      const isTarget =
-        k2.kind !== "none" &&
-        key.kind === k2.kind &&
-        String(key.value) === String(k2.value);
-
-      let nextStatus = s(xo.status).toLowerCase() || "pending";
-
-      if (isTarget) {
-        nextStatus = "approved";
-      } else if (nextStatus === "approved") {
-        nextStatus = "approved";
-      } else if (requiredCountNum <= 1) {
-        nextStatus = "rejected";
+      if (s(a.status) && s(a.status) !== "pending") {
+        bad("applicant is not pending", 409);
       }
 
-      if (nextStatus === "approved") nextApprovedCount += 1;
+      const applicantUserId = s(a.userId);
+      const applicantStaffId = s(a.staffId);
 
-      return {
-        ...xo,
-        status: nextStatus,
+      const ownerOr = [
+        ...(applicantStaffId ? [{ staffId: applicantStaffId }] : []),
+        ...(applicantUserId ? [{ helperUserId: applicantUserId }] : []),
+      ];
+
+      if (!ownerOr.length) {
+        bad("applicant identity missing", 400);
+      }
+
+      const existingShiftFromNeed = await Shift.findOne({
+        shiftNeedId: String(need._id),
+        $or: ownerOr,
+      })
+        .session(session)
+        .lean();
+
+      if (existingShiftFromNeed) {
+        bad("shift already created for this applicant", 409);
+      }
+
+      const overlap = await hasOverlappingShift({
+        staffId: applicantStaffId,
+        helperUserId: applicantUserId,
+        date: need.date,
+        start: need.start,
+        end: need.end,
+        session,
+      });
+
+      if (overlap) {
+        bad("applicant already has overlapping shift", 409);
+      }
+
+      const requiredCountNum = Math.max(1, Number(need.requiredCount || 1));
+      const approvedCount = applicants.filter(
+        (x) => s(x.status).toLowerCase() === "approved"
+      ).length;
+
+      if (approvedCount >= requiredCountNum) {
+        need.status = "filled";
+        await need.save({ session });
+        bad("need is already filled", 409);
+      }
+
+      const key = pickApplicantKey(a);
+
+      let nextApprovedCount = 0;
+      need.applicants = applicants.map((x) => {
+        const xo = x?.toObject ? x.toObject() : x;
+        const k2 = pickApplicantKey(xo);
+
+        const isTarget =
+          k2.kind !== "none" &&
+          key.kind === k2.kind &&
+          String(key.value) === String(k2.value);
+
+        let nextStatus = s(xo.status).toLowerCase() || "pending";
+
+        if (isTarget) {
+          nextStatus = "approved";
+        } else if (nextStatus === "approved") {
+          nextStatus = "approved";
+        } else if (requiredCountNum <= 1) {
+          nextStatus = "rejected";
+        }
+
+        if (nextStatus === "approved") nextApprovedCount += 1;
+
+        return {
+          ...xo,
+          status: nextStatus,
+        };
+      });
+
+      const needMeta = pickClinicMetaFromNeed(need);
+      const clinicMeta = Clinic
+        ? await loadClinicMetaByClinicId(need.clinicId)
+        : null;
+
+      const merged = mergeClinicMeta({ needMeta, clinicMeta });
+
+      const shift = await Shift.create(
+        [
+          {
+            clinicId: need.clinicId,
+            shiftNeedId: String(need._id),
+
+            staffId: applicantStaffId || "",
+            helperUserId: applicantUserId || "",
+
+            date: need.date,
+            start: need.start,
+            end: need.end,
+            hourlyRate: need.hourlyRate,
+            note: need.note || need.title || "Shift from ShiftNeed",
+            status: "scheduled",
+
+            clinicLat: merged.clinicLat ?? null,
+            clinicLng: merged.clinicLng ?? null,
+            clinicName: s(merged.clinicName),
+            clinicPhone: s(merged.clinicPhone),
+            clinicAddress: s(merged.clinicAddress),
+          },
+        ],
+        { session }
+      );
+
+      if (nextApprovedCount >= requiredCountNum) {
+        need.status = "filled";
+      }
+
+      need.clinicLat = merged.clinicLat ?? null;
+      need.clinicLng = merged.clinicLng ?? null;
+      need.clinicName = s(merged.clinicName);
+      need.clinicPhone = s(merged.clinicPhone);
+      need.clinicAddress = s(merged.clinicAddress);
+      need.clinicDistrict = s(merged.clinicDistrict);
+      need.clinicProvince = s(merged.clinicProvince);
+      need.clinicLocationLabel = s(merged.clinicLocationLabel);
+
+      await need.save({ session });
+
+      result = {
+        ok: true,
+        shift: Array.isArray(shift) ? shift[0] : shift,
       };
     });
 
-    const needMeta = pickClinicMetaFromNeed(need);
-    const clinicMeta = Clinic
-      ? await loadClinicMetaByClinicId(need.clinicId)
-      : null;
-
-    const merged = mergeClinicMeta({ needMeta, clinicMeta });
-
-    const shift = await Shift.create({
-      clinicId: need.clinicId,
-      shiftNeedId: String(need._id),
-
-      staffId: applicantStaffId || "",
-      helperUserId: applicantUserId || "",
-
-      date: need.date,
-      start: need.start,
-      end: need.end,
-      hourlyRate: need.hourlyRate,
-      note: need.note || need.title || "Shift from ShiftNeed",
-      status: "scheduled",
-
-      clinicLat: merged.clinicLat ?? null,
-      clinicLng: merged.clinicLng ?? null,
-      clinicName: s(merged.clinicName),
-      clinicPhone: s(merged.clinicPhone),
-      clinicAddress: s(merged.clinicAddress),
-    });
-
-    if (nextApprovedCount >= requiredCountNum) {
-      need.status = "filled";
+    if (!result) {
+      return res.status(409).json({
+        message: "approve applicant did not complete",
+      });
     }
 
-    need.clinicLat = merged.clinicLat ?? null;
-    need.clinicLng = merged.clinicLng ?? null;
-    need.clinicName = s(merged.clinicName);
-    need.clinicPhone = s(merged.clinicPhone);
-    need.clinicAddress = s(merged.clinicAddress);
-    need.clinicDistrict = s(merged.clinicDistrict);
-    need.clinicProvince = s(merged.clinicProvince);
-    need.clinicLocationLabel = s(merged.clinicLocationLabel);
-
-    await need.save();
-
-    return res.json({ ok: true, shift });
+    return res.json(result);
   } catch (e) {
     return res.status(e.statusCode || 500).json({
       message: "approveApplicant failed",
       error: e.message || String(e),
     });
+  } finally {
+    if (session) {
+      await session.endSession();
+    }
   }
 }
 
