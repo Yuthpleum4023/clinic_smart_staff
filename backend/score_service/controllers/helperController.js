@@ -71,6 +71,91 @@ function normalizeStats(doc) {
   };
 }
 
+function pickLocation(raw) {
+  const root = asObj(raw);
+  const coords = asObj(root.coordinates);
+
+  const lat =
+    n(
+      root.lat ??
+        root.latitude ??
+        coords.lat ??
+        coords.latitude,
+      NaN
+    );
+
+  const lng =
+    n(
+      root.lng ??
+        root.longitude ??
+        root.lon ??
+        root.long ??
+        coords.lng ??
+        coords.longitude ??
+        coords.lon ??
+        coords.long,
+      NaN
+    );
+
+  return {
+    lat: Number.isFinite(lat) ? lat : null,
+    lng: Number.isFinite(lng) ? lng : null,
+    district: s(root.district || root.amphoe),
+    province: s(root.province || root.changwat),
+    address: s(root.address || root.fullAddress),
+    label: s(root.label || root.locationLabel),
+  };
+}
+
+function buildAreaText(location = {}) {
+  const district = s(location.district);
+  const province = s(location.province);
+  const label = s(location.label);
+  const address = s(location.address);
+
+  if (district && province) return `${district}, ${province}`;
+  if (province) return province;
+  if (district) return district;
+  if (label) return label;
+  if (address) return address;
+  return "";
+}
+
+function toRad(deg) {
+  return (deg * Math.PI) / 180;
+}
+
+function haversineKm(lat1, lng1, lat2, lng2) {
+  if (
+    !Number.isFinite(lat1) ||
+    !Number.isFinite(lng1) ||
+    !Number.isFinite(lat2) ||
+    !Number.isFinite(lng2)
+  ) {
+    return null;
+  }
+
+  const R = 6371;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) *
+      Math.cos(toRad(lat2)) *
+      Math.sin(dLng / 2) *
+      Math.sin(dLng / 2);
+
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return Math.round(R * c * 100) / 100;
+}
+
+function formatDistanceText(distanceKm) {
+  if (!Number.isFinite(distanceKm)) return "";
+  if (distanceKm < 1) return `${Math.round(distanceKm * 1000)} ม.`;
+  return `${distanceKm.toFixed(distanceKm < 10 ? 1 : 0)} กม.`;
+}
+
 function toScorePayload(doc) {
   if (!doc) {
     return {
@@ -94,8 +179,22 @@ function toScorePayload(doc) {
       principalId: "",
       staffId: "",
       updatedAt: null,
+      location: {
+        lat: null,
+        lng: null,
+        district: "",
+        province: "",
+        address: "",
+        label: "",
+      },
+      areaText: "",
+      distanceKm: null,
+      distanceText: "",
+      nearClinic: false,
     };
   }
+
+  const location = pickLocation(doc.location);
 
   return {
     userId: isValidUserId(doc.userId) ? s(doc.userId) : "",
@@ -113,6 +212,12 @@ function toScorePayload(doc) {
     level: s(doc.level),
     levelLabel: s(doc.levelLabel),
     updatedAt: doc.updatedAt || null,
+
+    location,
+    areaText: buildAreaText(location),
+    distanceKm: null,
+    distanceText: "",
+    nearClinic: false,
   };
 }
 
@@ -235,6 +340,12 @@ function normalizeAuthUser(raw) {
     s(profile.phone) ||
     s(user.phone);
 
+  const location = pickLocation(
+    u.location ||
+      profile.location ||
+      user.location
+  );
+
   return {
     ...u,
     userId: isValidUserId(rawUserId) ? rawUserId : "",
@@ -245,6 +356,8 @@ function normalizeAuthUser(raw) {
     role: pickRole(u),
     activeRole: s(u.activeRole) || s(user.activeRole),
     roles: asArray(u.roles).length > 0 ? asArray(u.roles) : asArray(user.roles),
+    location,
+    areaText: buildAreaText(location),
   };
 }
 
@@ -264,6 +377,18 @@ function mergeHelperWithScore(user, scoreDoc) {
   const phone = s(normalizedUser.phone) || s(scorePayload.phone);
   const role = pickRole(normalizedUser, scoreDoc);
 
+  const userLocation = pickLocation(normalizedUser.location);
+  const scoreLocation = pickLocation(scorePayload.location);
+
+  const location = {
+    lat: userLocation.lat ?? scoreLocation.lat,
+    lng: userLocation.lng ?? scoreLocation.lng,
+    district: userLocation.district || scoreLocation.district,
+    province: userLocation.province || scoreLocation.province,
+    address: userLocation.address || scoreLocation.address,
+    label: userLocation.label || scoreLocation.label,
+  };
+
   return {
     ...normalizedUser,
     ...scorePayload,
@@ -277,6 +402,8 @@ function mergeHelperWithScore(user, scoreDoc) {
     name: s(normalizedUser.name) || s(scorePayload.name) || fullName,
     phone,
     role,
+    location,
+    areaText: buildAreaText(location),
   };
 }
 
@@ -338,12 +465,13 @@ async function loadScoreDocsByIdentity(items) {
         "level",
         "levelLabel",
         "updatedAt",
+        "location",
       ].join(" ")
     )
     .lean();
 }
 
-async function searchUsersFallback(q, limit) {
+async function searchUsersFallback(q, limit, clinicLat = null, clinicLng = null) {
   const db = mongoose.connection?.db;
   if (!db) return [];
 
@@ -385,6 +513,7 @@ async function searchUsersFallback(q, limit) {
       roles: 1,
       clinicId: 1,
       email: 1,
+      location: 1,
     })
     .limit(limit)
     .toArray();
@@ -402,16 +531,27 @@ async function searchUsersFallback(q, limit) {
       (staffId ? byStaffId.get(staffId) : null) ||
       null;
 
-    return {
+    const item = {
       ...mergeHelperWithScore(u, scoreDoc),
       source: "users_fallback",
+    };
+
+    const location = pickLocation(item.location);
+    const distanceKm = haversineKm(clinicLat, clinicLng, location.lat, location.lng);
+
+    return {
+      ...item,
+      distanceKm,
+      distanceText: formatDistanceText(distanceKm),
+      nearClinic: Number.isFinite(distanceKm) ? distanceKm <= 10 : false,
+      areaText: buildAreaText(location),
     };
   });
 
   return dedupeItems(merged);
 }
 
-async function searchTrustScoreFallback(q, limit) {
+async function searchTrustScoreFallback(q, limit, clinicLat = null, clinicLng = null) {
   const query = s(q);
   if (!query) return [];
 
@@ -447,6 +587,7 @@ async function searchTrustScoreFallback(q, limit) {
         "level",
         "levelLabel",
         "updatedAt",
+        "location",
       ].join(" ")
     )
     .sort({ trustScore: -1, updatedAt: -1 })
@@ -471,6 +612,9 @@ async function searchTrustScoreFallback(q, limit) {
 
   const items = Array.from(dedup.values()).map((d) => {
     const payload = toScorePayload(d);
+    const location = pickLocation(payload.location);
+    const distanceKm = haversineKm(clinicLat, clinicLng, location.lat, location.lng);
+
     return {
       userId: payload.userId,
       principalId: payload.principalId,
@@ -486,6 +630,11 @@ async function searchTrustScoreFallback(q, limit) {
       level: payload.level,
       levelLabel: payload.levelLabel,
       updatedAt: payload.updatedAt,
+      location,
+      areaText: buildAreaText(location),
+      distanceKm,
+      distanceText: formatDistanceText(distanceKm),
+      nearClinic: Number.isFinite(distanceKm) ? distanceKm <= 10 : false,
       source: "trustscore_fallback",
     };
   });
@@ -501,6 +650,9 @@ async function searchHelpers(req, res) {
       Math.max(Number.isFinite(limitRaw) ? limitRaw : 20, 1),
       50
     );
+
+    const clinicLat = n(req.query.clinicLat, NaN);
+    const clinicLng = n(req.query.clinicLng, NaN);
 
     if (!q) {
       return res.json({
@@ -523,9 +675,14 @@ async function searchHelpers(req, res) {
         : {}),
     };
 
+    const clinicQuery =
+      Number.isFinite(clinicLat) && Number.isFinite(clinicLng)
+        ? `&clinicLat=${encodeURIComponent(clinicLat)}&clinicLng=${encodeURIComponent(clinicLng)}`
+        : "";
+
     const candidates = [
-      `${base}/helpers/search?limit=${limit}&q=${encodeURIComponent(q)}`,
-      `${base}/api/helpers/search?limit=${limit}&q=${encodeURIComponent(q)}`,
+      `${base}/helpers/search?limit=${limit}&q=${encodeURIComponent(q)}${clinicQuery}`,
+      `${base}/api/helpers/search?limit=${limit}&q=${encodeURIComponent(q)}${clinicQuery}`,
     ];
 
     let payload = null;
@@ -541,7 +698,7 @@ async function searchHelpers(req, res) {
     }
 
     if (!payload) {
-      const userFallbackItems = await searchUsersFallback(q, limit);
+      const userFallbackItems = await searchUsersFallback(q, limit, clinicLat, clinicLng);
       if (userFallbackItems.length > 0) {
         return res.json({
           ok: true,
@@ -553,7 +710,7 @@ async function searchHelpers(req, res) {
         });
       }
 
-      const trustFallbackItems = await searchTrustScoreFallback(q, limit);
+      const trustFallbackItems = await searchTrustScoreFallback(q, limit, clinicLat, clinicLng);
       if (trustFallbackItems.length > 0) {
         return res.json({
           ok: true,
@@ -588,12 +745,23 @@ async function searchHelpers(req, res) {
           (staffId ? byStaffId.get(staffId) : null) ||
           null;
 
-        return mergeHelperWithScore(u, scoreDoc);
+        const item = mergeHelperWithScore(u, scoreDoc);
+        const location = pickLocation(item.location);
+        const distanceKm = haversineKm(clinicLat, clinicLng, location.lat, location.lng);
+
+        return {
+          ...item,
+          location,
+          areaText: buildAreaText(location),
+          distanceKm,
+          distanceText: formatDistanceText(distanceKm),
+          nearClinic: Number.isFinite(distanceKm) ? distanceKm <= 10 : false,
+        };
       })
     );
 
     if (results.length === 0) {
-      const userFallbackItems = await searchUsersFallback(q, limit);
+      const userFallbackItems = await searchUsersFallback(q, limit, clinicLat, clinicLng);
       if (userFallbackItems.length > 0) {
         return res.json({
           ok: true,
@@ -604,7 +772,7 @@ async function searchHelpers(req, res) {
         });
       }
 
-      const trustFallbackItems = await searchTrustScoreFallback(q, limit);
+      const trustFallbackItems = await searchTrustScoreFallback(q, limit, clinicLat, clinicLng);
       if (trustFallbackItems.length > 0) {
         return res.json({
           ok: true,
@@ -660,6 +828,7 @@ async function getHelperScoreByUserId(req, res) {
           "level",
           "levelLabel",
           "updatedAt",
+          "location",
         ].join(" ")
       )
       .lean();
@@ -671,33 +840,15 @@ async function getHelperScoreByUserId(req, res) {
       }
     }
 
-    if (!bestDoc) {
-      return res.json({
-        ok: true,
-        userId,
-        fullName: "",
-        name: "",
-        phone: "",
-        role: "helper",
-        trustScore: 80,
-        flags: [],
-        badges: [],
-        stats: {
-          totalShifts: 0,
-          completed: 0,
-          late: 0,
-          noShow: 0,
-          cancelledEarly: 0,
-        },
-        level: "unknown",
-        levelLabel: "ยังไม่มีข้อมูล",
-      });
-    }
+    const payload = toScorePayload(bestDoc);
+    const location = pickLocation(payload.location);
 
     return res.json({
       ok: true,
       userId,
-      ...toScorePayload(bestDoc),
+      ...payload,
+      location,
+      areaText: buildAreaText(location),
     });
   } catch (e) {
     return res.status(500).json({
