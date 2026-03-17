@@ -44,10 +44,66 @@ function isHelperLikeUser(doc) {
   return role === "helper" || activeRole === "helper" || roles.includes("helper");
 }
 
+function asObj(v) {
+  return v && typeof v === "object" ? v : {};
+}
+
+function toNum(v) {
+  if (v == null) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function pickLocation(raw) {
+  const root = asObj(raw);
+  const coords = asObj(root.coordinates);
+
+  const lat =
+    toNum(root.lat) ??
+    toNum(root.latitude) ??
+    toNum(coords.lat) ??
+    toNum(coords.latitude);
+
+  const lng =
+    toNum(root.lng) ??
+    toNum(root.longitude) ??
+    toNum(root.lon) ??
+    toNum(root.long) ??
+    toNum(coords.lng) ??
+    toNum(coords.longitude) ??
+    toNum(coords.lon) ??
+    toNum(coords.long);
+
+  return {
+    lat,
+    lng,
+    district: norm(root.district || root.amphoe),
+    province: norm(root.province || root.changwat),
+    address: norm(root.address || root.fullAddress),
+    label: norm(root.label || root.locationLabel),
+  };
+}
+
+function buildAreaText(location = {}) {
+  const district = norm(location.district);
+  const province = norm(location.province);
+  const label = norm(location.label);
+  const address = norm(location.address);
+
+  if (district && province) return `${district}, ${province}`;
+  if (province) return province;
+  if (district) return district;
+  if (label) return label;
+  if (address) return address;
+  return "";
+}
+
 function toHelperItem(doc) {
   const roles = Array.isArray(doc?.roles)
     ? doc.roles.map((x) => norm(x)).filter(Boolean)
     : [];
+
+  const location = pickLocation(doc?.location);
 
   return {
     userId: norm(doc?.userId),
@@ -57,8 +113,20 @@ function toHelperItem(doc) {
     role: isHelperLikeUser(doc) ? "helper" : norm(doc?.role),
     activeRole: isHelperLikeUser(doc) ? "helper" : norm(doc?.activeRole),
     roles,
-    clinicId: norm(doc?.clinicId), // source clinic ของ account นี้ (ถ้ามี)
-    staffId: norm(doc?.staffId),   // compatibility only
+    clinicId: norm(doc?.clinicId),
+    staffId: norm(doc?.staffId),
+
+    // ✅ location
+    location,
+    areaText: buildAreaText(location),
+
+    // ✅ convenience flat fields
+    lat: location.lat,
+    lng: location.lng,
+    district: location.district,
+    province: location.province,
+    address: location.address,
+    label: location.label,
   };
 }
 
@@ -108,7 +176,9 @@ async function searchHelpers(req, res) {
     }
 
     const docs = await User.find(mongoQuery)
-      .select("userId fullName phone email role activeRole roles clinicId staffId isActive")
+      .select(
+        "userId fullName phone email role activeRole roles clinicId staffId isActive location"
+      )
       .sort({ fullName: 1, createdAt: -1 })
       .limit(limit)
       .lean();
@@ -156,7 +226,9 @@ async function getHelperByUserId(req, res) {
         { roles: "helper" },
       ],
     })
-      .select("userId fullName phone email role activeRole roles clinicId staffId isActive")
+      .select(
+        "userId fullName phone email role activeRole roles clinicId staffId isActive location"
+      )
       .lean();
 
     if (!doc || !isHelperLikeUser(doc)) {
