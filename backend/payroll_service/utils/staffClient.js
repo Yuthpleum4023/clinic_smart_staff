@@ -2,8 +2,8 @@
 //
 // PURPOSE: payroll_service -> staff_service client
 // - getEmployeeByUserId(userId, bearerToken?)
-// - getEmployeeByStaffId(staffId, bearerToken?)          ✅ NEW
-// - listEmployeesDropdown(bearerToken?)                  ✅ NEW (admin dropdown)
+// - getEmployeeByStaffId(staffId, bearerToken?)
+// - listEmployeesDropdown(bearerToken?)
 //
 // NOTE:
 // staff_service ของท่านใช้: app.use("/api/employees", employeeRoutes)
@@ -21,10 +21,35 @@ function baseUrl() {
 }
 
 function buildHeaders(bearerToken = "") {
-  const headers = {};
+  const headers = {
+    Accept: "application/json",
+  };
+
   const t = s(bearerToken);
-  if (t) headers["Authorization"] = t; // ส่งต่อ token เดิม (ถ้า staff_service มี auth)
+  if (t) {
+    headers["Authorization"] = t;
+  }
+
   return headers;
+}
+
+async function readResponseBodySafe(response) {
+  const raw = await response.text().catch(() => "");
+
+  if (!raw) {
+    return { raw: "", data: {} };
+  }
+
+  try {
+    return { raw, data: JSON.parse(raw) };
+  } catch (_) {
+    return {
+      raw,
+      data: {
+        message: raw,
+      },
+    };
+  }
 }
 
 async function fetchJson(url, { headers = {}, timeoutMs = 15000 } = {}) {
@@ -38,29 +63,125 @@ async function fetchJson(url, { headers = {}, timeoutMs = 15000 } = {}) {
       signal: ctrl.signal,
     });
 
-    const data = await r.json().catch(() => ({}));
-    return { ok: r.ok, status: r.status, data };
+    const { raw, data } = await readResponseBodySafe(r);
+
+    return {
+      ok: r.ok,
+      status: r.status,
+      data,
+      raw,
+      url,
+    };
+  } catch (e) {
+    if (e?.name === "AbortError") {
+      const err = new Error(`staff_service timeout after ${timeoutMs}ms`);
+      err.status = 504;
+      err.payload = {};
+      err.url = url;
+      throw err;
+    }
+
+    const err = new Error(e?.message || "staff_service request failed");
+    err.status = 503;
+    err.payload = {};
+    err.url = url;
+    throw err;
   } finally {
     clearTimeout(t);
   }
 }
 
+function extractEmployee(payload) {
+  if (!payload || typeof payload !== "object") return null;
+
+  if (payload.employee && typeof payload.employee === "object") {
+    return payload.employee;
+  }
+
+  if (payload.data && typeof payload.data === "object" && !Array.isArray(payload.data)) {
+    if (payload.data.employee && typeof payload.data.employee === "object") {
+      return payload.data.employee;
+    }
+    return payload.data;
+  }
+
+  if (payload.item && typeof payload.item === "object") {
+    return payload.item;
+  }
+
+  if (payload.result && typeof payload.result === "object" && !Array.isArray(payload.result)) {
+    return payload.result;
+  }
+
+  if (Array.isArray(payload.items) && payload.items.length === 1) {
+    return payload.items[0];
+  }
+
+  if (
+    payload._id ||
+    payload.id ||
+    payload.staffId ||
+    payload.userId ||
+    payload.fullName
+  ) {
+    return payload;
+  }
+
+  return null;
+}
+
+function extractList(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (!payload || typeof payload !== "object") return [];
+
+  if (Array.isArray(payload.items)) return payload.items;
+  if (Array.isArray(payload.data)) return payload.data;
+  if (Array.isArray(payload.results)) return payload.results;
+  if (Array.isArray(payload.employees)) return payload.employees;
+
+  if (payload.data && typeof payload.data === "object" && Array.isArray(payload.data.items)) {
+    return payload.data.items;
+  }
+
+  return [];
+}
+
 // helper: try multiple candidate URLs (compat)
-async function getFirstOk(candidates, headers) {
+async function getFirstOk(candidates, headers, options = {}) {
+  const allow404 = !!options.allow404;
   let last = null;
 
   for (const url of candidates) {
-    const res = await fetchJson(url, { headers });
+    try {
+      const res = await fetchJson(url, { headers });
 
-    if (res.ok) return res;
+      if (res.ok) return res;
 
-    // เก็บ error ล่าสุดไว้
-    last = res;
+      if (allow404 && res.status === 404) {
+        last = res;
+        continue;
+      }
+
+      last = res;
+    } catch (e) {
+      last = {
+        ok: false,
+        status: e?.status || 503,
+        data: e?.payload || { message: e?.message || "staff_service request failed" },
+        raw: "",
+        url,
+      };
+    }
+  }
+
+  if (allow404 && last?.status === 404) {
+    return last;
   }
 
   const msg =
     last?.data?.message ||
     last?.data?.error ||
+    last?.raw ||
     `staff_service error (${last?.status || "unknown"})`;
 
   const err = new Error(msg);
@@ -83,16 +204,20 @@ async function getEmployeeByUserId(userId, bearerToken = "") {
   const candidates = [
     `${b}/api/employees/by-user/${encodeURIComponent(u)}`, // ✅ correct for your staff_service
     `${b}/employees/by-user/${encodeURIComponent(u)}`, // fallback
+    `${b}/api/employees?userId=${encodeURIComponent(u)}`, // fallback
+    `${b}/employees?userId=${encodeURIComponent(u)}`, // fallback
   ];
 
-  const r = await getFirstOk(candidates, headers);
+  const r = await getFirstOk(candidates, headers, { allow404: true });
 
-  // รองรับทั้งแบบ {ok:true, employee:{...}} หรือส่ง employee ตรง ๆ
-  return r.data?.employee || r.data || null;
+  if (!r.ok && r.status === 404) return null;
+
+  const employee = extractEmployee(r.data);
+  return employee || null;
 }
 
 // ======================================================
-// ✅ NEW: ดึง employee โดย staffId (ซึ่งเท่ากับ Employee _id ใน staff_service)
+// ดึง employee โดย staffId (ซึ่งเท่ากับ Employee _id ใน staff_service)
 // ======================================================
 async function getEmployeeByStaffId(staffId, bearerToken = "") {
   const id = s(staffId);
@@ -106,14 +231,20 @@ async function getEmployeeByStaffId(staffId, bearerToken = "") {
     `${b}/employees/by-staff/${encodeURIComponent(id)}`, // fallback
     `${b}/api/employees/${encodeURIComponent(id)}`, // fallback (CRUD by id)
     `${b}/employees/${encodeURIComponent(id)}`, // fallback
+    `${b}/api/employees?staffId=${encodeURIComponent(id)}`, // fallback
+    `${b}/employees?staffId=${encodeURIComponent(id)}`, // fallback
   ];
 
-  const r = await getFirstOk(candidates, headers);
-  return r.data?.employee || r.data || null;
+  const r = await getFirstOk(candidates, headers, { allow404: true });
+
+  if (!r.ok && r.status === 404) return null;
+
+  const employee = extractEmployee(r.data);
+  return employee || null;
 }
 
 // ======================================================
-// ✅ NEW: dropdown list สำหรับ admin
+// dropdown list สำหรับ admin
 // - expected from staff_service: { ok:true, items:[{staffId, fullName, employmentType, userId}] }
 // - fallback: ถ้า staff_service ยังไม่มี /dropdown จะ fallback ไป list แล้ว map ให้
 // ======================================================
@@ -128,10 +259,19 @@ async function listEmployeesDropdown(bearerToken = "") {
   ];
 
   try {
-    const r = await getFirstOk(dropdownCandidates, headers);
-    const items = r.data?.items;
-    if (Array.isArray(items)) return items;
-    // ถ้า payload ไม่ตรงก็ไป fallback list
+    const r = await getFirstOk(dropdownCandidates, headers, { allow404: true });
+    const items = extractList(r.data);
+    if (Array.isArray(items) && items.length) {
+      return items
+        .filter((e) => e && typeof e === "object")
+        .map((e) => ({
+          staffId: s(e.staffId || e._id || e.id),
+          fullName: s(e.fullName || e.name),
+          employmentType: s(e.employmentType),
+          userId: s(e.userId || e.linkedUserId),
+        }))
+        .filter((x) => x.staffId);
+    }
   } catch (_) {
     // ignore -> fallback list
   }
@@ -143,18 +283,27 @@ async function listEmployeesDropdown(bearerToken = "") {
   ];
 
   const r2 = await getFirstOk(listCandidates, headers);
-
-  // รองรับทั้งแบบ {ok:true, items:[...]} หรือเป็น array ตรง ๆ
-  const rawList = Array.isArray(r2.data) ? r2.data : r2.data?.items;
-  const list = Array.isArray(rawList) ? rawList : [];
+  const list = extractList(r2.data);
 
   return list
-    .filter((e) => e && (e.active === undefined || e.active === true))
+    .filter((e) => {
+      if (!e || typeof e !== "object") return false;
+
+      const status = s(e.status || e.employeeStatus).toLowerCase();
+      const activeFlag = e.active;
+
+      if (activeFlag === false) return false;
+      if (["inactive", "terminated", "deleted", "archived"].includes(status)) {
+        return false;
+      }
+
+      return true;
+    })
     .map((e) => ({
-      staffId: String(e._id || ""),
-      fullName: s(e.fullName),
+      staffId: s(e.staffId || e._id || e.id),
+      fullName: s(e.fullName || e.name),
       employmentType: s(e.employmentType),
-      userId: s(e.userId),
+      userId: s(e.userId || e.linkedUserId),
     }))
     .filter((x) => x.staffId);
 }
