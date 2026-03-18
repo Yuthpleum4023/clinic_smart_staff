@@ -40,6 +40,42 @@ function isValidLatLng(lat, lng) {
   return true;
 }
 
+function haversineKm(lat1, lng1, lat2, lng2) {
+  if (!isValidLatLng(lat1, lng1) || !isValidLatLng(lat2, lng2)) return null;
+
+  const toRad = (deg) => (deg * Math.PI) / 180;
+  const R = 6371; // km
+
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) *
+      Math.cos(toRad(lat2)) *
+      Math.sin(dLng / 2) *
+      Math.sin(dLng / 2);
+
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+function formatDistanceText(distanceKm) {
+  const km = numOrNull(distanceKm);
+  if (km === null || !Number.isFinite(km) || km <= 0) return "";
+
+  if (km < 1) {
+    const meters = Math.round(km * 1000);
+    return `${meters} ม.`;
+  }
+
+  if (km < 10) {
+    return `${km.toFixed(1)} กม.`;
+  }
+
+  return `${Math.round(km)} กม.`;
+}
+
 function pickClinicLatLngFromClinicDoc(doc) {
   if (!doc) {
     return {
@@ -118,7 +154,11 @@ async function loadClinicMapByIds(ids = []) {
   return m;
 }
 
-function normalizeShiftOutput(row, clinicMap = new Map()) {
+function normalizeShiftOutput(
+  row,
+  clinicMap = new Map(),
+  helperLocation = null
+) {
   const out = {
     ...row,
     staffId: s(row.staffId),
@@ -150,6 +190,29 @@ function normalizeShiftOutput(row, clinicMap = new Map()) {
       if (!s(out.clinicName)) out.clinicName = picked.clinicName;
       if (!s(out.clinicAddress)) out.clinicAddress = picked.clinicAddress;
     }
+  }
+
+  // ✅ NEW: distance support (optional)
+  const helperLat = numOrNull(helperLocation?.lat);
+  const helperLng = numOrNull(helperLocation?.lng);
+  const clinicLat = numOrNull(out.clinicLat);
+  const clinicLng = numOrNull(out.clinicLng);
+
+  if (
+    isValidLatLng(helperLat, helperLng) &&
+    isValidLatLng(clinicLat, clinicLng)
+  ) {
+    const distanceKm = haversineKm(helperLat, helperLng, clinicLat, clinicLng);
+    out.distanceKm =
+      distanceKm !== null ? Number(distanceKm.toFixed(distanceKm < 10 ? 1 : 0)) : null;
+    out.distance_km = out.distanceKm;
+    out.distanceText = formatDistanceText(distanceKm);
+    out.distance_text = out.distanceText;
+  } else {
+    out.distanceKm = row.distanceKm ?? row.distance_km ?? null;
+    out.distance_km = out.distanceKm;
+    out.distanceText = s(row.distanceText || row.distance_text);
+    out.distance_text = out.distanceText;
   }
 
   return out;
@@ -223,7 +286,7 @@ async function createShift(req, res) {
 
     return res.json({
       ok: true,
-      shift: normalizeShiftOutput(created.toObject(), clinicMap),
+      shift: normalizeShiftOutput(created.toObject(), clinicMap, null),
     });
   } catch (e) {
     return res.status(500).json({
@@ -247,6 +310,8 @@ async function listShifts(req, res) {
       helperUserId = "",
       date = "",
       status = "",
+      helperLat = "",
+      helperLng = "",
     } = req.query || {};
 
     const q = {};
@@ -304,7 +369,15 @@ async function listShifts(req, res) {
       clinicMap = await loadClinicMapByIds(clinicIds);
     }
 
-    const items = rows.map((r) => normalizeShiftOutput(r, clinicMap));
+    // ✅ NEW: distance support via query helperLat/helperLng
+    const helperLocation = {
+      lat: numOrNull(helperLat),
+      lng: numOrNull(helperLng),
+    };
+
+    const items = rows.map((r) =>
+      normalizeShiftOutput(r, clinicMap, helperLocation)
+    );
 
     return res.json({
       ok: true,
@@ -347,7 +420,7 @@ async function updateShiftStatus(req, res) {
 
     return res.json({
       ok: true,
-      shift: normalizeShiftOutput(shift.toObject(), clinicMap),
+      shift: normalizeShiftOutput(shift.toObject(), clinicMap, null),
     });
   } catch (e) {
     return res.status(500).json({
