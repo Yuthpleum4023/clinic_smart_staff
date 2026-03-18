@@ -4,6 +4,9 @@ const mongoose = require("mongoose");
 const Availability = require("../models/Availability");
 const Shift = require("../models/Shift");
 const Clinic = require("../models/Clinic");
+const {
+  buildDistancePayload,
+} = require("../utils/locationEngine");
 
 // ---------------- helpers ----------------
 function normalizeRoles(r) {
@@ -151,54 +154,6 @@ function buildLocationLabel({
   if (d) return d;
   if (a) return a;
   return "";
-}
-
-function toRad(v) {
-  return (v * Math.PI) / 180;
-}
-
-function distanceKmBetween(lat1, lng1, lat2, lng2) {
-  const aLat = toNumOrNull(lat1);
-  const aLng = toNumOrNull(lng1);
-  const bLat = toNumOrNull(lat2);
-  const bLng = toNumOrNull(lng2);
-
-  if (aLat === null || aLng === null || bLat === null || bLng === null) {
-    return null;
-  }
-
-  const R = 6371;
-  const dLat = toRad(bLat - aLat);
-  const dLng = toRad(bLng - aLng);
-
-  const x =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(toRad(aLat)) *
-      Math.cos(toRad(bLat)) *
-      Math.sin(dLng / 2) *
-      Math.sin(dLng / 2);
-
-  const c = 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
-  const km = R * c;
-
-  if (!Number.isFinite(km)) return null;
-  return km;
-}
-
-function roundDistanceKm(km) {
-  if (km === null || km === undefined || !Number.isFinite(Number(km))) {
-    return null;
-  }
-  const n = Number(km);
-  if (n < 10) return Math.round(n * 10) / 10;
-  return Math.round(n);
-}
-
-function formatDistanceKm(km) {
-  const rounded = roundDistanceKm(km);
-  if (rounded === null) return "";
-  if (rounded < 10) return `${rounded.toFixed(1)} กม.`;
-  return `${Math.round(rounded)} กม.`;
 }
 
 function isNearbyDistance(distanceKm) {
@@ -627,16 +582,16 @@ async function buildEnrichedAvailabilityItems(items, clinicCtx) {
       remoteLocationMap[lookupKey]
     );
 
-    const rawDistanceKm = clinicCtx
-      ? distanceKmBetween(
-          clinicCtx.lat,
-          clinicCtx.lng,
-          mergedLoc.lat,
-          mergedLoc.lng
+    const distancePayload = clinicCtx
+      ? buildDistancePayload(
+          { lat: clinicCtx?.lat, lng: clinicCtx?.lng },
+          { lat: mergedLoc?.lat, lng: mergedLoc?.lng }
         )
-      : null;
-
-    const distanceKm = roundDistanceKm(rawDistanceKm);
+      : {
+          distanceKm: null,
+          distanceText: "",
+          nearClinic: false,
+        };
 
     return {
       ...it,
@@ -646,10 +601,10 @@ async function buildEnrichedAvailabilityItems(items, clinicCtx) {
       province: mergedLoc.province,
       address: mergedLoc.address,
       locationLabel: mergedLoc.locationLabel,
-      distanceKm,
-      distanceText: formatDistanceKm(rawDistanceKm),
-      isNearby: isNearbyDistance(distanceKm),
-      nearbyLabel: nearbyLabelFromDistance(distanceKm),
+      distanceKm: distancePayload.distanceKm,
+      distanceText: distancePayload.distanceText,
+      isNearby: distancePayload.nearClinic,
+      nearbyLabel: distancePayload.nearClinic ? "ใกล้คลินิก" : "",
     };
   });
 
@@ -824,7 +779,10 @@ async function listMyAvailabilities(req, res) {
           address: clinicAddress,
         });
 
-      const distanceKm = distanceKmBetween(it?.lat, it?.lng, c?.lat, c?.lng);
+      const distancePayload = buildDistancePayload(
+        { lat: it?.lat, lng: it?.lng },
+        { lat: c?.lat, lng: c?.lng }
+      );
 
       return {
         ...it,
@@ -836,8 +794,8 @@ async function listMyAvailabilities(req, res) {
         bookedClinicDistrict: clinicDistrict,
         bookedClinicProvince: clinicProvince,
         bookedClinicLocationLabel: bookedClinicLocationLabel,
-        bookedClinicDistanceKm: roundDistanceKm(distanceKm),
-        bookedClinicDistanceText: formatDistanceKm(distanceKm),
+        bookedClinicDistanceKm: distancePayload.distanceKm,
+        bookedClinicDistanceText: distancePayload.distanceText,
       };
     });
 

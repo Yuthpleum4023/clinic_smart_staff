@@ -1,5 +1,10 @@
 const mongoose = require("mongoose");
 const TrustScore = require("../models/TrustScore");
+const {
+  haversineKm,
+  formatDistanceText,
+  buildDistancePayload,
+} = require("../utils/locationEngine");
 
 function s(v) {
   return String(v || "").trim();
@@ -75,27 +80,22 @@ function pickLocation(raw) {
   const root = asObj(raw);
   const coords = asObj(root.coordinates);
 
-  const lat =
-    n(
-      root.lat ??
-        root.latitude ??
-        coords.lat ??
-        coords.latitude,
-      NaN
-    );
+  const lat = n(
+    root.lat ?? root.latitude ?? coords.lat ?? coords.latitude,
+    NaN
+  );
 
-  const lng =
-    n(
-      root.lng ??
-        root.longitude ??
-        root.lon ??
-        root.long ??
-        coords.lng ??
-        coords.longitude ??
-        coords.lon ??
-        coords.long,
-      NaN
-    );
+  const lng = n(
+    root.lng ??
+      root.longitude ??
+      root.lon ??
+      root.long ??
+      coords.lng ??
+      coords.longitude ??
+      coords.lon ??
+      coords.long,
+    NaN
+  );
 
   return {
     lat: Number.isFinite(lat) ? lat : null,
@@ -121,39 +121,20 @@ function buildAreaText(location = {}) {
   return "";
 }
 
-function toRad(deg) {
-  return (deg * Math.PI) / 180;
-}
+function buildDistanceFields(clinicLat, clinicLng, helperLocation) {
+  const payload = buildDistancePayload(
+    helperLocation,
+    {
+      lat: clinicLat,
+      lng: clinicLng,
+    }
+  );
 
-function haversineKm(lat1, lng1, lat2, lng2) {
-  if (
-    !Number.isFinite(lat1) ||
-    !Number.isFinite(lng1) ||
-    !Number.isFinite(lat2) ||
-    !Number.isFinite(lng2)
-  ) {
-    return null;
-  }
-
-  const R = 6371;
-  const dLat = toRad(lat2 - lat1);
-  const dLng = toRad(lng2 - lng1);
-
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(toRad(lat1)) *
-      Math.cos(toRad(lat2)) *
-      Math.sin(dLng / 2) *
-      Math.sin(dLng / 2);
-
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return Math.round(R * c * 100) / 100;
-}
-
-function formatDistanceText(distanceKm) {
-  if (!Number.isFinite(distanceKm)) return "";
-  if (distanceKm < 1) return `${Math.round(distanceKm * 1000)} ม.`;
-  return `${distanceKm.toFixed(distanceKm < 10 ? 1 : 0)} กม.`;
+  return {
+    distanceKm: payload.distanceKm,
+    distanceText: payload.distanceText,
+    nearClinic: payload.nearClinic,
+  };
 }
 
 function toScorePayload(doc) {
@@ -537,13 +518,11 @@ async function searchUsersFallback(q, limit, clinicLat = null, clinicLng = null)
     };
 
     const location = pickLocation(item.location);
-    const distanceKm = haversineKm(clinicLat, clinicLng, location.lat, location.lng);
+    const distance = buildDistanceFields(clinicLat, clinicLng, location);
 
     return {
       ...item,
-      distanceKm,
-      distanceText: formatDistanceText(distanceKm),
-      nearClinic: Number.isFinite(distanceKm) ? distanceKm <= 10 : false,
+      ...distance,
       areaText: buildAreaText(location),
     };
   });
@@ -613,7 +592,7 @@ async function searchTrustScoreFallback(q, limit, clinicLat = null, clinicLng = 
   const items = Array.from(dedup.values()).map((d) => {
     const payload = toScorePayload(d);
     const location = pickLocation(payload.location);
-    const distanceKm = haversineKm(clinicLat, clinicLng, location.lat, location.lng);
+    const distance = buildDistanceFields(clinicLat, clinicLng, location);
 
     return {
       userId: payload.userId,
@@ -632,9 +611,7 @@ async function searchTrustScoreFallback(q, limit, clinicLat = null, clinicLng = 
       updatedAt: payload.updatedAt,
       location,
       areaText: buildAreaText(location),
-      distanceKm,
-      distanceText: formatDistanceText(distanceKm),
-      nearClinic: Number.isFinite(distanceKm) ? distanceKm <= 10 : false,
+      ...distance,
       source: "trustscore_fallback",
     };
   });
@@ -698,7 +675,12 @@ async function searchHelpers(req, res) {
     }
 
     if (!payload) {
-      const userFallbackItems = await searchUsersFallback(q, limit, clinicLat, clinicLng);
+      const userFallbackItems = await searchUsersFallback(
+        q,
+        limit,
+        clinicLat,
+        clinicLng
+      );
       if (userFallbackItems.length > 0) {
         return res.json({
           ok: true,
@@ -710,7 +692,12 @@ async function searchHelpers(req, res) {
         });
       }
 
-      const trustFallbackItems = await searchTrustScoreFallback(q, limit, clinicLat, clinicLng);
+      const trustFallbackItems = await searchTrustScoreFallback(
+        q,
+        limit,
+        clinicLat,
+        clinicLng
+      );
       if (trustFallbackItems.length > 0) {
         return res.json({
           ok: true,
@@ -747,21 +734,24 @@ async function searchHelpers(req, res) {
 
         const item = mergeHelperWithScore(u, scoreDoc);
         const location = pickLocation(item.location);
-        const distanceKm = haversineKm(clinicLat, clinicLng, location.lat, location.lng);
+        const distance = buildDistanceFields(clinicLat, clinicLng, location);
 
         return {
           ...item,
           location,
           areaText: buildAreaText(location),
-          distanceKm,
-          distanceText: formatDistanceText(distanceKm),
-          nearClinic: Number.isFinite(distanceKm) ? distanceKm <= 10 : false,
+          ...distance,
         };
       })
     );
 
     if (results.length === 0) {
-      const userFallbackItems = await searchUsersFallback(q, limit, clinicLat, clinicLng);
+      const userFallbackItems = await searchUsersFallback(
+        q,
+        limit,
+        clinicLat,
+        clinicLng
+      );
       if (userFallbackItems.length > 0) {
         return res.json({
           ok: true,
@@ -772,7 +762,12 @@ async function searchHelpers(req, res) {
         });
       }
 
-      const trustFallbackItems = await searchTrustScoreFallback(q, limit, clinicLat, clinicLng);
+      const trustFallbackItems = await searchTrustScoreFallback(
+        q,
+        limit,
+        clinicLat,
+        clinicLng
+      );
       if (trustFallbackItems.length > 0) {
         return res.json({
           ok: true,

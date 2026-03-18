@@ -1,6 +1,13 @@
 // payroll_service/controllers/shiftController.js
 const mongoose = require("mongoose");
 const Shift = require("../models/Shift");
+const {
+  s,
+  numOrNull,
+  isValidLatLng,
+  buildDistancePayload,
+  pickBestDistanceFromRow,
+} = require("../utils/locationEngine");
 
 // ✅ OPTIONAL: ถ้ามี models/Clinic.js จะดึงพิกัดคลินิกมาเติมให้
 let Clinic = null;
@@ -18,62 +25,6 @@ function mustBeAdmin(req, res) {
     return false;
   }
   return true;
-}
-
-function s(v) {
-  return (v ?? "").toString().trim();
-}
-
-function numOrNull(v) {
-  if (v === null || v === undefined) return null;
-  const n = Number(v);
-  if (Number.isNaN(n)) return null;
-  return n;
-}
-
-function isValidLatLng(lat, lng) {
-  if (lat === null || lng === null) return false;
-  if (typeof lat !== "number" || typeof lng !== "number") return false;
-  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false;
-  if (lat < -90 || lat > 90) return false;
-  if (lng < -180 || lng > 180) return false;
-  return true;
-}
-
-function haversineKm(lat1, lng1, lat2, lng2) {
-  if (!isValidLatLng(lat1, lng1) || !isValidLatLng(lat2, lng2)) return null;
-
-  const toRad = (deg) => (deg * Math.PI) / 180;
-  const R = 6371; // km
-
-  const dLat = toRad(lat2 - lat1);
-  const dLng = toRad(lng2 - lng1);
-
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(toRad(lat1)) *
-      Math.cos(toRad(lat2)) *
-      Math.sin(dLng / 2) *
-      Math.sin(dLng / 2);
-
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
-}
-
-function formatDistanceText(distanceKm) {
-  const km = numOrNull(distanceKm);
-  if (km === null || !Number.isFinite(km) || km <= 0) return "";
-
-  if (km < 1) {
-    const meters = Math.round(km * 1000);
-    return `${meters} ม.`;
-  }
-
-  if (km < 10) {
-    return `${km.toFixed(1)} กม.`;
-  }
-
-  return `${Math.round(km)} กม.`;
 }
 
 function pickClinicLatLngFromClinicDoc(doc) {
@@ -192,27 +143,25 @@ function normalizeShiftOutput(
     }
   }
 
-  // ✅ NEW: distance support (optional)
-  const helperLat = numOrNull(helperLocation?.lat);
-  const helperLng = numOrNull(helperLocation?.lng);
-  const clinicLat = numOrNull(out.clinicLat);
-  const clinicLng = numOrNull(out.clinicLng);
+  const distancePayload = buildDistancePayload(
+    helperLocation,
+    {
+      lat: numOrNull(out.clinicLat),
+      lng: numOrNull(out.clinicLng),
+    }
+  );
 
-  if (
-    isValidLatLng(helperLat, helperLng) &&
-    isValidLatLng(clinicLat, clinicLng)
-  ) {
-    const distanceKm = haversineKm(helperLat, helperLng, clinicLat, clinicLng);
-    out.distanceKm =
-      distanceKm !== null ? Number(distanceKm.toFixed(distanceKm < 10 ? 1 : 0)) : null;
-    out.distance_km = out.distanceKm;
-    out.distanceText = formatDistanceText(distanceKm);
-    out.distance_text = out.distanceText;
+  if (distancePayload.distanceKm !== null) {
+    out.distanceKm = distancePayload.distanceKm;
+    out.distance_km = distancePayload.distance_km;
+    out.distanceText = distancePayload.distanceText;
+    out.distance_text = distancePayload.distance_text;
   } else {
-    out.distanceKm = row.distanceKm ?? row.distance_km ?? null;
-    out.distance_km = out.distanceKm;
-    out.distanceText = s(row.distanceText || row.distance_text);
-    out.distance_text = out.distanceText;
+    const fallback = pickBestDistanceFromRow(row);
+    out.distanceKm = fallback.distanceKm;
+    out.distance_km = fallback.distance_km;
+    out.distanceText = fallback.distanceText;
+    out.distance_text = fallback.distance_text;
   }
 
   return out;
@@ -249,7 +198,6 @@ async function createShift(req, res) {
     const st = s(start);
     const en = s(end);
 
-    // ✅ รองรับทั้ง employee และ helper
     if (!cid || (!sid && !hid) || !d || !st || !en) {
       return res.status(400).json({
         message:
@@ -320,7 +268,6 @@ async function listShifts(req, res) {
     if (status) q.status = s(status);
 
     if (role === "admin") {
-      // admin ดูได้ทั้งหมดในคลินิกตัวเอง และกรองเพิ่มได้
       if (clinicId) {
         q.clinicId = s(clinicId);
       } else if (tokenClinicId) {
@@ -330,7 +277,6 @@ async function listShifts(req, res) {
       if (staffId) q.staffId = s(staffId);
       if (helperUserId) q.helperUserId = s(helperUserId);
     } else if (role === "employee") {
-      // employee ต้องถูกล็อกด้วย clinic + staff ของตัวเอง
       if (!tokenClinicId) {
         return res.status(401).json({ message: "clinicId missing in token" });
       }
@@ -341,17 +287,14 @@ async function listShifts(req, res) {
       q.clinicId = tokenClinicId;
       q.staffId = tokenStaffId;
     } else if (role === "helper") {
-      // ✅ helper ต้องเห็นทุกงานของตัวเอง ข้ามหลายคลินิกได้
       if (tokenUserId) {
         q.helperUserId = tokenUserId;
       } else if (tokenStaffId) {
-        // fallback legacy
         q.staffId = tokenStaffId;
       } else {
         return res.json({ ok: true, items: [] });
       }
 
-      // optional filter: ถ้าหน้าไหนอยากกรองเฉพาะคลินิกเดียวค่อยส่ง clinicId มาเอง
       if (clinicId) {
         q.clinicId = s(clinicId);
       }
@@ -369,7 +312,6 @@ async function listShifts(req, res) {
       clinicMap = await loadClinicMapByIds(clinicIds);
     }
 
-    // ✅ NEW: distance support via query helperLat/helperLng
     const helperLocation = {
       lat: numOrNull(helperLat),
       lng: numOrNull(helperLng),
