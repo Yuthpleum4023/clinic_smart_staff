@@ -251,36 +251,32 @@ async function listShifts(req, res) {
 
     const q = {};
 
-    // clinic filter
-    if (role === "admin") {
-      if (clinicId) {
-        q.clinicId = s(clinicId);
-      } else if (tokenClinicId) {
-        // ✅ admin ในระบบนี้มักควรถูกผูกกับคลินิกตัวเอง
-        q.clinicId = tokenClinicId;
-      }
-    } else {
-      if (!tokenClinicId) {
-        return res.status(401).json({ message: "clinicId missing in token" });
-      }
-      q.clinicId = tokenClinicId;
-    }
-
     if (date) q.date = s(date);
     if (status) q.status = s(status);
 
     if (role === "admin") {
       // admin ดูได้ทั้งหมดในคลินิกตัวเอง และกรองเพิ่มได้
+      if (clinicId) {
+        q.clinicId = s(clinicId);
+      } else if (tokenClinicId) {
+        q.clinicId = tokenClinicId;
+      }
+
       if (staffId) q.staffId = s(staffId);
       if (helperUserId) q.helperUserId = s(helperUserId);
     } else if (role === "employee") {
-      // employee ต้องใช้ staffId จาก token
+      // employee ต้องถูกล็อกด้วย clinic + staff ของตัวเอง
+      if (!tokenClinicId) {
+        return res.status(401).json({ message: "clinicId missing in token" });
+      }
       if (!tokenStaffId) {
         return res.status(403).json({ message: "staffId missing in token" });
       }
+
+      q.clinicId = tokenClinicId;
       q.staffId = tokenStaffId;
     } else if (role === "helper") {
-      // helper ใช้ helperUserId เป็นหลัก
+      // ✅ helper ต้องเห็นทุกงานของตัวเอง ข้ามหลายคลินิกได้
       if (tokenUserId) {
         q.helperUserId = tokenUserId;
       } else if (tokenStaffId) {
@@ -289,11 +285,18 @@ async function listShifts(req, res) {
       } else {
         return res.json({ ok: true, items: [] });
       }
+
+      // optional filter: ถ้าหน้าไหนอยากกรองเฉพาะคลินิกเดียวค่อยส่ง clinicId มาเอง
+      if (clinicId) {
+        q.clinicId = s(clinicId);
+      }
     } else {
       return res.status(403).json({ message: "Forbidden" });
     }
 
-    const rows = await Shift.find(q).sort({ date: -1, createdAt: -1 }).lean();
+    const rows = await Shift.find(q)
+      .sort({ date: 1, start: 1, createdAt: -1 })
+      .lean();
 
     let clinicMap = new Map();
     if (Clinic && rows.length) {
