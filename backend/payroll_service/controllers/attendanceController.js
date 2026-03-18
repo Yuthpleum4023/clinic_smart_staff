@@ -733,15 +733,108 @@ async function loadShiftForSession({
   return null;
 }
 
-async function findPreviousOpenSession({ clinicId, principalId, workDate }) {
+// ✅ NEW: หา shift candidates ทั้งหมดของ helper ในวันนั้น
+async function loadShiftCandidatesForSession({
+  clinicId,
+  staffId,
+  userId,
+  workDate,
+  shiftId,
+}) {
+  if (shiftId && mongoose.Types.ObjectId.isValid(String(shiftId))) {
+    const one = await Shift.findById(shiftId).lean();
+    return one ? [one] : [];
+  }
+
+  const cid = s(clinicId);
+  const date = s(workDate);
+  const sid = s(staffId);
+  const uid = s(userId);
+
+  const or = [];
+  if (sid) or.push({ staffId: sid });
+  if (uid) or.push({ helperUserId: uid });
+
+  if (!or.length || !date) return [];
+
+  const q = { date, $or: or };
+  if (cid) q.clinicId = cid;
+
+  return Shift.find(q).sort({ start: 1, createdAt: -1 }).lean();
+}
+
+// ✅ NEW: เลือก shift ที่ active ตามเวลาจริง
+function pickBestShiftForTime(shifts, now = new Date()) {
+  if (!Array.isArray(shifts) || !shifts.length) return null;
+
+  const prepared = shifts
+    .map((sh) => {
+      const startAt = getShiftStartDateTime(sh);
+      const endAt = getShiftEndDateTime(sh);
+      return { sh, startAt, endAt };
+    })
+    .filter((x) => x.startAt && x.endAt);
+
+  if (!prepared.length) return shifts[0] || null;
+
+  const active = prepared.filter(
+    (x) =>
+      now.getTime() >= x.startAt.getTime() &&
+      now.getTime() <= x.endAt.getTime()
+  );
+
+  if (active.length === 1) return active[0].sh;
+
+  if (active.length > 1) {
+    return {
+      _conflict: true,
+      candidates: active.map((x) => x.sh),
+    };
+  }
+
+  const graceMinutes = 120;
+  const near = prepared
+    .map((x) => ({
+      ...x,
+      distanceMs: Math.min(
+        Math.abs(now.getTime() - x.startAt.getTime()),
+        Math.abs(now.getTime() - x.endAt.getTime())
+      ),
+    }))
+    .filter((x) => x.distanceMs <= graceMinutes * 60000)
+    .sort((a, b) => a.distanceMs - b.distanceMs);
+
+  if (near.length === 1) return near[0].sh;
+
+  if (near.length > 1 && near[0].distanceMs === near[1].distanceMs) {
+    return {
+      _conflict: true,
+      candidates: near.map((x) => x.sh),
+    };
+  }
+
+  return near[0]?.sh || null;
+}
+
+async function findPreviousOpenSession({ principalId, workDate }) {
   return AttendanceSession.findOne({
-    clinicId,
     principalId,
     status: "open",
     workDate: { $lt: workDate },
   })
     .sort({ workDate: -1, checkInAt: -1 })
     .lean();
+}
+
+async function findOpenSessionsForPrincipal(principalId, workDate = "") {
+  const q = {
+    principalId: s(principalId),
+    status: "open",
+  };
+
+  if (isYmd(workDate)) q.workDate = workDate;
+
+  return AttendanceSession.find(q).sort({ checkInAt: -1 }).lean();
 }
 
 // ======================================================
@@ -1447,7 +1540,7 @@ async function resolveRuntimeContext(req, workDate, shiftId = null) {
       };
     }
   } else if (role === "helper") {
-    shift = await loadShiftForSession({
+    let candidates = await loadShiftCandidatesForSession({
       clinicId: effectiveClinicId,
       staffId,
       userId,
@@ -1455,8 +1548,8 @@ async function resolveRuntimeContext(req, workDate, shiftId = null) {
       shiftId,
     });
 
-    if (!shift && !effectiveClinicId) {
-      shift = await loadShiftForSession({
+    if (!candidates.length && !effectiveClinicId) {
+      candidates = await loadShiftCandidatesForSession({
         clinicId: "",
         staffId,
         userId,
@@ -1465,7 +1558,7 @@ async function resolveRuntimeContext(req, workDate, shiftId = null) {
       });
     }
 
-    if (!shift) {
+    if (!candidates.length) {
       return {
         ok: false,
         status: 409,
@@ -1473,6 +1566,37 @@ async function resolveRuntimeContext(req, workDate, shiftId = null) {
           ok: false,
           code: "NO_SHIFT_TODAY",
           message: "วันนี้ไม่มีตารางงาน",
+          workDate,
+        },
+      };
+    }
+
+    const picked = pickBestShiftForTime(candidates, new Date());
+
+    if (picked?._conflict) {
+      return {
+        ok: false,
+        status: 409,
+        body: {
+          ok: false,
+          code: "MULTIPLE_ACTIVE_SHIFTS",
+          message: "พบหลายกะงานในช่วงเวลาเดียวกัน กรุณาเลือกกะงาน/คลินิกก่อนสแกน",
+          workDate,
+          candidates: picked.candidates,
+        },
+      };
+    }
+
+    shift = picked;
+
+    if (!shift) {
+      return {
+        ok: false,
+        status: 409,
+        body: {
+          ok: false,
+          code: "SHIFT_NOT_RESOLVED",
+          message: "ไม่สามารถระบุกะงานที่กำลังทำอยู่ได้ กรุณาเลือกกะงานก่อนสแกน",
           workDate,
         },
       };
@@ -1571,7 +1695,6 @@ async function checkIn(req, res) {
 
     const previousOpen = rules.blockNewCheckInIfPreviousOpen
       ? await findPreviousOpenSession({
-          clinicId,
           principalId,
           workDate,
         })
@@ -1584,6 +1707,7 @@ async function checkIn(req, res) {
         "Previous day session is still open. Please submit manual attendance request.",
         {
           previousSessionId: String(previousOpen._id || ""),
+          previousClinicId: s(previousOpen.clinicId),
           previousWorkDate: s(previousOpen.workDate),
         }
       );
@@ -1637,19 +1761,29 @@ async function checkIn(req, res) {
       }
     }
 
-    const existingOpen = await AttendanceSession.findOne({
-      clinicId,
+    const existingOpenAnywhere = await findOpenSessionsForPrincipal(
       principalId,
-      workDate,
-      status: "open",
-    });
+      ""
+    );
 
-    if (existingOpen) {
+    if (existingOpenAnywhere.length > 1) {
       return res.status(409).json({
         ok: false,
-        code: "ALREADY_CHECKED_IN",
-        message: "Already checked-in (open session exists)",
-        session: existingOpen,
+        code: "MULTIPLE_OPEN_SESSIONS",
+        message: "พบ open session มากกว่าหนึ่งรายการ กรุณาให้ผู้ดูแลตรวจสอบข้อมูลก่อน",
+        sessions: existingOpenAnywhere,
+      });
+    }
+
+    if (existingOpenAnywhere.length === 1) {
+      const open = existingOpenAnywhere[0];
+      return res.status(409).json({
+        ok: false,
+        code: "ALREADY_CHECKED_IN_OTHER_SESSION",
+        message: "มี session ที่ยังไม่ปิดอยู่แล้ว",
+        existingSessionId: String(open._id || ""),
+        existingClinicId: s(open.clinicId),
+        existingWorkDate: s(open.workDate),
       });
     }
 
@@ -1842,15 +1976,31 @@ async function checkOut(req, res) {
 
       if (isYmd(bodyWorkDate)) q.workDate = bodyWorkDate;
 
-      session = await AttendanceSession.findOne(q).sort({ checkInAt: -1 });
+      const openSessions = await AttendanceSession.find(q).sort({ checkInAt: -1 });
 
-      if (!session) {
+      if (!openSessions.length) {
         return res.status(409).json({
           ok: false,
           code: "NO_OPEN_SESSION",
           message: "No open session to check-out",
         });
       }
+
+      if (openSessions.length > 1) {
+        return res.status(409).json({
+          ok: false,
+          code: "MULTIPLE_OPEN_SESSIONS",
+          message: "พบ open session มากกว่าหนึ่งรายการ กรุณาระบุ session ที่ต้องการปิด",
+          sessions: openSessions.map((x) => ({
+            _id: String(x._id || ""),
+            clinicId: s(x.clinicId),
+            workDate: s(x.workDate),
+            checkInAt: x.checkInAt,
+          })),
+        });
+      }
+
+      session = openSessions[0];
     }
 
     if (s(session.principalId) !== principalId) {

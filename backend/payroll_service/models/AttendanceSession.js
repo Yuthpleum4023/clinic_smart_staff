@@ -10,11 +10,12 @@ const mongoose = require("mongoose");
  *
  * ✅ helper (ไม่มี staffId) ลงเวลาได้ โดยไม่ต้องยัด usr_ ไปใน staffId
  *
- * ✅ V1 ATTENDANCE RULE
- * - 1 principal ต่อ 1 workDate มี session หลักได้ 1 อัน
+ * ✅ ATTENDANCE RULE (UPDATED FOR MULTI-CLINIC HELPERS)
+ * - 1 principal มี open session ได้พร้อมกันแค่ 1 อันทั้งระบบ
+ * - 1 principal / 1 clinic / 1 workDate มี main session ได้ 1 อัน
  * - scan แรก = check-in
  * - scan ถัดมา (session open) = check-out
- * - ถ้าปิดวันแล้ว ห้ามเปิด session ใหม่เอง
+ * - ถ้าปิดวันแล้ว ห้ามเปิด session ใหม่เองใน clinic/date เดิม
  * - ถ้าผิด flow / เลย cut-off / ลืม check-out -> ไป manual request flow
  *
  * ✅ NEW
@@ -248,8 +249,8 @@ const AttendanceSessionSchema = new mongoose.Schema(
 // ======================================================
 
 /**
- * ✅ RULE หลัก:
- * 1 principal / 1 workDate / 1 main session only
+ * ✅ RULE หลัก (ราย clinic/day):
+ * 1 principal / 1 clinic / 1 workDate / 1 main session only
  *
  * main session statuses:
  * - open
@@ -259,11 +260,11 @@ const AttendanceSessionSchema = new mongoose.Schema(
  * cancelled ไม่นับเป็น main session
  *
  * หมายเหตุ:
- * index นี้จะกันไม่ให้มี session หลักมากกว่า 1 อันต่อวัน
+ * index นี้จะกันไม่ให้มี session หลักมากกว่า 1 อันต่อวันใน clinic เดียว
  * เช่น:
- * - open แล้วสร้าง closed ซ้ำไม่ได้
- * - closed แล้วกลับมาเปิดใหม่ไม่ได้
- * - pending_manual ซ้ำอีกอันไม่ได้
+ * - open แล้วสร้าง closed ซ้ำใน clinic/date เดิมไม่ได้
+ * - closed แล้วกลับมาเปิดใหม่ใน clinic/date เดิมไม่ได้
+ * - pending_manual ซ้ำอีกอันใน clinic/date เดิมไม่ได้
  */
 AttendanceSessionSchema.index(
   { clinicId: 1, principalId: 1, workDate: 1 },
@@ -272,11 +273,28 @@ AttendanceSessionSchema.index(
     partialFilterExpression: {
       status: { $in: ["open", "closed", "pending_manual"] },
     },
-    name: "uniq_main_session_per_principal_per_day",
+    name: "uniq_main_session_per_principal_per_clinic_per_day",
   }
 );
 
-// ✅ เผื่อ query หา open session เร็ว
+/**
+ * ✅ NEW:
+ * 1 principal มี open session ได้พร้อมกันแค่ 1 อันทั้งระบบ
+ * ไม่ว่าจะเป็นคลินิกไหน
+ *
+ * สำคัญมากสำหรับ helper ที่ทำหลายคลินิก
+ * เพื่อกัน race condition / request ซ้ำ / check-in พร้อมกันหลายที่
+ */
+AttendanceSessionSchema.index(
+  { principalId: 1, status: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { status: "open" },
+    name: "uniq_global_open_session_per_principal",
+  }
+);
+
+// ✅ เผื่อ query หา open session เร็วใน clinic/day
 AttendanceSessionSchema.index(
   { clinicId: 1, principalId: 1, workDate: 1, status: 1 },
   {
@@ -291,6 +309,15 @@ AttendanceSessionSchema.index(
   {
     partialFilterExpression: { status: "pending_manual" },
     name: "idx_pending_manual_per_day",
+  }
+);
+
+// ✅ query open session ระดับ principal เร็ว
+AttendanceSessionSchema.index(
+  { principalId: 1, status: 1, checkInAt: -1 },
+  {
+    partialFilterExpression: { status: "open" },
+    name: "idx_principal_open_session_desc",
   }
 );
 
