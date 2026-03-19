@@ -242,6 +242,28 @@ function getBearerToken(req) {
   return s(req.headers?.authorization);
 }
 
+function getBodyStaffId(req) {
+  return (
+    s(req.body?.staffId) ||
+    s(req.body?.employeeId) ||
+    s(req.params?.staffId) ||
+    s(req.params?.employeeId) ||
+    s(req.query?.staffId) ||
+    s(req.query?.employeeId)
+  );
+}
+
+function getStaffCandidates(req) {
+  return Array.from(
+    new Set([s(req.user?.staffId), getBodyStaffId(req)].filter(Boolean))
+  );
+}
+
+function shouldContinueLookupAfterError(err) {
+  const status = Number(err?.status || 0);
+  return [400, 401, 403, 404].includes(status);
+}
+
 function normalizeEmployeeRecord(emp) {
   if (!emp || typeof emp !== "object") return null;
 
@@ -278,6 +300,11 @@ function normalizeEmployeeRecord(emp) {
       ""
   ).toLowerCase();
 
+  const activeFlag =
+    emp.active === undefined && emp.isActive === undefined
+      ? null
+      : !!(emp.active ?? emp.isActive);
+
   const deleted =
     !!emp.deleted ||
     !!emp.isDeleted ||
@@ -295,6 +322,7 @@ function normalizeEmployeeRecord(emp) {
     rawStatus === "terminated";
 
   const inactive =
+    activeFlag === false ||
     !!emp.inactive ||
     !!emp.isInactive ||
     ["inactive", "disabled"].includes(rawStatus);
@@ -323,42 +351,124 @@ function normalizeEmployeeRecord(emp) {
 }
 
 function isEmployeeAttendanceAllowed(employee) {
-  if (!employee) return { ok: false, code: "EMPLOYEE_NOT_FOUND", message: "Employee not found" };
+  if (!employee) {
+    return { ok: false, code: "EMPLOYEE_NOT_FOUND", message: "Employee not found" };
+  }
   if (employee.deleted) {
-    return { ok: false, code: "EMPLOYEE_DELETED", message: "Employee record is deleted/archived" };
+    return {
+      ok: false,
+      code: "EMPLOYEE_DELETED",
+      message: "Employee record is deleted/archived",
+    };
   }
   if (employee.suspended) {
-    return { ok: false, code: "EMPLOYEE_SUSPENDED", message: "Employee is suspended" };
+    return {
+      ok: false,
+      code: "EMPLOYEE_SUSPENDED",
+      message: "Employee is suspended",
+    };
   }
   if (employee.terminated) {
-    return { ok: false, code: "EMPLOYEE_TERMINATED", message: "Employee is terminated" };
+    return {
+      ok: false,
+      code: "EMPLOYEE_TERMINATED",
+      message: "Employee is terminated",
+    };
   }
   if (employee.inactive) {
-    return { ok: false, code: "EMPLOYEE_INACTIVE", message: "Employee is inactive" };
+    return {
+      ok: false,
+      code: "EMPLOYEE_INACTIVE",
+      message: "Employee is inactive",
+    };
   }
   if (!employee.verified) {
-    return { ok: false, code: "EMPLOYEE_NOT_VERIFIED", message: "Employee is not verified yet" };
+    return {
+      ok: false,
+      code: "EMPLOYEE_NOT_VERIFIED",
+      message: "Employee is not verified yet",
+    };
   }
   return { ok: true, code: "", message: "" };
 }
 
 async function fetchEmployeeForRequest(req, { preferStaffId = true } = {}) {
   const token = getBearerToken(req);
-  const tokenStaffId = s(req.user?.staffId);
   const tokenUserId = s(req.user?.userId);
+  const staffCandidates = getStaffCandidates(req);
+
+  console.log("🔎 fetchEmployeeForRequest", {
+    preferStaffId,
+    tokenUserId,
+    staffCandidates,
+    bodyStaffId: getBodyStaffId(req),
+    tokenStaffId: s(req.user?.staffId),
+  });
 
   let raw = null;
+  let lastHardError = null;
 
-  if (preferStaffId && tokenStaffId) {
-    raw = await getEmployeeByStaffId(tokenStaffId, token);
+  if (preferStaffId) {
+    for (const candidateStaffId of staffCandidates) {
+      try {
+        console.log("➡️ try getEmployeeByStaffId:", candidateStaffId);
+        raw = await getEmployeeByStaffId(candidateStaffId, token);
+        console.log("⬅️ by-staff result:", raw ? "FOUND" : "NULL");
+        if (raw) break;
+      } catch (e) {
+        console.log("⚠️ by-staff lookup failed:", {
+          staffId: candidateStaffId,
+          status: e?.status || 0,
+          message: e?.message || "",
+        });
+        if (!shouldContinueLookupAfterError(e)) {
+          lastHardError = e;
+          break;
+        }
+      }
+    }
   }
 
   if (!raw && tokenUserId) {
-    raw = await getEmployeeByUserId(tokenUserId, token);
+    try {
+      console.log("➡️ try getEmployeeByUserId:", tokenUserId);
+      raw = await getEmployeeByUserId(tokenUserId, token);
+      console.log("⬅️ by-user result:", raw ? "FOUND" : "NULL");
+    } catch (e) {
+      console.log("⚠️ by-user lookup failed:", {
+        userId: tokenUserId,
+        status: e?.status || 0,
+        message: e?.message || "",
+      });
+      if (!shouldContinueLookupAfterError(e)) {
+        lastHardError = e;
+      }
+    }
   }
 
-  if (!raw && !preferStaffId && tokenStaffId) {
-    raw = await getEmployeeByStaffId(tokenStaffId, token);
+  if (!raw && !preferStaffId) {
+    for (const candidateStaffId of staffCandidates) {
+      try {
+        console.log("➡️ fallback getEmployeeByStaffId:", candidateStaffId);
+        raw = await getEmployeeByStaffId(candidateStaffId, token);
+        console.log("⬅️ fallback by-staff result:", raw ? "FOUND" : "NULL");
+        if (raw) break;
+      } catch (e) {
+        console.log("⚠️ fallback by-staff lookup failed:", {
+          staffId: candidateStaffId,
+          status: e?.status || 0,
+          message: e?.message || "",
+        });
+        if (!shouldContinueLookupAfterError(e)) {
+          lastHardError = e;
+          break;
+        }
+      }
+    }
+  }
+
+  if (!raw && lastHardError) {
+    throw lastHardError;
   }
 
   return normalizeEmployeeRecord(raw);
@@ -368,12 +478,55 @@ async function ensureVerifiedEmployeeFromRequest(req, fallbackClinicId = "") {
   const tokenClinicId = s(fallbackClinicId || req.user?.clinicId);
   const tokenStaffId = s(req.user?.staffId);
   const tokenUserId = s(req.user?.userId);
+  const bodyStaffId = getBodyStaffId(req);
 
-  const employee = await fetchEmployeeForRequest(req, { preferStaffId: true });
+  let employee = null;
+
+  try {
+    employee = await fetchEmployeeForRequest(req, { preferStaffId: true });
+  } catch (e) {
+    return buildCodeResponse(
+      Number(e?.status || 503),
+      "EMPLOYEE_LOOKUP_FAILED",
+      e?.message || "Cannot verify employee from token",
+      {
+        tokenUserId,
+        tokenStaffId,
+        bodyStaffId,
+        tokenClinicId,
+      }
+    );
+  }
+
+  if (!employee) {
+    return buildCodeResponse(404, "EMPLOYEE_NOT_FOUND", "Employee not found", {
+      tokenUserId,
+      tokenStaffId,
+      bodyStaffId,
+      tokenClinicId,
+    });
+  }
 
   const allow = isEmployeeAttendanceAllowed(employee);
   if (!allow.ok) {
-    return buildCodeResponse(403, allow.code, allow.message);
+    return buildCodeResponse(403, allow.code, allow.message, {
+      tokenUserId,
+      tokenStaffId,
+      bodyStaffId,
+      tokenClinicId,
+    });
+  }
+
+  if (bodyStaffId && employee.staffId && employee.staffId !== bodyStaffId) {
+    return buildCodeResponse(
+      403,
+      "REQUEST_STAFF_MISMATCH",
+      "Requested staffId does not match employee record",
+      {
+        requestStaffId: bodyStaffId,
+        employeeStaffId: employee.staffId,
+      }
+    );
   }
 
   if (tokenStaffId && employee.staffId && employee.staffId !== tokenStaffId) {
@@ -400,7 +553,11 @@ async function ensureVerifiedEmployeeFromRequest(req, fallbackClinicId = "") {
     );
   }
 
-  if (tokenClinicId && employee.clinicId && employee.clinicId !== tokenClinicId) {
+  if (
+    tokenClinicId &&
+    employee.clinicId &&
+    employee.clinicId !== tokenClinicId
+  ) {
     return buildCodeResponse(
       403,
       "EMPLOYEE_CLINIC_MISMATCH",
@@ -417,7 +574,7 @@ async function ensureVerifiedEmployeeFromRequest(req, fallbackClinicId = "") {
     employee,
     clinicId: employee.clinicId || tokenClinicId,
     userId: employee.userId || tokenUserId,
-    staffId: employee.staffId || tokenStaffId,
+    staffId: employee.staffId || tokenStaffId || bodyStaffId,
   };
 }
 
@@ -429,20 +586,72 @@ async function ensureSessionEmployeeAccess(req, session) {
   const sessionStaffId = s(session?.staffId);
   const sessionUserId = s(session?.userId);
   const sessionClinicId = s(session?.clinicId);
+  const bodyStaffId = getBodyStaffId(req);
 
   let raw = null;
 
-  if (sessionStaffId) {
-    raw = await getEmployeeByStaffId(sessionStaffId, token);
+  try {
+    if (sessionStaffId) {
+      raw = await getEmployeeByStaffId(sessionStaffId, token);
+    }
+  } catch (e) {
+    console.log("⚠️ ensureSessionEmployeeAccess by-staff failed:", {
+      sessionStaffId,
+      status: e?.status || 0,
+      message: e?.message || "",
+    });
+    if (!shouldContinueLookupAfterError(e)) {
+      return buildCodeResponse(
+        Number(e?.status || 503),
+        "SESSION_EMPLOYEE_LOOKUP_FAILED",
+        e?.message || "Cannot verify employee session"
+      );
+    }
   }
-  if (!raw && sessionUserId) {
-    raw = await getEmployeeByUserId(sessionUserId, token);
+
+  try {
+    if (!raw && sessionUserId) {
+      raw = await getEmployeeByUserId(sessionUserId, token);
+    }
+  } catch (e) {
+    console.log("⚠️ ensureSessionEmployeeAccess by-user failed:", {
+      sessionUserId,
+      status: e?.status || 0,
+      message: e?.message || "",
+    });
+    if (!shouldContinueLookupAfterError(e)) {
+      return buildCodeResponse(
+        Number(e?.status || 503),
+        "SESSION_EMPLOYEE_LOOKUP_FAILED",
+        e?.message || "Cannot verify employee session"
+      );
+    }
   }
 
   const employee = normalizeEmployeeRecord(raw);
+  if (!employee) {
+    return buildCodeResponse(
+      404,
+      "SESSION_EMPLOYEE_NOT_FOUND",
+      "Employee not found for this session"
+    );
+  }
+
   const allow = isEmployeeAttendanceAllowed(employee);
   if (!allow.ok) {
     return buildCodeResponse(403, allow.code, allow.message);
+  }
+
+  if (bodyStaffId && employee.staffId && employee.staffId !== bodyStaffId) {
+    return buildCodeResponse(
+      403,
+      "REQUEST_STAFF_MISMATCH",
+      "Requested staffId does not match employee record",
+      {
+        requestStaffId: bodyStaffId,
+        employeeStaffId: employee.staffId,
+      }
+    );
   }
 
   if (sessionStaffId && employee.staffId && employee.staffId !== sessionStaffId) {
@@ -461,7 +670,11 @@ async function ensureSessionEmployeeAccess(req, session) {
     );
   }
 
-  if (sessionClinicId && employee.clinicId && employee.clinicId !== sessionClinicId) {
+  if (
+    sessionClinicId &&
+    employee.clinicId &&
+    employee.clinicId !== sessionClinicId
+  ) {
     return buildCodeResponse(
       403,
       "SESSION_EMPLOYEE_CLINIC_MISMATCH",
@@ -485,7 +698,11 @@ async function ensureSessionEmployeeAccess(req, session) {
     );
   }
 
-  if (tokenClinicId && employee.clinicId && tokenClinicId !== employee.clinicId) {
+  if (
+    tokenClinicId &&
+    employee.clinicId &&
+    tokenClinicId !== employee.clinicId
+  ) {
     return buildCodeResponse(
       403,
       "TOKEN_EMPLOYEE_CLINIC_MISMATCH",
@@ -849,7 +1066,9 @@ function getPrincipal(req) {
   const clinicId = s(req.user?.clinicId);
   const role = s(req.user?.role);
   const userId = s(req.user?.userId);
-  const staffId = s(req.user?.staffId);
+
+  const bodyStaffId = getBodyStaffId(req);
+  const staffId = s(req.user?.staffId) || bodyStaffId;
 
   const principalId = staffId || userId;
   const principalType = staffId ? "staff" : "user";
@@ -868,7 +1087,7 @@ function pickEmployeeClinicId(emp) {
 }
 
 async function resolveEmployeeClinicIdFromStaff(req, fallbackClinicId = "") {
-  const staffId = s(req.user?.staffId);
+  const staffId = s(req.user?.staffId) || getBodyStaffId(req);
   if (!staffId) return s(fallbackClinicId);
 
   try {
@@ -1772,6 +1991,15 @@ async function resolveRuntimeContext(req, workDate, shiftId = null) {
   const { clinicId, role, userId, staffId, principalId, principalType } =
     getPrincipal(req);
 
+  console.log("🧭 resolveRuntimeContext", {
+    role,
+    clinicId,
+    userId,
+    staffId,
+    principalId,
+    principalType,
+  });
+
   if (!principalId) {
     return {
       ok: false,
@@ -1910,6 +2138,11 @@ async function checkIn(req, res) {
   try {
     const workDate = s(req.body?.workDate);
     const shiftId = req.body?.shiftId || null;
+
+    console.log("🚀 CHECK-IN START", {
+      authUser: req.user,
+      body: req.body,
+    });
 
     if (!isYmd(workDate)) {
       return res
@@ -2201,6 +2434,7 @@ async function checkIn(req, res) {
       policy: buildPublicPolicy(policy, workDate),
     });
   } catch (e) {
+    console.log("❌ check-in failed:", e?.message || e);
     return res
       .status(500)
       .json({ ok: false, message: "check-in failed", error: e.message });
@@ -2544,6 +2778,7 @@ async function checkOut(req, res) {
       policy: buildPublicPolicy(policy, s(session.workDate)),
     });
   } catch (e) {
+    console.log("❌ check-out failed:", e?.message || e);
     return res
       .status(500)
       .json({ ok: false, message: "check-out failed", error: e.message });
@@ -3484,7 +3719,9 @@ async function myDayPreview(req, res) {
     );
 
     const suspiciousCount = normalizedSessions.reduce(
-      (sum, x) => sum + (Array.isArray(x.suspiciousFlags) && x.suspiciousFlags.length > 0 ? 1 : 0),
+      (sum, x) =>
+        sum +
+        (Array.isArray(x.suspiciousFlags) && x.suspiciousFlags.length > 0 ? 1 : 0),
       0
     );
 
