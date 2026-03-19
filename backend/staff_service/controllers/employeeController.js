@@ -4,6 +4,7 @@
 // + ✅ Admin dropdown list (scoped by clinicId if schema supports)
 // + ✅ Safe getters: by-user / by-staff
 // + ✅ HARD FIX: always return staffId = String(_id) in employee payload
+// + ✅ FIX: allow non-admin to read own record by staffId
 // ==================================================
 
 const mongoose = require("mongoose");
@@ -27,7 +28,6 @@ function isAdmin(req) {
  */
 function withStaffId(emp) {
   if (!emp) return emp;
-  // emp could be mongoose doc or lean object
   const obj = typeof emp.toObject === "function" ? emp.toObject() : emp;
   const id = s(obj._id);
   return { ...obj, staffId: id || s(obj.staffId) };
@@ -35,7 +35,7 @@ function withStaffId(emp) {
 
 /**
  * Detect whether Employee schema has clinicId field.
- * If not, we must fallback (works for single-clinic MVP but not safe for multi-clinic).
+ * If not, fallback works for single-clinic MVP only.
  */
 function hasClinicIdField() {
   try {
@@ -46,7 +46,6 @@ function hasClinicIdField() {
 }
 
 function clinicScopeQuery(req) {
-  // return { clinicId } if schema supports and token has clinicId
   if (!hasClinicIdField()) return {};
   const clinicId = s(req.user?.clinicId);
   return clinicId ? { clinicId } : {};
@@ -55,7 +54,6 @@ function clinicScopeQuery(req) {
 // -------------------- CREATE (admin route should guard) --------------------
 exports.createEmployee = async (req, res) => {
   try {
-    // ✅ Optional: lock clinicId from token if schema supports it
     if (hasClinicIdField()) {
       const clinicId = s(req.user?.clinicId);
       if (clinicId) req.body.clinicId = clinicId;
@@ -79,20 +77,24 @@ exports.getEmployeeById = async (req, res) => {
     }
 
     const emp = await Employee.findById(id).lean();
-    if (!emp) return res.status(404).json({ ok: false, error: "Employee not found" });
+    if (!emp) {
+      return res.status(404).json({ ok: false, error: "Employee not found" });
+    }
 
-    // clinic scope (only if schema has clinicId)
     if (hasClinicIdField()) {
       const tokenClinicId = s(req.user?.clinicId);
       if (!tokenClinicId) {
-        return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
+        return res
+          .status(401)
+          .json({ ok: false, message: "Missing clinicId in token" });
       }
       if (s(emp.clinicId) !== tokenClinicId) {
-        return res.status(403).json({ ok: false, message: "Forbidden (different clinic)" });
+        return res
+          .status(403)
+          .json({ ok: false, message: "Forbidden (different clinic)" });
       }
     }
 
-    // non-admin can read only self
     if (!isAdmin(req)) {
       const tokenUserId = s(req.user?.userId);
       if (!tokenUserId || s(emp.userId) !== tokenUserId) {
@@ -117,7 +119,9 @@ exports.listEmployees = async (req, res) => {
         "⚠️ Employee schema has NO clinicId -> listEmployees is NOT clinic-scoped (MVP only)"
       );
     } else if (!s(req.user?.clinicId)) {
-      return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
+      return res
+        .status(401)
+        .json({ ok: false, message: "Missing clinicId in token" });
     }
 
     const list = await Employee.find(q).sort({ createdAt: -1 }).lean();
@@ -129,25 +133,27 @@ exports.listEmployees = async (req, res) => {
 
 // -------------------- LIST FOR DROPDOWN (ADMIN) --------------------
 // GET /api/employees/dropdown
-// - ใช้สำหรับหน้า admin เลือกชื่อพนักงาน (dropdown)
-// - ส่ง field เท่าที่จำเป็น: staffId(_id), fullName, employmentType, userId
 exports.listForDropdown = async (req, res) => {
   try {
     const role = s(req.user?.role);
     if (role !== "admin") {
-      return res.status(403).json({ ok: false, message: "Forbidden (admin only)" });
+      return res
+        .status(403)
+        .json({ ok: false, message: "Forbidden (admin only)" });
     }
 
-    // ✅ ถ้า schema มี clinicId -> ต้องมี clinicId ใน token
-    // ✅ ถ้า schema ไม่มี clinicId -> ทำงานแบบ MVP ได้ (ไม่บังคับ clinicId)
     if (hasClinicIdField() && !s(req.user?.clinicId)) {
-      return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
+      return res
+        .status(401)
+        .json({ ok: false, message: "Missing clinicId in token" });
     }
 
     const q = { active: true, ...clinicScopeQuery(req) };
 
     if (!hasClinicIdField()) {
-      console.log("⚠️ Employee schema has NO clinicId -> dropdown is NOT clinic-scoped (MVP only)");
+      console.log(
+        "⚠️ Employee schema has NO clinicId -> dropdown is NOT clinic-scoped (MVP only)"
+      );
     }
 
     const list = await Employee.find(q)
@@ -178,7 +184,11 @@ exports.listForDropdown = async (req, res) => {
 exports.getEmployeeByUserId = async (req, res) => {
   try {
     const paramUserId = s(req.params.userId);
-    if (!paramUserId) return res.status(400).json({ ok: false, message: "userId required" });
+    if (!paramUserId) {
+      return res
+        .status(400)
+        .json({ ok: false, message: "userId required" });
+    }
 
     const tokenUserId = s(req.user?.userId);
 
@@ -188,17 +198,21 @@ exports.getEmployeeByUserId = async (req, res) => {
       }
     }
 
-    // ✅ ถ้า schema มี clinicId -> enforce clinic scope และต้องมี clinicId ใน token
     if (hasClinicIdField() && !s(req.user?.clinicId)) {
-      return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
+      return res
+        .status(401)
+        .json({ ok: false, message: "Missing clinicId in token" });
     }
 
     const q = { userId: paramUserId, active: true, ...clinicScopeQuery(req) };
 
     const emp = await Employee.findOne(q).lean();
-    if (!emp) return res.status(404).json({ ok: false, message: "Employee not found" });
+    if (!emp) {
+      return res
+        .status(404)
+        .json({ ok: false, message: "Employee not found" });
+    }
 
-    // ✅ HARD FIX: attach staffId for Flutter / payroll_service
     return res.json({ ok: true, employee: withStaffId(emp) });
   } catch (err) {
     return res.status(500).json({ ok: false, error: err.message });
@@ -207,31 +221,46 @@ exports.getEmployeeByUserId = async (req, res) => {
 
 // -------------------- GET BY STAFF ID --------------------
 // GET /api/employees/by-staff/:staffId
-// - admin-only (ปลอดภัยสุด)
-// - staffId คือ _id ของ Employee
+// - admin: read within clinic
+// - non-admin: allow only if this employee belongs to token user / token staff
 exports.getEmployeeByStaffId = async (req, res) => {
   try {
-    if (!isAdmin(req)) {
-      return res.status(403).json({ ok: false, message: "Forbidden (admin only)" });
-    }
-
     const staffId = s(req.params.staffId);
     if (!isObjectId(staffId)) {
       return res.status(400).json({ ok: false, message: "Invalid staffId" });
     }
 
-    // ✅ ถ้า schema มี clinicId -> ต้องมี clinicId ใน token
     if (hasClinicIdField() && !s(req.user?.clinicId)) {
-      return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
+      return res
+        .status(401)
+        .json({ ok: false, message: "Missing clinicId in token" });
     }
 
     const emp = await Employee.findById(staffId).lean();
-    if (!emp) return res.status(404).json({ ok: false, message: "Employee not found" });
+    if (!emp) {
+      return res
+        .status(404)
+        .json({ ok: false, message: "Employee not found" });
+    }
 
     if (hasClinicIdField()) {
       const tokenClinicId = s(req.user?.clinicId);
       if (s(emp.clinicId) !== tokenClinicId) {
-        return res.status(403).json({ ok: false, message: "Forbidden (different clinic)" });
+        return res
+          .status(403)
+          .json({ ok: false, message: "Forbidden (different clinic)" });
+      }
+    }
+
+    if (!isAdmin(req)) {
+      const tokenUserId = s(req.user?.userId);
+      const tokenStaffId = s(req.user?.staffId);
+
+      const ownsByUser = !!tokenUserId && s(emp.userId) === tokenUserId;
+      const ownsByStaff = !!tokenStaffId && tokenStaffId === staffId;
+
+      if (!ownsByUser && !ownsByStaff) {
+        return res.status(403).json({ ok: false, message: "Forbidden" });
       }
     }
 
@@ -245,23 +274,34 @@ exports.getEmployeeByStaffId = async (req, res) => {
 exports.updateEmployee = async (req, res) => {
   try {
     const id = s(req.params.id);
-    if (!isObjectId(id)) return res.status(400).json({ ok: false, error: "Invalid employee id" });
-
-    // ✅ Optional: lock clinicId from token if schema supports it
-    if (hasClinicIdField()) {
-      const clinicId = s(req.user?.clinicId);
-      if (!clinicId) return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
-      req.body.clinicId = clinicId; // กันคนเปลี่ยน clinicId เอง
+    if (!isObjectId(id)) {
+      return res.status(400).json({ ok: false, error: "Invalid employee id" });
     }
 
-    const emp = await Employee.findByIdAndUpdate(id, req.body, { new: true }).lean();
-    if (!emp) return res.status(404).json({ ok: false, error: "Employee not found" });
+    if (hasClinicIdField()) {
+      const clinicId = s(req.user?.clinicId);
+      if (!clinicId) {
+        return res
+          .status(401)
+          .json({ ok: false, message: "Missing clinicId in token" });
+      }
+      req.body.clinicId = clinicId;
+    }
 
-    // enforce clinic scope after update
+    const emp = await Employee.findByIdAndUpdate(id, req.body, {
+      new: true,
+    }).lean();
+
+    if (!emp) {
+      return res.status(404).json({ ok: false, error: "Employee not found" });
+    }
+
     if (hasClinicIdField()) {
       const clinicId = s(req.user?.clinicId);
       if (clinicId && s(emp.clinicId) !== clinicId) {
-        return res.status(403).json({ ok: false, message: "Forbidden (different clinic)" });
+        return res
+          .status(403)
+          .json({ ok: false, message: "Forbidden (different clinic)" });
       }
     }
 
@@ -275,19 +315,32 @@ exports.updateEmployee = async (req, res) => {
 exports.deactivateEmployee = async (req, res) => {
   try {
     const id = s(req.params.id);
-    if (!isObjectId(id)) return res.status(400).json({ ok: false, error: "Invalid employee id" });
-
-    if (hasClinicIdField() && !s(req.user?.clinicId)) {
-      return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
+    if (!isObjectId(id)) {
+      return res.status(400).json({ ok: false, error: "Invalid employee id" });
     }
 
-    const emp = await Employee.findByIdAndUpdate(id, { active: false }, { new: true }).lean();
-    if (!emp) return res.status(404).json({ ok: false, error: "Employee not found" });
+    if (hasClinicIdField() && !s(req.user?.clinicId)) {
+      return res
+        .status(401)
+        .json({ ok: false, message: "Missing clinicId in token" });
+    }
+
+    const emp = await Employee.findByIdAndUpdate(
+      id,
+      { active: false },
+      { new: true }
+    ).lean();
+
+    if (!emp) {
+      return res.status(404).json({ ok: false, error: "Employee not found" });
+    }
 
     if (hasClinicIdField()) {
       const clinicId = s(req.user?.clinicId);
       if (clinicId && s(emp.clinicId) !== clinicId) {
-        return res.status(403).json({ ok: false, message: "Forbidden (different clinic)" });
+        return res
+          .status(403)
+          .json({ ok: false, message: "Forbidden (different clinic)" });
       }
     }
 
