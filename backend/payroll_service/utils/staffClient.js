@@ -9,6 +9,11 @@
 // staff_service ของท่านใช้: app.use("/api/employees", employeeRoutes)
 // ดังนั้น path หลักคือ /api/employees/...
 // แต่ใส่ fallback candidates เผื่อบางเครื่องยังเป็น /employees/...
+//
+// PATCH:
+// - ✅ send x-internal-key for internal calls
+// - ✅ stop fallback immediately on 429 Too Many Requests
+// - ✅ clearer error propagation
 
 function s(v) {
   return String(v || "").trim();
@@ -16,7 +21,12 @@ function s(v) {
 
 function baseUrl() {
   const u = s(process.env.STAFF_SERVICE_URL);
-  if (!u) throw new Error("Missing STAFF_SERVICE_URL");
+  if (!u) {
+    const err = new Error("Missing STAFF_SERVICE_URL");
+    err.status = 503;
+    err.payload = { message: "Missing STAFF_SERVICE_URL" };
+    throw err;
+  }
   return u.replace(/\/+$/, "");
 }
 
@@ -28,6 +38,13 @@ function buildHeaders(bearerToken = "") {
   const t = s(bearerToken);
   if (t) {
     headers["Authorization"] = t;
+  }
+
+  const internalKey = s(
+    process.env.STAFF_SERVICE_INTERNAL_KEY || process.env.INTERNAL_SERVICE_KEY
+  );
+  if (internalKey) {
+    headers["x-internal-key"] = internalKey;
   }
 
   return headers;
@@ -76,14 +93,14 @@ async function fetchJson(url, { headers = {}, timeoutMs = 15000 } = {}) {
     if (e?.name === "AbortError") {
       const err = new Error(`staff_service timeout after ${timeoutMs}ms`);
       err.status = 504;
-      err.payload = {};
+      err.payload = { message: err.message };
       err.url = url;
       throw err;
     }
 
     const err = new Error(e?.message || "staff_service request failed");
     err.status = 503;
-    err.payload = {};
+    err.payload = { message: err.message };
     err.url = url;
     throw err;
   } finally {
@@ -98,7 +115,11 @@ function extractEmployee(payload) {
     return payload.employee;
   }
 
-  if (payload.data && typeof payload.data === "object" && !Array.isArray(payload.data)) {
+  if (
+    payload.data &&
+    typeof payload.data === "object" &&
+    !Array.isArray(payload.data)
+  ) {
     if (payload.data.employee && typeof payload.data.employee === "object") {
       return payload.data.employee;
     }
@@ -109,7 +130,11 @@ function extractEmployee(payload) {
     return payload.item;
   }
 
-  if (payload.result && typeof payload.result === "object" && !Array.isArray(payload.result)) {
+  if (
+    payload.result &&
+    typeof payload.result === "object" &&
+    !Array.isArray(payload.result)
+  ) {
     return payload.result;
   }
 
@@ -139,7 +164,11 @@ function extractList(payload) {
   if (Array.isArray(payload.results)) return payload.results;
   if (Array.isArray(payload.employees)) return payload.employees;
 
-  if (payload.data && typeof payload.data === "object" && Array.isArray(payload.data.items)) {
+  if (
+    payload.data &&
+    typeof payload.data === "object" &&
+    Array.isArray(payload.data.items)
+  ) {
     return payload.data.items;
   }
 
@@ -157,6 +186,20 @@ async function getFirstOk(candidates, headers, options = {}) {
 
       if (res.ok) return res;
 
+      // ✅ ถ้าโดน rate limit ให้หยุดเลย ห้าม fallback ต่อ
+      if (res.status === 429) {
+        const msg =
+          res?.data?.message ||
+          res?.data?.error ||
+          res?.raw ||
+          "staff_service rate limited (429)";
+        const err = new Error(msg);
+        err.status = 429;
+        err.payload = res.data || { message: msg };
+        err.url = url;
+        throw err;
+      }
+
       if (allow404 && res.status === 404) {
         last = res;
         continue;
@@ -164,10 +207,17 @@ async function getFirstOk(candidates, headers, options = {}) {
 
       last = res;
     } catch (e) {
+      // ✅ ถ้า 429 ให้โยนขึ้นทันที ห้ามไป candidate ถัดไป
+      if (Number(e?.status || 0) === 429) {
+        throw e;
+      }
+
       last = {
         ok: false,
         status: e?.status || 503,
-        data: e?.payload || { message: e?.message || "staff_service request failed" },
+        data: e?.payload || {
+          message: e?.message || "staff_service request failed",
+        },
         raw: "",
         url,
       };
@@ -202,10 +252,10 @@ async function getEmployeeByUserId(userId, bearerToken = "") {
   const headers = buildHeaders(bearerToken);
 
   const candidates = [
-    `${b}/api/employees/by-user/${encodeURIComponent(u)}`, // ✅ correct for your staff_service
-    `${b}/employees/by-user/${encodeURIComponent(u)}`, // fallback
-    `${b}/api/employees?userId=${encodeURIComponent(u)}`, // fallback
-    `${b}/employees?userId=${encodeURIComponent(u)}`, // fallback
+    `${b}/api/employees/by-user/${encodeURIComponent(u)}`,
+    `${b}/employees/by-user/${encodeURIComponent(u)}`,
+    `${b}/api/employees?userId=${encodeURIComponent(u)}`,
+    `${b}/employees?userId=${encodeURIComponent(u)}`,
   ];
 
   const r = await getFirstOk(candidates, headers, { allow404: true });
@@ -227,12 +277,12 @@ async function getEmployeeByStaffId(staffId, bearerToken = "") {
   const headers = buildHeaders(bearerToken);
 
   const candidates = [
-    `${b}/api/employees/by-staff/${encodeURIComponent(id)}`, // ✅ correct
-    `${b}/employees/by-staff/${encodeURIComponent(id)}`, // fallback
-    `${b}/api/employees/${encodeURIComponent(id)}`, // fallback (CRUD by id)
-    `${b}/employees/${encodeURIComponent(id)}`, // fallback
-    `${b}/api/employees?staffId=${encodeURIComponent(id)}`, // fallback
-    `${b}/employees?staffId=${encodeURIComponent(id)}`, // fallback
+    `${b}/api/employees/by-staff/${encodeURIComponent(id)}`,
+    `${b}/employees/by-staff/${encodeURIComponent(id)}`,
+    `${b}/api/employees/${encodeURIComponent(id)}`,
+    `${b}/employees/${encodeURIComponent(id)}`,
+    `${b}/api/employees?staffId=${encodeURIComponent(id)}`,
+    `${b}/employees?staffId=${encodeURIComponent(id)}`,
   ];
 
   const r = await getFirstOk(candidates, headers, { allow404: true });
@@ -254,8 +304,8 @@ async function listEmployeesDropdown(bearerToken = "") {
 
   // 1) try dropdown endpoint first
   const dropdownCandidates = [
-    `${b}/api/employees/dropdown`, // ✅ correct
-    `${b}/employees/dropdown`, // fallback
+    `${b}/api/employees/dropdown`,
+    `${b}/employees/dropdown`,
   ];
 
   try {
@@ -272,14 +322,17 @@ async function listEmployeesDropdown(bearerToken = "") {
         }))
         .filter((x) => x.staffId);
     }
-  } catch (_) {
+  } catch (e) {
+    if (Number(e?.status || 0) === 429) {
+      throw e;
+    }
     // ignore -> fallback list
   }
 
   // 2) fallback: list employees แล้ว map ให้เป็น dropdown format
   const listCandidates = [
-    `${b}/api/employees`, // ✅ correct
-    `${b}/employees`, // fallback
+    `${b}/api/employees`,
+    `${b}/employees`,
   ];
 
   const r2 = await getFirstOk(listCandidates, headers);
