@@ -5,18 +5,23 @@
 // - getEmployeeByStaffId(staffId, bearerToken?)
 // - listEmployeesDropdown(bearerToken?)
 //
-// NOTE:
-// staff_service ของท่านใช้: app.use("/api/employees", employeeRoutes)
-// ดังนั้น path หลักคือ /api/employees/...
-// แต่ใส่ fallback candidates เผื่อบางเครื่องยังเป็น /employees/...
-//
-// PATCH:
-// - ✅ send x-internal-key for internal calls
-// - ✅ stop fallback immediately on 429 Too Many Requests
-// - ✅ clearer error propagation
+// PRODUCTION SAFE PATCH
+// - ลด fallback candidates ให้เหลือเท่าที่จำเป็น
+// - มี in-memory short cache ลด request ซ้ำ
+// - stop immediately on 429 Too Many Requests
+// - stop immediately on 401/403 (auth/internal key issue)
+// - dedupe in-flight requests (ถ้ามี call พร้อมกัน key เดียวกัน จะใช้ promise เดียวกัน)
+// - clearer error propagation + safer logs
+// - FIX: null cache works correctly
+// - FIX: dropdown cache key safer per bearer token hash-ish key
 
 function s(v) {
   return String(v || "").trim();
+}
+
+function n(v, fallback = 0) {
+  const x = Number(v);
+  return Number.isFinite(x) ? x : fallback;
 }
 
 function baseUrl() {
@@ -37,7 +42,7 @@ function buildHeaders(bearerToken = "") {
 
   const t = s(bearerToken);
   if (t) {
-    headers["Authorization"] = t;
+    headers.Authorization = t;
   }
 
   const internalKey = s(
@@ -69,9 +74,9 @@ async function readResponseBodySafe(response) {
   }
 }
 
-async function fetchJson(url, { headers = {}, timeoutMs = 15000 } = {}) {
+async function fetchJson(url, { headers = {}, timeoutMs = 10000 } = {}) {
   const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
 
   try {
     const r = await fetch(url, {
@@ -104,8 +109,21 @@ async function fetchJson(url, { headers = {}, timeoutMs = 15000 } = {}) {
     err.url = url;
     throw err;
   } finally {
-    clearTimeout(t);
+    clearTimeout(timer);
   }
+}
+
+function makeError(message, status = 500, payload = {}, extra = {}) {
+  const err = new Error(message || "staff_service error");
+  err.status = status;
+  err.payload = payload || {};
+  Object.assign(err, extra || {});
+  return err;
+}
+
+function shouldStopImmediately(status) {
+  const code = Number(status || 0);
+  return code === 429 || code === 401 || code === 403;
 }
 
 function extractEmployee(payload) {
@@ -175,29 +193,128 @@ function extractList(payload) {
   return [];
 }
 
-// helper: try multiple candidate URLs (compat)
+function normalizeEmployee(employee) {
+  if (!employee || typeof employee !== "object") return null;
+
+  return {
+    ...employee,
+    _id: s(employee._id || employee.id || employee.staffId || ""),
+    id: s(employee.id || employee._id || employee.staffId || ""),
+    staffId: s(
+      employee.staffId ||
+        employee.employeeCode ||
+        employee.code ||
+        employee._id ||
+        employee.id ||
+        ""
+    ),
+    userId: s(
+      employee.userId ||
+        employee.linkedUserId ||
+        employee.accountUserId ||
+        employee.user?._id ||
+        employee.user?.id ||
+        ""
+    ),
+    fullName: s(employee.fullName || employee.name || ""),
+    name: s(employee.name || employee.fullName || ""),
+    clinicId: s(
+      employee.clinicId ||
+        employee.clinic?._id ||
+        employee.clinic?.id ||
+        employee.clinic?.clinicId ||
+        ""
+    ),
+    employmentType: s(employee.employmentType || ""),
+    status: s(employee.status || employee.employeeStatus || ""),
+  };
+}
+
+// ======================================================
+// SHORT CACHE + IN-FLIGHT DEDUPE
+// ======================================================
+const RESPONSE_CACHE = new Map();
+const INFLIGHT = new Map();
+
+const DEFAULT_TTL_MS = n(process.env.STAFF_CLIENT_CACHE_TTL_MS, 5000);
+const NULL_TTL_MS = n(process.env.STAFF_CLIENT_NULL_CACHE_TTL_MS, 2000);
+
+const CACHE_MISS = Symbol("CACHE_MISS");
+
+function nowMs() {
+  return Date.now();
+}
+
+function getCache(cacheKey) {
+  const item = RESPONSE_CACHE.get(cacheKey);
+  if (!item) return CACHE_MISS;
+
+  if (item.expireAt <= nowMs()) {
+    RESPONSE_CACHE.delete(cacheKey);
+    return CACHE_MISS;
+  }
+
+  return item.value;
+}
+
+function setCache(cacheKey, value, ttlMs = DEFAULT_TTL_MS) {
+  RESPONSE_CACHE.set(cacheKey, {
+    value,
+    expireAt: nowMs() + Math.max(500, ttlMs),
+  });
+}
+
+function deleteCache(cacheKey) {
+  RESPONSE_CACHE.delete(cacheKey);
+}
+
+async function withInflight(cacheKey, fn) {
+  if (INFLIGHT.has(cacheKey)) {
+    return INFLIGHT.get(cacheKey);
+  }
+
+  const promise = (async () => {
+    try {
+      return await fn();
+    } finally {
+      INFLIGHT.delete(cacheKey);
+    }
+  })();
+
+  INFLIGHT.set(cacheKey, promise);
+  return promise;
+}
+
+function tokenCacheKeyPart(bearerToken = "") {
+  const t = s(bearerToken);
+  if (!t) return "anon";
+  return `toklen:${t.length}`;
+}
+
+// ======================================================
+// CORE CANDIDATE FETCHER
+// ======================================================
 async function getFirstOk(candidates, headers, options = {}) {
   const allow404 = !!options.allow404;
+  const timeoutMs = n(options.timeoutMs, 10000);
   let last = null;
 
   for (const url of candidates) {
     try {
-      const res = await fetchJson(url, { headers });
+      const res = await fetchJson(url, { headers, timeoutMs });
 
-      if (res.ok) return res;
+      if (res.ok) {
+        return res;
+      }
 
-      // ✅ ถ้าโดน rate limit ให้หยุดเลย ห้าม fallback ต่อ
-      if (res.status === 429) {
-        const msg =
-          res?.data?.message ||
-          res?.data?.error ||
-          res?.raw ||
-          "staff_service rate limited (429)";
-        const err = new Error(msg);
-        err.status = 429;
-        err.payload = res.data || { message: msg };
-        err.url = url;
-        throw err;
+      const msg =
+        res?.data?.message ||
+        res?.data?.error ||
+        res?.raw ||
+        `staff_service error (${res.status || "unknown"})`;
+
+      if (shouldStopImmediately(res.status)) {
+        throw makeError(msg, res.status, res.data || {}, { url });
       }
 
       if (allow404 && res.status === 404) {
@@ -207,14 +324,15 @@ async function getFirstOk(candidates, headers, options = {}) {
 
       last = res;
     } catch (e) {
-      // ✅ ถ้า 429 ให้โยนขึ้นทันที ห้ามไป candidate ถัดไป
-      if (Number(e?.status || 0) === 429) {
+      const status = Number(e?.status || 0);
+
+      if (shouldStopImmediately(status)) {
         throw e;
       }
 
       last = {
         ok: false,
-        status: e?.status || 503,
+        status: status || 503,
         data: e?.payload || {
           message: e?.message || "staff_service request failed",
         },
@@ -234,135 +352,203 @@ async function getFirstOk(candidates, headers, options = {}) {
     last?.raw ||
     `staff_service error (${last?.status || "unknown"})`;
 
-  const err = new Error(msg);
-  err.status = last?.status || 500;
-  err.payload = last?.data || {};
-  err.tried = candidates;
-  throw err;
+  throw makeError(msg, last?.status || 500, last?.data || {}, {
+    tried: candidates,
+  });
 }
 
 // ======================================================
-// ดึง employee โดย userId
+// LOOKUP BY USER ID
+// ใช้เท่าที่จำเป็น: endpoint หลัก + fallback query
 // ======================================================
 async function getEmployeeByUserId(userId, bearerToken = "") {
   const u = s(userId);
-  if (!u) throw new Error("Missing userId");
+  if (!u) {
+    throw makeError("Missing userId", 400, { message: "Missing userId" });
+  }
 
-  const b = baseUrl();
-  const headers = buildHeaders(bearerToken);
+  const cacheKey = `user:${u}`;
+  const cached = getCache(cacheKey);
+  if (cached !== CACHE_MISS) return cached;
 
-  const candidates = [
-    `${b}/api/employees/by-user/${encodeURIComponent(u)}`,
-    `${b}/employees/by-user/${encodeURIComponent(u)}`,
-    `${b}/api/employees?userId=${encodeURIComponent(u)}`,
-    `${b}/employees?userId=${encodeURIComponent(u)}`,
-  ];
+  return withInflight(cacheKey, async () => {
+    const cachedAgain = getCache(cacheKey);
+    if (cachedAgain !== CACHE_MISS) return cachedAgain;
 
-  const r = await getFirstOk(candidates, headers, { allow404: true });
+    const b = baseUrl();
+    const headers = buildHeaders(bearerToken);
 
-  if (!r.ok && r.status === 404) return null;
+    const candidates = [
+      `${b}/api/employees/by-user/${encodeURIComponent(u)}`,
+      `${b}/api/employees?userId=${encodeURIComponent(u)}`,
+    ];
 
-  const employee = extractEmployee(r.data);
-  return employee || null;
+    const r = await getFirstOk(candidates, headers, {
+      allow404: true,
+      timeoutMs: 10000,
+    });
+
+    if (!r.ok && r.status === 404) {
+      setCache(cacheKey, null, NULL_TTL_MS);
+      return null;
+    }
+
+    const employee = normalizeEmployee(extractEmployee(r.data));
+
+    if (!employee) {
+      setCache(cacheKey, null, NULL_TTL_MS);
+      return null;
+    }
+
+    setCache(cacheKey, employee, DEFAULT_TTL_MS);
+
+    if (employee.staffId) {
+      setCache(`staff:${employee.staffId}`, employee, DEFAULT_TTL_MS);
+    }
+    if (employee.userId) {
+      setCache(`user:${employee.userId}`, employee, DEFAULT_TTL_MS);
+    }
+
+    return employee;
+  });
 }
 
 // ======================================================
-// ดึง employee โดย staffId (ซึ่งเท่ากับ Employee _id ใน staff_service)
+// LOOKUP BY STAFF ID
+// ใช้เท่าที่จำเป็น: endpoint หลัก + fallback by id
 // ======================================================
 async function getEmployeeByStaffId(staffId, bearerToken = "") {
   const id = s(staffId);
-  if (!id) throw new Error("Missing staffId");
+  if (!id) {
+    throw makeError("Missing staffId", 400, { message: "Missing staffId" });
+  }
 
-  const b = baseUrl();
-  const headers = buildHeaders(bearerToken);
+  const cacheKey = `staff:${id}`;
+  const cached = getCache(cacheKey);
+  if (cached !== CACHE_MISS) return cached;
 
-  const candidates = [
-    `${b}/api/employees/by-staff/${encodeURIComponent(id)}`,
-    `${b}/employees/by-staff/${encodeURIComponent(id)}`,
-    `${b}/api/employees/${encodeURIComponent(id)}`,
-    `${b}/employees/${encodeURIComponent(id)}`,
-    `${b}/api/employees?staffId=${encodeURIComponent(id)}`,
-    `${b}/employees?staffId=${encodeURIComponent(id)}`,
-  ];
+  return withInflight(cacheKey, async () => {
+    const cachedAgain = getCache(cacheKey);
+    if (cachedAgain !== CACHE_MISS) return cachedAgain;
 
-  const r = await getFirstOk(candidates, headers, { allow404: true });
+    const b = baseUrl();
+    const headers = buildHeaders(bearerToken);
 
-  if (!r.ok && r.status === 404) return null;
+    const candidates = [
+      `${b}/api/employees/by-staff/${encodeURIComponent(id)}`,
+      `${b}/api/employees/${encodeURIComponent(id)}`,
+    ];
 
-  const employee = extractEmployee(r.data);
-  return employee || null;
+    const r = await getFirstOk(candidates, headers, {
+      allow404: true,
+      timeoutMs: 10000,
+    });
+
+    if (!r.ok && r.status === 404) {
+      setCache(cacheKey, null, NULL_TTL_MS);
+      return null;
+    }
+
+    const employee = normalizeEmployee(extractEmployee(r.data));
+
+    if (!employee) {
+      setCache(cacheKey, null, NULL_TTL_MS);
+      return null;
+    }
+
+    setCache(cacheKey, employee, DEFAULT_TTL_MS);
+
+    if (employee.staffId) {
+      setCache(`staff:${employee.staffId}`, employee, DEFAULT_TTL_MS);
+    }
+    if (employee.userId) {
+      setCache(`user:${employee.userId}`, employee, DEFAULT_TTL_MS);
+    }
+
+    return employee;
+  });
 }
 
 // ======================================================
-// dropdown list สำหรับ admin
-// - expected from staff_service: { ok:true, items:[{staffId, fullName, employmentType, userId}] }
-// - fallback: ถ้า staff_service ยังไม่มี /dropdown จะ fallback ไป list แล้ว map ให้
+// DROPDOWN LIST FOR ADMIN
+// try dropdown endpoint first, then fallback to full list
 // ======================================================
 async function listEmployeesDropdown(bearerToken = "") {
-  const b = baseUrl();
-  const headers = buildHeaders(bearerToken);
+  const cacheKey = `dropdown:employees:${tokenCacheKeyPart(bearerToken)}`;
+  const cached = getCache(cacheKey);
+  if (cached !== CACHE_MISS) return cached;
 
-  // 1) try dropdown endpoint first
-  const dropdownCandidates = [
-    `${b}/api/employees/dropdown`,
-    `${b}/employees/dropdown`,
-  ];
+  return withInflight(cacheKey, async () => {
+    const cachedAgain = getCache(cacheKey);
+    if (cachedAgain !== CACHE_MISS) return cachedAgain;
 
-  try {
-    const r = await getFirstOk(dropdownCandidates, headers, { allow404: true });
+    const b = baseUrl();
+    const headers = buildHeaders(bearerToken);
+
+    const dropdownCandidates = [
+      `${b}/api/employees/dropdown`,
+      `${b}/api/employees`,
+    ];
+
+    const r = await getFirstOk(dropdownCandidates, headers, {
+      allow404: true,
+      timeoutMs: 12000,
+    });
+
     const items = extractList(r.data);
-    if (Array.isArray(items) && items.length) {
-      return items
-        .filter((e) => e && typeof e === "object")
-        .map((e) => ({
-          staffId: s(e.staffId || e._id || e.id),
-          fullName: s(e.fullName || e.name),
-          employmentType: s(e.employmentType),
-          userId: s(e.userId || e.linkedUserId),
-        }))
-        .filter((x) => x.staffId);
-    }
-  } catch (e) {
-    if (Number(e?.status || 0) === 429) {
-      throw e;
-    }
-    // ignore -> fallback list
-  }
 
-  // 2) fallback: list employees แล้ว map ให้เป็น dropdown format
-  const listCandidates = [
-    `${b}/api/employees`,
-    `${b}/employees`,
-  ];
+    const normalized = (Array.isArray(items) ? items : [])
+      .filter((e) => e && typeof e === "object")
+      .filter((e) => {
+        const status = s(e.status || e.employeeStatus).toLowerCase();
+        const activeFlag =
+          e.active === undefined && e.isActive === undefined
+            ? null
+            : !!(e.active ?? e.isActive);
 
-  const r2 = await getFirstOk(listCandidates, headers);
-  const list = extractList(r2.data);
+        const deleted =
+          !!e.deleted || !!e.isDeleted || !!e.archived || !!e.isArchived;
+        const inactive =
+          activeFlag === false ||
+          ["inactive", "terminated", "deleted", "archived"].includes(status);
 
-  return list
-    .filter((e) => {
-      if (!e || typeof e !== "object") return false;
+        return !deleted && !inactive;
+      })
+      .map((e) => ({
+        staffId: s(e.staffId || e._id || e.id),
+        fullName: s(e.fullName || e.name),
+        employmentType: s(e.employmentType),
+        userId: s(e.userId || e.linkedUserId),
+      }))
+      .filter((x) => x.staffId);
 
-      const status = s(e.status || e.employeeStatus).toLowerCase();
-      const activeFlag = e.active;
+    setCache(cacheKey, normalized, DEFAULT_TTL_MS);
 
-      if (activeFlag === false) return false;
-      if (["inactive", "terminated", "deleted", "archived"].includes(status)) {
-        return false;
-      }
+    return normalized;
+  });
+}
 
-      return true;
-    })
-    .map((e) => ({
-      staffId: s(e.staffId || e._id || e.id),
-      fullName: s(e.fullName || e.name),
-      employmentType: s(e.employmentType),
-      userId: s(e.userId || e.linkedUserId),
-    }))
-    .filter((x) => x.staffId);
+// ======================================================
+// OPTIONAL HELPERS (debug/admin use)
+// ======================================================
+function clearStaffClientCache() {
+  RESPONSE_CACHE.clear();
+  INFLIGHT.clear();
+}
+
+function getStaffClientCacheStats() {
+  return {
+    responseCacheSize: RESPONSE_CACHE.size,
+    inflightSize: INFLIGHT.size,
+    defaultTtlMs: DEFAULT_TTL_MS,
+    nullTtlMs: NULL_TTL_MS,
+  };
 }
 
 module.exports = {
   getEmployeeByUserId,
   getEmployeeByStaffId,
   listEmployeesDropdown,
+  clearStaffClientCache,
+  getStaffClientCacheStats,
 };

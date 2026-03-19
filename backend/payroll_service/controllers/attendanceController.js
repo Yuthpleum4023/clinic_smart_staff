@@ -69,7 +69,7 @@ async function buildTrustScorePayloadFromSession(session) {
 
   if (ownerUserId) {
     try {
-      emp = await getEmployeeByUserId(ownerUserId);
+      emp = await cachedGetEmployeeByUserId(ownerUserId);
     } catch (_) {
       emp = null;
     }
@@ -233,6 +233,84 @@ function buildCodeResponse(status, code, message, extra = {}) {
       ...extra,
     },
   };
+}
+
+// ======================================================
+// employee lookup cache / dedupe helpers
+// ======================================================
+const EMPLOYEE_LOOKUP_CACHE_TTL_MS = Math.max(
+  3000,
+  Number(process.env.EMPLOYEE_LOOKUP_CACHE_TTL_MS || 15000)
+);
+
+const employeeLookupCache = new Map();
+const employeeLookupInflight = new Map();
+
+function getEmployeeLookupCache(key) {
+  const hit = employeeLookupCache.get(key);
+  if (!hit) return null;
+
+  if (hit.expiresAt <= Date.now()) {
+    employeeLookupCache.delete(key);
+    return null;
+  }
+
+  return hit.value;
+}
+
+function setEmployeeLookupCache(key, value) {
+  employeeLookupCache.set(key, {
+    value: value || null,
+    expiresAt: Date.now() + EMPLOYEE_LOOKUP_CACHE_TTL_MS,
+  });
+}
+
+async function withEmployeeLookupDedupe(key, loader) {
+  const cached = getEmployeeLookupCache(key);
+  if (cached !== null || employeeLookupCache.has(key)) {
+    return cached;
+  }
+
+  if (employeeLookupInflight.has(key)) {
+    return employeeLookupInflight.get(key);
+  }
+
+  const p = (async () => {
+    try {
+      const value = await loader();
+      setEmployeeLookupCache(key, value || null);
+      return value || null;
+    } finally {
+      employeeLookupInflight.delete(key);
+    }
+  })();
+
+  employeeLookupInflight.set(key, p);
+  return p;
+}
+
+async function cachedGetEmployeeByStaffId(staffId, bearerToken = "") {
+  const id = s(staffId);
+  if (!id) return null;
+
+  const token = s(bearerToken);
+  const key = `staff:${id}|auth:${token ? "1" : "0"}`;
+
+  return withEmployeeLookupDedupe(key, async () => {
+    return getEmployeeByStaffId(id, token);
+  });
+}
+
+async function cachedGetEmployeeByUserId(userId, bearerToken = "") {
+  const id = s(userId);
+  if (!id) return null;
+
+  const token = s(bearerToken);
+  const key = `user:${id}|auth:${token ? "1" : "0"}`;
+
+  return withEmployeeLookupDedupe(key, async () => {
+    return getEmployeeByUserId(id, token);
+  });
 }
 
 // ======================================================
@@ -412,7 +490,7 @@ async function fetchEmployeeForRequest(req, { preferStaffId = true } = {}) {
     for (const candidateStaffId of staffCandidates) {
       try {
         console.log("➡️ try getEmployeeByStaffId:", candidateStaffId);
-        raw = await getEmployeeByStaffId(candidateStaffId, token);
+        raw = await cachedGetEmployeeByStaffId(candidateStaffId, token);
         console.log("⬅️ by-staff result:", raw ? "FOUND" : "NULL");
         if (raw) break;
       } catch (e) {
@@ -429,10 +507,10 @@ async function fetchEmployeeForRequest(req, { preferStaffId = true } = {}) {
     }
   }
 
-  if (!raw && tokenUserId) {
+  if (!raw && !lastHardError && tokenUserId) {
     try {
       console.log("➡️ try getEmployeeByUserId:", tokenUserId);
-      raw = await getEmployeeByUserId(tokenUserId, token);
+      raw = await cachedGetEmployeeByUserId(tokenUserId, token);
       console.log("⬅️ by-user result:", raw ? "FOUND" : "NULL");
     } catch (e) {
       console.log("⚠️ by-user lookup failed:", {
@@ -446,11 +524,11 @@ async function fetchEmployeeForRequest(req, { preferStaffId = true } = {}) {
     }
   }
 
-  if (!raw && !preferStaffId) {
+  if (!raw && !lastHardError && !preferStaffId) {
     for (const candidateStaffId of staffCandidates) {
       try {
         console.log("➡️ fallback getEmployeeByStaffId:", candidateStaffId);
-        raw = await getEmployeeByStaffId(candidateStaffId, token);
+        raw = await cachedGetEmployeeByStaffId(candidateStaffId, token);
         console.log("⬅️ fallback by-staff result:", raw ? "FOUND" : "NULL");
         if (raw) break;
       } catch (e) {
@@ -592,7 +670,7 @@ async function ensureSessionEmployeeAccess(req, session) {
 
   try {
     if (sessionStaffId) {
-      raw = await getEmployeeByStaffId(sessionStaffId, token);
+      raw = await cachedGetEmployeeByStaffId(sessionStaffId, token);
     }
   } catch (e) {
     console.log("⚠️ ensureSessionEmployeeAccess by-staff failed:", {
@@ -611,7 +689,7 @@ async function ensureSessionEmployeeAccess(req, session) {
 
   try {
     if (!raw && sessionUserId) {
-      raw = await getEmployeeByUserId(sessionUserId, token);
+      raw = await cachedGetEmployeeByUserId(sessionUserId, token);
     }
   } catch (e) {
     console.log("⚠️ ensureSessionEmployeeAccess by-user failed:", {
@@ -1091,7 +1169,7 @@ async function resolveEmployeeClinicIdFromStaff(req, fallbackClinicId = "") {
   if (!staffId) return s(fallbackClinicId);
 
   try {
-    const emp = await getEmployeeByStaffId(
+    const emp = await cachedGetEmployeeByStaffId(
       staffId,
       s(req.headers?.authorization)
     );
@@ -1805,7 +1883,7 @@ async function syncOvertimeForSession({ session, policy, shift }) {
 
     if (ownerUserId) {
       try {
-        emp = await getEmployeeByUserId(ownerUserId);
+        emp = await cachedGetEmployeeByUserId(ownerUserId);
       } catch (_) {
         emp = null;
       }
@@ -3733,7 +3811,7 @@ async function myDayPreview(req, res) {
     let emp = ctxEmployee?.raw || null;
     if (!emp && userId) {
       try {
-        emp = await getEmployeeByUserId(userId, getBearerToken(req));
+        emp = await cachedGetEmployeeByUserId(userId, getBearerToken(req));
       } catch (_) {
         emp = null;
       }
