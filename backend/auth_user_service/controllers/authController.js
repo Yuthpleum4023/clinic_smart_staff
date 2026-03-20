@@ -268,7 +268,11 @@ async function syncUserStaffIdFromEnsured(userLike, ensured) {
     const currentStaffId = normStr(userLike?.staffId);
     const ensuredStaffId = normStr(ensured?.employee?.staffId);
 
-    if (!userLike?.userId || !ensuredStaffId || ensuredStaffId === currentStaffId) {
+    if (
+      !userLike?.userId ||
+      !ensuredStaffId ||
+      ensuredStaffId === currentStaffId
+    ) {
       return userLike;
     }
 
@@ -388,24 +392,32 @@ async function login(req, res) {
     const loginRole = normalizeRole(user?.activeRole || user?.role);
 
     if (loginRole === "employee") {
-      try {
-        const ensured = await ensureEmployeeForUser(user, "");
-        console.log("🩹 ensureEmployeeForUser(login):", {
+      if (!normStr(user?.clinicId)) {
+        console.log("⚠️ skip ensureEmployeeForUser(login)", {
           userId: user.userId,
-          ok: !!ensured?.ok,
-          created: !!ensured?.created,
-          skipped: !!ensured?.skipped,
-          reason: ensured?.reason || "",
-          employeeStaffId: ensured?.employee?.staffId || "",
+          role: loginRole,
+          reason: "missing_clinicId",
         });
+      } else {
+        try {
+          const ensured = await ensureEmployeeForUser(user, "");
+          console.log("🩹 ensureEmployeeForUser(login):", {
+            userId: user.userId,
+            ok: !!ensured?.ok,
+            created: !!ensured?.created,
+            skipped: !!ensured?.skipped,
+            reason: ensured?.reason || "",
+            employeeStaffId: ensured?.employee?.staffId || "",
+          });
 
-        user = await syncUserStaffIdFromEnsured(user, ensured);
-      } catch (e) {
-        console.log("⚠️ ensureEmployeeForUser(login) failed:", {
-          userId: user.userId,
-          status: e?.status || 0,
-          message: e?.message || "",
-        });
+          user = await syncUserStaffIdFromEnsured(user, ensured);
+        } catch (e) {
+          console.log("⚠️ ensureEmployeeForUser(login) failed:", {
+            userId: user.userId,
+            status: e?.status || 0,
+            message: e?.message || "",
+          });
+        }
       }
     } else {
       console.log("✅ skip ensureEmployeeForUser(login)", {
@@ -650,6 +662,8 @@ async function registerClinicAdmin(req, res) {
 
 /* ======================================================
    REGISTER WITH INVITE
+   - employee: ผูก clinicId ถาวร + ensure employee
+   - helper: สมัครด้วย invite ได้ แต่ไม่ผูก clinicId ถาวร
 ====================================================== */
 async function registerWithInvite(req, res) {
   try {
@@ -698,21 +712,31 @@ async function registerWithInvite(req, res) {
     }
 
     const userId = makeId(USER_PREFIX, 10);
-    const employeeCode = invRole === "employee" ? makeId(EMP_PREFIX, 10) : "";
-    const staffId = invRole === "employee" ? makeId(STAFF_PREFIX, 10) : "";
+
+    const isEmployeeInvite = invRole === "employee";
+    const boundClinicId = isEmployeeInvite ? normStr(inv.clinicId) : "";
+
+    if (isEmployeeInvite && !boundClinicId) {
+      return res.status(400).json({
+        message: "Invite missing clinicId for employee",
+      });
+    }
+
+    const employeeCode = isEmployeeInvite ? makeId(EMP_PREFIX, 10) : "";
+    const staffId = isEmployeeInvite ? makeId(STAFF_PREFIX, 10) : "";
 
     const passwordHash = await bcrypt.hash(password, 10);
 
     const user = await User.create({
       userId,
-      clinicId: inv.clinicId,
+      clinicId: boundClinicId,
       roles: [invRole],
       activeRole: invRole,
       role: invRole,
       staffId,
       email: finalEmail,
       phone: finalPhone,
-      fullName: fullName || inv.fullName || "",
+      fullName: fullName || normStr(inv.fullName) || "",
       employeeCode,
       passwordHash,
       isActive: true,
@@ -727,23 +751,31 @@ async function registerWithInvite(req, res) {
 
     let userPlain = user.toObject ? user.toObject() : user;
 
-    try {
-      const ensured = await ensureEmployeeForUser(userPlain, "");
-      console.log("🧩 ensureEmployeeForUser(registerWithInvite):", {
-        userId: userPlain.userId,
-        ok: !!ensured?.ok,
-        created: !!ensured?.created,
-        skipped: !!ensured?.skipped,
-        reason: ensured?.reason || "",
-        employeeStaffId: ensured?.employee?.staffId || "",
-      });
+    if (isEmployeeInvite) {
+      try {
+        const ensured = await ensureEmployeeForUser(userPlain, "");
+        console.log("🧩 ensureEmployeeForUser(registerWithInvite):", {
+          userId: userPlain.userId,
+          ok: !!ensured?.ok,
+          created: !!ensured?.created,
+          skipped: !!ensured?.skipped,
+          reason: ensured?.reason || "",
+          employeeStaffId: ensured?.employee?.staffId || "",
+        });
 
-      userPlain = await syncUserStaffIdFromEnsured(userPlain, ensured);
-    } catch (e) {
-      console.log("⚠️ ensureEmployeeForUser(registerWithInvite) failed:", {
+        userPlain = await syncUserStaffIdFromEnsured(userPlain, ensured);
+      } catch (e) {
+        console.log("⚠️ ensureEmployeeForUser(registerWithInvite) failed:", {
+          userId: userPlain.userId,
+          status: e?.status || 0,
+          message: e?.message || "",
+        });
+      }
+    } else {
+      console.log("✅ skip ensureEmployeeForUser(registerWithInvite)", {
         userId: userPlain.userId,
-        status: e?.status || 0,
-        message: e?.message || "",
+        role: invRole,
+        reason: "not_employee",
       });
     }
 

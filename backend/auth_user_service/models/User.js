@@ -88,7 +88,6 @@ const ROLE_ENUM = ["admin", "employee", "helper"];
  * ✅ Subscription / Plan (Premium 299/เดือน)
  * - plan: free | premium
  * - premiumUntil: วันหมดอายุ (ถ้า null/อดีต => ถือว่า free)
- * - NOTE: enforcement ทำใน service ที่ใช้ feature (เช่น payroll_service)
  * ================================
  */
 const PLAN_ENUM = ["free", "premium"];
@@ -97,13 +96,24 @@ const UserSchema = new mongoose.Schema(
   {
     userId: { type: String, required: true, unique: true, index: true }, // usr_xxx
 
-    // ✅ clinic tenancy (MVP: user อยู่คลินิกเดียวก่อน)
-    clinicId: { type: String, required: true, index: true }, // cln_xxx
+    /**
+     * ✅ clinic tenancy
+     * - admin / employee : ควรมี clinicId
+     * - helper           : ไม่จำเป็นต้องมี clinicId ถาวร
+     * - enforcement ให้ทำใน controller/service ตาม business flow
+     */
+    clinicId: { type: String, default: "", index: true }, // cln_xxx หรือ ""
+
+    /**
+     * ✅ OPTIONAL: remember first clinic from invite
+     * - useful for helper onboarding / analytics / default suggestions
+     * - ไม่ใช่ binding หลัก
+     */
+    firstClinicId: { type: String, default: "", index: true },
 
     /**
      * ✅ NEW: roles[] (multi-role)
      * - เก็บบทบาททั้งหมดที่ user นี้มี
-     * - ค่าเริ่มต้น: ถ้ายังใช้ระบบเดิม -> จะถูก backfill จาก role (เดิม) ใน hook
      */
     roles: {
       type: [String],
@@ -115,7 +125,6 @@ const UserSchema = new mongoose.Schema(
     /**
      * ✅ NEW: activeRole
      * - role ที่ “กำลังใช้งาน” ตอนนี้
-     * - token ควรใส่ role = activeRole เท่านั้น
      */
     activeRole: {
       type: String,
@@ -127,7 +136,6 @@ const UserSchema = new mongoose.Schema(
     /**
      * ⚠️ Legacy field: role (เดิม)
      * - คงไว้กันระบบเก่าพัง
-     * - hook จะ sync ให้ role = activeRole อัตโนมัติ
      */
     role: {
       type: String,
@@ -139,8 +147,8 @@ const UserSchema = new mongoose.Schema(
 
     /**
      * ✅ staffId = ตัวตน "พนักงาน/ผู้ช่วย"
-     * - employee: ต้องมี staffId (enforce ใน controller/token/guard)
-     * - helper: อาจมีหรือไม่มีก็ได้ (ตาม design ของท่าน)
+     * - employee: ต้องมี staffId
+     * - helper: อาจมีหรือไม่มีก็ได้
      */
     staffId: { type: String, default: "" }, // stf_xxx
 
@@ -156,9 +164,6 @@ const UserSchema = new mongoose.Schema(
     /**
      * ================================
      * ✅ User Location (MASTER)
-     * - ใช้เก็บพิกัด helper เพื่อคำนวณ nearby jobs
-     * - ใช้เก็บพิกัด admin/clinic user ได้เช่นกัน
-     * - ✅ NEW: เก็บ district / province / address ด้วย
      * ================================
      */
     location: {
@@ -193,8 +198,6 @@ const UserSchema = new mongoose.Schema(
     /**
      * ================================
      * ✅ Tax Profiles (ลดหย่อนภาษี)
-     * - array ต่อปี
-     * - ถ้าไม่กรอก => array ว่าง
      * ================================
      */
     taxProfiles: {
@@ -211,6 +214,9 @@ const UserSchema = new mongoose.Schema(
 UserSchema.index({ clinicId: 1, email: 1 }, { unique: false });
 UserSchema.index({ clinicId: 1, phone: 1 }, { unique: false });
 
+// first clinic analytics / helper onboarding
+UserSchema.index({ firstClinicId: 1 }, { unique: false });
+
 // cross-service lookups
 UserSchema.index({ staffId: 1 }, { unique: false });
 
@@ -221,16 +227,16 @@ UserSchema.index({ clinicId: 1, roles: 1 }, { unique: false });
 // premium query helpers
 UserSchema.index({ plan: 1, premiumUntil: 1 }, { unique: false });
 
-// ✅ location lookup helpers
+// location lookup helpers
 UserSchema.index({ "location.lat": 1, "location.lng": 1 }, { unique: false });
 
 /**
  * ================================
  * ✅ Hooks: Backfill + Sync
- * - ทำให้เอกสารเก่า (ที่มี role อย่างเดียว) ยังทำงานได้
- * - ป้องกัน “ฟีเจอร์หาย” เพราะ activeRole/roles ไม่สัมพันธ์กัน
+ * - normalize role / activeRole / roles
  * - normalize plan/premiumUntil
  * - normalize location
+ * - normalize clinic fields by role
  * ================================
  */
 UserSchema.pre("validate", function (next) {
@@ -264,16 +270,25 @@ UserSchema.pre("validate", function (next) {
       this.role = this.activeRole;
     }
 
-    // 5) Normalize plan (free|premium)
+    // 5) Normalize plan
     const p = String(this.plan || "free").trim().toLowerCase();
     this.plan = PLAN_ENUM.includes(p) ? p : "free";
 
-    // 6) ถ้าไม่ใช่ premium -> premiumUntil = null (กันสับสน)
+    // 6) ถ้าไม่ใช่ premium -> premiumUntil = null
     if (this.plan !== "premium") {
       this.premiumUntil = null;
     }
 
-    // 7) Normalize location object
+    // 7) Normalize clinic fields
+    this.clinicId = String(this.clinicId || "").trim();
+    this.firstClinicId = String(this.firstClinicId || "").trim();
+
+    // helper ไม่ควร bind clinic ถาวร
+    if (this.activeRole === "helper") {
+      this.clinicId = "";
+    }
+
+    // 8) Normalize location object
     if (!this.location || typeof this.location !== "object") {
       this.location = {
         lat: null,
