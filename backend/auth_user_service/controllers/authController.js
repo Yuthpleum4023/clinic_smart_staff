@@ -263,15 +263,38 @@ async function ensureStaffIdIfEmployee(userDocOrLean) {
   }
 }
 
+async function syncUserStaffIdFromEnsured(userLike, ensured) {
+  try {
+    const currentStaffId = normStr(userLike?.staffId);
+    const ensuredStaffId = normStr(ensured?.employee?.staffId);
+
+    if (!userLike?.userId || !ensuredStaffId || ensuredStaffId === currentStaffId) {
+      return userLike;
+    }
+
+    await User.updateOne(
+      { userId: userLike.userId },
+      { $set: { staffId: ensuredStaffId } }
+    );
+
+    return {
+      ...userLike,
+      staffId: ensuredStaffId,
+    };
+  } catch (_) {
+    return userLike;
+  }
+}
+
 /* ======================================================
    LOGIN
    POST /login
    body: { emailOrPhone, password, activeRole? }
 
-   ✅ PRODUCTION SAFE
-   - login ผ่านได้แม้ staff_service ช้า/429
-   - จะ self-heal เฉพาะ employee ที่ "ยังไม่มี staffId"
-   - ถ้ามี staffId แล้ว จะ skip ไม่ยิง staff_service ซ้ำ
+   ✅ FIXED
+   - ถ้าเป็น employee จะเช็ก/สร้าง employee record ทุกครั้ง
+   - จะไม่ skip เพียงเพราะ user มี staffId อยู่แล้ว
+   - ถ้า staff_service คืน staffId ใหม่ จะ sync กลับเข้า User
 ====================================================== */
 async function login(req, res) {
   const t0 = Date.now();
@@ -362,12 +385,9 @@ async function login(req, res) {
       roles: fixed.roles,
     };
 
-    // ✅ IMPORTANT:
-    // self-heal staff_service เฉพาะ employee ที่ยังไม่มี staffId เท่านั้น
     const loginRole = normalizeRole(user?.activeRole || user?.role);
-    const loginStaffId = normStr(user?.staffId);
 
-    if (loginRole === "employee" && !loginStaffId) {
+    if (loginRole === "employee") {
       try {
         const ensured = await ensureEmployeeForUser(user, "");
         console.log("🩹 ensureEmployeeForUser(login):", {
@@ -378,6 +398,8 @@ async function login(req, res) {
           reason: ensured?.reason || "",
           employeeStaffId: ensured?.employee?.staffId || "",
         });
+
+        user = await syncUserStaffIdFromEnsured(user, ensured);
       } catch (e) {
         console.log("⚠️ ensureEmployeeForUser(login) failed:", {
           userId: user.userId,
@@ -389,9 +411,7 @@ async function login(req, res) {
       console.log("✅ skip ensureEmployeeForUser(login)", {
         userId: user.userId,
         role: loginRole,
-        staffId: loginStaffId,
-        reason:
-          loginRole !== "employee" ? "not_employee" : "already_has_staffId",
+        reason: "not_employee",
       });
     }
 
@@ -705,10 +725,8 @@ async function registerWithInvite(req, res) {
     inv.usedByUserId = userId;
     await inv.save();
 
-    const userPlain = user.toObject ? user.toObject() : user;
+    let userPlain = user.toObject ? user.toObject() : user;
 
-    // ✅ สมัครด้วย invite แล้วค่อยพยายามสร้าง employee record ทันที
-    // แต่ถ้าพลาด ไม่ทำให้สมัคร fail
     try {
       const ensured = await ensureEmployeeForUser(userPlain, "");
       console.log("🧩 ensureEmployeeForUser(registerWithInvite):", {
@@ -719,6 +737,8 @@ async function registerWithInvite(req, res) {
         reason: ensured?.reason || "",
         employeeStaffId: ensured?.employee?.staffId || "",
       });
+
+      userPlain = await syncUserStaffIdFromEnsured(userPlain, ensured);
     } catch (e) {
       console.log("⚠️ ensureEmployeeForUser(registerWithInvite) failed:", {
         userId: userPlain.userId,
