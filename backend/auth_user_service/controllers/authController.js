@@ -379,33 +379,11 @@ async function login(req, res) {
     const loginRole = normalizeRole(user?.activeRole || user?.role);
 
     if (loginRole === "employee") {
-      if (!normStr(user?.clinicId)) {
-        console.log("⚠️ skip ensureEmployeeForUser(login)", {
-          userId: user.userId,
-          role: loginRole,
-          reason: "missing_clinicId",
-        });
-      } else {
-        try {
-          const ensured = await ensureEmployeeForUser(user, "");
-          console.log("🩹 ensureEmployeeForUser(login):", {
-            userId: user.userId,
-            ok: !!ensured?.ok,
-            created: !!ensured?.created,
-            skipped: !!ensured?.skipped,
-            reason: ensured?.reason || "",
-            employeeStaffId: ensured?.employee?.staffId || "",
-          });
-
-          user = await syncUserStaffIdFromEnsured(user, ensured);
-        } catch (e) {
-          console.log("⚠️ ensureEmployeeForUser(login) failed:", {
-            userId: user.userId,
-            status: e?.status || 0,
-            message: e?.message || "",
-          });
-        }
-      }
+      console.log("✅ skip ensureEmployeeForUser(login) - production safe", {
+        userId: user.userId,
+        role: loginRole,
+        reason: "avoid_rate_limit",
+      });
     } else {
       console.log("✅ skip ensureEmployeeForUser(login)", {
         userId: user.userId,
