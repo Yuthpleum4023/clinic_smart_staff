@@ -36,7 +36,7 @@ function normalizeRole(v) {
 
 function normalizeRoles(arr) {
   const roles = Array.isArray(arr) ? arr : [];
-  const set = new Set(roles.map((x) => normalizeRole(x)).filter((x) => !!x));
+  const set = new Set(roles.map((x) => normalizeRole(x)).filter(Boolean));
   return Array.from(set);
 }
 
@@ -131,7 +131,11 @@ function ensureRolesAndActive(userLike, desiredActiveRole) {
   if (!roles.includes(active)) roles = [...roles, active];
   roles = normalizeRoles(roles);
 
-  return { roles, activeRole: active, legacyRole: active };
+  return {
+    roles,
+    activeRole: active,
+    legacyRole: active,
+  };
 }
 
 function pickActiveRole(user, requested) {
@@ -243,8 +247,8 @@ async function ensureStaffIdIfEmployee(userDocOrLean) {
 
     if (!hasEmployee) return userDocOrLean;
 
-    const staffId = String(userDocOrLean.staffId || "").trim();
-    if (staffId.length > 0) return userDocOrLean;
+    const staffId = normStr(userDocOrLean.staffId);
+    if (staffId) return userDocOrLean;
 
     const newStaffId = makeId(STAFF_PREFIX, 10);
 
@@ -259,8 +263,19 @@ async function ensureStaffIdIfEmployee(userDocOrLean) {
   }
 }
 
+/* ======================================================
+   LOGIN
+   POST /login
+   body: { emailOrPhone, password, activeRole? }
+
+   ✅ PRODUCTION SAFE
+   - login ผ่านได้แม้ staff_service ช้า/429
+   - จะ self-heal เฉพาะ employee ที่ "ยังไม่มี staffId"
+   - ถ้ามี staffId แล้ว จะ skip ไม่ยิง staff_service ซ้ำ
+====================================================== */
 async function login(req, res) {
   const t0 = Date.now();
+
   try {
     const emailOrPhone = normStr(req.body?.emailOrPhone);
     const password = normStr(req.body?.password);
@@ -290,7 +305,10 @@ async function login(req, res) {
       ms: Date.now() - t0,
     });
 
-    if (!user) return res.status(401).json({ message: "Invalid credentials" });
+    if (!user) {
+      return res.status(401).json({ message: "Invalid credentials" });
+    }
+
     if (!user.isActive) {
       return res.status(403).json({ message: "User disabled" });
     }
@@ -308,7 +326,9 @@ async function login(req, res) {
       ms: Date.now() - t0,
     });
 
-    if (!ok) return res.status(401).json({ message: "Invalid credentials" });
+    if (!ok) {
+      return res.status(401).json({ message: "Invalid credentials" });
+    }
 
     user = await ensureStaffIdIfEmployee(user);
 
@@ -342,24 +362,36 @@ async function login(req, res) {
       roles: fixed.roles,
     };
 
-    // ✅ PRODUCTION SELF-HEAL:
-    // ถ้า user นี้เป็น employee แต่ staff_service ยังไม่มี employee record
-    // ให้พยายามสร้างอัตโนมัติ โดยไม่ทำให้ login fail
-    try {
-      const ensured = await ensureEmployeeForUser(user, "");
-      console.log("🩹 ensureEmployeeForUser(login):", {
+    // ✅ IMPORTANT:
+    // self-heal staff_service เฉพาะ employee ที่ยังไม่มี staffId เท่านั้น
+    const loginRole = normalizeRole(user?.activeRole || user?.role);
+    const loginStaffId = normStr(user?.staffId);
+
+    if (loginRole === "employee" && !loginStaffId) {
+      try {
+        const ensured = await ensureEmployeeForUser(user, "");
+        console.log("🩹 ensureEmployeeForUser(login):", {
+          userId: user.userId,
+          ok: !!ensured?.ok,
+          created: !!ensured?.created,
+          skipped: !!ensured?.skipped,
+          reason: ensured?.reason || "",
+          employeeStaffId: ensured?.employee?.staffId || "",
+        });
+      } catch (e) {
+        console.log("⚠️ ensureEmployeeForUser(login) failed:", {
+          userId: user.userId,
+          status: e?.status || 0,
+          message: e?.message || "",
+        });
+      }
+    } else {
+      console.log("✅ skip ensureEmployeeForUser(login)", {
         userId: user.userId,
-        ok: !!ensured?.ok,
-        created: !!ensured?.created,
-        skipped: !!ensured?.skipped,
-        reason: ensured?.reason || "",
-        employeeStaffId: ensured?.employee?.staffId || "",
-      });
-    } catch (e) {
-      console.log("⚠️ ensureEmployeeForUser(login) failed:", {
-        userId: user.userId,
-        status: e?.status || 0,
-        message: e?.message || "",
+        role: loginRole,
+        staffId: loginStaffId,
+        reason:
+          loginRole !== "employee" ? "not_employee" : "already_has_staffId",
       });
     }
 
@@ -369,10 +401,16 @@ async function login(req, res) {
     return res.json({ user: safeUser(user), token });
   } catch (e) {
     console.error("❌ login failed", e, "ms=", Date.now() - t0);
-    return res.status(500).json({ message: "login failed", error: e.message });
+    return res.status(500).json({
+      message: "login failed",
+      error: e.message,
+    });
   }
 }
 
+/* ======================================================
+   ME
+====================================================== */
 async function me(req, res) {
   try {
     const userId = req.user?.userId;
@@ -381,16 +419,24 @@ async function me(req, res) {
     }
 
     let user = await User.findOne({ userId }).select("-passwordHash").lean();
-    if (!user) return res.status(404).json({ message: "User not found" });
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
 
     user = await ensureStaffIdIfEmployee(user);
 
     return res.json({ user: safeUser(user) });
   } catch (e) {
-    return res.status(500).json({ message: "me failed", error: e.message });
+    return res.status(500).json({
+      message: "me failed",
+      error: e.message,
+    });
   }
 }
 
+/* ======================================================
+   UPDATE MY LOCATION
+====================================================== */
 async function updateMyLocation(req, res) {
   try {
     const userId = req.user?.userId;
@@ -453,6 +499,9 @@ async function updateMyLocation(req, res) {
   }
 }
 
+/* ======================================================
+   SWITCH ROLE
+====================================================== */
 async function switchRole(req, res) {
   try {
     const userId = req.user?.userId;
@@ -508,10 +557,16 @@ async function switchRole(req, res) {
     const token = signToken(makeJwtPayload(user));
     return res.json({ user: safeUser(user), token });
   } catch (e) {
-    return res.status(500).json({ message: "switchRole failed", error: e.message });
+    return res.status(500).json({
+      message: "switchRole failed",
+      error: e.message,
+    });
   }
 }
 
+/* ======================================================
+   REGISTER CLINIC ADMIN
+====================================================== */
 async function registerClinicAdmin(req, res) {
   try {
     const clinicName = normStr(req.body?.clinicName);
@@ -557,22 +612,25 @@ async function registerClinicAdmin(req, res) {
       planUpdatedAt: null,
     });
 
-    const token = signToken(
-      makeJwtPayload(user.toObject ? user.toObject() : user)
-    );
+    const plain = user.toObject ? user.toObject() : user;
+    const token = signToken(makeJwtPayload(plain));
 
     return res.json({
       clinic: { clinicId: clinic.clinicId, name: clinic.name },
-      user: safeUser(user.toObject ? user.toObject() : user),
+      user: safeUser(plain),
       token,
     });
   } catch (e) {
-    return res
-      .status(500)
-      .json({ message: "registerClinicAdmin failed", error: e.message });
+    return res.status(500).json({
+      message: "registerClinicAdmin failed",
+      error: e.message,
+    });
   }
 }
 
+/* ======================================================
+   REGISTER WITH INVITE
+====================================================== */
 async function registerWithInvite(req, res) {
   try {
     const inviteCode = normStr(req.body?.inviteCode).toUpperCase();
@@ -625,7 +683,7 @@ async function registerWithInvite(req, res) {
 
     const passwordHash = await bcrypt.hash(password, 10);
 
-    let user = await User.create({
+    const user = await User.create({
       userId,
       clinicId: inv.clinicId,
       roles: [invRole],
@@ -649,9 +707,8 @@ async function registerWithInvite(req, res) {
 
     const userPlain = user.toObject ? user.toObject() : user;
 
-    // ✅ PRODUCTION FIX:
-    // ถ้า invite นี้คือ employee ให้สร้าง employee record ใน staff_service ทันที
-    // ถ้าพลาด ยังสมัครผ่านได้ แต่จะมี log ให้ตามต่อ
+    // ✅ สมัครด้วย invite แล้วค่อยพยายามสร้าง employee record ทันที
+    // แต่ถ้าพลาด ไม่ทำให้สมัคร fail
     try {
       const ensured = await ensureEmployeeForUser(userPlain, "");
       console.log("🧩 ensureEmployeeForUser(registerWithInvite):", {
@@ -677,12 +734,16 @@ async function registerWithInvite(req, res) {
       token,
     });
   } catch (e) {
-    return res
-      .status(500)
-      .json({ message: "registerWithInvite failed", error: e.message });
+    return res.status(500).json({
+      message: "registerWithInvite failed",
+      error: e.message,
+    });
   }
 }
 
+/* ======================================================
+   FORGOT PASSWORD
+====================================================== */
 async function forgotPassword(req, res) {
   try {
     const emailOrPhone = normStr(req.body?.emailOrPhone);
@@ -716,12 +777,16 @@ async function forgotPassword(req, res) {
 
     return res.json({ ok: true });
   } catch (e) {
-    return res
-      .status(500)
-      .json({ message: "forgotPassword failed", error: e.message });
+    return res.status(500).json({
+      message: "forgotPassword failed",
+      error: e.message,
+    });
   }
 }
 
+/* ======================================================
+   RESET PASSWORD
+====================================================== */
 async function resetPassword(req, res) {
   try {
     const emailOrPhone = normStr(req.body?.emailOrPhone);
@@ -731,10 +796,11 @@ async function resetPassword(req, res) {
     if (!emailOrPhone || !code || !newPassword) {
       return res.status(400).json({ message: "invalid payload" });
     }
+
     if (newPassword.length < 6) {
-      return res
-        .status(400)
-        .json({ message: "newPassword too short (>=6)" });
+      return res.status(400).json({
+        message: "newPassword too short (>=6)",
+      });
     }
 
     const user = await User.findOne({
@@ -761,9 +827,10 @@ async function resetPassword(req, res) {
 
     return res.json({ ok: true });
   } catch (e) {
-    return res
-      .status(500)
-      .json({ message: "resetPassword failed", error: e.message });
+    return res.status(500).json({
+      message: "resetPassword failed",
+      error: e.message,
+    });
   }
 }
 
