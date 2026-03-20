@@ -10,7 +10,6 @@ const { ensureEmployeeForUser } = require("../utils/staffServiceClient");
 const USER_PREFIX = (process.env.USER_ID_PREFIX || "usr_").toString();
 const CLINIC_PREFIX = (process.env.CLINIC_ID_PREFIX || "cln_").toString();
 const EMP_PREFIX = (process.env.EMPLOYEE_ID_PREFIX || "emp_").toString();
-const STAFF_PREFIX = (process.env.STAFF_ID_PREFIX || "stf_").toString();
 
 const RESET_TOKEN_TTL_MINUTES = Number(
   process.env.RESET_TOKEN_TTL_MINUTES || 10
@@ -232,6 +231,11 @@ function makeJwtPayload(user) {
   return payload;
 }
 
+/**
+ * IMPORTANT:
+ * - auth_user_service ห้าม generate staffId เอง
+ * - staffId ต้องมาจาก staff_service หลัง ensure/create สำเร็จเท่านั้น
+ */
 async function ensureStaffIdIfEmployee(userDocOrLean) {
   try {
     if (!userDocOrLean) return userDocOrLean;
@@ -247,17 +251,12 @@ async function ensureStaffIdIfEmployee(userDocOrLean) {
 
     if (!hasEmployee) return userDocOrLean;
 
+    // ถ้ามีอยู่แล้วก็คืนเดิม
     const staffId = normStr(userDocOrLean.staffId);
     if (staffId) return userDocOrLean;
 
-    const newStaffId = makeId(STAFF_PREFIX, 10);
-
-    await User.updateOne(
-      { userId: userDocOrLean.userId },
-      { $set: { staffId: newStaffId } }
-    );
-
-    return { ...userDocOrLean, staffId: newStaffId };
+    // ถ้ายังไม่มี ก็ห้ามสร้างเอง
+    return userDocOrLean;
   } catch (_) {
     return userDocOrLean;
   }
@@ -723,7 +722,7 @@ async function registerWithInvite(req, res) {
     }
 
     const employeeCode = isEmployeeInvite ? makeId(EMP_PREFIX, 10) : "";
-    const staffId = isEmployeeInvite ? makeId(STAFF_PREFIX, 10) : "";
+    const staffId = ""; // IMPORTANT: ห้าม auth_user_service generate staffId เอง
 
     const passwordHash = await bcrypt.hash(password, 10);
 
