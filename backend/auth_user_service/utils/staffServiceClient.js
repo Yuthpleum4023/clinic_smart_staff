@@ -118,114 +118,40 @@ function normalizeEmployeePayload(employeeLike = {}) {
 
 async function getEmployeeByUserId(userId, bearerToken = "") {
   const uid = s(userId);
-  if (!uid) {
-    throw makeError("Missing userId", 400, { message: "Missing userId" });
-  }
+  if (!uid) return null;
 
   const b = baseUrl();
   const headers = buildHeaders(bearerToken);
 
-  const candidates = [
-    `${b}/api/employees/by-user/${encodeURIComponent(uid)}`,
-    `${b}/api/employees?userId=${encodeURIComponent(uid)}`,
-  ];
+  const url = `${b}/api/employees/by-user/${encodeURIComponent(uid)}`;
 
-  let last404 = null;
+  try {
+    const data = await fetchJson(url, {
+      method: "GET",
+      headers,
+      timeoutMs: 8000,
+    });
 
-  for (const url of candidates) {
-    try {
-      const data = await fetchJson(url, {
-        method: "GET",
-        headers,
-        timeoutMs: 12000,
-      });
-
-      const employee =
-        data?.employee ||
-        data?.data?.employee ||
-        data?.data ||
-        data?.item ||
-        data?.result ||
-        (Array.isArray(data?.items) ? data.items[0] : null) ||
-        null;
-
-      return employee ? normalizeEmployeePayload(employee) : null;
-    } catch (e) {
-      if (Number(e?.status || 0) === 404) {
-        last404 = e;
-        continue;
-      }
-      throw e;
+    const employee = data?.employee || data?.data || null;
+    return employee ? normalizeEmployeePayload(employee) : null;
+  } catch (e) {
+    // ✅ IMPORTANT: ไม่ throw ถ้า 404 หรือ 429
+    if ([404, 429].includes(Number(e?.status))) {
+      return null;
     }
+    throw e;
   }
-
-  if (last404) return null;
-  return null;
-}
-
-async function getEmployeeByStaffId(staffId, bearerToken = "") {
-  const sid = s(staffId);
-  if (!sid) {
-    throw makeError("Missing staffId", 400, { message: "Missing staffId" });
-  }
-
-  const b = baseUrl();
-  const headers = buildHeaders(bearerToken);
-
-  const candidates = [
-    `${b}/api/employees/by-staff/${encodeURIComponent(sid)}`,
-    `${b}/api/employees/${encodeURIComponent(sid)}`,
-  ];
-
-  let last404 = null;
-
-  for (const url of candidates) {
-    try {
-      const data = await fetchJson(url, {
-        method: "GET",
-        headers,
-        timeoutMs: 12000,
-      });
-
-      const employee =
-        data?.employee ||
-        data?.data?.employee ||
-        data?.data ||
-        data?.item ||
-        data?.result ||
-        null;
-
-      return employee ? normalizeEmployeePayload(employee) : null;
-    } catch (e) {
-      if (Number(e?.status || 0) === 404) {
-        last404 = e;
-        continue;
-      }
-      throw e;
-    }
-  }
-
-  if (last404) return null;
-  return null;
 }
 
 function buildCreateEmployeeBody(userLike = {}) {
-  const userId = s(userLike.userId);
-  const clinicId = s(userLike.clinicId);
-  const fullName = s(userLike.fullName || userLike.name);
-  const phone = s(userLike.phone);
-  const email = s(userLike.email);
-  const employmentType = s(userLike.employmentType || "fullTime");
-  const employeeCode = s(userLike.employeeCode);
-
   return {
-    userId,
-    clinicId,
-    fullName,
-    employmentType: employmentType || "fullTime",
-    phone,
-    email,
-    employeeCode,
+    userId: s(userLike.userId),
+    clinicId: s(userLike.clinicId),
+    fullName: s(userLike.fullName || userLike.name),
+    employmentType: "fullTime",
+    phone: s(userLike.phone),
+    email: s(userLike.email),
+    employeeCode: s(userLike.employeeCode),
     active: true,
   };
 }
@@ -233,91 +159,96 @@ function buildCreateEmployeeBody(userLike = {}) {
 async function createEmployeeFromUser(userLike, bearerToken = "") {
   const body = buildCreateEmployeeBody(userLike);
 
-  if (!body.userId) {
-    throw makeError("Missing userId for employee creation", 400);
-  }
-  if (!body.fullName) {
-    throw makeError("Missing fullName for employee creation", 400);
-  }
-  if (!body.clinicId) {
-    throw makeError("Missing clinicId for employee creation", 400);
+  if (!body.userId || !body.fullName || !body.clinicId) {
+    return null;
   }
 
   const b = baseUrl();
   const headers = buildHeaders(bearerToken);
 
-  // ✅ IMPORTANT:
-  // ใช้ internal route ใหม่
-  const data = await fetchJson(
-    `${b}/api/employees/internal/create-from-user`,
-    {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      timeoutMs: 15000,
+  try {
+    const data = await fetchJson(
+      `${b}/api/employees/internal/create-from-user`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+        timeoutMs: 12000,
+      }
+    );
+
+    const employee = data?.employee || data?.data || null;
+    return employee ? normalizeEmployeePayload(employee) : null;
+  } catch (e) {
+    // ✅ CRITICAL: กัน 429
+    if (Number(e?.status) === 429) {
+      console.log("⚠️ createEmployee skipped (429 rate limit)");
+      return null;
     }
-  );
 
-  const employee =
-    data?.employee ||
-    data?.data?.employee ||
-    data?.data ||
-    data?.item ||
-    data?.result ||
-    null;
-
-  return employee ? normalizeEmployeePayload(employee) : null;
+    console.log("⚠️ createEmployee failed:", e.message);
+    return null;
+  }
 }
 
 async function ensureEmployeeForUser(userLike, bearerToken = "") {
-  const role = s(userLike?.activeRole || userLike?.role).toLowerCase();
-  const roles = Array.isArray(userLike?.roles)
-    ? userLike.roles.map((x) => s(x).toLowerCase()).filter(Boolean)
-    : [];
+  try {
+    const role = s(userLike?.activeRole || userLike?.role).toLowerCase();
+    const roles = Array.isArray(userLike?.roles)
+      ? userLike.roles.map((x) => s(x).toLowerCase())
+      : [];
 
-  const isEmployee = role === "employee" || roles.includes("employee");
-  if (!isEmployee) {
+    const isEmployee = role === "employee" || roles.includes("employee");
+
+    if (!isEmployee) {
+      return { ok: true, skipped: true, reason: "not_employee_role" };
+    }
+
+    const userId = s(userLike?.userId);
+    if (!userId) {
+      return { ok: false, skipped: true, reason: "missing_userId" };
+    }
+
+    // ✅ NEW: ถ้ามี staffId แล้ว → ไม่ต้องยิง service
+    if (s(userLike?.staffId)) {
+      return {
+        ok: true,
+        skipped: true,
+        reason: "staffId_exists",
+        employee: null,
+      };
+    }
+
+    const existing = await getEmployeeByUserId(userId, bearerToken);
+    if (existing) {
+      return {
+        ok: true,
+        created: false,
+        employee: existing,
+      };
+    }
+
+    const created = await createEmployeeFromUser(userLike, bearerToken);
+
     return {
       ok: true,
-      skipped: true,
-      reason: "not_employee_role",
-      employee: null,
+      created: !!created,
+      employee: created,
     };
-  }
+  } catch (e) {
+    // ✅ สำคัญ: ห้าม throw กลับ
+    console.log("⚠️ ensureEmployeeForUser safe fail:", e.message);
 
-  const userId = s(userLike?.userId);
-  if (!userId) {
     return {
       ok: false,
       skipped: true,
-      reason: "missing_userId",
-      employee: null,
+      reason: "safe_fail",
     };
   }
-
-  const existing = await getEmployeeByUserId(userId, bearerToken);
-  if (existing) {
-    return {
-      ok: true,
-      created: false,
-      skipped: false,
-      employee: existing,
-    };
-  }
-
-  const created = await createEmployeeFromUser(userLike, bearerToken);
-
-  return {
-    ok: true,
-    created: true,
-    skipped: false,
-    employee: created,
-  };
 }
 
 module.exports = {
   getEmployeeByUserId,
-  getEmployeeByStaffId,
   createEmployeeFromUser,
   ensureEmployeeForUser,
 };

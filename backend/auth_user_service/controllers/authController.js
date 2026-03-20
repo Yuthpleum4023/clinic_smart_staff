@@ -292,13 +292,6 @@ async function syncUserStaffIdFromEnsured(userLike, ensured) {
 
 /* ======================================================
    LOGIN
-   POST /login
-   body: { emailOrPhone, password, activeRole? }
-
-   ✅ FIXED
-   - ถ้าเป็น employee จะเช็ก/สร้าง employee record ทุกครั้ง
-   - จะไม่ skip เพียงเพราะ user มี staffId อยู่แล้ว
-   - ถ้า staff_service คืน staffId ใหม่ จะ sync กลับเข้า User
 ====================================================== */
 async function login(req, res) {
   const t0 = Date.now();
@@ -397,6 +390,13 @@ async function login(req, res) {
           userId: user.userId,
           role: loginRole,
           reason: "missing_clinicId",
+        });
+      } else if (normStr(user?.staffId)) {
+        console.log("✅ skip ensureEmployeeForUser(login)", {
+          userId: user.userId,
+          role: loginRole,
+          reason: "staffId_exists",
+          staffId: user.staffId,
         });
       } else {
         try {
