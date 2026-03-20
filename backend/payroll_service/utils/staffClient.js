@@ -13,7 +13,9 @@
 // - dedupe in-flight requests (ถ้ามี call พร้อมกัน key เดียวกัน จะใช้ promise เดียวกัน)
 // - clearer error propagation + safer logs
 // - FIX: null cache works correctly
-// - FIX: dropdown cache key safer per bearer token hash-ish key
+// - FIX: dropdown cache key safer per bearer token key
+// - FIX: user/staff lookup cache key now separated by bearer token key
+// - FIX: extractEmployee supports array/list fallback better
 
 function s(v) {
   return String(v || "").trim();
@@ -127,7 +129,11 @@ function shouldStopImmediately(status) {
 }
 
 function extractEmployee(payload) {
-  if (!payload || typeof payload !== "object") return null;
+  if (!payload) return null;
+
+  if (Array.isArray(payload) && payload.length === 1) {
+    return payload[0];
+  }
 
   if (payload.employee && typeof payload.employee === "object") {
     return payload.employee;
@@ -141,6 +147,11 @@ function extractEmployee(payload) {
     if (payload.data.employee && typeof payload.data.employee === "object") {
       return payload.data.employee;
     }
+
+    if (Array.isArray(payload.data.items) && payload.data.items.length === 1) {
+      return payload.data.items[0];
+    }
+
     return payload.data;
   }
 
@@ -158,6 +169,14 @@ function extractEmployee(payload) {
 
   if (Array.isArray(payload.items) && payload.items.length === 1) {
     return payload.items[0];
+  }
+
+  if (Array.isArray(payload.results) && payload.results.length === 1) {
+    return payload.results[0];
+  }
+
+  if (Array.isArray(payload.employees) && payload.employees.length === 1) {
+    return payload.employees[0];
   }
 
   if (
@@ -288,7 +307,13 @@ async function withInflight(cacheKey, fn) {
 function tokenCacheKeyPart(bearerToken = "") {
   const t = s(bearerToken);
   if (!t) return "anon";
-  return `toklen:${t.length}`;
+
+  let h = 0;
+  for (let i = 0; i < t.length; i++) {
+    h = (h * 31 + t.charCodeAt(i)) >>> 0;
+  }
+
+  return `tok:${h.toString(16)}`;
 }
 
 // ======================================================
@@ -367,7 +392,8 @@ async function getEmployeeByUserId(userId, bearerToken = "") {
     throw makeError("Missing userId", 400, { message: "Missing userId" });
   }
 
-  const cacheKey = `user:${u}`;
+  const tokenPart = tokenCacheKeyPart(bearerToken);
+  const cacheKey = `user:${u}:${tokenPart}`;
   const cached = getCache(cacheKey);
   if (cached !== CACHE_MISS) return cached;
 
@@ -393,7 +419,9 @@ async function getEmployeeByUserId(userId, bearerToken = "") {
       return null;
     }
 
-    const employee = normalizeEmployee(extractEmployee(r.data));
+    const employee =
+      normalizeEmployee(extractEmployee(r.data)) ||
+      normalizeEmployee(extractList(r.data)[0]);
 
     if (!employee) {
       setCache(cacheKey, null, NULL_TTL_MS);
@@ -403,10 +431,10 @@ async function getEmployeeByUserId(userId, bearerToken = "") {
     setCache(cacheKey, employee, DEFAULT_TTL_MS);
 
     if (employee.staffId) {
-      setCache(`staff:${employee.staffId}`, employee, DEFAULT_TTL_MS);
+      setCache(`staff:${employee.staffId}:${tokenPart}`, employee, DEFAULT_TTL_MS);
     }
     if (employee.userId) {
-      setCache(`user:${employee.userId}`, employee, DEFAULT_TTL_MS);
+      setCache(`user:${employee.userId}:${tokenPart}`, employee, DEFAULT_TTL_MS);
     }
 
     return employee;
@@ -423,7 +451,8 @@ async function getEmployeeByStaffId(staffId, bearerToken = "") {
     throw makeError("Missing staffId", 400, { message: "Missing staffId" });
   }
 
-  const cacheKey = `staff:${id}`;
+  const tokenPart = tokenCacheKeyPart(bearerToken);
+  const cacheKey = `staff:${id}:${tokenPart}`;
   const cached = getCache(cacheKey);
   if (cached !== CACHE_MISS) return cached;
 
@@ -449,7 +478,9 @@ async function getEmployeeByStaffId(staffId, bearerToken = "") {
       return null;
     }
 
-    const employee = normalizeEmployee(extractEmployee(r.data));
+    const employee =
+      normalizeEmployee(extractEmployee(r.data)) ||
+      normalizeEmployee(extractList(r.data)[0]);
 
     if (!employee) {
       setCache(cacheKey, null, NULL_TTL_MS);
@@ -459,10 +490,10 @@ async function getEmployeeByStaffId(staffId, bearerToken = "") {
     setCache(cacheKey, employee, DEFAULT_TTL_MS);
 
     if (employee.staffId) {
-      setCache(`staff:${employee.staffId}`, employee, DEFAULT_TTL_MS);
+      setCache(`staff:${employee.staffId}:${tokenPart}`, employee, DEFAULT_TTL_MS);
     }
     if (employee.userId) {
-      setCache(`user:${employee.userId}`, employee, DEFAULT_TTL_MS);
+      setCache(`user:${employee.userId}:${tokenPart}`, employee, DEFAULT_TTL_MS);
     }
 
     return employee;

@@ -69,7 +69,7 @@ async function buildTrustScorePayloadFromSession(session) {
 
   if (ownerUserId) {
     try {
-      emp = await cachedGetEmployeeByUserId(ownerUserId);
+      emp = await getEmployeeByUserId(ownerUserId);
     } catch (_) {
       emp = null;
     }
@@ -235,82 +235,86 @@ function buildCodeResponse(status, code, message, extra = {}) {
   };
 }
 
-// ======================================================
-// employee lookup cache / dedupe helpers
-// ======================================================
-const EMPLOYEE_LOOKUP_CACHE_TTL_MS = Math.max(
-  3000,
-  Number(process.env.EMPLOYEE_LOOKUP_CACHE_TTL_MS || 15000)
-);
-
-const employeeLookupCache = new Map();
-const employeeLookupInflight = new Map();
-
-function getEmployeeLookupCache(key) {
-  const hit = employeeLookupCache.get(key);
-  if (!hit) return null;
-
-  if (hit.expiresAt <= Date.now()) {
-    employeeLookupCache.delete(key);
-    return null;
-  }
-
-  return hit.value;
+function isTooManyRequestsError(err) {
+  return Number(err?.status || 0) === 429;
 }
 
-function setEmployeeLookupCache(key, value) {
-  employeeLookupCache.set(key, {
-    value: value || null,
-    expiresAt: Date.now() + EMPLOYEE_LOOKUP_CACHE_TTL_MS,
-  });
+function createRequestMemo(req) {
+  if (!req._attendanceMemo || typeof req._attendanceMemo !== "object") {
+    req._attendanceMemo = {
+      employeeByStaffId: new Map(),
+      employeeByUserId: new Map(),
+      verifiedEmployee: null,
+      runtimeContext: new Map(),
+    };
+  }
+  return req._attendanceMemo;
 }
 
-async function withEmployeeLookupDedupe(key, loader) {
-  const cached = getEmployeeLookupCache(key);
-  if (cached !== null || employeeLookupCache.has(key)) {
-    return cached;
-  }
+function makeRuntimeContextKey(req, workDate, shiftId = null) {
+  return [
+    s(workDate),
+    s(shiftId),
+    s(req.user?.role),
+    s(req.user?.userId),
+    s(req.user?.staffId),
+    s(req.user?.clinicId),
+    getBodyStaffId(req),
+  ].join("|");
+}
 
-  if (employeeLookupInflight.has(key)) {
-    return employeeLookupInflight.get(key);
-  }
-
-  const p = (async () => {
-    try {
-      const value = await loader();
-      setEmployeeLookupCache(key, value || null);
-      return value || null;
-    } finally {
-      employeeLookupInflight.delete(key);
+function buildBusyEmployeeServiceResponse(extra = {}) {
+  return buildCodeResponse(
+    503,
+    "EMPLOYEE_SERVICE_BUSY",
+    "ระบบข้อมูลพนักงานกำลังถูกใช้งานหนาแน่น กรุณาลองใหม่อีกครั้ง",
+    {
+      upstreamStatus: 429,
+      ...extra,
     }
-  })();
-
-  employeeLookupInflight.set(key, p);
-  return p;
+  );
 }
 
-async function cachedGetEmployeeByStaffId(staffId, bearerToken = "") {
-  const id = s(staffId);
-  if (!id) return null;
+async function memoizedGetEmployeeByStaffId(req, staffId, token = "") {
+  const key = s(staffId);
+  if (!key) return null;
 
-  const token = s(bearerToken);
-  const key = `staff:${id}|auth:${token ? "1" : "0"}`;
+  const memo = createRequestMemo(req);
+  if (memo.employeeByStaffId.has(key)) {
+    const cached = memo.employeeByStaffId.get(key);
+    if (cached.ok) return cached.value;
+    throw cached.error;
+  }
 
-  return withEmployeeLookupDedupe(key, async () => {
-    return getEmployeeByStaffId(id, token);
-  });
+  try {
+    const value = await getEmployeeByStaffId(key, token);
+    memo.employeeByStaffId.set(key, { ok: true, value });
+    return value;
+  } catch (error) {
+    memo.employeeByStaffId.set(key, { ok: false, error });
+    throw error;
+  }
 }
 
-async function cachedGetEmployeeByUserId(userId, bearerToken = "") {
-  const id = s(userId);
-  if (!id) return null;
+async function memoizedGetEmployeeByUserId(req, userId, token = "") {
+  const key = s(userId);
+  if (!key) return null;
 
-  const token = s(bearerToken);
-  const key = `user:${id}|auth:${token ? "1" : "0"}`;
+  const memo = createRequestMemo(req);
+  if (memo.employeeByUserId.has(key)) {
+    const cached = memo.employeeByUserId.get(key);
+    if (cached.ok) return cached.value;
+    throw cached.error;
+  }
 
-  return withEmployeeLookupDedupe(key, async () => {
-    return getEmployeeByUserId(id, token);
-  });
+  try {
+    const value = await getEmployeeByUserId(key, token);
+    memo.employeeByUserId.set(key, { ok: true, value });
+    return value;
+  } catch (error) {
+    memo.employeeByUserId.set(key, { ok: false, error });
+    throw error;
+  }
 }
 
 // ======================================================
@@ -485,63 +489,73 @@ async function fetchEmployeeForRequest(req, { preferStaffId = true } = {}) {
 
   let raw = null;
   let lastHardError = null;
+  let saw429 = false;
+
+  const tryByStaff = async (candidateStaffId, label = "by-staff") => {
+    try {
+      console.log(`➡️ try ${label}:`, candidateStaffId);
+      const result = await memoizedGetEmployeeByStaffId(req, candidateStaffId, token);
+      console.log(`⬅️ ${label} result:`, result ? "FOUND" : "NULL");
+      return result;
+    } catch (e) {
+      console.log(`⚠️ ${label} lookup failed:`, {
+        staffId: candidateStaffId,
+        status: e?.status || 0,
+        message: e?.message || "",
+      });
+
+      if (isTooManyRequestsError(e)) {
+        saw429 = true;
+        return null;
+      }
+
+      if (!shouldContinueLookupAfterError(e)) {
+        lastHardError = e;
+      }
+      return null;
+    }
+  };
+
+  const tryByUser = async (candidateUserId) => {
+    try {
+      console.log("➡️ try getEmployeeByUserId:", candidateUserId);
+      const result = await memoizedGetEmployeeByUserId(req, candidateUserId, token);
+      console.log("⬅️ by-user result:", result ? "FOUND" : "NULL");
+      return result;
+    } catch (e) {
+      console.log("⚠️ by-user lookup failed:", {
+        userId: candidateUserId,
+        status: e?.status || 0,
+        message: e?.message || "",
+      });
+
+      if (isTooManyRequestsError(e)) {
+        saw429 = true;
+        return null;
+      }
+
+      if (!shouldContinueLookupAfterError(e)) {
+        lastHardError = e;
+      }
+      return null;
+    }
+  };
 
   if (preferStaffId) {
     for (const candidateStaffId of staffCandidates) {
-      try {
-        console.log("➡️ try getEmployeeByStaffId:", candidateStaffId);
-        raw = await cachedGetEmployeeByStaffId(candidateStaffId, token);
-        console.log("⬅️ by-staff result:", raw ? "FOUND" : "NULL");
-        if (raw) break;
-      } catch (e) {
-        console.log("⚠️ by-staff lookup failed:", {
-          staffId: candidateStaffId,
-          status: e?.status || 0,
-          message: e?.message || "",
-        });
-        if (!shouldContinueLookupAfterError(e)) {
-          lastHardError = e;
-          break;
-        }
-      }
+      raw = await tryByStaff(candidateStaffId, "getEmployeeByStaffId");
+      if (raw || lastHardError) break;
     }
   }
 
   if (!raw && !lastHardError && tokenUserId) {
-    try {
-      console.log("➡️ try getEmployeeByUserId:", tokenUserId);
-      raw = await cachedGetEmployeeByUserId(tokenUserId, token);
-      console.log("⬅️ by-user result:", raw ? "FOUND" : "NULL");
-    } catch (e) {
-      console.log("⚠️ by-user lookup failed:", {
-        userId: tokenUserId,
-        status: e?.status || 0,
-        message: e?.message || "",
-      });
-      if (!shouldContinueLookupAfterError(e)) {
-        lastHardError = e;
-      }
-    }
+    raw = await tryByUser(tokenUserId);
   }
 
   if (!raw && !lastHardError && !preferStaffId) {
     for (const candidateStaffId of staffCandidates) {
-      try {
-        console.log("➡️ fallback getEmployeeByStaffId:", candidateStaffId);
-        raw = await cachedGetEmployeeByStaffId(candidateStaffId, token);
-        console.log("⬅️ fallback by-staff result:", raw ? "FOUND" : "NULL");
-        if (raw) break;
-      } catch (e) {
-        console.log("⚠️ fallback by-staff lookup failed:", {
-          staffId: candidateStaffId,
-          status: e?.status || 0,
-          message: e?.message || "",
-        });
-        if (!shouldContinueLookupAfterError(e)) {
-          lastHardError = e;
-          break;
-        }
-      }
+      raw = await tryByStaff(candidateStaffId, "fallback getEmployeeByStaffId");
+      if (raw || lastHardError) break;
     }
   }
 
@@ -549,10 +563,28 @@ async function fetchEmployeeForRequest(req, { preferStaffId = true } = {}) {
     throw lastHardError;
   }
 
+  if (!raw && saw429) {
+    const err = new Error("Employee service is temporarily busy");
+    err.status = 429;
+    throw err;
+  }
+
   return normalizeEmployeeRecord(raw);
 }
 
 async function ensureVerifiedEmployeeFromRequest(req, fallbackClinicId = "") {
+  const memo = createRequestMemo(req);
+  const cacheKey = [
+    s(fallbackClinicId || req.user?.clinicId),
+    s(req.user?.userId),
+    s(req.user?.staffId),
+    getBodyStaffId(req),
+  ].join("|");
+
+  if (memo.verifiedEmployee && memo.verifiedEmployee.key === cacheKey) {
+    return memo.verifiedEmployee.value;
+  }
+
   const tokenClinicId = s(fallbackClinicId || req.user?.clinicId);
   const tokenStaffId = s(req.user?.staffId);
   const tokenUserId = s(req.user?.userId);
@@ -563,40 +595,53 @@ async function ensureVerifiedEmployeeFromRequest(req, fallbackClinicId = "") {
   try {
     employee = await fetchEmployeeForRequest(req, { preferStaffId: true });
   } catch (e) {
-    return buildCodeResponse(
-      Number(e?.status || 503),
-      "EMPLOYEE_LOOKUP_FAILED",
-      e?.message || "Cannot verify employee from token",
-      {
-        tokenUserId,
-        tokenStaffId,
-        bodyStaffId,
-        tokenClinicId,
-      }
-    );
+    const out = isTooManyRequestsError(e)
+      ? buildBusyEmployeeServiceResponse({
+          tokenUserId,
+          tokenStaffId,
+          bodyStaffId,
+          tokenClinicId,
+        })
+      : buildCodeResponse(
+          Number(e?.status || 503),
+          "EMPLOYEE_LOOKUP_FAILED",
+          e?.message || "Cannot verify employee from token",
+          {
+            tokenUserId,
+            tokenStaffId,
+            bodyStaffId,
+            tokenClinicId,
+          }
+        );
+    memo.verifiedEmployee = { key: cacheKey, value: out };
+    return out;
   }
 
   if (!employee) {
-    return buildCodeResponse(404, "EMPLOYEE_NOT_FOUND", "Employee not found", {
+    const out = buildCodeResponse(404, "EMPLOYEE_NOT_FOUND", "Employee not found", {
       tokenUserId,
       tokenStaffId,
       bodyStaffId,
       tokenClinicId,
     });
+    memo.verifiedEmployee = { key: cacheKey, value: out };
+    return out;
   }
 
   const allow = isEmployeeAttendanceAllowed(employee);
   if (!allow.ok) {
-    return buildCodeResponse(403, allow.code, allow.message, {
+    const out = buildCodeResponse(403, allow.code, allow.message, {
       tokenUserId,
       tokenStaffId,
       bodyStaffId,
       tokenClinicId,
     });
+    memo.verifiedEmployee = { key: cacheKey, value: out };
+    return out;
   }
 
   if (bodyStaffId && employee.staffId && employee.staffId !== bodyStaffId) {
-    return buildCodeResponse(
+    const out = buildCodeResponse(
       403,
       "REQUEST_STAFF_MISMATCH",
       "Requested staffId does not match employee record",
@@ -605,10 +650,12 @@ async function ensureVerifiedEmployeeFromRequest(req, fallbackClinicId = "") {
         employeeStaffId: employee.staffId,
       }
     );
+    memo.verifiedEmployee = { key: cacheKey, value: out };
+    return out;
   }
 
   if (tokenStaffId && employee.staffId && employee.staffId !== tokenStaffId) {
-    return buildCodeResponse(
+    const out = buildCodeResponse(
       403,
       "EMPLOYEE_STAFF_MISMATCH",
       "Token staffId does not match employee record",
@@ -617,10 +664,12 @@ async function ensureVerifiedEmployeeFromRequest(req, fallbackClinicId = "") {
         employeeStaffId: employee.staffId,
       }
     );
+    memo.verifiedEmployee = { key: cacheKey, value: out };
+    return out;
   }
 
   if (tokenUserId && employee.userId && employee.userId !== tokenUserId) {
-    return buildCodeResponse(
+    const out = buildCodeResponse(
       403,
       "EMPLOYEE_USER_MISMATCH",
       "Token userId does not match employee record",
@@ -629,6 +678,8 @@ async function ensureVerifiedEmployeeFromRequest(req, fallbackClinicId = "") {
         employeeUserId: employee.userId,
       }
     );
+    memo.verifiedEmployee = { key: cacheKey, value: out };
+    return out;
   }
 
   if (
@@ -636,7 +687,7 @@ async function ensureVerifiedEmployeeFromRequest(req, fallbackClinicId = "") {
     employee.clinicId &&
     employee.clinicId !== tokenClinicId
   ) {
-    return buildCodeResponse(
+    const out = buildCodeResponse(
       403,
       "EMPLOYEE_CLINIC_MISMATCH",
       "Employee does not belong to this clinic",
@@ -645,15 +696,20 @@ async function ensureVerifiedEmployeeFromRequest(req, fallbackClinicId = "") {
         employeeClinicId: employee.clinicId,
       }
     );
+    memo.verifiedEmployee = { key: cacheKey, value: out };
+    return out;
   }
 
-  return {
+  const out = {
     ok: true,
     employee,
     clinicId: employee.clinicId || tokenClinicId,
     userId: employee.userId || tokenUserId,
     staffId: employee.staffId || tokenStaffId || bodyStaffId,
   };
+
+  memo.verifiedEmployee = { key: cacheKey, value: out };
+  return out;
 }
 
 async function ensureSessionEmployeeAccess(req, session) {
@@ -667,43 +723,54 @@ async function ensureSessionEmployeeAccess(req, session) {
   const bodyStaffId = getBodyStaffId(req);
 
   let raw = null;
+  let saw429 = false;
 
-  try {
-    if (sessionStaffId) {
-      raw = await cachedGetEmployeeByStaffId(sessionStaffId, token);
-    }
-  } catch (e) {
-    console.log("⚠️ ensureSessionEmployeeAccess by-staff failed:", {
-      sessionStaffId,
-      status: e?.status || 0,
-      message: e?.message || "",
-    });
-    if (!shouldContinueLookupAfterError(e)) {
-      return buildCodeResponse(
-        Number(e?.status || 503),
-        "SESSION_EMPLOYEE_LOOKUP_FAILED",
-        e?.message || "Cannot verify employee session"
-      );
+  if (sessionStaffId) {
+    try {
+      raw = await memoizedGetEmployeeByStaffId(req, sessionStaffId, token);
+    } catch (e) {
+      console.log("⚠️ ensureSessionEmployeeAccess by-staff failed:", {
+        sessionStaffId,
+        status: e?.status || 0,
+        message: e?.message || "",
+      });
+
+      if (isTooManyRequestsError(e)) {
+        saw429 = true;
+      } else if (!shouldContinueLookupAfterError(e)) {
+        return buildCodeResponse(
+          Number(e?.status || 503),
+          "SESSION_EMPLOYEE_LOOKUP_FAILED",
+          e?.message || "Cannot verify employee session"
+        );
+      }
     }
   }
 
-  try {
-    if (!raw && sessionUserId) {
-      raw = await cachedGetEmployeeByUserId(sessionUserId, token);
+  if (!raw && sessionUserId) {
+    try {
+      raw = await memoizedGetEmployeeByUserId(req, sessionUserId, token);
+    } catch (e) {
+      console.log("⚠️ ensureSessionEmployeeAccess by-user failed:", {
+        sessionUserId,
+        status: e?.status || 0,
+        message: e?.message || "",
+      });
+
+      if (isTooManyRequestsError(e)) {
+        saw429 = true;
+      } else if (!shouldContinueLookupAfterError(e)) {
+        return buildCodeResponse(
+          Number(e?.status || 503),
+          "SESSION_EMPLOYEE_LOOKUP_FAILED",
+          e?.message || "Cannot verify employee session"
+        );
+      }
     }
-  } catch (e) {
-    console.log("⚠️ ensureSessionEmployeeAccess by-user failed:", {
-      sessionUserId,
-      status: e?.status || 0,
-      message: e?.message || "",
-    });
-    if (!shouldContinueLookupAfterError(e)) {
-      return buildCodeResponse(
-        Number(e?.status || 503),
-        "SESSION_EMPLOYEE_LOOKUP_FAILED",
-        e?.message || "Cannot verify employee session"
-      );
-    }
+  }
+
+  if (!raw && saw429) {
+    return buildBusyEmployeeServiceResponse();
   }
 
   const employee = normalizeEmployeeRecord(raw);
@@ -1169,7 +1236,8 @@ async function resolveEmployeeClinicIdFromStaff(req, fallbackClinicId = "") {
   if (!staffId) return s(fallbackClinicId);
 
   try {
-    const emp = await cachedGetEmployeeByStaffId(
+    const emp = await memoizedGetEmployeeByStaffId(
+      req,
       staffId,
       s(req.headers?.authorization)
     );
@@ -1883,7 +1951,7 @@ async function syncOvertimeForSession({ session, policy, shift }) {
 
     if (ownerUserId) {
       try {
-        emp = await cachedGetEmployeeByUserId(ownerUserId);
+        emp = await getEmployeeByUserId(ownerUserId);
       } catch (_) {
         emp = null;
       }
@@ -2066,6 +2134,12 @@ async function recalcSessionByTimes({ session, policy, shift }) {
 // runtime resolution
 // ======================================================
 async function resolveRuntimeContext(req, workDate, shiftId = null) {
+  const memo = createRequestMemo(req);
+  const runtimeKey = makeRuntimeContextKey(req, workDate, shiftId);
+  if (memo.runtimeContext.has(runtimeKey)) {
+    return memo.runtimeContext.get(runtimeKey);
+  }
+
   const { clinicId, role, userId, staffId, principalId, principalType } =
     getPrincipal(req);
 
@@ -2079,11 +2153,13 @@ async function resolveRuntimeContext(req, workDate, shiftId = null) {
   });
 
   if (!principalId) {
-    return {
+    const out = {
       ok: false,
       status: 401,
       body: { ok: false, message: "Missing userId/staffId in token" },
     };
+    memo.runtimeContext.set(runtimeKey, out);
+    return out;
   }
 
   let effectiveClinicId = s(clinicId);
@@ -2095,11 +2171,13 @@ async function resolveRuntimeContext(req, workDate, shiftId = null) {
   if (role === "employee" || role === "staff") {
     const verify = await ensureVerifiedEmployeeFromRequest(req, effectiveClinicId);
     if (!verify.ok) {
-      return {
+      const out = {
         ok: false,
         status: verify.status,
         body: verify.body,
       };
+      memo.runtimeContext.set(runtimeKey, out);
+      return out;
     }
 
     employee = verify.employee;
@@ -2108,11 +2186,13 @@ async function resolveRuntimeContext(req, workDate, shiftId = null) {
     effectiveStaffId = s(verify.staffId);
 
     if (!effectiveClinicId) {
-      return {
+      const out = {
         ok: false,
         status: 401,
         body: { ok: false, message: "Cannot resolve clinicId for employee" },
       };
+      memo.runtimeContext.set(runtimeKey, out);
+      return out;
     }
   } else if (role === "helper") {
     let candidates = await loadShiftCandidatesForSession({
@@ -2134,7 +2214,7 @@ async function resolveRuntimeContext(req, workDate, shiftId = null) {
     }
 
     if (!candidates.length) {
-      return {
+      const out = {
         ok: false,
         status: 409,
         body: {
@@ -2144,12 +2224,14 @@ async function resolveRuntimeContext(req, workDate, shiftId = null) {
           workDate,
         },
       };
+      memo.runtimeContext.set(runtimeKey, out);
+      return out;
     }
 
     const picked = pickBestShiftForTime(candidates, new Date());
 
     if (picked?._conflict) {
-      return {
+      const out = {
         ok: false,
         status: 409,
         body: {
@@ -2160,12 +2242,14 @@ async function resolveRuntimeContext(req, workDate, shiftId = null) {
           candidates: picked.candidates,
         },
       };
+      memo.runtimeContext.set(runtimeKey, out);
+      return out;
     }
 
     shift = picked;
 
     if (!shift) {
-      return {
+      const out = {
         ok: false,
         status: 409,
         body: {
@@ -2175,28 +2259,34 @@ async function resolveRuntimeContext(req, workDate, shiftId = null) {
           workDate,
         },
       };
+      memo.runtimeContext.set(runtimeKey, out);
+      return out;
     }
 
     effectiveClinicId = s(shift.clinicId) || effectiveClinicId;
 
     if (!effectiveClinicId) {
-      return {
+      const out = {
         ok: false,
         status: 401,
         body: { ok: false, message: "Cannot resolve clinicId from helper shift" },
       };
+      memo.runtimeContext.set(runtimeKey, out);
+      return out;
     }
   } else {
     if (!effectiveClinicId) {
-      return {
+      const out = {
         ok: false,
         status: 401,
         body: { ok: false, message: "Missing clinicId" },
       };
+      memo.runtimeContext.set(runtimeKey, out);
+      return out;
     }
   }
 
-  return {
+  const out = {
     ok: true,
     role,
     userId: effectiveUserId,
@@ -2207,8 +2297,10 @@ async function resolveRuntimeContext(req, workDate, shiftId = null) {
     shift,
     employee,
   };
-}
 
+  memo.runtimeContext.set(runtimeKey, out);
+  return out;
+}
 // ======================================================
 // POST /attendance/check-in
 // ======================================================
@@ -2245,7 +2337,10 @@ async function checkIn(req, res) {
     const policy = await getOrCreatePolicy(clinicId, userId || principalId);
     const rules = attendanceRuleDefaults(policy);
 
-    if ((role === "employee" || role === "staff") && !isClinicOpenDay(policy, workDate)) {
+    if (
+      (role === "employee" || role === "staff") &&
+      !isClinicOpenDay(policy, workDate)
+    ) {
       return res.status(409).json({
         ok: false,
         code: "CLINIC_CLOSED_DAY",
@@ -2270,7 +2365,11 @@ async function checkIn(req, res) {
       return res.status(400).json({ ok: false, message: manualReasonErr });
     }
 
-    if (method === "biometric" && policy.requireBiometric && !biometricVerified) {
+    if (
+      method === "biometric" &&
+      policy.requireBiometric &&
+      !biometricVerified
+    ) {
       return res.status(400).json({ ok: false, message: "Biometric required" });
     }
 
@@ -2351,7 +2450,8 @@ async function checkIn(req, res) {
       return res.status(409).json({
         ok: false,
         code: "MULTIPLE_OPEN_SESSIONS",
-        message: "พบ open session มากกว่าหนึ่งรายการ กรุณาให้ผู้ดูแลตรวจสอบข้อมูลก่อน",
+        message:
+          "พบ open session มากกว่าหนึ่งรายการ กรุณาให้ผู้ดูแลตรวจสอบข้อมูลก่อน",
         sessions: existingOpenAnywhere,
       });
     }
@@ -2513,9 +2613,11 @@ async function checkIn(req, res) {
     });
   } catch (e) {
     console.log("❌ check-in failed:", e?.message || e);
-    return res
-      .status(500)
-      .json({ ok: false, message: "check-in failed", error: e.message });
+    return res.status(500).json({
+      ok: false,
+      message: "check-in failed",
+      error: e.message,
+    });
   }
 }
 
@@ -2544,7 +2646,11 @@ async function checkOut(req, res) {
         return res.status(404).json({ ok: false, message: "Session not found" });
       }
 
-      if (bodyWorkDate && isYmd(bodyWorkDate) && s(session.workDate) !== bodyWorkDate) {
+      if (
+        bodyWorkDate &&
+        isYmd(bodyWorkDate) &&
+        s(session.workDate) !== bodyWorkDate
+      ) {
         return res.status(409).json({
           ok: false,
           message: "Session workDate does not match requested workDate",
@@ -2558,7 +2664,9 @@ async function checkOut(req, res) {
 
       if (isYmd(bodyWorkDate)) q.workDate = bodyWorkDate;
 
-      const openSessions = await AttendanceSession.find(q).sort({ checkInAt: -1 });
+      const openSessions = await AttendanceSession.find(q).sort({
+        checkInAt: -1,
+      });
 
       if (!openSessions.length) {
         return res.status(409).json({
@@ -2572,7 +2680,8 @@ async function checkOut(req, res) {
         return res.status(409).json({
           ok: false,
           code: "MULTIPLE_OPEN_SESSIONS",
-          message: "พบ open session มากกว่าหนึ่งรายการ กรุณาระบุ session ที่ต้องการปิด",
+          message:
+            "พบ open session มากกว่าหนึ่งรายการ กรุณาระบุ session ที่ต้องการปิด",
           sessions: openSessions.map((x) => ({
             _id: String(x._id || ""),
             clinicId: s(x.clinicId),
@@ -2649,7 +2758,11 @@ async function checkOut(req, res) {
       return res.status(400).json({ ok: false, message: manualReasonErr });
     }
 
-    if (method === "biometric" && policy.requireBiometric && !biometricVerified) {
+    if (
+      method === "biometric" &&
+      policy.requireBiometric &&
+      !biometricVerified
+    ) {
       return res.status(400).json({ ok: false, message: "Biometric required" });
     }
 
@@ -2785,7 +2898,8 @@ async function checkOut(req, res) {
     session.checkOutAt = checkOutAt;
     session.status = "closed";
     session.checkOutMethod = method;
-    session.biometricVerifiedOut = method === "biometric" ? biometricVerified : false;
+    session.biometricVerifiedOut =
+      method === "biometric" ? biometricVerified : false;
 
     if (s(req.body?.deviceId)) session.deviceId = s(req.body?.deviceId);
 
@@ -2802,7 +2916,9 @@ async function checkOut(req, res) {
     setLocationSecurityMeta({
       session,
       phase: "out",
-      distanceMeters: Number.isFinite(outDistanceMeters) ? outDistanceMeters : null,
+      distanceMeters: Number.isFinite(outDistanceMeters)
+        ? outDistanceMeters
+        : null,
       locationSource: outLocationSource,
       mocked: outMocked,
     });
@@ -2857,9 +2973,11 @@ async function checkOut(req, res) {
     });
   } catch (e) {
     console.log("❌ check-out failed:", e?.message || e);
-    return res
-      .status(500)
-      .json({ ok: false, message: "check-out failed", error: e.message });
+    return res.status(500).json({
+      ok: false,
+      message: "check-out failed",
+      error: e.message,
+    });
   }
 }
 
@@ -2900,7 +3018,6 @@ async function submitManualRequest(req, res) {
     if (!ctx.ok) return res.status(ctx.status).json(ctx.body);
 
     const {
-      role,
       userId,
       staffId,
       principalId: resolvedPrincipalId,
@@ -2910,7 +3027,10 @@ async function submitManualRequest(req, res) {
 
     let shift = ctx.shift || null;
 
-    const policy = await getOrCreatePolicy(clinicId, userId || resolvedPrincipalId);
+    const policy = await getOrCreatePolicy(
+      clinicId,
+      userId || resolvedPrincipalId
+    );
     const features = withFeatureDefaults(policy?.features || {});
     if (!features.manualAttendance) {
       return res
@@ -3080,7 +3200,11 @@ async function submitManualRequest(req, res) {
           message:
             "Attendance already completed for this date. Use edit_both instead if correction is needed.",
         });
-      } else if (targetSession && targetSession.checkInAt && !targetSession.checkOutAt) {
+      } else if (
+        targetSession &&
+        targetSession.checkInAt &&
+        !targetSession.checkOutAt
+      ) {
         targetSession = targetSession;
       } else {
         return res.status(409).json({
@@ -3178,7 +3302,6 @@ async function submitManualRequest(req, res) {
     });
   }
 }
-
 // ======================================================
 // GET /attendance/manual-request/my
 // ======================================================
@@ -3198,7 +3321,10 @@ async function listMyManualRequests(req, res) {
     let effectiveClinicId = s(clinicId);
 
     if (role === "employee" || role === "staff") {
-      const verify = await ensureVerifiedEmployeeFromRequest(req, effectiveClinicId);
+      const verify = await ensureVerifiedEmployeeFromRequest(
+        req,
+        effectiveClinicId
+      );
       if (!verify.ok) {
         return res.status(verify.status).json(verify.body);
       }
@@ -3222,7 +3348,10 @@ async function listMyManualRequests(req, res) {
       .sort({ workDate: -1, requestedAt: -1, createdAt: -1 })
       .lean();
 
-    const policy = await getOrCreatePolicy(effectiveClinicId, userId || principalId);
+    const policy = await getOrCreatePolicy(
+      effectiveClinicId,
+      userId || principalId
+    );
 
     const normalizedItems = items.map((x) => {
       if (!Array.isArray(x.suspiciousFlags)) x.suspiciousFlags = [];
@@ -3316,7 +3445,8 @@ async function listClinicManualRequests(req, res) {
       return x;
     });
 
-    const normalizedFilter = normalizeApprovalFilter(approvalStatus) || "pending";
+    const normalizedFilter =
+      normalizeApprovalFilter(approvalStatus) || "pending";
 
     return res.json({
       ok: true,
@@ -3401,7 +3531,8 @@ async function approveManualRequest(req, res) {
     const requestReasonCodeBeforeClear = s(session.requestReasonCode);
     const requestReasonTextBeforeClear = s(session.requestReasonText);
 
-    const finalCheckInAt = session.requestedCheckInAt || session.checkInAt || null;
+    const finalCheckInAt =
+      session.requestedCheckInAt || session.checkInAt || null;
     const finalCheckOutAt =
       session.requestedCheckOutAt || session.checkOutAt || null;
 
@@ -3416,7 +3547,8 @@ async function approveManualRequest(req, res) {
     }
 
     if (
-      (requestedType === "check_out" || requestedType === "forgot_checkout") &&
+      (requestedType === "check_out" ||
+        requestedType === "forgot_checkout") &&
       !finalCheckOutAt
     ) {
       return res.status(400).json({
@@ -3585,7 +3717,10 @@ async function listMySessions(req, res) {
 
     let effectiveClinicId = s(clinicId);
     if (role === "employee" || role === "staff") {
-      const verify = await ensureVerifiedEmployeeFromRequest(req, effectiveClinicId);
+      const verify = await ensureVerifiedEmployeeFromRequest(
+        req,
+        effectiveClinicId
+      );
       if (!verify.ok) {
         return res.status(verify.status).json(verify.body);
       }
@@ -3609,7 +3744,10 @@ async function listMySessions(req, res) {
     const items = await AttendanceSession.find(q)
       .sort({ checkInAt: -1 })
       .lean();
-    const policy = await getOrCreatePolicy(effectiveClinicId, userId || principalId);
+    const policy = await getOrCreatePolicy(
+      effectiveClinicId,
+      userId || principalId
+    );
 
     const normalizedItems = items.map((x) => {
       if (!Array.isArray(x.suspiciousFlags)) x.suspiciousFlags = [];
@@ -3760,11 +3898,13 @@ async function myDayPreview(req, res) {
     });
 
     const openSession =
-      normalizedSessions.find((x) => s(x.status).toLowerCase() === "open") || null;
+      normalizedSessions.find((x) => s(x.status).toLowerCase() === "open") ||
+      null;
 
     const pendingManualSession =
-      normalizedSessions.find((x) => s(x.status).toLowerCase() === "pending_manual") ||
-      null;
+      normalizedSessions.find(
+        (x) => s(x.status).toLowerCase() === "pending_manual"
+      ) || null;
 
     const closedSessions = normalizedSessions.filter(
       (x) => s(x.status).toLowerCase() === "closed"
@@ -3799,7 +3939,9 @@ async function myDayPreview(req, res) {
     const suspiciousCount = normalizedSessions.reduce(
       (sum, x) =>
         sum +
-        (Array.isArray(x.suspiciousFlags) && x.suspiciousFlags.length > 0 ? 1 : 0),
+        (Array.isArray(x.suspiciousFlags) && x.suspiciousFlags.length > 0
+          ? 1
+          : 0),
       0
     );
 
@@ -3811,7 +3953,11 @@ async function myDayPreview(req, res) {
     let emp = ctxEmployee?.raw || null;
     if (!emp && userId) {
       try {
-        emp = await cachedGetEmployeeByUserId(userId, getBearerToken(req));
+        emp = await memoizedGetEmployeeByUserId(
+          req,
+          userId,
+          getBearerToken(req)
+        );
       } catch (_) {
         emp = null;
       }
