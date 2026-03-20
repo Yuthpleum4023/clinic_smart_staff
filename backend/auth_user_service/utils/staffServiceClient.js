@@ -125,6 +125,12 @@ async function getEmployeeByUserId(userId, bearerToken = "") {
 
   const url = `${b}/api/employees/by-user/${encodeURIComponent(uid)}`;
 
+  console.log("🧪 [staffClient] getEmployeeByUserId");
+  console.log("   ↳ baseUrl:", b);
+  console.log("   ↳ url:", url);
+  console.log("   ↳ userId:", uid);
+  console.log("   ↳ has internal key:", !!headers["x-internal-key"]);
+
   try {
     const data = await fetchJson(url, {
       method: "GET",
@@ -142,6 +148,12 @@ async function getEmployeeByUserId(userId, bearerToken = "") {
 
     return employee ? normalizeEmployeePayload(employee) : null;
   } catch (e) {
+    console.log("⚠️ [staffClient] getEmployeeByUserId failed:", {
+      status: Number(e?.status || 0),
+      message: e?.message || "",
+      payload: e?.payload || {},
+    });
+
     if ([404, 429].includes(Number(e?.status))) {
       return null;
     }
@@ -166,22 +178,28 @@ async function createEmployeeFromUser(userLike, bearerToken = "") {
   const body = buildCreateEmployeeBody(userLike);
 
   if (!body.userId || !body.fullName || !body.clinicId) {
+    console.log("⚠️ [staffClient] createEmployeeFromUser skipped: invalid body", body);
     return null;
   }
 
   const b = baseUrl();
   const headers = buildHeaders(bearerToken);
+  const url = `${b}/api/employees/internal/create-from-user`;
+
+  console.log("🧪 [staffClient] createEmployeeFromUser");
+  console.log("   ↳ baseUrl:", b);
+  console.log("   ↳ url:", url);
+  console.log("   ↳ has internal key:", !!headers["x-internal-key"]);
+  console.log("   ↳ internal key prefix:", s(headers["x-internal-key"]).slice(0, 12));
+  console.log("   ↳ body:", body);
 
   try {
-    const data = await fetchJson(
-      `${b}/api/employees/internal/create-from-user`,
-      {
-        method: "POST",
-        headers,
-        body: JSON.stringify(body),
-        timeoutMs: 12000,
-      }
-    );
+    const data = await fetchJson(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      timeoutMs: 12000,
+    });
 
     const employee =
       data?.employee ||
@@ -191,8 +209,21 @@ async function createEmployeeFromUser(userLike, bearerToken = "") {
       data?.result ||
       null;
 
+    console.log("✅ [staffClient] createEmployeeFromUser success:", {
+      created: !!employee,
+      staffId: s(employee?.staffId || employee?._id || employee?.id),
+      userId: s(employee?.userId),
+      clinicId: s(employee?.clinicId),
+    });
+
     return employee ? normalizeEmployeePayload(employee) : null;
   } catch (e) {
+    console.log("❌ [staffClient] createEmployeeFromUser failed:", {
+      status: Number(e?.status || 0),
+      message: e?.message || "",
+      payload: e?.payload || {},
+    });
+
     if (Number(e?.status) === 429) {
       console.log("⚠️ createEmployee skipped (429 rate limit)");
       return null;
@@ -212,6 +243,13 @@ async function ensureEmployeeForUser(userLike, bearerToken = "") {
 
     const isEmployee = role === "employee" || roles.includes("employee");
 
+    console.log("🧪 [staffClient] ensureEmployeeForUser");
+    console.log("   ↳ userId:", s(userLike?.userId));
+    console.log("   ↳ clinicId:", s(userLike?.clinicId));
+    console.log("   ↳ role:", role);
+    console.log("   ↳ roles:", roles);
+    console.log("   ↳ isEmployee:", isEmployee);
+
     if (!isEmployee) {
       return { ok: true, skipped: true, reason: "not_employee_role" };
     }
@@ -228,6 +266,12 @@ async function ensureEmployeeForUser(userLike, bearerToken = "") {
 
     const existing = await getEmployeeByUserId(userId, bearerToken);
     if (existing) {
+      console.log("✅ [staffClient] employee already exists:", {
+        userId: existing.userId,
+        staffId: existing.staffId,
+        clinicId: existing.clinicId,
+      });
+
       return {
         ok: true,
         created: false,
