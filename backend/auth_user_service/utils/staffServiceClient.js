@@ -132,10 +132,16 @@ async function getEmployeeByUserId(userId, bearerToken = "") {
       timeoutMs: 8000,
     });
 
-    const employee = data?.employee || data?.data || null;
+    const employee =
+      data?.employee ||
+      data?.data?.employee ||
+      data?.data ||
+      data?.item ||
+      data?.result ||
+      null;
+
     return employee ? normalizeEmployeePayload(employee) : null;
   } catch (e) {
-    // ✅ IMPORTANT: ไม่ throw ถ้า 404 หรือ 429
     if ([404, 429].includes(Number(e?.status))) {
       return null;
     }
@@ -177,10 +183,16 @@ async function createEmployeeFromUser(userLike, bearerToken = "") {
       }
     );
 
-    const employee = data?.employee || data?.data || null;
+    const employee =
+      data?.employee ||
+      data?.data?.employee ||
+      data?.data ||
+      data?.item ||
+      data?.result ||
+      null;
+
     return employee ? normalizeEmployeePayload(employee) : null;
   } catch (e) {
-    // ✅ CRITICAL: กัน 429
     if (Number(e?.status) === 429) {
       console.log("⚠️ createEmployee skipped (429 rate limit)");
       return null;
@@ -209,14 +221,9 @@ async function ensureEmployeeForUser(userLike, bearerToken = "") {
       return { ok: false, skipped: true, reason: "missing_userId" };
     }
 
-    // ✅ NEW: ถ้ามี staffId แล้ว → ไม่ต้องยิง service
-    if (s(userLike?.staffId)) {
-      return {
-        ok: true,
-        skipped: true,
-        reason: "staffId_exists",
-        employee: null,
-      };
+    const clinicId = s(userLike?.clinicId);
+    if (!clinicId) {
+      return { ok: false, skipped: true, reason: "missing_clinicId" };
     }
 
     const existing = await getEmployeeByUserId(userId, bearerToken);
@@ -224,6 +231,7 @@ async function ensureEmployeeForUser(userLike, bearerToken = "") {
       return {
         ok: true,
         created: false,
+        skipped: false,
         employee: existing,
       };
     }
@@ -233,10 +241,11 @@ async function ensureEmployeeForUser(userLike, bearerToken = "") {
     return {
       ok: true,
       created: !!created,
+      skipped: !created,
+      reason: created ? "" : "create_failed_or_rate_limited",
       employee: created,
     };
   } catch (e) {
-    // ✅ สำคัญ: ห้าม throw กลับ
     console.log("⚠️ ensureEmployeeForUser safe fail:", e.message);
 
     return {

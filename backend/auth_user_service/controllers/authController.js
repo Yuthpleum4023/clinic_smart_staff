@@ -251,11 +251,6 @@ async function ensureStaffIdIfEmployee(userDocOrLean) {
 
     if (!hasEmployee) return userDocOrLean;
 
-    // ถ้ามีอยู่แล้วก็คืนเดิม
-    const staffId = normStr(userDocOrLean.staffId);
-    if (staffId) return userDocOrLean;
-
-    // ถ้ายังไม่มี ก็ห้ามสร้างเอง
     return userDocOrLean;
   } catch (_) {
     return userDocOrLean;
@@ -389,13 +384,6 @@ async function login(req, res) {
           userId: user.userId,
           role: loginRole,
           reason: "missing_clinicId",
-        });
-      } else if (normStr(user?.staffId)) {
-        console.log("✅ skip ensureEmployeeForUser(login)", {
-          userId: user.userId,
-          role: loginRole,
-          reason: "staffId_exists",
-          staffId: user.staffId,
         });
       } else {
         try {
