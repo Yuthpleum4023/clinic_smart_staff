@@ -1,5 +1,3 @@
-const crypto = require("crypto");
-
 function s(v) {
   return String(v || "").trim();
 }
@@ -39,7 +37,7 @@ function buildHeaders(bearerToken = "") {
   const key = internalKey();
   if (key) {
     headers["x-internal-key"] = key;
-    headers["INTERNAL_SERVICE_KEY"] = key;
+    headers["internal_service_key"] = key;
   }
 
   return headers;
@@ -214,7 +212,7 @@ async function getEmployeeByStaffId(staffId, bearerToken = "") {
 function buildCreateEmployeeBody(userLike = {}) {
   const userId = s(userLike.userId);
   const clinicId = s(userLike.clinicId);
-  const fullName = s(userLike.fullName);
+  const fullName = s(userLike.fullName || userLike.name);
   const phone = s(userLike.phone);
   const email = s(userLike.email);
   const employmentType = s(userLike.employmentType || "fullTime");
@@ -228,6 +226,7 @@ function buildCreateEmployeeBody(userLike = {}) {
     phone,
     email,
     employeeCode,
+    active: true,
   };
 }
 
@@ -240,16 +239,24 @@ async function createEmployeeFromUser(userLike, bearerToken = "") {
   if (!body.fullName) {
     throw makeError("Missing fullName for employee creation", 400);
   }
+  if (!body.clinicId) {
+    throw makeError("Missing clinicId for employee creation", 400);
+  }
 
   const b = baseUrl();
   const headers = buildHeaders(bearerToken);
 
-  const data = await fetchJson(`${b}/api/employees`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-    timeoutMs: 15000,
-  });
+  // ✅ IMPORTANT:
+  // ใช้ internal route ใหม่
+  const data = await fetchJson(
+    `${b}/api/employees/internal/create-from-user`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      timeoutMs: 15000,
+    }
+  );
 
   const employee =
     data?.employee ||

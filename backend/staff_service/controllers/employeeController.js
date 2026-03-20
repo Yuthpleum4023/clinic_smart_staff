@@ -1,10 +1,11 @@
 // controllers/employeeController.js
 // ==================================================
 // PURPOSE: Employee CRUD (Staff service)
-// + ✅ Admin dropdown list (scoped by clinicId if schema supports)
-// + ✅ Safe getters: by-user / by-staff
-// + ✅ HARD FIX: always return staffId = String(_id) in employee payload
-// + ✅ FIX: allow non-admin to read own record by staffId
+// + Admin dropdown list (scoped by clinicId if schema supports)
+// + Safe getters: by-user / by-staff
+// + HARD FIX: always return staffId = String(_id) in employee payload
+// + FIX: allow non-admin to read own record by staffId
+// + NEW: internal create-from-user route for service-to-service flow
 // ==================================================
 
 const mongoose = require("mongoose");
@@ -23,7 +24,7 @@ function isAdmin(req) {
 }
 
 /**
- * ✅ Attach staffId to payload (Flutter expects this)
+ * Attach staffId to payload (Flutter expects this)
  * staffId in system = Employee._id (string)
  */
 function withStaffId(emp) {
@@ -51,18 +52,149 @@ function clinicScopeQuery(req) {
   return clinicId ? { clinicId } : {};
 }
 
+function normalizeEmploymentType(v) {
+  const t = s(v).toLowerCase();
+
+  if (!t) return "fullTime";
+  if (["fulltime", "full_time", "full-time", "ft"].includes(t)) {
+    return "fullTime";
+  }
+  if (["parttime", "part_time", "part-time", "pt"].includes(t)) {
+    return "partTime";
+  }
+
+  return s(v) || "fullTime";
+}
+
+function buildEmployeeCreatePayload(input = {}) {
+  const payload = {
+    userId: s(input.userId),
+    fullName: s(input.fullName || input.name),
+    employmentType: normalizeEmploymentType(input.employmentType),
+    phone: s(input.phone),
+    email: s(input.email),
+    employeeCode: s(input.employeeCode),
+    active:
+      input.active === undefined && input.isActive === undefined
+        ? true
+        : !!(input.active ?? input.isActive),
+  };
+
+  if (hasClinicIdField()) {
+    payload.clinicId = s(input.clinicId);
+  }
+
+  return payload;
+}
+
+async function findEmployeeByUserIdScoped(userId, clinicId = "") {
+  const uid = s(userId);
+  if (!uid) return null;
+
+  const q = { userId: uid };
+  if (hasClinicIdField() && clinicId) q.clinicId = s(clinicId);
+
+  return Employee.findOne(q).lean();
+}
+
 // -------------------- CREATE (admin route should guard) --------------------
 exports.createEmployee = async (req, res) => {
   try {
-    if (hasClinicIdField()) {
-      const clinicId = s(req.user?.clinicId);
-      if (clinicId) req.body.clinicId = clinicId;
+    const payload = buildEmployeeCreatePayload(req.body || {});
+
+    if (!payload.userId) {
+      return res.status(400).json({ ok: false, error: "userId is required" });
     }
 
-    const emp = await Employee.create(req.body);
+    if (!payload.fullName) {
+      return res.status(400).json({ ok: false, error: "fullName is required" });
+    }
+
+    if (hasClinicIdField()) {
+      const clinicId = s(req.user?.clinicId);
+      if (!clinicId) {
+        return res
+          .status(401)
+          .json({ ok: false, message: "Missing clinicId in token" });
+      }
+      payload.clinicId = clinicId;
+    }
+
+    const existing = await findEmployeeByUserIdScoped(
+      payload.userId,
+      payload.clinicId
+    );
+
+    if (existing) {
+      return res.status(200).json({
+        ok: true,
+        existed: true,
+        employee: withStaffId(existing),
+      });
+    }
+
+    const emp = await Employee.create(payload);
     return res.status(201).json({ ok: true, employee: withStaffId(emp) });
   } catch (err) {
     return res.status(400).json({ ok: false, error: err.message });
+  }
+};
+
+// -------------------- INTERNAL CREATE FROM USER --------------------
+// POST /api/employees/internal/create-from-user
+// - internal service only
+// - creates employee if not exists
+// - returns existing record if already exists
+exports.createEmployeeFromInternal = async (req, res) => {
+  try {
+    const payload = buildEmployeeCreatePayload(req.body || {});
+
+    if (!payload.userId) {
+      return res.status(400).json({
+        ok: false,
+        message: "userId is required",
+      });
+    }
+
+    if (!payload.fullName) {
+      return res.status(400).json({
+        ok: false,
+        message: "fullName is required",
+      });
+    }
+
+    if (hasClinicIdField() && !payload.clinicId) {
+      return res.status(400).json({
+        ok: false,
+        message: "clinicId is required",
+      });
+    }
+
+    const existing = await findEmployeeByUserIdScoped(
+      payload.userId,
+      payload.clinicId
+    );
+
+    if (existing) {
+      return res.status(200).json({
+        ok: true,
+        created: false,
+        employee: withStaffId(existing),
+      });
+    }
+
+    const emp = await Employee.create(payload);
+
+    return res.status(201).json({
+      ok: true,
+      created: true,
+      employee: withStaffId(emp),
+    });
+  } catch (err) {
+    return res.status(400).json({
+      ok: false,
+      message: err.message || "createEmployeeFromInternal failed",
+    });
   }
 };
 

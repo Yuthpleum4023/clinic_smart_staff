@@ -6,11 +6,27 @@ const express = require("express");
 const router = express.Router();
 
 const { auth, requireRole } = require("../middleware/auth");
+
+// ✅ NEW: internal key middleware
+const { requireInternalKey } = require("../middleware/internalKey");
+
 const ctrl = require("../controllers/employeeController");
 
 // ==================================================
+// 🔒 INTERNAL ROUTES (system-to-system)
+// ==================================================
+// ใช้สำหรับ auth_user_service → staff_service
+// ไม่ต้องใช้ JWT ของ user
+// ใช้ x-internal-key แทน
+// ==================================================
+router.post(
+  "/internal/create-from-user",
+  requireInternalKey,
+  ctrl.createEmployeeFromInternal
+);
+
+// ==================================================
 // 🔒 ADMIN DROPDOWN (ต้องมาก่อน /:id กันชน)
-// GET /employees/dropdown
 // ==================================================
 router.get(
   "/dropdown",
@@ -38,7 +54,7 @@ router.get(
 // CRUD
 // ==================================================
 
-// CREATE
+// CREATE (admin only)
 router.post(
   "/",
   auth,
@@ -46,7 +62,7 @@ router.post(
   ctrl.createEmployee
 );
 
-// LIST (active employees)
+// LIST (admin only)
 router.get(
   "/",
   auth,
@@ -61,7 +77,7 @@ router.get(
   ctrl.getEmployeeById
 );
 
-// UPDATE
+// UPDATE (admin only)
 router.put(
   "/:id",
   auth,
@@ -69,7 +85,7 @@ router.put(
   ctrl.updateEmployee
 );
 
-// DEACTIVATE
+// DEACTIVATE (admin only)
 router.delete(
   "/:id",
   auth,
