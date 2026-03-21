@@ -7,18 +7,29 @@ const router = express.Router();
 
 const { auth, requireRole } = require("../middleware/auth");
 
-// ✅ NEW: internal key middleware
+// ✅ internal key middleware
 const { requireInternalKey } = require("../middleware/internalKey");
 
 const ctrl = require("../controllers/employeeController");
 
 // ==================================================
 // 🔒 INTERNAL ROUTES (system-to-system)
-// ==================================================
 // ใช้สำหรับ auth_user_service → staff_service
 // ไม่ต้องใช้ JWT ของ user
 // ใช้ x-internal-key แทน
 // ==================================================
+router.get(
+  "/internal/by-user/:userId",
+  requireInternalKey,
+  ctrl.getEmployeeByUserIdInternal
+);
+
+router.get(
+  "/internal/by-staff/:staffId",
+  requireInternalKey,
+  ctrl.getEmployeeByStaffIdInternal
+);
+
 router.post(
   "/internal/create-from-user",
   requireInternalKey,
