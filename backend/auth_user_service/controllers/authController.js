@@ -750,16 +750,18 @@ async function registerWithInvite(req, res) {
         });
       }
 
-      if (!ensured?.employee) {
-        await User.deleteOne({ userId: userPlain.userId }).catch(() => {});
-        return res.status(500).json({
-          message: "สร้างผู้ใช้สำเร็จ แต่สร้างข้อมูลพนักงานไม่สำเร็จ",
-          code: "EMPLOYEE_NOT_CREATED",
-          reason: ensured?.reason || "employee_missing_after_ensure",
+      // ✅ PRODUCTION-SAFE:
+      // ถ้า employee service busy / skipped / ยังไม่พร้อม
+      // ให้สมัครผ่านก่อน อย่าล้ม flow
+      if (ensured?.employee) {
+        userPlain = await syncUserStaffIdFromEnsured(userPlain, ensured);
+      } else {
+        console.log("⚠️ employee not ready yet, allow register", {
+          userId: userPlain.userId,
+          reason: ensured?.reason || "",
+          skipped: !!ensured?.skipped,
         });
       }
-
-      userPlain = await syncUserStaffIdFromEnsured(userPlain, ensured);
     } else {
       console.log("✅ skip ensureEmployeeForUser(registerWithInvite)", {
         userId: userPlain.userId,
