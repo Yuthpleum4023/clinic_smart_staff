@@ -122,14 +122,9 @@ async function getEmployeeByUserId(userId, bearerToken = "") {
 
   const b = baseUrl();
   const headers = buildHeaders(bearerToken);
-
   const url = `${b}/api/employees/by-user/${encodeURIComponent(uid)}`;
 
-  console.log("🧪 [staffClient] getEmployeeByUserId");
-  console.log("   ↳ baseUrl:", b);
-  console.log("   ↳ url:", url);
-  console.log("   ↳ userId:", uid);
-  console.log("   ↳ has internal key:", !!headers["x-internal-key"]);
+  console.log("🧪 getEmployeeByUserId:", url);
 
   try {
     const data = await fetchJson(url, {
@@ -148,15 +143,19 @@ async function getEmployeeByUserId(userId, bearerToken = "") {
 
     return employee ? normalizeEmployeePayload(employee) : null;
   } catch (e) {
-    console.log("⚠️ [staffClient] getEmployeeByUserId failed:", {
-      status: Number(e?.status || 0),
-      message: e?.message || "",
-      payload: e?.payload || {},
-    });
+    const status = Number(e?.status || 0);
 
-    if ([404, 429].includes(Number(e?.status))) {
-      return null;
+    console.log("⚠️ getEmployeeByUserId error:", status, e.message);
+
+    if (status === 404) {
+      return null; // ไม่มี employee จริง
     }
+
+    if (status === 429) {
+      // ❗ สำคัญ: ต้อง throw
+      throw makeError("EMPLOYEE_SERVICE_BUSY", 429);
+    }
+
     throw e;
   }
 }
@@ -178,20 +177,14 @@ async function createEmployeeFromUser(userLike, bearerToken = "") {
   const body = buildCreateEmployeeBody(userLike);
 
   if (!body.userId || !body.fullName || !body.clinicId) {
-    console.log("⚠️ [staffClient] createEmployeeFromUser skipped: invalid body", body);
-    return null;
+    throw makeError("Invalid employee body", 400);
   }
 
   const b = baseUrl();
   const headers = buildHeaders(bearerToken);
   const url = `${b}/api/employees/internal/create-from-user`;
 
-  console.log("🧪 [staffClient] createEmployeeFromUser");
-  console.log("   ↳ baseUrl:", b);
-  console.log("   ↳ url:", url);
-  console.log("   ↳ has internal key:", !!headers["x-internal-key"]);
-  console.log("   ↳ internal key prefix:", s(headers["x-internal-key"]).slice(0, 12));
-  console.log("   ↳ body:", body);
+  console.log("🧪 createEmployeeFromUser:", url);
 
   try {
     const data = await fetchJson(url, {
@@ -209,73 +202,35 @@ async function createEmployeeFromUser(userLike, bearerToken = "") {
       data?.result ||
       null;
 
-    console.log("✅ [staffClient] createEmployeeFromUser success:", {
-      created: !!employee,
-      staffId: s(employee?.staffId || employee?._id || employee?.id),
-      userId: s(employee?.userId),
-      clinicId: s(employee?.clinicId),
-    });
-
     return employee ? normalizeEmployeePayload(employee) : null;
   } catch (e) {
-    console.log("❌ [staffClient] createEmployeeFromUser failed:", {
-      status: Number(e?.status || 0),
-      message: e?.message || "",
-      payload: e?.payload || {},
-    });
+    const status = Number(e?.status || 0);
 
-    if (Number(e?.status) === 429) {
-      console.log("⚠️ createEmployee skipped (429 rate limit)");
-      return null;
+    console.log("❌ createEmployeeFromUser error:", status, e.message);
+
+    if (status === 429) {
+      throw makeError("EMPLOYEE_CREATE_RATE_LIMIT", 429);
     }
 
-    console.log("⚠️ createEmployee failed:", e.message);
-    return null;
+    throw e;
   }
 }
 
 async function ensureEmployeeForUser(userLike, bearerToken = "") {
   try {
-    const role = s(userLike?.activeRole || userLike?.role).toLowerCase();
-    const roles = Array.isArray(userLike?.roles)
-      ? userLike.roles.map((x) => s(x).toLowerCase())
-      : [];
-
-    const isEmployee = role === "employee" || roles.includes("employee");
-
-    console.log("🧪 [staffClient] ensureEmployeeForUser");
-    console.log("   ↳ userId:", s(userLike?.userId));
-    console.log("   ↳ clinicId:", s(userLike?.clinicId));
-    console.log("   ↳ role:", role);
-    console.log("   ↳ roles:", roles);
-    console.log("   ↳ isEmployee:", isEmployee);
-
-    if (!isEmployee) {
-      return { ok: true, skipped: true, reason: "not_employee_role" };
-    }
-
     const userId = s(userLike?.userId);
-    if (!userId) {
-      return { ok: false, skipped: true, reason: "missing_userId" };
-    }
-
     const clinicId = s(userLike?.clinicId);
-    if (!clinicId) {
-      return { ok: false, skipped: true, reason: "missing_clinicId" };
+
+    if (!userId || !clinicId) {
+      return { ok: false, reason: "missing_data" };
     }
 
     const existing = await getEmployeeByUserId(userId, bearerToken);
-    if (existing) {
-      console.log("✅ [staffClient] employee already exists:", {
-        userId: existing.userId,
-        staffId: existing.staffId,
-        clinicId: existing.clinicId,
-      });
 
+    if (existing) {
       return {
         ok: true,
         created: false,
-        skipped: false,
         employee: existing,
       };
     }
@@ -285,17 +240,23 @@ async function ensureEmployeeForUser(userLike, bearerToken = "") {
     return {
       ok: true,
       created: !!created,
-      skipped: !created,
-      reason: created ? "" : "create_failed_or_rate_limited",
       employee: created,
     };
   } catch (e) {
-    console.log("⚠️ ensureEmployeeForUser safe fail:", e.message);
+    const status = Number(e?.status || 0);
+
+    console.log("⚠️ ensureEmployeeForUser fail:", status, e.message);
+
+    if (status === 429) {
+      return {
+        ok: false,
+        reason: "employee_service_busy",
+      };
+    }
 
     return {
       ok: false,
-      skipped: true,
-      reason: "safe_fail",
+      reason: "unknown_error",
     };
   }
 }
