@@ -66,8 +66,8 @@ function makeError(message, status = 500, payload = {}) {
 
 function getRetryConfig(options = {}) {
   return {
-    retries: n(options.retries, 2), // รวมรอบแรก = ยิงได้สูงสุด 3 ครั้ง
-    retryDelayMs: n(options.retryDelayMs, 400),
+    retries: n(options.retries, 4), // ยิงรวมรอบแรกได้สูงสุด 5 ครั้ง
+    retryDelayMs: n(options.retryDelayMs, 1000),
     retryStatuses: Array.isArray(options.retryStatuses)
       ? options.retryStatuses
       : [429],
@@ -81,10 +81,21 @@ async function fetchJson(url, options = {}) {
   let lastError = null;
 
   for (let attempt = 0; attempt <= retries; attempt++) {
+    const attemptNo = attempt + 1;
+    const maxAttempts = retries + 1;
+
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
 
     try {
+      console.log("🌐 fetchJson request:", {
+        method: options.method || "GET",
+        url,
+        attempt: attemptNo,
+        maxAttempts,
+        timeoutMs,
+      });
+
       const res = await fetch(url, {
         method: options.method || "GET",
         headers: options.headers || {},
@@ -105,11 +116,12 @@ async function fetchJson(url, options = {}) {
           retryStatuses.includes(res.status) && attempt < retries;
 
         if (canRetry) {
-          const waitMs = retryDelayMs * (attempt + 1);
+          const waitMs = retryDelayMs * attemptNo;
           console.log("⏳ fetchJson retry after response error:", {
             status: res.status,
-            attempt: attempt + 1,
-            retries,
+            message: err.message,
+            attempt: attemptNo,
+            maxAttempts,
             waitMs,
             url,
           });
@@ -119,6 +131,14 @@ async function fetchJson(url, options = {}) {
 
         throw err;
       }
+
+      console.log("✅ fetchJson success:", {
+        method: options.method || "GET",
+        url,
+        attempt: attemptNo,
+        maxAttempts,
+        status: res.status,
+      });
 
       return data;
     } catch (e) {
@@ -133,12 +153,12 @@ async function fetchJson(url, options = {}) {
       const canRetry = retryStatuses.includes(status) && attempt < retries;
 
       if (canRetry) {
-        const waitMs = retryDelayMs * (attempt + 1);
+        const waitMs = retryDelayMs * attemptNo;
         console.log("⏳ fetchJson retry after thrown error:", {
           status,
           message: e?.message || "",
-          attempt: attempt + 1,
-          retries,
+          attempt: attemptNo,
+          maxAttempts,
           waitMs,
           url,
         });
@@ -219,9 +239,9 @@ async function getEmployeeByUserId(userId, bearerToken = "", clinicId = "") {
     const data = await fetchJson(url, {
       method: "GET",
       headers,
-      timeoutMs: 8000,
-      retries: 2,
-      retryDelayMs: 500,
+      timeoutMs: 10000,
+      retries: 4,
+      retryDelayMs: 1000,
       retryStatuses: [429],
     });
 
@@ -285,9 +305,9 @@ async function createEmployeeFromUser(userLike, bearerToken = "") {
       method: "POST",
       headers,
       body: JSON.stringify(body),
-      timeoutMs: 12000,
-      retries: 2,
-      retryDelayMs: 700,
+      timeoutMs: 15000,
+      retries: 4,
+      retryDelayMs: 1200,
       retryStatuses: [429],
     });
 
@@ -347,7 +367,6 @@ async function ensureEmployeeForUser(userLike, bearerToken = "") {
 
     console.log("⚠️ ensureEmployeeForUser fail:", status, e.message);
 
-    // ✅ กัน 429 ไม่ให้พัง flow
     if (status === 429) {
       return {
         ok: true,
@@ -358,7 +377,6 @@ async function ensureEmployeeForUser(userLike, bearerToken = "") {
       };
     }
 
-    // ✅ production-safe: กัน unknown error ไม่ให้ล้ม register
     return {
       ok: true,
       created: false,
