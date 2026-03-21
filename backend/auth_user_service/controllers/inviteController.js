@@ -262,9 +262,105 @@ async function redeemInvite(req, res) {
   }
 }
 
+// ==================================================
+// HELPER: finalize invite after register success
+// IMPORTANT:
+// - ใช้หลังสร้าง user สำเร็จแล้วเท่านั้น
+// - auth_user_service "ไม่สร้าง employee" เอง
+// - function นี้แค่ mark invite used และคืน invite payload
+//   ให้ register controller เอาไปใช้ต่อ
+// ==================================================
+async function finalizeInviteAfterRegister(inviteCode, userId) {
+  const code = upper(inviteCode);
+  const uid = normStr(userId);
+
+  if (!code) {
+    throw new Error("inviteCode is required");
+  }
+
+  if (!uid) {
+    throw new Error("userId is required");
+  }
+
+  const inv = await Invite.findOne({ inviteCode: code });
+
+  if (!inv) {
+    throw new Error("Invalid invite code");
+  }
+
+  if (inv.isRevoked) {
+    throw new Error("Invite revoked");
+  }
+
+  if (inv.usedAt) {
+    throw new Error("Invite already used");
+  }
+
+  if (isExpired(inv)) {
+    throw new Error("Invite expired");
+  }
+
+  inv.usedAt = new Date();
+  inv.usedByUserId = uid;
+
+  await inv.save();
+
+  return {
+    inviteCode: normStr(inv.inviteCode),
+    clinicId: normStr(inv.clinicId),
+    role: normalizeInviteRole(inv.role) || "employee",
+    fullName: normStr(inv.fullName),
+    email: normStr(inv.email),
+    phone: normStr(inv.phone),
+    expiresAt: inv.expiresAt || null,
+  };
+}
+
+// ==================================================
+// HELPER: find valid invite by code without marking used
+// useful for register flow / service logic
+// ==================================================
+async function getValidInviteByCode(inviteCode) {
+  const code = upper(inviteCode);
+
+  if (!code) {
+    throw new Error("inviteCode is required");
+  }
+
+  const inv = await Invite.findOne({ inviteCode: code }).lean();
+
+  if (!inv) {
+    throw new Error("Invalid invite code");
+  }
+
+  if (inv.isRevoked) {
+    throw new Error("Invite revoked");
+  }
+
+  if (inv.usedAt) {
+    throw new Error("Invite already used");
+  }
+
+  if (isExpired(inv)) {
+    throw new Error("Invite expired");
+  }
+
+  return {
+    inviteCode: normStr(inv.inviteCode),
+    clinicId: normStr(inv.clinicId),
+    role: normalizeInviteRole(inv.role) || "employee",
+    fullName: normStr(inv.fullName),
+    email: normStr(inv.email),
+    phone: normStr(inv.phone),
+    expiresAt: inv.expiresAt || null,
+  };
+}
+
 module.exports = {
   createInvite,
   listInvites,
   revokeInvite,
   redeemInvite,
+  finalizeInviteAfterRegister,
+  getValidInviteByCode,
 };

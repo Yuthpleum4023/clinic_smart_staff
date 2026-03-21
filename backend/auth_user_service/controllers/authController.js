@@ -175,6 +175,7 @@ function safeUser(u) {
     fullName: u.fullName || "",
     employeeCode: u.employeeCode || "",
     isActive: u.isActive,
+    employeeProvisionStatus: normStr(u.employeeProvisionStatus) || "",
     location: {
       lat: u?.location?.lat ?? null,
       lng: u?.location?.lng ?? null,
@@ -607,6 +608,7 @@ async function registerClinicAdmin(req, res) {
       plan: "free",
       premiumUntil: null,
       planUpdatedAt: null,
+      employeeProvisionStatus: "not_applicable",
     });
 
     const plain = user.toObject ? user.toObject() : user;
@@ -627,7 +629,7 @@ async function registerClinicAdmin(req, res) {
 
 /* ======================================================
    REGISTER WITH INVITE
-   - employee: ผูก clinicId ถาวร + ensure employee
+   - employee: ผูก clinicId ถาวร + ensure employee (non-blocking)
    - helper: สมัครด้วย invite ได้ แต่ไม่ผูก clinicId ถาวร
 ====================================================== */
 async function registerWithInvite(req, res) {
@@ -688,8 +690,6 @@ async function registerWithInvite(req, res) {
     }
 
     const employeeCode = isEmployeeInvite ? makeId(EMP_PREFIX, 10) : "";
-    const staffId = "";
-
     const passwordHash = await bcrypt.hash(password, 10);
 
     const createdUser = await User.create({
@@ -698,7 +698,7 @@ async function registerWithInvite(req, res) {
       roles: [invRole],
       activeRole: invRole,
       role: invRole,
-      staffId,
+      staffId: "",
       email: finalEmail,
       phone: finalPhone,
       fullName: fullName || normStr(inv.fullName) || "",
@@ -708,15 +708,14 @@ async function registerWithInvite(req, res) {
       plan: "free",
       premiumUntil: null,
       planUpdatedAt: null,
+      employeeProvisionStatus: isEmployeeInvite ? "pending" : "not_applicable",
     });
 
     let userPlain = createdUser.toObject ? createdUser.toObject() : createdUser;
 
     if (isEmployeeInvite) {
-      let ensured = null;
-
       try {
-        ensured = await ensureEmployeeForUser(userPlain, "");
+        const ensured = await ensureEmployeeForUser(userPlain, "");
 
         console.log("🧩 ensureEmployeeForUser(registerWithInvite):", {
           userId: userPlain.userId,
@@ -726,40 +725,66 @@ async function registerWithInvite(req, res) {
           reason: ensured?.reason || "",
           employeeStaffId: ensured?.employee?.staffId || "",
         });
+
+        if (ensured?.ok && ensured?.employee) {
+          userPlain = await syncUserStaffIdFromEnsured(userPlain, ensured);
+
+          await User.updateOne(
+            { userId: userPlain.userId },
+            {
+              $set: {
+                employeeProvisionStatus: "ready",
+                staffId: normStr(ensured.employee.staffId),
+              },
+            }
+          );
+
+          userPlain = {
+            ...userPlain,
+            employeeProvisionStatus: "ready",
+            staffId: normStr(ensured.employee.staffId),
+          };
+        } else {
+          await User.updateOne(
+            { userId: userPlain.userId },
+            {
+              $set: {
+                employeeProvisionStatus: "pending",
+              },
+            }
+          );
+
+          userPlain = {
+            ...userPlain,
+            employeeProvisionStatus: "pending",
+          };
+
+          console.log("⚠️ employee not ready yet, allow register", {
+            userId: userPlain.userId,
+            reason: ensured?.reason || "",
+            skipped: !!ensured?.skipped,
+          });
+        }
       } catch (e) {
-        console.log("⚠️ ensureEmployeeForUser(registerWithInvite) failed:", {
+        console.log("⚠️ ensureEmployee error (non-blocking):", {
           userId: userPlain.userId,
           status: e?.status || 0,
           message: e?.message || "",
         });
 
-        await User.deleteOne({ userId: userPlain.userId }).catch(() => {});
-        return res.status(503).json({
-          message: "ไม่สามารถเตรียมข้อมูลพนักงานได้ กรุณาลองใหม่อีกครั้ง",
-          code: "EMPLOYEE_ENSURE_FAILED",
-          reason: "employee_service_exception",
-        });
-      }
+        await User.updateOne(
+          { userId: userPlain.userId },
+          {
+            $set: {
+              employeeProvisionStatus: "pending",
+            },
+          }
+        );
 
-      if (!ensured?.ok) {
-        await User.deleteOne({ userId: userPlain.userId }).catch(() => {});
-        return res.status(503).json({
-          message: "ระบบข้อมูลพนักงานกำลังถูกใช้งานหนาแน่น กรุณาลองใหม่อีกครั้ง",
-          code: "EMPLOYEE_SERVICE_BUSY",
-          reason: ensured?.reason || "employee_ensure_failed",
-        });
-      }
-
-      // ✅ production-safe:
-      // ok=true แต่ employee ยังไม่มา ก็ให้สมัครผ่านก่อน
-      if (ensured?.employee) {
-        userPlain = await syncUserStaffIdFromEnsured(userPlain, ensured);
-      } else {
-        console.log("⚠️ employee not ready yet, allow register", {
-          userId: userPlain.userId,
-          reason: ensured?.reason || "",
-          skipped: !!ensured?.skipped,
-        });
+        userPlain = {
+          ...userPlain,
+          employeeProvisionStatus: "pending",
+        };
       }
     } else {
       console.log("✅ skip ensureEmployeeForUser(registerWithInvite)", {
@@ -871,7 +896,12 @@ async function reconcileEmployeeSelf(req, res) {
     if (ensured?.employee?.staffId) {
       await User.updateOne(
         { userId },
-        { $set: { staffId: ensured.employee.staffId } }
+        {
+          $set: {
+            staffId: ensured.employee.staffId,
+            employeeProvisionStatus: "ready",
+          },
+        }
       );
 
       return res.json({
@@ -880,6 +910,15 @@ async function reconcileEmployeeSelf(req, res) {
         staffId: ensured.employee.staffId,
       });
     }
+
+    await User.updateOne(
+      { userId },
+      {
+        $set: {
+          employeeProvisionStatus: "pending",
+        },
+      }
+    );
 
     return res.json({
       ok: true,

@@ -1,13 +1,14 @@
 // ==================================================
 // routes/employeeRoutes.js
+// PURPOSE:
+// - Employee CRUD
+// - Internal ensure / lookup routes for service-to-service flow
 // ==================================================
 
 const express = require("express");
 const router = express.Router();
 
 const { auth, requireRole } = require("../middleware/auth");
-
-// ✅ internal key middleware
 const { requireInternalKey } = require("../middleware/internalKey");
 
 const ctrl = require("../controllers/employeeController");
@@ -18,18 +19,29 @@ const ctrl = require("../controllers/employeeController");
 // ไม่ต้องใช้ JWT ของ user
 // ใช้ x-internal-key แทน
 // ==================================================
+
+// ✅ internal get by user
 router.get(
   "/internal/by-user/:userId",
   requireInternalKey,
   ctrl.getEmployeeByUserIdInternal
 );
 
+// ✅ internal get by staff
 router.get(
   "/internal/by-staff/:staffId",
   requireInternalKey,
   ctrl.getEmployeeByStaffIdInternal
 );
 
+// ✅ NEW: internal ensure employee (route ใหม่ที่ควรใช้)
+router.post(
+  "/internal/ensure",
+  requireInternalKey,
+  ctrl.ensureEmployeeInternal
+);
+
+// ✅ BACKWARD COMPAT: route เก่ายังใช้ได้
 router.post(
   "/internal/create-from-user",
   requireInternalKey,
@@ -49,12 +61,15 @@ router.get(
 // ==================================================
 // FIXED PATH ROUTES (ต้องมาก่อน /:id)
 // ==================================================
+
+// GET employee by userId
 router.get(
   "/by-user/:userId",
   auth,
   ctrl.getEmployeeByUserId
 );
 
+// GET employee by staffId
 router.get(
   "/by-staff/:staffId",
   auth,

@@ -92,6 +92,22 @@ const ROLE_ENUM = ["admin", "employee", "helper"];
  */
 const PLAN_ENUM = ["free", "premium"];
 
+/**
+ * ================================
+ * ✅ Employee Provision Status
+ * - pending: user สมัครแล้ว แต่ staff_service ยังสร้าง employee ไม่เสร็จ
+ * - ready: staff_service สร้าง employee แล้ว / มี staffId พร้อม
+ * - failed: เคยพยายามสร้างแล้ว fail
+ * - not_applicable: ไม่ใช่ employee flow
+ * ================================
+ */
+const EMPLOYEE_PROVISION_ENUM = [
+  "pending",
+  "ready",
+  "failed",
+  "not_applicable",
+];
+
 const UserSchema = new mongoose.Schema(
   {
     userId: { type: String, required: true, unique: true, index: true }, // usr_xxx
@@ -151,6 +167,17 @@ const UserSchema = new mongoose.Schema(
      * - helper: อาจมีหรือไม่มีก็ได้
      */
     staffId: { type: String, default: "" }, // stf_xxx
+
+    /**
+     * ✅ employee provisioning status
+     * - ใช้คู่กับ auth_user_service + staff_service
+     */
+    employeeProvisionStatus: {
+      type: String,
+      enum: EMPLOYEE_PROVISION_ENUM,
+      default: "not_applicable",
+      index: true,
+    },
 
     // login
     email: { type: String, default: "", index: true },
@@ -224,6 +251,12 @@ UserSchema.index({ staffId: 1 }, { unique: false });
 UserSchema.index({ clinicId: 1, activeRole: 1 }, { unique: false });
 UserSchema.index({ clinicId: 1, roles: 1 }, { unique: false });
 
+// employee provisioning helpers
+UserSchema.index(
+  { clinicId: 1, activeRole: 1, employeeProvisionStatus: 1 },
+  { unique: false }
+);
+
 // premium query helpers
 UserSchema.index({ plan: 1, premiumUntil: 1 }, { unique: false });
 
@@ -237,6 +270,7 @@ UserSchema.index({ "location.lat": 1, "location.lng": 1 }, { unique: false });
  * - normalize plan/premiumUntil
  * - normalize location
  * - normalize clinic fields by role
+ * - normalize employeeProvisionStatus
  * ================================
  */
 UserSchema.pre("validate", function (next) {
@@ -288,7 +322,30 @@ UserSchema.pre("validate", function (next) {
       this.clinicId = "";
     }
 
-    // 8) Normalize location object
+    // 8) Normalize employeeProvisionStatus
+    const eps = String(this.employeeProvisionStatus || "")
+      .trim()
+      .toLowerCase();
+
+    if (EMPLOYEE_PROVISION_ENUM.includes(eps)) {
+      this.employeeProvisionStatus = eps;
+    } else {
+      // employee default = pending, non-employee default = not_applicable
+      this.employeeProvisionStatus =
+        this.activeRole === "employee" ? "pending" : "not_applicable";
+    }
+
+    // ถ้าไม่ใช่ employee ไม่ควรติด pending/ready/failed
+    if (this.activeRole !== "employee") {
+      this.employeeProvisionStatus = "not_applicable";
+    }
+
+    // ถ้ามี staffId แล้ว ปรับเป็น ready อัตโนมัติ
+    if (String(this.staffId || "").trim()) {
+      this.employeeProvisionStatus = "ready";
+    }
+
+    // 9) Normalize location object
     if (!this.location || typeof this.location !== "object") {
       this.location = {
         lat: null,

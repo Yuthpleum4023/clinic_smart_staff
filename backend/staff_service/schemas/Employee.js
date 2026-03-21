@@ -2,6 +2,8 @@
 // schemas/Employee.js
 // PURPOSE: Employee Master Data (Payroll-ready)
 // + ✅ clinicId for multi-clinic scoping
+// + ✅ idempotent-safe unique index for userId + clinicId
+// + ✅ ready for internal ensure employee flow
 // ==================================================
 
 const mongoose = require("mongoose");
@@ -9,18 +11,36 @@ const mongoose = require("mongoose");
 const EmployeeSchema = new mongoose.Schema(
   {
     // ✅ IMPORTANT (multi-clinic):
-    // ใช้ clinicId จาก token (admin) ตอนสร้าง/อัปเดต เพื่อกันข้อมูลข้ามคลินิก
-    clinicId: { type: String, index: true, default: "" },
+    // ใช้ clinicId จาก invite / auth / token ตอนสร้าง
+    // เพื่อกันข้อมูลข้ามคลินิก
+    clinicId: {
+      type: String,
+      required: true,
+      index: true,
+      trim: true,
+      default: "",
+    },
 
-    // ถ้าผูกกับ user_service
-    userId: { type: String, index: true, default: "" },
+    // ✅ ผูกกับ user_service / auth_user_service
+    userId: {
+      type: String,
+      required: true,
+      index: true,
+      trim: true,
+      default: "",
+    },
 
-    fullName: { type: String, required: true },
+    fullName: {
+      type: String,
+      required: true,
+      trim: true,
+    },
 
     employmentType: {
       type: String,
       enum: ["fullTime", "partTime"],
       required: true,
+      default: "fullTime",
     },
 
     // ---- PAY RATE ----
@@ -35,13 +55,36 @@ const EmployeeSchema = new mongoose.Schema(
     otMultiplierNormal: { type: Number, default: 1.5 },
     otMultiplierHoliday: { type: Number, default: 2.0 },
 
+    // ---- STATUS ----
     active: { type: Boolean, default: true },
+
+    // ✅ useful for debugging / provisioning source
+    provisionedFrom: {
+      type: String,
+      default: "manual",
+      trim: true,
+    },
   },
   { timestamps: true }
 );
 
-// ✅ Helpful indexes (optional but good)
+// --------------------------------------------------
+// Indexes
+// --------------------------------------------------
+
+// ✅ query helper
 EmployeeSchema.index({ clinicId: 1, active: 1, fullName: 1 });
-EmployeeSchema.index({ clinicId: 1, userId: 1 });
+
+// ✅ critical: prevent duplicate employee for same user in same clinic
+EmployeeSchema.index(
+  { clinicId: 1, userId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      clinicId: { $type: "string", $ne: "" },
+      userId: { $type: "string", $ne: "" },
+    },
+  }
+);
 
 module.exports = mongoose.model("Employee", EmployeeSchema);

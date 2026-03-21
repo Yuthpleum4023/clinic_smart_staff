@@ -41,7 +41,6 @@ function buildHeaders(bearerToken = "") {
   const key = internalKey();
   if (key) {
     headers["x-internal-key"] = key;
-    headers["internal_service_key"] = key;
   }
 
   return headers;
@@ -64,124 +63,43 @@ function makeError(message, status = 500, payload = {}) {
   return err;
 }
 
-function getRetryConfig(options = {}) {
-  return {
-    retries: n(options.retries, 4), // ยิงรวมรอบแรกได้สูงสุด 5 ครั้ง
-    retryDelayMs: n(options.retryDelayMs, 1000),
-    retryStatuses: Array.isArray(options.retryStatuses)
-      ? options.retryStatuses
-      : [429],
-  };
-}
-
+// ================= SAFE FETCH (NO CREATE RETRY) =================
 async function fetchJson(url, options = {}) {
   const timeoutMs = n(options.timeoutMs, 15000);
-  const { retries, retryDelayMs, retryStatuses } = getRetryConfig(options);
 
-  let lastError = null;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
 
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    const attemptNo = attempt + 1;
-    const maxAttempts = retries + 1;
+  try {
+    const res = await fetch(url, {
+      method: options.method || "GET",
+      headers: options.headers || {},
+      body: options.body,
+      signal: ctrl.signal,
+    });
 
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    const data = await readJsonSafe(res);
 
-    try {
-      console.log("🌐 fetchJson request:", {
-        method: options.method || "GET",
-        url,
-        attempt: attemptNo,
-        maxAttempts,
-        timeoutMs,
-      });
-
-      const res = await fetch(url, {
-        method: options.method || "GET",
-        headers: options.headers || {},
-        body: options.body,
-        signal: ctrl.signal,
-      });
-
-      const data = await readJsonSafe(res);
-
-      if (!res.ok) {
-        const err = makeError(
-          data?.message || data?.error || `HTTP ${res.status}`,
-          res.status,
-          data
-        );
-
-        const canRetry =
-          retryStatuses.includes(res.status) && attempt < retries;
-
-        if (canRetry) {
-          const waitMs = retryDelayMs * attemptNo;
-          console.log("⏳ fetchJson retry after response error:", {
-            status: res.status,
-            message: err.message,
-            attempt: attemptNo,
-            maxAttempts,
-            waitMs,
-            url,
-          });
-          await sleep(waitMs);
-          continue;
-        }
-
-        throw err;
-      }
-
-      console.log("✅ fetchJson success:", {
-        method: options.method || "GET",
-        url,
-        attempt: attemptNo,
-        maxAttempts,
-        status: res.status,
-      });
-
-      return data;
-    } catch (e) {
-      lastError = e;
-
-      if (e?.name === "AbortError") {
-        clearTimeout(timer);
-        throw makeError(`staff service timeout after ${timeoutMs}ms`, 504);
-      }
-
-      const status = Number(e?.status || 0);
-      const canRetry = retryStatuses.includes(status) && attempt < retries;
-
-      if (canRetry) {
-        const waitMs = retryDelayMs * attemptNo;
-        console.log("⏳ fetchJson retry after thrown error:", {
-          status,
-          message: e?.message || "",
-          attempt: attemptNo,
-          maxAttempts,
-          waitMs,
-          url,
-        });
-        await sleep(waitMs);
-        continue;
-      }
-
-      if (e?.status) {
-        clearTimeout(timer);
-        throw e;
-      }
-
-      clearTimeout(timer);
-      throw makeError(e?.message || "staff service request failed", 503);
-    } finally {
-      clearTimeout(timer);
+    if (!res.ok) {
+      throw makeError(
+        data?.message || `HTTP ${res.status}`,
+        res.status,
+        data
+      );
     }
-  }
 
-  if (lastError?.status) throw lastError;
-  throw makeError(lastError?.message || "staff service request failed", 503);
+    return data;
+  } catch (e) {
+    if (e?.name === "AbortError") {
+      throw makeError("staff service timeout", 504);
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
+// ================= NORMALIZE =================
 function normalizeEmployeePayload(employeeLike = {}) {
   const obj =
     employeeLike && typeof employeeLike === "object" ? employeeLike : {};
@@ -190,144 +108,57 @@ function normalizeEmployeePayload(employeeLike = {}) {
     staffId: s(obj.staffId || obj._id || obj.id),
     userId: s(obj.userId),
     clinicId: s(obj.clinicId),
-    employeeCode: s(obj.employeeCode),
-    fullName: s(obj.fullName || obj.name),
-    name: s(obj.name || obj.fullName),
-    employmentType: s(obj.employmentType),
-    phone: s(obj.phone),
-    email: s(obj.email),
-    active:
-      obj.active === undefined && obj.isActive === undefined
-        ? true
-        : !!(obj.active ?? obj.isActive),
+    fullName: s(obj.fullName),
   };
 }
 
-function shouldUseInternalLookup(bearerToken = "") {
-  return !s(bearerToken) && !!internalKey();
-}
-
-// ================= GET BY USER =================
+// ================= GET =================
 async function getEmployeeByUserId(userId, bearerToken = "", clinicId = "") {
   const uid = s(userId);
   const cid = s(clinicId);
   if (!uid) return null;
 
-  const b = baseUrl();
-  const headers = buildHeaders(bearerToken);
-
-  const internal = shouldUseInternalLookup(bearerToken);
-
-  const basePath = internal
-    ? `/api/employees/internal/by-user/${encodeURIComponent(uid)}`
-    : `/api/employees/by-user/${encodeURIComponent(uid)}`;
-
-  const qs = internal && cid ? `?clinicId=${encodeURIComponent(cid)}` : "";
-
-  const url = `${b}${basePath}${qs}`;
-
-  console.log("🧪 getEmployeeByUserId:", {
-    url,
-    internal,
-    userId: uid,
-    clinicId: cid,
-    hasBearer: !!s(bearerToken),
-    hasInternalKey: !!headers["x-internal-key"],
-  });
+  const url = `${baseUrl()}/api/employees/internal/by-user/${uid}?clinicId=${cid}`;
 
   try {
     const data = await fetchJson(url, {
       method: "GET",
-      headers,
+      headers: buildHeaders(bearerToken),
       timeoutMs: 10000,
-      retries: 4,
-      retryDelayMs: 1000,
-      retryStatuses: [429],
     });
 
-    const employee =
-      data?.employee ||
-      data?.data?.employee ||
-      data?.data ||
-      data?.item ||
-      data?.result ||
-      null;
-
-    return employee ? normalizeEmployeePayload(employee) : null;
+    const emp = data?.employee || null;
+    return emp ? normalizeEmployeePayload(emp) : null;
   } catch (e) {
-    const status = Number(e?.status || 0);
-
-    console.log("⚠️ getEmployeeByUserId error:", status, e.message);
-
-    if (status === 404) return null;
-
-    if (status === 429) {
-      throw makeError("EMPLOYEE_SERVICE_BUSY", 429);
-    }
-
+    if (e.status === 404) return null;
+    if (e.status === 429) throw makeError("EMPLOYEE_BUSY", 429);
     throw e;
   }
 }
 
-// ================= CREATE =================
-function buildCreateEmployeeBody(userLike = {}) {
-  return {
+// ================= ENSURE (NEW) =================
+async function ensureEmployee(userLike, bearerToken = "") {
+  const body = {
     userId: s(userLike.userId),
     clinicId: s(userLike.clinicId),
-    fullName: s(userLike.fullName || userLike.name),
-    employmentType: "fullTime",
-    phone: s(userLike.phone),
-    email: s(userLike.email),
-    employeeCode: s(userLike.employeeCode),
-    active: true,
+    fullName: s(userLike.fullName),
   };
-}
 
-async function createEmployeeFromUser(userLike, bearerToken = "") {
-  const body = buildCreateEmployeeBody(userLike);
+  const url = `${baseUrl()}/api/employees/internal/ensure`;
 
-  if (!body.userId || !body.fullName || !body.clinicId) {
-    throw makeError("Invalid employee body", 400);
-  }
-
-  const b = baseUrl();
-  const headers = buildHeaders(bearerToken);
-
-  const url = `${b}/api/employees/internal/create-from-user`;
-
-  console.log("🧪 createEmployeeFromUser:", {
-    url,
-    body,
+  const data = await fetchJson(url, {
+    method: "POST",
+    headers: buildHeaders(bearerToken),
+    body: JSON.stringify(body),
+    timeoutMs: 15000,
   });
 
-  try {
-    const data = await fetchJson(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      timeoutMs: 15000,
-      retries: 4,
-      retryDelayMs: 1200,
-      retryStatuses: [429],
-    });
-
-    const employee = data?.employee || data?.data || null;
-
-    return employee ? normalizeEmployeePayload(employee) : null;
-  } catch (e) {
-    const status = Number(e?.status || 0);
-
-    console.log("❌ createEmployeeFromUser error:", status, e.message);
-
-    if (status === 429) {
-      throw makeError("EMPLOYEE_CREATE_RATE_LIMIT", 429);
-    }
-
-    throw e;
-  }
+  return data?.employee
+    ? normalizeEmployeePayload(data.employee)
+    : null;
 }
 
-// ================= ENSURE =================
+// ================= MAIN =================
 async function ensureEmployeeForUser(userLike, bearerToken = "") {
   try {
     const userId = s(userLike?.userId);
@@ -336,14 +167,17 @@ async function ensureEmployeeForUser(userLike, bearerToken = "") {
     if (!userId || !clinicId) {
       return {
         ok: false,
-        created: false,
-        skipped: false,
+        skipped: true,
         reason: "missing_data",
-        employee: null,
       };
     }
 
-    const existing = await getEmployeeByUserId(userId, bearerToken, clinicId);
+    // 1. check existing
+    const existing = await getEmployeeByUserId(
+      userId,
+      bearerToken,
+      clinicId
+    );
 
     if (existing) {
       return {
@@ -354,41 +188,37 @@ async function ensureEmployeeForUser(userLike, bearerToken = "") {
       };
     }
 
-    const created = await createEmployeeFromUser(userLike, bearerToken);
+    // 2. ensure (NO RETRY)
+    const employee = await ensureEmployee(userLike, bearerToken);
 
     return {
       ok: true,
-      created: !!created,
+      created: true,
       skipped: false,
-      employee: created,
+      employee,
     };
   } catch (e) {
     const status = Number(e?.status || 0);
 
-    console.log("⚠️ ensureEmployeeForUser fail:", status, e.message);
+    console.log("⚠️ ensureEmployeeForUser:", status, e.message);
 
     if (status === 429) {
       return {
         ok: true,
-        created: false,
         skipped: true,
         reason: "employee_service_busy",
-        employee: null,
       };
     }
 
     return {
       ok: true,
-      created: false,
       skipped: true,
       reason: "unknown_error",
-      employee: null,
     };
   }
 }
 
 module.exports = {
   getEmployeeByUserId,
-  createEmployeeFromUser,
   ensureEmployeeForUser,
 };

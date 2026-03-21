@@ -5,8 +5,8 @@
 // + Safe getters: by-user / by-staff
 // + HARD FIX: always return staffId = String(_id) in employee payload
 // + FIX: allow non-admin to read own record by staffId
-// + NEW: internal create-from-user route for service-to-service flow
-// + NEW: internal by-user / by-staff lookups for service-to-service flow
+// + NEW: internal ensure route for service-to-service flow
+// + NEW: duplicate-safe / idempotent employee creation
 // ==================================================
 
 const mongoose = require("mongoose");
@@ -72,20 +72,51 @@ function buildEmployeeCreatePayload(input = {}) {
     userId: s(input.userId),
     fullName: s(input.fullName || input.name),
     employmentType: normalizeEmploymentType(input.employmentType),
-    phone: s(input.phone),
-    email: s(input.email),
-    employeeCode: s(input.employeeCode),
     active:
       input.active === undefined && input.isActive === undefined
         ? true
         : !!(input.active ?? input.isActive),
   };
 
+  // เก็บ field เพิ่มเมื่อ schema รองรับเท่านั้น
   if (hasClinicIdField()) {
     payload.clinicId = s(input.clinicId);
   }
 
+  if (Employee?.schema?.path("monthlySalary")) {
+    payload.monthlySalary = Number(input.monthlySalary || 0) || 0;
+  }
+
+  if (Employee?.schema?.path("hourlyRate")) {
+    payload.hourlyRate = Number(input.hourlyRate || 0) || 0;
+  }
+
+  if (Employee?.schema?.path("hoursPerDay")) {
+    payload.hoursPerDay = Number(input.hoursPerDay || 8) || 8;
+  }
+
+  if (Employee?.schema?.path("workingDaysPerMonth")) {
+    payload.workingDaysPerMonth = Number(input.workingDaysPerMonth || 26) || 26;
+  }
+
+  if (Employee?.schema?.path("otMultiplierNormal")) {
+    payload.otMultiplierNormal = Number(input.otMultiplierNormal || 1.5) || 1.5;
+  }
+
+  if (Employee?.schema?.path("otMultiplierHoliday")) {
+    payload.otMultiplierHoliday =
+      Number(input.otMultiplierHoliday || 2.0) || 2.0;
+  }
+
+  if (Employee?.schema?.path("provisionedFrom")) {
+    payload.provisionedFrom = s(input.provisionedFrom || "manual");
+  }
+
   return payload;
+}
+
+function isDuplicateKeyError(err) {
+  return !!(err && (err.code === 11000 || err.code === 11001));
 }
 
 async function findEmployeeByUserIdScoped(userId, clinicId = "") {
@@ -121,6 +152,43 @@ function getInternalClinicId(req) {
   );
 }
 
+async function createOrGetExistingEmployee(payload) {
+  const existing = await findEmployeeByUserIdScoped(
+    payload.userId,
+    payload.clinicId
+  );
+
+  if (existing) {
+    return {
+      created: false,
+      employee: existing,
+    };
+  }
+
+  try {
+    const emp = await Employee.create(payload);
+    return {
+      created: true,
+      employee: emp,
+    };
+  } catch (err) {
+    if (isDuplicateKeyError(err)) {
+      const existingAfterConflict = await findEmployeeByUserIdScoped(
+        payload.userId,
+        payload.clinicId
+      );
+
+      if (existingAfterConflict) {
+        return {
+          created: false,
+          employee: existingAfterConflict,
+        };
+      }
+    }
+    throw err;
+  }
+}
+
 // -------------------- CREATE (admin route should guard) --------------------
 exports.createEmployee = async (req, res) => {
   try {
@@ -144,33 +212,34 @@ exports.createEmployee = async (req, res) => {
       payload.clinicId = clinicId;
     }
 
-    const existing = await findEmployeeByUserIdScoped(
-      payload.userId,
-      payload.clinicId
-    );
-
-    if (existing) {
-      return res.status(200).json({
-        ok: true,
-        existed: true,
-        employee: withStaffId(existing),
-      });
+    if (Employee?.schema?.path("provisionedFrom") && !payload.provisionedFrom) {
+      payload.provisionedFrom = "manual_admin";
     }
 
-    const emp = await Employee.create(payload);
-    return res.status(201).json({ ok: true, employee: withStaffId(emp) });
+    const result = await createOrGetExistingEmployee(payload);
+
+    return res.status(result.created ? 201 : 200).json({
+      ok: true,
+      existed: !result.created,
+      created: result.created,
+      employee: withStaffId(result.employee),
+    });
   } catch (err) {
     return res.status(400).json({ ok: false, error: err.message });
   }
 };
 
-// -------------------- INTERNAL CREATE FROM USER --------------------
-// POST /api/employees/internal/create-from-user
-exports.createEmployeeFromInternal = async (req, res) => {
+// -------------------- INTERNAL ENSURE FROM USER --------------------
+// POST /api/employees/internal/ensure
+// NOTE:
+// - idempotent
+// - if exists -> return existing
+// - if duplicate race -> fallback find existing
+async function ensureEmployeeInternalHandler(req, res) {
   try {
     const payload = buildEmployeeCreatePayload(req.body || {});
 
-    console.log("🔥 INTERNAL create-from-user HIT", {
+    console.log("🔥 INTERNAL ensure HIT", {
       userId: payload.userId,
       clinicId: payload.clinicId,
       hasClinicIdField: hasClinicIdField(),
@@ -197,33 +266,32 @@ exports.createEmployeeFromInternal = async (req, res) => {
       });
     }
 
-    const existing = await findEmployeeByUserIdScoped(
-      payload.userId,
-      payload.clinicId
-    );
-
-    if (existing) {
-      return res.status(200).json({
-        ok: true,
-        created: false,
-        employee: withStaffId(existing),
-      });
+    if (Employee?.schema?.path("provisionedFrom")) {
+      payload.provisionedFrom = s(payload.provisionedFrom || "internal_ensure");
     }
 
-    const emp = await Employee.create(payload);
+    const result = await createOrGetExistingEmployee(payload);
 
-    return res.status(201).json({
+    return res.status(result.created ? 201 : 200).json({
       ok: true,
-      created: true,
-      employee: withStaffId(emp),
+      created: result.created,
+      employee: withStaffId(result.employee),
     });
   } catch (err) {
-    return res.status(400).json({
+    console.error("❌ ensureEmployeeInternal failed:", err);
+    return res.status(500).json({
       ok: false,
-      message: err.message || "createEmployeeFromInternal failed",
+      message: err.message || "ensureEmployeeInternal failed",
     });
   }
-};
+}
+
+// ✅ route ใหม่ที่ควรใช้
+exports.ensureEmployeeInternal = ensureEmployeeInternalHandler;
+
+// ✅ alias เก่าเพื่อ backward compatibility
+// POST /api/employees/internal/create-from-user
+exports.createEmployeeFromInternal = ensureEmployeeInternalHandler;
 
 // -------------------- INTERNAL GET BY USER ID --------------------
 // GET /api/employees/internal/by-user/:userId
