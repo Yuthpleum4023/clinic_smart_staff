@@ -7,6 +7,10 @@ function n(v, fallback = 0) {
   return Number.isFinite(x) ? x : fallback;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
+}
+
 function baseUrl() {
   const u = s(process.env.STAFF_SERVICE_URL);
   if (!u) {
@@ -31,9 +35,7 @@ function buildHeaders(bearerToken = "") {
 
   const t = s(bearerToken);
   if (t) {
-    headers.Authorization = t.startsWith("Bearer ")
-      ? t
-      : `Bearer ${t}`;
+    headers.Authorization = t.startsWith("Bearer ") ? t : `Bearer ${t}`;
   }
 
   const key = internalKey();
@@ -62,46 +64,107 @@ function makeError(message, status = 500, payload = {}) {
   return err;
 }
 
+function getRetryConfig(options = {}) {
+  return {
+    retries: n(options.retries, 2), // รวมรอบแรก = ยิงได้สูงสุด 3 ครั้ง
+    retryDelayMs: n(options.retryDelayMs, 400),
+    retryStatuses: Array.isArray(options.retryStatuses)
+      ? options.retryStatuses
+      : [429],
+  };
+}
+
 async function fetchJson(url, options = {}) {
   const timeoutMs = n(options.timeoutMs, 15000);
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  const { retries, retryDelayMs, retryStatuses } = getRetryConfig(options);
 
-  try {
-    const res = await fetch(url, {
-      method: options.method || "GET",
-      headers: options.headers || {},
-      body: options.body,
-      signal: ctrl.signal,
-    });
+  let lastError = null;
 
-    const data = await readJsonSafe(res);
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
 
-    if (!res.ok) {
-      throw makeError(
-        data?.message || data?.error || `HTTP ${res.status}`,
-        res.status,
-        data
-      );
+    try {
+      const res = await fetch(url, {
+        method: options.method || "GET",
+        headers: options.headers || {},
+        body: options.body,
+        signal: ctrl.signal,
+      });
+
+      const data = await readJsonSafe(res);
+
+      if (!res.ok) {
+        const err = makeError(
+          data?.message || data?.error || `HTTP ${res.status}`,
+          res.status,
+          data
+        );
+
+        const canRetry =
+          retryStatuses.includes(res.status) && attempt < retries;
+
+        if (canRetry) {
+          const waitMs = retryDelayMs * (attempt + 1);
+          console.log("⏳ fetchJson retry after response error:", {
+            status: res.status,
+            attempt: attempt + 1,
+            retries,
+            waitMs,
+            url,
+          });
+          await sleep(waitMs);
+          continue;
+        }
+
+        throw err;
+      }
+
+      return data;
+    } catch (e) {
+      lastError = e;
+
+      if (e?.name === "AbortError") {
+        clearTimeout(timer);
+        throw makeError(`staff service timeout after ${timeoutMs}ms`, 504);
+      }
+
+      const status = Number(e?.status || 0);
+      const canRetry = retryStatuses.includes(status) && attempt < retries;
+
+      if (canRetry) {
+        const waitMs = retryDelayMs * (attempt + 1);
+        console.log("⏳ fetchJson retry after thrown error:", {
+          status,
+          message: e?.message || "",
+          attempt: attempt + 1,
+          retries,
+          waitMs,
+          url,
+        });
+        await sleep(waitMs);
+        continue;
+      }
+
+      if (e?.status) {
+        clearTimeout(timer);
+        throw e;
+      }
+
+      clearTimeout(timer);
+      throw makeError(e?.message || "staff service request failed", 503);
+    } finally {
+      clearTimeout(timer);
     }
-
-    return data;
-  } catch (e) {
-    if (e?.name === "AbortError") {
-      throw makeError(`staff service timeout after ${timeoutMs}ms`, 504);
-    }
-    if (e?.status) throw e;
-    throw makeError(e?.message || "staff service request failed", 503);
-  } finally {
-    clearTimeout(timer);
   }
+
+  if (lastError?.status) throw lastError;
+  throw makeError(lastError?.message || "staff service request failed", 503);
 }
 
 function normalizeEmployeePayload(employeeLike = {}) {
   const obj =
-    employeeLike && typeof employeeLike === "object"
-      ? employeeLike
-      : {};
+    employeeLike && typeof employeeLike === "object" ? employeeLike : {};
 
   return {
     staffId: s(obj.staffId || obj._id || obj.id),
@@ -125,11 +188,7 @@ function shouldUseInternalLookup(bearerToken = "") {
 }
 
 // ================= GET BY USER =================
-async function getEmployeeByUserId(
-  userId,
-  bearerToken = "",
-  clinicId = ""
-) {
+async function getEmployeeByUserId(userId, bearerToken = "", clinicId = "") {
   const uid = s(userId);
   const cid = s(clinicId);
   if (!uid) return null;
@@ -143,10 +202,7 @@ async function getEmployeeByUserId(
     ? `/api/employees/internal/by-user/${encodeURIComponent(uid)}`
     : `/api/employees/by-user/${encodeURIComponent(uid)}`;
 
-  const qs =
-    internal && cid
-      ? `?clinicId=${encodeURIComponent(cid)}`
-      : "";
+  const qs = internal && cid ? `?clinicId=${encodeURIComponent(cid)}` : "";
 
   const url = `${b}${basePath}${qs}`;
 
@@ -164,6 +220,9 @@ async function getEmployeeByUserId(
       method: "GET",
       headers,
       timeoutMs: 8000,
+      retries: 2,
+      retryDelayMs: 500,
+      retryStatuses: [429],
     });
 
     const employee =
@@ -174,9 +233,7 @@ async function getEmployeeByUserId(
       data?.result ||
       null;
 
-    return employee
-      ? normalizeEmployeePayload(employee)
-      : null;
+    return employee ? normalizeEmployeePayload(employee) : null;
   } catch (e) {
     const status = Number(e?.status || 0);
 
@@ -229,20 +286,18 @@ async function createEmployeeFromUser(userLike, bearerToken = "") {
       headers,
       body: JSON.stringify(body),
       timeoutMs: 12000,
+      retries: 2,
+      retryDelayMs: 700,
+      retryStatuses: [429],
     });
 
-    const employee =
-      data?.employee ||
-      data?.data ||
-      null;
+    const employee = data?.employee || data?.data || null;
 
-    return employee
-      ? normalizeEmployeePayload(employee)
-      : null;
+    return employee ? normalizeEmployeePayload(employee) : null;
   } catch (e) {
     const status = Number(e?.status || 0);
 
-    console.log("❌ createEmployeeFromUser error:", status);
+    console.log("❌ createEmployeeFromUser error:", status, e.message);
 
     if (status === 429) {
       throw makeError("EMPLOYEE_CREATE_RATE_LIMIT", 429);
@@ -252,7 +307,7 @@ async function createEmployeeFromUser(userLike, bearerToken = "") {
   }
 }
 
-// ================= ENSURE (⭐ FIX ตรงนี้) =================
+// ================= ENSURE =================
 async function ensureEmployeeForUser(userLike, bearerToken = "") {
   try {
     const userId = s(userLike?.userId);
@@ -268,11 +323,7 @@ async function ensureEmployeeForUser(userLike, bearerToken = "") {
       };
     }
 
-    const existing = await getEmployeeByUserId(
-      userId,
-      bearerToken,
-      clinicId
-    );
+    const existing = await getEmployeeByUserId(userId, bearerToken, clinicId);
 
     if (existing) {
       return {
@@ -283,10 +334,7 @@ async function ensureEmployeeForUser(userLike, bearerToken = "") {
       };
     }
 
-    const created = await createEmployeeFromUser(
-      userLike,
-      bearerToken
-    );
+    const created = await createEmployeeFromUser(userLike, bearerToken);
 
     return {
       ok: true,
@@ -299,10 +347,10 @@ async function ensureEmployeeForUser(userLike, bearerToken = "") {
 
     console.log("⚠️ ensureEmployeeForUser fail:", status, e.message);
 
-    // ⭐ FIX: กัน 429 ไม่ให้พัง flow
+    // ✅ กัน 429 ไม่ให้พัง flow
     if (status === 429) {
       return {
-        ok: true,          // ⭐ สำคัญ
+        ok: true,
         created: false,
         skipped: true,
         reason: "employee_service_busy",
@@ -310,7 +358,7 @@ async function ensureEmployeeForUser(userLike, bearerToken = "") {
       };
     }
 
-    // ⭐ FIX: กัน unknown error ไม่ให้ล้ม register
+    // ✅ production-safe: กัน unknown error ไม่ให้ล้ม register
     return {
       ok: true,
       created: false,
