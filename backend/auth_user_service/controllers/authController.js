@@ -750,9 +750,8 @@ async function registerWithInvite(req, res) {
         });
       }
 
-      // ✅ PRODUCTION-SAFE:
-      // ถ้า employee service busy / skipped / ยังไม่พร้อม
-      // ให้สมัครผ่านก่อน อย่าล้ม flow
+      // ✅ production-safe:
+      // ok=true แต่ employee ยังไม่มา ก็ให้สมัครผ่านก่อน
       if (ensured?.employee) {
         userPlain = await syncUserStaffIdFromEnsured(userPlain, ensured);
       } else {
@@ -783,6 +782,117 @@ async function registerWithInvite(req, res) {
   } catch (e) {
     return res.status(500).json({
       message: "registerWithInvite failed",
+      error: e.message,
+    });
+  }
+}
+
+/* ======================================================
+   RECONCILE EMPLOYEE (SELF HEAL)
+====================================================== */
+async function reconcileEmployeeSelf(req, res) {
+  try {
+    const userId = req.user?.userId;
+    const clinicId = req.user?.clinicId;
+
+    if (!userId) {
+      return res.status(401).json({ message: "Missing token payload" });
+    }
+
+    let user = await User.findOne({ userId }).lean();
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const roles = normalizeRoles(user?.roles);
+    const legacyRole = normalizeRole(user?.role);
+    const activeRole = normalizeRole(user?.activeRole);
+
+    const isEmployeeUser =
+      roles.includes("employee") ||
+      legacyRole === "employee" ||
+      activeRole === "employee";
+
+    if (!isEmployeeUser) {
+      return res.json({
+        ok: true,
+        skipped: true,
+        reason: "not_employee_role",
+      });
+    }
+
+    if (normStr(user.staffId)) {
+      return res.json({
+        ok: true,
+        skipped: true,
+        reason: "already_has_staff",
+        staffId: user.staffId,
+      });
+    }
+
+    console.log("🧪 reconcileEmployeeSelf start:", {
+      userId,
+      clinicId,
+    });
+
+    let ensured = null;
+
+    try {
+      ensured = await ensureEmployeeForUser(user, "");
+
+      console.log("🧩 reconcileEmployeeSelf result:", {
+        userId,
+        ok: !!ensured?.ok,
+        created: !!ensured?.created,
+        skipped: !!ensured?.skipped,
+        reason: ensured?.reason || "",
+        employeeStaffId: ensured?.employee?.staffId || "",
+      });
+    } catch (e) {
+      console.log("⚠️ reconcileEmployeeSelf ensure failed:", {
+        userId,
+        status: e?.status || 0,
+        message: e?.message || "",
+      });
+
+      return res.status(503).json({
+        ok: false,
+        reason: "employee_service_exception",
+      });
+    }
+
+    if (!ensured?.ok) {
+      return res.status(503).json({
+        ok: false,
+        reason: ensured?.reason || "ensure_failed",
+      });
+    }
+
+    if (ensured?.employee?.staffId) {
+      await User.updateOne(
+        { userId },
+        { $set: { staffId: ensured.employee.staffId } }
+      );
+
+      return res.json({
+        ok: true,
+        created: true,
+        staffId: ensured.employee.staffId,
+      });
+    }
+
+    return res.json({
+      ok: true,
+      created: false,
+      skipped: true,
+      reason: ensured?.reason || "not_ready",
+    });
+  } catch (e) {
+    console.log("❌ reconcileEmployeeSelf error:", e.message);
+
+    return res.status(500).json({
+      ok: false,
+      message: "reconcile failed",
       error: e.message,
     });
   }
@@ -888,6 +998,7 @@ module.exports = {
   switchRole,
   registerClinicAdmin,
   registerWithInvite,
+  reconcileEmployeeSelf,
   forgotPassword,
   resetPassword,
 };

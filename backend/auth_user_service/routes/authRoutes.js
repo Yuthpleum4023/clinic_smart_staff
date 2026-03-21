@@ -16,10 +16,13 @@ router.post("/reset-password", ctrl.resetPassword);
 // ================= Protected =================
 router.get("/me", auth, ctrl.me);
 
-// ✅ NEW: update my location
+// ✅ update my location
 router.patch("/users/me/location", auth, ctrl.updateMyLocation);
 
-// ✅ NEW: Multi-role switch (ออก token ใหม่ตาม activeRole)
+// ✅ Multi-role switch (ออก token ใหม่ตาม activeRole)
 router.post("/switch-role", auth, ctrl.switchRole);
+
+// ✅ NEW: self-heal employee after register/login
+router.post("/reconcile-employee-self", auth, ctrl.reconcileEmployeeSelf);
 
 module.exports = router;
