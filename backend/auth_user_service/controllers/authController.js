@@ -688,11 +688,11 @@ async function registerWithInvite(req, res) {
     }
 
     const employeeCode = isEmployeeInvite ? makeId(EMP_PREFIX, 10) : "";
-    const staffId = ""; // IMPORTANT: ห้าม auth_user_service generate staffId เอง
+    const staffId = "";
 
     const passwordHash = await bcrypt.hash(password, 10);
 
-    const user = await User.create({
+    const createdUser = await User.create({
       userId,
       clinicId: boundClinicId,
       roles: [invRole],
@@ -710,15 +710,14 @@ async function registerWithInvite(req, res) {
       planUpdatedAt: null,
     });
 
-    inv.usedAt = new Date();
-    inv.usedByUserId = userId;
-    await inv.save();
-
-    let userPlain = user.toObject ? user.toObject() : user;
+    let userPlain = createdUser.toObject ? createdUser.toObject() : createdUser;
 
     if (isEmployeeInvite) {
+      let ensured = null;
+
       try {
-        const ensured = await ensureEmployeeForUser(userPlain, "");
+        ensured = await ensureEmployeeForUser(userPlain, "");
+
         console.log("🧩 ensureEmployeeForUser(registerWithInvite):", {
           userId: userPlain.userId,
           ok: !!ensured?.ok,
@@ -727,15 +726,40 @@ async function registerWithInvite(req, res) {
           reason: ensured?.reason || "",
           employeeStaffId: ensured?.employee?.staffId || "",
         });
-
-        userPlain = await syncUserStaffIdFromEnsured(userPlain, ensured);
       } catch (e) {
         console.log("⚠️ ensureEmployeeForUser(registerWithInvite) failed:", {
           userId: userPlain.userId,
           status: e?.status || 0,
           message: e?.message || "",
         });
+
+        await User.deleteOne({ userId: userPlain.userId }).catch(() => {});
+        return res.status(503).json({
+          message: "ไม่สามารถเตรียมข้อมูลพนักงานได้ กรุณาลองใหม่อีกครั้ง",
+          code: "EMPLOYEE_ENSURE_FAILED",
+          reason: "employee_service_exception",
+        });
       }
+
+      if (!ensured?.ok) {
+        await User.deleteOne({ userId: userPlain.userId }).catch(() => {});
+        return res.status(503).json({
+          message: "ระบบข้อมูลพนักงานกำลังถูกใช้งานหนาแน่น กรุณาลองใหม่อีกครั้ง",
+          code: "EMPLOYEE_SERVICE_BUSY",
+          reason: ensured?.reason || "employee_ensure_failed",
+        });
+      }
+
+      if (!ensured?.employee) {
+        await User.deleteOne({ userId: userPlain.userId }).catch(() => {});
+        return res.status(500).json({
+          message: "สร้างผู้ใช้สำเร็จ แต่สร้างข้อมูลพนักงานไม่สำเร็จ",
+          code: "EMPLOYEE_NOT_CREATED",
+          reason: ensured?.reason || "employee_missing_after_ensure",
+        });
+      }
+
+      userPlain = await syncUserStaffIdFromEnsured(userPlain, ensured);
     } else {
       console.log("✅ skip ensureEmployeeForUser(registerWithInvite)", {
         userId: userPlain.userId,
@@ -743,6 +767,10 @@ async function registerWithInvite(req, res) {
         reason: "not_employee",
       });
     }
+
+    inv.usedAt = new Date();
+    inv.usedByUserId = userId;
+    await inv.save();
 
     const token = signToken(makeJwtPayload(userPlain));
 
