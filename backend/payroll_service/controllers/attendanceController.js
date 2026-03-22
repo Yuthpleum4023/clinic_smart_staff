@@ -429,13 +429,46 @@ function normalizeEmployeeRecord(emp) {
     suspended,
     terminated,
     inactive,
+    _fallback: !!emp._fallback,
   };
+}
+
+function buildFallbackEmployeeFromToken(req, fallbackClinicId = "") {
+  const tokenClinicId = s(fallbackClinicId || req.user?.clinicId);
+  const tokenUserId = s(req.user?.userId);
+  const tokenStaffId = s(req.user?.staffId) || getBodyStaffId(req);
+
+  return normalizeEmployeeRecord({
+    _fallback: true,
+    clinicId: tokenClinicId,
+    userId: tokenUserId,
+    staffId: tokenStaffId,
+    fullName: s(req.user?.fullName || req.user?.name),
+    name: s(req.user?.name || req.user?.fullName),
+    employmentType: s(req.user?.employmentType || "fullTime"),
+    verified: true,
+    active: true,
+    deleted: false,
+    suspended: false,
+    terminated: false,
+    inactive: false,
+    status: "active",
+  });
 }
 
 function isEmployeeAttendanceAllowed(employee) {
   if (!employee) {
-    return { ok: false, code: "EMPLOYEE_NOT_FOUND", message: "Employee not found" };
+    return {
+      ok: false,
+      code: "EMPLOYEE_NOT_FOUND",
+      message: "Employee not found",
+    };
   }
+
+  if (employee._fallback === true) {
+    return { ok: true, code: "", message: "" };
+  }
+
   if (employee.deleted) {
     return {
       ok: false,
@@ -474,7 +507,10 @@ function isEmployeeAttendanceAllowed(employee) {
   return { ok: true, code: "", message: "" };
 }
 
-async function fetchEmployeeForRequest(req, { preferStaffId = true } = {}) {
+async function fetchEmployeeForRequest(
+  req,
+  { preferStaffId = true, fallbackClinicId = "" } = {}
+) {
   const token = getBearerToken(req);
   const tokenUserId = s(req.user?.userId);
   const staffCandidates = getStaffCandidates(req);
@@ -494,7 +530,11 @@ async function fetchEmployeeForRequest(req, { preferStaffId = true } = {}) {
   const tryByStaff = async (candidateStaffId, label = "by-staff") => {
     try {
       console.log(`➡️ try ${label}:`, candidateStaffId);
-      const result = await memoizedGetEmployeeByStaffId(req, candidateStaffId, token);
+      const result = await memoizedGetEmployeeByStaffId(
+        req,
+        candidateStaffId,
+        token
+      );
       console.log(`⬅️ ${label} result:`, result ? "FOUND" : "NULL");
       return result;
     } catch (e) {
@@ -564,9 +604,8 @@ async function fetchEmployeeForRequest(req, { preferStaffId = true } = {}) {
   }
 
   if (!raw && saw429) {
-    const err = new Error("Employee service is temporarily busy");
-    err.status = 429;
-    throw err;
+    console.log("⚠️ Employee service 429 -> using token fallback employee");
+    return buildFallbackEmployeeFromToken(req, fallbackClinicId);
   }
 
   return normalizeEmployeeRecord(raw);
@@ -593,7 +632,10 @@ async function ensureVerifiedEmployeeFromRequest(req, fallbackClinicId = "") {
   let employee = null;
 
   try {
-    employee = await fetchEmployeeForRequest(req, { preferStaffId: true });
+    employee = await fetchEmployeeForRequest(req, {
+      preferStaffId: true,
+      fallbackClinicId: tokenClinicId,
+    });
   } catch (e) {
     const out = isTooManyRequestsError(e)
       ? buildBusyEmployeeServiceResponse({
@@ -640,7 +682,12 @@ async function ensureVerifiedEmployeeFromRequest(req, fallbackClinicId = "") {
     return out;
   }
 
-  if (bodyStaffId && employee.staffId && employee.staffId !== bodyStaffId) {
+  if (
+    bodyStaffId &&
+    employee.staffId &&
+    employee.staffId !== bodyStaffId &&
+    !employee._fallback
+  ) {
     const out = buildCodeResponse(
       403,
       "REQUEST_STAFF_MISMATCH",
@@ -654,7 +701,12 @@ async function ensureVerifiedEmployeeFromRequest(req, fallbackClinicId = "") {
     return out;
   }
 
-  if (tokenStaffId && employee.staffId && employee.staffId !== tokenStaffId) {
+  if (
+    tokenStaffId &&
+    employee.staffId &&
+    employee.staffId !== tokenStaffId &&
+    !employee._fallback
+  ) {
     const out = buildCodeResponse(
       403,
       "EMPLOYEE_STAFF_MISMATCH",
@@ -668,7 +720,12 @@ async function ensureVerifiedEmployeeFromRequest(req, fallbackClinicId = "") {
     return out;
   }
 
-  if (tokenUserId && employee.userId && employee.userId !== tokenUserId) {
+  if (
+    tokenUserId &&
+    employee.userId &&
+    employee.userId !== tokenUserId &&
+    !employee._fallback
+  ) {
     const out = buildCodeResponse(
       403,
       "EMPLOYEE_USER_MISMATCH",
@@ -685,7 +742,8 @@ async function ensureVerifiedEmployeeFromRequest(req, fallbackClinicId = "") {
   if (
     tokenClinicId &&
     employee.clinicId &&
-    employee.clinicId !== tokenClinicId
+    employee.clinicId !== tokenClinicId &&
+    !employee._fallback
   ) {
     const out = buildCodeResponse(
       403,
@@ -770,7 +828,52 @@ async function ensureSessionEmployeeAccess(req, session) {
   }
 
   if (!raw && saw429) {
-    return buildBusyEmployeeServiceResponse();
+    const fallbackEmployee = buildFallbackEmployeeFromToken(
+      req,
+      sessionClinicId || tokenClinicId
+    );
+
+    if (!fallbackEmployee) {
+      return buildBusyEmployeeServiceResponse();
+    }
+
+    if (
+      sessionStaffId &&
+      fallbackEmployee.staffId &&
+      fallbackEmployee.staffId !== sessionStaffId
+    ) {
+      return buildCodeResponse(
+        403,
+        "SESSION_EMPLOYEE_STAFF_MISMATCH",
+        "Session staffId does not match employee record"
+      );
+    }
+
+    if (
+      sessionUserId &&
+      fallbackEmployee.userId &&
+      fallbackEmployee.userId !== sessionUserId
+    ) {
+      return buildCodeResponse(
+        403,
+        "SESSION_EMPLOYEE_USER_MISMATCH",
+        "Session userId does not match employee record"
+      );
+    }
+
+    if (
+      sessionClinicId &&
+      fallbackEmployee.clinicId &&
+      fallbackEmployee.clinicId !== sessionClinicId
+    ) {
+      return buildCodeResponse(
+        403,
+        "SESSION_EMPLOYEE_CLINIC_MISMATCH",
+        "Session clinicId does not match employee record"
+      );
+    }
+
+    return { ok: true, employee: fallbackEmployee };
   }
 
   const employee = normalizeEmployeeRecord(raw);
@@ -990,7 +1093,6 @@ function detectCheckoutRiskFlags({
 
   return flags;
 }
-
 // ======================================================
 // feature / policy helpers
 // ======================================================
@@ -2620,7 +2722,6 @@ async function checkIn(req, res) {
     });
   }
 }
-
 // ======================================================
 // POST /attendance/check-out
 // POST /attendance/:id/check-out
