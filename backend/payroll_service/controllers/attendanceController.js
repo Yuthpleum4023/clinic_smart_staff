@@ -1093,6 +1093,7 @@ function detectCheckoutRiskFlags({
 
   return flags;
 }
+
 // ======================================================
 // feature / policy helpers
 // ======================================================
@@ -1305,7 +1306,6 @@ function buildPublicPolicy(policy, workDate = "") {
       : [],
   };
 }
-
 // ======================================================
 // principal / auth helpers
 // ======================================================
@@ -1425,6 +1425,38 @@ async function getOrCreatePolicy(clinicId, userId) {
   return p;
 }
 
+function buildHelperShiftUserOr(userId) {
+  const uid = s(userId);
+  if (!uid) return [];
+
+  return [
+    { helperUserId: uid },
+    { userId: uid },
+    { helperId: uid },
+    { assignedUserId: uid },
+    { acceptedHelperUserId: uid },
+    { selectedHelperUserId: uid },
+    { bookedHelperUserId: uid },
+    { "helper.userId": uid },
+    { "helper.id": uid },
+    { "helper._id": uid },
+  ];
+}
+
+function dedupeShifts(shifts) {
+  const out = [];
+  const seen = new Set();
+
+  for (const sh of Array.isArray(shifts) ? shifts : []) {
+    const key = String(sh?._id || "");
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(sh);
+  }
+
+  return out;
+}
+
 async function loadShiftForSession({
   clinicId,
   staffId,
@@ -1437,26 +1469,19 @@ async function loadShiftForSession({
     return sh || null;
   }
 
-  const cid = s(clinicId);
-  const date = s(workDate);
-  const sid = s(staffId);
-  const uid = s(userId);
+  const candidates = await loadShiftCandidatesForSession({
+    clinicId,
+    staffId,
+    userId,
+    workDate,
+    shiftId: null,
+  });
 
-  if (sid) {
-    const q = { staffId: sid, date };
-    if (cid) q.clinicId = cid;
-    const sh = await Shift.findOne(q).sort({ createdAt: -1 }).lean();
-    return sh || null;
-  }
+  if (!candidates.length) return null;
 
-  if (uid) {
-    const q = { helperUserId: uid, date };
-    if (cid) q.clinicId = cid;
-    const sh = await Shift.findOne(q).sort({ createdAt: -1 }).lean();
-    return sh || null;
-  }
-
-  return null;
+  const picked = pickBestShiftForTime(candidates, new Date());
+  if (picked?._conflict) return null;
+  return picked || null;
 }
 
 async function loadShiftCandidatesForSession({
@@ -1476,16 +1501,30 @@ async function loadShiftCandidatesForSession({
   const sid = s(staffId);
   const uid = s(userId);
 
-  const or = [];
-  if (sid) or.push({ staffId: sid });
-  if (uid) or.push({ helperUserId: uid });
+  if (!date) return [];
 
-  if (!or.length || !date) return [];
+  const queries = [];
 
-  const q = { date, $or: or };
-  if (cid) q.clinicId = cid;
+  if (sid) {
+    const q = { date, staffId: sid };
+    if (cid) q.clinicId = cid;
+    queries.push(q);
+  }
 
-  return Shift.find(q).sort({ start: 1, createdAt: -1 }).lean();
+  const helperOr = buildHelperShiftUserOr(uid);
+  if (helperOr.length) {
+    const q = { date, $or: helperOr };
+    if (cid) q.clinicId = cid;
+    queries.push(q);
+  }
+
+  if (!queries.length) return [];
+
+  const results = await Promise.all(
+    queries.map((q) => Shift.find(q).sort({ start: 1, createdAt: -1 }).lean())
+  );
+
+  return dedupeShifts(results.flat());
 }
 
 function pickBestShiftForTime(shifts, now = new Date()) {
@@ -2305,7 +2344,7 @@ async function resolveRuntimeContext(req, workDate, shiftId = null) {
       shiftId,
     });
 
-    if (!candidates.length && !effectiveClinicId) {
+    if (!candidates.length && effectiveClinicId) {
       candidates = await loadShiftCandidatesForSession({
         clinicId: "",
         staffId: effectiveStaffId,
@@ -2314,6 +2353,15 @@ async function resolveRuntimeContext(req, workDate, shiftId = null) {
         shiftId,
       });
     }
+
+    console.log("🧪 helper shift candidates", {
+      requestedClinicId: effectiveClinicId,
+      userId: effectiveUserId,
+      staffId: effectiveStaffId,
+      workDate,
+      count: candidates.length,
+      candidateIds: candidates.map((x) => String(x?._id || "")),
+    });
 
     if (!candidates.length) {
       const out = {
@@ -3081,7 +3129,6 @@ async function checkOut(req, res) {
     });
   }
 }
-
 // ======================================================
 // POST /attendance/manual-request
 // ======================================================

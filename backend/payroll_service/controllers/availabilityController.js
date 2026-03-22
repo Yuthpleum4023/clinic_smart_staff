@@ -850,7 +850,7 @@ async function cancelAvailability(req, res) {
 // ---------------- clinic admin: list open ----------------
 async function listOpenAvailabilities(req, res) {
   try {
-    mustRole(req, ["admin"]);
+    mustRoleAny(req, ["admin", "clinic_admin"]);
 
     const q = { status: "open" };
 
@@ -929,7 +929,7 @@ async function listOpenAvailabilities(req, res) {
 // =====================================================
 async function listBookedAvailabilities(req, res) {
   try {
-    mustRole(req, ["admin"]);
+    mustRoleAny(req, ["admin", "clinic_admin"]);
 
     const clinicId = getClinicIdStrict(req);
     if (!clinicId) bad("missing clinicId in token (required)", 400);
@@ -1008,7 +1008,7 @@ async function listBookedAvailabilities(req, res) {
 // =====================================================
 async function clearBookedAvailability(req, res) {
   try {
-    mustRole(req, ["admin"]);
+    mustRoleAny(req, ["admin", "clinic_admin"]);
 
     const clinicId = getClinicIdStrict(req);
     if (!clinicId) bad("missing clinicId in token (required)", 400);
@@ -1049,7 +1049,7 @@ async function clearBookedAvailability(req, res) {
 // =====================================================
 async function bookAvailability(req, res) {
   try {
-    mustRole(req, ["admin"]);
+    mustRoleAny(req, ["admin", "clinic_admin"]);
 
     const clinicId = getClinicIdStrict(req);
     if (!clinicId) bad("missing clinicId in token (required)", 400);
@@ -1114,6 +1114,7 @@ async function bookAvailability(req, res) {
     const shiftPayload = {
       clinicId,
       staffId: s(updated.staffId),
+      helperUserId: s(updated.userId),
 
       date: s(updated.date),
       start: s(updated.start),

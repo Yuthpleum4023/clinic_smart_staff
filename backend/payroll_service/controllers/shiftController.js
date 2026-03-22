@@ -19,8 +19,8 @@ try {
 
 // -------------------- Helpers --------------------
 function mustBeAdmin(req, res) {
-  const role = req.user?.role;
-  if (role !== "admin") {
+  const role = s(req.user?.role);
+  if (role !== "admin" && role !== "clinic_admin") {
     res.status(403).json({ message: "Forbidden (admin only)" });
     return false;
   }
@@ -105,6 +105,18 @@ async function loadClinicMapByIds(ids = []) {
   return m;
 }
 
+function normalizeHelperUserIdInput(body = {}) {
+  return s(
+    body.helperUserId ||
+      body.userId ||
+      body.helperId ||
+      body.assignedUserId ||
+      body.acceptedHelperUserId ||
+      body.selectedHelperUserId ||
+      body.bookedHelperUserId
+  );
+}
+
 function normalizeShiftOutput(
   row,
   clinicMap = new Map(),
@@ -113,7 +125,13 @@ function normalizeShiftOutput(
   const out = {
     ...row,
     staffId: s(row.staffId),
-    helperUserId: s(row.helperUserId),
+    helperUserId: s(
+      row.helperUserId ||
+        row.userId ||
+        row.helperId ||
+        row.assignedUserId ||
+        row.acceptedHelperUserId
+    ),
     clinicId: s(row.clinicId),
     date: s(row.date),
     start: s(row.start),
@@ -167,6 +185,75 @@ function normalizeShiftOutput(
   return out;
 }
 
+function isHHmm(v) {
+  return /^([01]\d|2[0-3]):([0-5]\d)$/.test(s(v));
+}
+
+function makeLocalDateTime(dateYmd, timeHHmm) {
+  return new Date(`${dateYmd}T${timeHHmm}:00+07:00`);
+}
+
+function getShiftRange(date, start, end) {
+  if (!s(date) || !isHHmm(start) || !isHHmm(end)) return null;
+
+  const startAt = makeLocalDateTime(date, start);
+  let endAt = makeLocalDateTime(date, end);
+
+  if (endAt.getTime() <= startAt.getTime()) {
+    endAt = new Date(endAt.getTime() + 24 * 60 * 60000);
+  }
+
+  return { startAt, endAt };
+}
+
+function isOverlap(aStart, aEnd, bStart, bEnd) {
+  return aStart.getTime() < bEnd.getTime() && bStart.getTime() < aEnd.getTime();
+}
+
+async function ensureNoShiftConflict({
+  clinicId,
+  date,
+  start,
+  end,
+  staffId = "",
+  helperUserId = "",
+  excludeShiftId = "",
+}) {
+  const range = getShiftRange(date, start, end);
+  if (!range) return null;
+
+  const or = [];
+  if (s(staffId)) or.push({ staffId: s(staffId) });
+  if (s(helperUserId)) or.push({ helperUserId: s(helperUserId) });
+
+  if (!or.length) return null;
+
+  const q = {
+    clinicId: s(clinicId),
+    date: s(date),
+    $or: or,
+  };
+
+  if (s(excludeShiftId) && mongoose.Types.ObjectId.isValid(String(excludeShiftId))) {
+    q._id = { $ne: excludeShiftId };
+  }
+
+  const rows = await Shift.find(q).lean();
+
+  for (const row of rows) {
+    const existing = getShiftRange(row.date, row.start, row.end);
+    if (!existing) continue;
+
+    if (
+      isOverlap(range.startAt, range.endAt, existing.startAt, existing.endAt)
+    ) {
+      return row;
+    }
+  }
+
+  return null;
+}
+
 // -------------------- Controllers --------------------
 
 // POST /shifts (admin)
@@ -177,7 +264,6 @@ async function createShift(req, res) {
     const {
       clinicId,
       staffId,
-      helperUserId,
       date,
       start,
       end,
@@ -193,7 +279,7 @@ async function createShift(req, res) {
 
     const cid = s(clinicId);
     const sid = s(staffId);
-    const hid = s(helperUserId);
+    const hid = normalizeHelperUserIdInput(req.body || {});
     const d = s(date);
     const st = s(start);
     const en = s(end);
@@ -202,6 +288,25 @@ async function createShift(req, res) {
       return res.status(400).json({
         message:
           "clinicId + (staffId or helperUserId) + date + start + end required",
+      });
+    }
+
+    const conflict = await ensureNoShiftConflict({
+      clinicId: cid,
+      date: d,
+      start: st,
+      end: en,
+      staffId: sid,
+      helperUserId: hid,
+    });
+
+    if (conflict) {
+      return res.status(409).json({
+        ok: false,
+        code: "SHIFT_TIME_OVERLAP",
+        message: "พบ shift ชนเวลากับรายการเดิม",
+        conflictShiftId: String(conflict._id || ""),
+        conflict,
       });
     }
 
@@ -267,7 +372,7 @@ async function listShifts(req, res) {
     if (date) q.date = s(date);
     if (status) q.status = s(status);
 
-    if (role === "admin") {
+    if (role === "admin" || role === "clinic_admin") {
       if (clinicId) {
         q.clinicId = s(clinicId);
       } else if (tokenClinicId) {
@@ -346,12 +451,62 @@ async function updateShiftStatus(req, res) {
       return res.status(404).json({ message: "Shift not found" });
     }
 
-    if (req.body?.status !== undefined) {
-      shift.status = s(req.body.status);
+    const nextStatus =
+      req.body?.status !== undefined ? s(req.body.status) : s(shift.status);
+
+    const nextMinutesLate =
+      req.body?.minutesLate !== undefined
+        ? Number(req.body.minutesLate || 0)
+        : Number(shift.minutesLate || 0);
+
+    const nextHelperUserId =
+      req.body?.helperUserId !== undefined ||
+      req.body?.userId !== undefined ||
+      req.body?.helperId !== undefined ||
+      req.body?.assignedUserId !== undefined ||
+      req.body?.acceptedHelperUserId !== undefined
+        ? normalizeHelperUserIdInput(req.body || {})
+        : s(shift.helperUserId);
+
+    const nextStaffId =
+      req.body?.staffId !== undefined ? s(req.body.staffId) : s(shift.staffId);
+
+    const nextDate =
+      req.body?.date !== undefined ? s(req.body.date) : s(shift.date);
+
+    const nextStart =
+      req.body?.start !== undefined ? s(req.body.start) : s(shift.start);
+
+    const nextEnd =
+      req.body?.end !== undefined ? s(req.body.end) : s(shift.end);
+
+    const conflict = await ensureNoShiftConflict({
+      clinicId: s(shift.clinicId),
+      date: nextDate,
+      start: nextStart,
+      end: nextEnd,
+      staffId: nextStaffId,
+      helperUserId: nextHelperUserId,
+      excludeShiftId: id,
+    });
+
+    if (conflict) {
+      return res.status(409).json({
+        ok: false,
+        code: "SHIFT_TIME_OVERLAP",
+        message: "พบ shift ชนเวลากับรายการเดิม",
+        conflictShiftId: String(conflict._id || ""),
+        conflict,
+      });
     }
-    if (req.body?.minutesLate !== undefined) {
-      shift.minutesLate = Number(req.body.minutesLate || 0);
-    }
+
+    shift.status = nextStatus;
+    shift.minutesLate = nextMinutesLate;
+    shift.helperUserId = nextHelperUserId;
+    shift.staffId = nextStaffId;
+    shift.date = nextDate;
+    shift.start = nextStart;
+    shift.end = nextEnd;
 
     await shift.save();
 

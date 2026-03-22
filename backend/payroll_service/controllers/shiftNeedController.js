@@ -58,7 +58,7 @@ function xOr(v) {
 }
 
 function mustRoleAny(req, roles = []) {
-  const have = normalizeRoles(req.user?.role);
+  const have = normalizeRoles(req.user?.roles || req.user?.role);
   const want = (roles || []).map((x) => String(x || "").trim()).filter(Boolean);
 
   const ok = have.some((x) => want.includes(x));
@@ -70,12 +70,7 @@ function mustRoleAny(req, roles = []) {
 }
 
 function mustRole(req, roles = []) {
-  const r = req.user?.role;
-  if (!roles.includes(r)) {
-    const err = new Error("forbidden");
-    err.statusCode = 403;
-    throw err;
-  }
+  mustRoleAny(req, roles);
 }
 
 function getClinicId(req) {
@@ -569,7 +564,7 @@ async function hasOverlappingShift({
 // ---------------- admin: create need ----------------
 async function createNeed(req, res) {
   try {
-    mustRole(req, ["admin"]);
+    mustRoleAny(req, ["admin", "clinic_admin"]);
 
     const clinicId = getClinicId(req);
     if (!clinicId) bad("missing clinicId in token", 400);
@@ -655,7 +650,7 @@ async function createNeed(req, res) {
 // ---------------- admin: list own clinic needs ----------------
 async function listClinicNeeds(req, res) {
   try {
-    mustRole(req, ["admin"]);
+    mustRoleAny(req, ["admin", "clinic_admin"]);
     const clinicId = getClinicId(req);
     if (!clinicId) bad("missing clinicId in token", 400);
 
@@ -923,7 +918,7 @@ async function applyNeed(req, res) {
 // ---------------- admin: list applicants ----------------
 async function listApplicants(req, res) {
   try {
-    mustRole(req, ["admin"]);
+    mustRoleAny(req, ["admin", "clinic_admin"]);
     const clinicId = getClinicId(req);
     if (!clinicId) bad("missing clinicId in token", 400);
 
@@ -1052,7 +1047,7 @@ async function approveApplicant(req, res) {
   let session = null;
 
   try {
-    mustRole(req, ["admin"]);
+    mustRoleAny(req, ["admin", "clinic_admin"]);
     const clinicId = getClinicId(req);
     if (!clinicId) bad("missing clinicId in token", 400);
 
@@ -1237,7 +1232,7 @@ async function approveApplicant(req, res) {
 // ---------------- admin: cancel need ----------------
 async function cancelNeed(req, res) {
   try {
-    mustRole(req, ["admin"]);
+    mustRoleAny(req, ["admin", "clinic_admin"]);
     const clinicId = getClinicId(req);
     if (!clinicId) bad("missing clinicId in token", 400);
 
