@@ -8,9 +8,6 @@ const {
   getEmployeeByStaffId,
 } = require("../utils/staffClient");
 
-// ======================================================
-// basic helpers
-// ======================================================
 function s(v) {
   return String(v || "").trim();
 }
@@ -299,9 +296,6 @@ function normalizeSessionItem(x) {
   return x;
 }
 
-// ======================================================
-// score service
-// ======================================================
 function getScoreServiceBaseUrl() {
   return s(process.env.SCORE_SERVICE_URL).replace(/\/+$/, "");
 }
@@ -380,9 +374,6 @@ async function maybePostTrustScoreFromSession(session) {
   }
 }
 
-// ======================================================
-// policy / clinic helpers
-// ======================================================
 function withFeatureDefaults(features) {
   return {
     manualAttendance: true,
@@ -608,9 +599,7 @@ async function getOrCreatePolicy(clinicId, userId) {
   }
   return p;
 }
-// ======================================================
-// employee helpers / memo
-// ======================================================
+
 function createRequestMemo(req) {
   if (!req._attendanceMemo || typeof req._attendanceMemo !== "object") {
     req._attendanceMemo = {
@@ -792,7 +781,6 @@ function isEmployeeAttendanceAllowed(employee) {
   if (!employee.verified) return { ok: false, code: "EMPLOYEE_NOT_VERIFIED", message: "Employee is not verified yet" };
   return { ok: true, code: "", message: "" };
 }
-
 async function fetchEmployeeForRequest(
   req,
   { preferStaffId = true, fallbackClinicId = "" } = {}
@@ -1073,9 +1061,6 @@ async function ensureSessionEmployeeAccess(req, session) {
   return { ok: true, employee };
 }
 
-// ======================================================
-// self clinic scope
-// ======================================================
 async function resolveSelfClinicFilter(req, fallbackClinicId = "") {
   const role = s(req.user?.role);
   const requestedClinicId =
@@ -1110,9 +1095,6 @@ async function resolveSelfClinicFilter(req, fallbackClinicId = "") {
   };
 }
 
-// ======================================================
-// shift / time helpers
-// ======================================================
 function buildHelperShiftUserOr(userId) {
   const uid = s(userId);
   if (!uid) return [];
@@ -1275,6 +1257,7 @@ function getCutoffDateTime(workDate, cutoffTime) {
   const base = makeLocalDateTime(workDate, cutoff);
   return new Date(base.getTime() + 24 * 60 * 60000);
 }
+
 function computeLateMinutes(policy, shift, checkInAt) {
   if (!shift || !isYmd(shift.date) || !isHHmm(shift.start)) return 0;
   const shiftStart = makeLocalDateTime(shift.date, shift.start);
@@ -1413,7 +1396,6 @@ function detectEarlyCheckOut({ policy, shift, checkOutAt, role, workDate }) {
   }
   return checkOutAt.getTime() < getClinicCloseDateTime(workDate, policy).getTime();
 }
-
 function detectLeftEarlyMinutes({
   shift,
   checkOutAt,
@@ -1781,9 +1763,6 @@ async function recalcSessionByTimes({ session, policy, shift }) {
   session.riskScore = clampRisk(session.riskScore);
 }
 
-// ======================================================
-// runtime context
-// ======================================================
 async function resolveRuntimeContext(req, workDate, shiftId = null) {
   const memo = createRequestMemo(req);
   const runtimeKey = makeRuntimeContextKey(req, workDate, shiftId);
@@ -1933,9 +1912,6 @@ async function resolveRuntimeContext(req, workDate, shiftId = null) {
   memo.runtimeContext.set(runtimeKey, out);
   return out;
 }
-// ======================================================
-// controllers
-// ======================================================
 async function checkIn(req, res) {
   try {
     const workDate = s(req.body?.workDate);
@@ -2993,7 +2969,7 @@ async function rejectManualRequest(req, res) {
 
 async function listMySessions(req, res) {
   try {
-    const { clinicId, principalId, userId, staffId } = getPrincipal(req);
+    const { clinicId, principalId, userId, staffId, role } = getPrincipal(req);
 
     if (!principalId && !userId && !staffId) {
       return res.status(401).json({ ok: false, message: "Missing userId/staffId in token" });
@@ -3005,10 +2981,10 @@ async function listMySessions(req, res) {
     const clinicScope = await resolveSelfClinicFilter(req, clinicId);
     if (!clinicScope.ok) return res.status(clinicScope.status).json(clinicScope.body);
 
-    const effectiveClinicId = s(clinicScope.clinicId);
+    const requestedClinicId = s(clinicScope.clinicId);
 
     const q = buildMyAttendanceQuery({
-      clinicId: effectiveClinicId,
+      clinicId: role === "helper" ? requestedClinicId : requestedClinicId,
       principalId,
       userId,
       staffId,
@@ -3016,20 +2992,39 @@ async function listMySessions(req, res) {
       dateTo,
     });
 
+    console.log("📘 listMySessions principal =", {
+      role,
+      clinicId,
+      requestedClinicId,
+      principalId,
+      userId,
+      staffId,
+    });
+    console.log("📘 listMySessions query =", JSON.stringify(q, null, 2));
+
     const items = await AttendanceSession.find(q)
       .sort({ workDate: -1, checkInAt: -1, createdAt: -1 })
       .lean();
 
-    const policy = effectiveClinicId
-      ? await getOrCreatePolicy(effectiveClinicId, userId || principalId || staffId)
-      : null;
+    console.log("📘 listMySessions resultCount =", items.length);
+
+    const policy =
+      requestedClinicId && role !== "helper"
+        ? await getOrCreatePolicy(
+            requestedClinicId,
+            userId || principalId || staffId
+          )
+        : null;
 
     return res.json({
       ok: true,
       items: items.map(normalizeSessionItem),
       clinicScope: {
-        clinicId: effectiveClinicId || "",
-        scope: clinicScope.scope,
+        clinicId: requestedClinicId || "",
+        scope:
+          role === "helper" && !requestedClinicId
+            ? "all_clinics"
+            : clinicScope.scope,
       },
       policy: policy ? buildPublicPolicy(policy) : null,
     });
