@@ -1439,6 +1439,19 @@ async function resolveEmployeeClinicIdFromStaff(req, fallbackClinicId = "") {
   }
 }
 
+function resolveSelfClinicScope(req, role, fallbackClinicId = "") {
+  const requestedClinicId =
+    s(req.query?.clinicId) ||
+    s(req.body?.clinicId) ||
+    s(req.params?.clinicId);
+
+  if (role === "helper") {
+    return requestedClinicId;
+  }
+
+  return requestedClinicId || s(fallbackClinicId);
+}
+
 // ======================================================
 // db / loader helpers
 // ======================================================
@@ -2112,11 +2125,11 @@ function buildManualRequestQueryForSelf({
   approvalStatus,
 }) {
   const q = {
-    clinicId,
-    principalId,
     manualRequestType: { $ne: "" },
   };
 
+  if (s(clinicId)) q.clinicId = s(clinicId);
+  if (s(principalId)) q.principalId = s(principalId);
   if (isYmd(workDate)) q.workDate = workDate;
 
   const filter = normalizeApprovalFilter(approvalStatus);
@@ -3548,7 +3561,7 @@ async function submitManualRequest(req, res) {
 // ======================================================
 async function listMyManualRequests(req, res) {
   try {
-    const { clinicId, principalId, userId, role } = getPrincipal(req);
+    const { clinicId, principalId, userId } = getPrincipal(req);
 
     if (!principalId) {
       return res
@@ -3559,24 +3572,12 @@ async function listMyManualRequests(req, res) {
     const workDate = s(req.query?.workDate);
     const approvalStatus = s(req.query?.approvalStatus);
 
-    let effectiveClinicId = s(clinicId);
-
-    if (role === "employee" || role === "staff") {
-      const verify = await ensureVerifiedEmployeeFromRequest(
-        req,
-        effectiveClinicId
-      );
-      if (!verify.ok) {
-        return res.status(verify.status).json(verify.body);
-      }
-      effectiveClinicId = s(verify.clinicId);
+    const clinicScope = await resolveSelfClinicFilter(req, clinicId);
+    if (!clinicScope.ok) {
+      return res.status(clinicScope.status).json(clinicScope.body);
     }
 
-    if (!effectiveClinicId) {
-      return res
-        .status(401)
-        .json({ ok: false, message: "Missing clinicId" });
-    }
+    const effectiveClinicId = s(clinicScope.clinicId);
 
     const q = buildManualRequestQueryForSelf({
       clinicId: effectiveClinicId,
@@ -3589,10 +3590,9 @@ async function listMyManualRequests(req, res) {
       .sort({ workDate: -1, requestedAt: -1, createdAt: -1 })
       .lean();
 
-    const policy = await getOrCreatePolicy(
-      effectiveClinicId,
-      userId || principalId
-    );
+    const policy = effectiveClinicId
+      ? await getOrCreatePolicy(effectiveClinicId, userId || principalId)
+      : null;
 
     const normalizedItems = items.map(normalizeSessionItem);
     const normalizedFilter = normalizeApprovalFilter(approvalStatus);
@@ -3607,7 +3607,11 @@ async function listMyManualRequests(req, res) {
             : normalizedFilter || "all",
         approvalStatus: normalizedFilter || "",
       },
-      policy: buildPublicPolicy(policy, workDate),
+      clinicScope: {
+        clinicId: effectiveClinicId || "",
+        scope: clinicScope.scope,
+      },
+      policy: policy ? buildPublicPolicy(policy, workDate) : null,
     });
   } catch (e) {
     return res.status(500).json({
@@ -3917,7 +3921,7 @@ async function rejectManualRequest(req, res) {
 // ======================================================
 async function listMySessions(req, res) {
   try {
-    const { clinicId, principalId, userId, role, staffId } = getPrincipal(req);
+    const { clinicId, principalId, userId, staffId } = getPrincipal(req);
 
     if (!principalId && !userId && !staffId) {
       return res
@@ -3925,21 +3929,15 @@ async function listMySessions(req, res) {
         .json({ ok: false, message: "Missing userId/staffId in token" });
     }
 
-    let effectiveClinicId = s(clinicId);
-
-    if (role === "employee" || role === "staff") {
-      const verify = await ensureVerifiedEmployeeFromRequest(
-        req,
-        effectiveClinicId
-      );
-      if (!verify.ok) {
-        return res.status(verify.status).json(verify.body);
-      }
-      effectiveClinicId = s(verify.clinicId);
-    }
-
     const dateFrom = s(req.query?.dateFrom);
     const dateTo = s(req.query?.dateTo);
+
+    const clinicScope = await resolveSelfClinicFilter(req, clinicId);
+    if (!clinicScope.ok) {
+      return res.status(clinicScope.status).json(clinicScope.body);
+    }
+
+    const effectiveClinicId = s(clinicScope.clinicId);
 
     const q = buildMyAttendanceQuery({
       clinicId: effectiveClinicId,
@@ -3950,6 +3948,7 @@ async function listMySessions(req, res) {
       dateTo,
     });
 
+    console.log("📘 listMySessions clinicScope =", clinicScope);
     console.log("📘 listMySessions query =", JSON.stringify(q, null, 2));
 
     const items = await AttendanceSession.find(q)
@@ -3957,7 +3956,10 @@ async function listMySessions(req, res) {
       .lean();
 
     const policy = effectiveClinicId
-      ? await getOrCreatePolicy(effectiveClinicId, userId || principalId || staffId)
+      ? await getOrCreatePolicy(
+          effectiveClinicId,
+          userId || principalId || staffId
+        )
       : null;
 
     const normalizedItems = items.map(normalizeSessionItem);
@@ -3965,6 +3967,10 @@ async function listMySessions(req, res) {
     return res.json({
       ok: true,
       items: normalizedItems,
+      clinicScope: {
+        clinicId: effectiveClinicId || "",
+        scope: clinicScope.scope,
+      },
       policy: policy ? buildPublicPolicy(policy) : null,
     });
   } catch (e) {
