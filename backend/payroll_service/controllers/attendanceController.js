@@ -275,6 +275,95 @@ function buildBusyEmployeeServiceResponse(extra = {}) {
   );
 }
 
+function normalizeSessionItem(x) {
+  if (!Array.isArray(x.suspiciousFlags)) x.suspiciousFlags = [];
+  if (!x.securityMeta) {
+    x.securityMeta = {
+      inDistanceMeters: null,
+      outDistanceMeters: null,
+      inLocationSource: "",
+      outLocationSource: "",
+      inMocked: false,
+      outMocked: false,
+    };
+  }
+  x.riskScore = clampRisk(x.riskScore || 0);
+  return x;
+}
+
+function buildAttendanceActorOr({ principalId = "", userId = "", staffId = "" }) {
+  const pid = s(principalId);
+  const uid = s(userId);
+  const sid = s(staffId);
+
+  const or = [];
+
+  if (pid) {
+    or.push({ principalId: pid });
+    or.push({ userId: pid });
+    or.push({ helperUserId: pid });
+    or.push({ assignedUserId: pid });
+    or.push({ actorUserId: pid });
+    or.push({ helperId: pid });
+  }
+
+  if (uid) {
+    or.push({ userId: uid });
+    or.push({ helperUserId: uid });
+    or.push({ assignedUserId: uid });
+    or.push({ actorUserId: uid });
+    or.push({ helperId: uid });
+    or.push({ principalId: uid });
+  }
+
+  if (sid) {
+    or.push({ staffId: sid });
+    or.push({ employeeId: sid });
+    or.push({ principalId: sid });
+  }
+
+  const seen = new Set();
+  return or.filter((item) => {
+    const key = JSON.stringify(item);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function buildMyAttendanceQuery({
+  clinicId = "",
+  principalId = "",
+  userId = "",
+  staffId = "",
+  dateFrom = "",
+  dateTo = "",
+}) {
+  const and = [];
+  const cid = s(clinicId);
+
+  if (cid) {
+    and.push({ clinicId: cid });
+  }
+
+  const actorOr = buildAttendanceActorOr({ principalId, userId, staffId });
+  if (actorOr.length) {
+    and.push({ $or: actorOr });
+  }
+
+  if (isYmd(dateFrom) && isYmd(dateTo)) {
+    and.push({ workDate: { $gte: dateFrom, $lte: dateTo } });
+  } else if (isYmd(dateFrom)) {
+    and.push({ workDate: { $gte: dateFrom } });
+  } else if (isYmd(dateTo)) {
+    and.push({ workDate: { $lte: dateTo } });
+  }
+
+  if (!and.length) return {};
+  if (and.length === 1) return and[0];
+  return { $and: and };
+}
+
 async function memoizedGetEmployeeByStaffId(req, staffId, token = "") {
   const key = s(staffId);
   if (!key) return null;
@@ -2387,7 +2476,8 @@ async function resolveRuntimeContext(req, workDate, shiftId = null) {
         body: {
           ok: false,
           code: "MULTIPLE_ACTIVE_SHIFTS",
-          message: "พบหลายกะงานในช่วงเวลาเดียวกัน กรุณาเลือกกะงาน/คลินิกก่อนสแกน",
+          message:
+            "พบหลายกะงานในช่วงเวลาเดียวกัน กรุณาเลือกกะงาน/คลินิกก่อนสแกน",
           workDate,
           candidates: picked.candidates,
         },
@@ -2451,6 +2541,7 @@ async function resolveRuntimeContext(req, workDate, shiftId = null) {
   memo.runtimeContext.set(runtimeKey, out);
   return out;
 }
+
 // ======================================================
 // POST /attendance/check-in
 // ======================================================
@@ -3129,6 +3220,7 @@ async function checkOut(req, res) {
     });
   }
 }
+
 // ======================================================
 // POST /attendance/manual-request
 // ======================================================
@@ -3450,6 +3542,7 @@ async function submitManualRequest(req, res) {
     });
   }
 }
+
 // ======================================================
 // GET /attendance/manual-request/my
 // ======================================================
@@ -3501,22 +3594,7 @@ async function listMyManualRequests(req, res) {
       userId || principalId
     );
 
-    const normalizedItems = items.map((x) => {
-      if (!Array.isArray(x.suspiciousFlags)) x.suspiciousFlags = [];
-      if (!x.securityMeta) {
-        x.securityMeta = {
-          inDistanceMeters: null,
-          outDistanceMeters: null,
-          inLocationSource: "",
-          outLocationSource: "",
-          inMocked: false,
-          outMocked: false,
-        };
-      }
-      x.riskScore = clampRisk(x.riskScore || 0);
-      return x;
-    });
-
+    const normalizedItems = items.map(normalizeSessionItem);
     const normalizedFilter = normalizeApprovalFilter(approvalStatus);
 
     return res.json({
@@ -3576,23 +3654,7 @@ async function listClinicManualRequests(req, res) {
       .lean();
 
     const policy = await getOrCreatePolicy(clinicId, actorUserId);
-
-    const normalizedItems = items.map((x) => {
-      if (!Array.isArray(x.suspiciousFlags)) x.suspiciousFlags = [];
-      if (!x.securityMeta) {
-        x.securityMeta = {
-          inDistanceMeters: null,
-          outDistanceMeters: null,
-          inLocationSource: "",
-          outLocationSource: "",
-          inMocked: false,
-          outMocked: false,
-        };
-      }
-      x.riskScore = clampRisk(x.riskScore || 0);
-      return x;
-    });
-
+    const normalizedItems = items.map(normalizeSessionItem);
     const normalizedFilter =
       normalizeApprovalFilter(approvalStatus) || "pending";
 
@@ -3855,15 +3917,16 @@ async function rejectManualRequest(req, res) {
 // ======================================================
 async function listMySessions(req, res) {
   try {
-    const { clinicId, principalId, userId, role } = getPrincipal(req);
+    const { clinicId, principalId, userId, role, staffId } = getPrincipal(req);
 
-    if (!principalId) {
+    if (!principalId && !userId && !staffId) {
       return res
         .status(401)
         .json({ ok: false, message: "Missing userId/staffId in token" });
     }
 
     let effectiveClinicId = s(clinicId);
+
     if (role === "employee" || role === "staff") {
       const verify = await ensureVerifiedEmployeeFromRequest(
         req,
@@ -3875,48 +3938,34 @@ async function listMySessions(req, res) {
       effectiveClinicId = s(verify.clinicId);
     }
 
-    if (!effectiveClinicId) {
-      return res
-        .status(401)
-        .json({ ok: false, message: "Missing clinicId" });
-    }
-
     const dateFrom = s(req.query?.dateFrom);
     const dateTo = s(req.query?.dateTo);
 
-    const q = { clinicId: effectiveClinicId, principalId };
-    if (isYmd(dateFrom) && isYmd(dateTo)) {
-      q.workDate = { $gte: dateFrom, $lte: dateTo };
-    }
+    const q = buildMyAttendanceQuery({
+      clinicId: effectiveClinicId,
+      principalId,
+      userId,
+      staffId,
+      dateFrom,
+      dateTo,
+    });
+
+    console.log("📘 listMySessions query =", JSON.stringify(q, null, 2));
 
     const items = await AttendanceSession.find(q)
-      .sort({ checkInAt: -1 })
+      .sort({ workDate: -1, checkInAt: -1, createdAt: -1 })
       .lean();
-    const policy = await getOrCreatePolicy(
-      effectiveClinicId,
-      userId || principalId
-    );
 
-    const normalizedItems = items.map((x) => {
-      if (!Array.isArray(x.suspiciousFlags)) x.suspiciousFlags = [];
-      if (!x.securityMeta) {
-        x.securityMeta = {
-          inDistanceMeters: null,
-          outDistanceMeters: null,
-          inLocationSource: "",
-          outLocationSource: "",
-          inMocked: false,
-          outMocked: false,
-        };
-      }
-      x.riskScore = clampRisk(x.riskScore || 0);
-      return x;
-    });
+    const policy = effectiveClinicId
+      ? await getOrCreatePolicy(effectiveClinicId, userId || principalId || staffId)
+      : null;
+
+    const normalizedItems = items.map(normalizeSessionItem);
 
     return res.json({
       ok: true,
       items: normalizedItems,
-      policy: buildPublicPolicy(policy),
+      policy: policy ? buildPublicPolicy(policy) : null,
     });
   } catch (e) {
     return res
@@ -3955,6 +4004,9 @@ async function listClinicSessions(req, res) {
       q.$or = [
         { staffId: staffIdOrPrincipal },
         { principalId: staffIdOrPrincipal },
+        { userId: staffIdOrPrincipal },
+        { helperUserId: staffIdOrPrincipal },
+        { assignedUserId: staffIdOrPrincipal },
       ];
     }
 
@@ -3962,22 +4014,7 @@ async function listClinicSessions(req, res) {
       .sort({ checkInAt: -1 })
       .lean();
     const policy = await getOrCreatePolicy(clinicId, s(req.user?.userId));
-
-    const normalizedItems = items.map((x) => {
-      if (!Array.isArray(x.suspiciousFlags)) x.suspiciousFlags = [];
-      if (!x.securityMeta) {
-        x.securityMeta = {
-          inDistanceMeters: null,
-          outDistanceMeters: null,
-          inLocationSource: "",
-          outLocationSource: "",
-          inMocked: false,
-          outMocked: false,
-        };
-      }
-      x.riskScore = clampRisk(x.riskScore || 0);
-      return x;
-    });
+    const normalizedItems = items.map(normalizeSessionItem);
 
     return res.json({
       ok: true,
@@ -4029,21 +4066,7 @@ async function myDayPreview(req, res) {
       .sort({ checkInAt: -1, createdAt: -1 })
       .lean();
 
-    const normalizedSessions = sessions.map((x) => {
-      if (!Array.isArray(x.suspiciousFlags)) x.suspiciousFlags = [];
-      if (!x.securityMeta) {
-        x.securityMeta = {
-          inDistanceMeters: null,
-          outDistanceMeters: null,
-          inLocationSource: "",
-          outLocationSource: "",
-          inMocked: false,
-          outMocked: false,
-        };
-      }
-      x.riskScore = clampRisk(x.riskScore || 0);
-      return x;
-    });
+    const normalizedSessions = sessions.map(normalizeSessionItem);
 
     const openSession =
       normalizedSessions.find((x) => s(x.status).toLowerCase() === "open") ||
