@@ -137,6 +137,10 @@ function getBodyStaffId(req) {
   );
 }
 
+function getRequestedShiftId(req) {
+  return req.body?.shiftId || req.params?.shiftId || req.query?.shiftId || null;
+}
+
 function getPrincipal(req) {
   const clinicId = s(req.user?.clinicId);
   const role = s(req.user?.role);
@@ -1124,6 +1128,126 @@ function dedupeShifts(shifts) {
   return out;
 }
 
+function getNestedValue(obj, path) {
+  return String(path || "")
+    .split(".")
+    .filter(Boolean)
+    .reduce((acc, key) => (acc == null ? undefined : acc[key]), obj);
+}
+
+function valuesToComparableSet(value) {
+  const out = new Set();
+
+  const pushOne = (v) => {
+    if (v == null) return;
+    if (Array.isArray(v)) {
+      v.forEach(pushOne);
+      return;
+    }
+    if (typeof v === "object") {
+      if (v._id != null) pushOne(v._id);
+      if (v.id != null) pushOne(v.id);
+      if (v.userId != null) pushOne(v.userId);
+      if (v.staffId != null) pushOne(v.staffId);
+      return;
+    }
+    const text = s(v);
+    if (text) out.add(text);
+  };
+
+  pushOne(value);
+  return out;
+}
+
+function shiftBelongsToHelper(shift, { principalId = "", userId = "", staffId = "" }) {
+  if (!shift || typeof shift !== "object") return false;
+
+  const wanted = new Set([s(principalId), s(userId), s(staffId)].filter(Boolean));
+  if (!wanted.size) return false;
+
+  const candidatePaths = [
+    "principalId",
+    "userId",
+    "helperUserId",
+    "helperId",
+    "assignedUserId",
+    "acceptedHelperUserId",
+    "selectedHelperUserId",
+    "bookedHelperUserId",
+    "staffId",
+    "employeeId",
+    "helper.userId",
+    "helper.id",
+    "helper._id",
+    "assignedHelper.userId",
+    "assignedHelper.id",
+    "assignedHelper._id",
+    "selectedHelper.userId",
+    "selectedHelper.id",
+    "selectedHelper._id",
+    "acceptedHelper.userId",
+    "acceptedHelper.id",
+    "acceptedHelper._id",
+  ];
+
+  for (const path of candidatePaths) {
+    const values = valuesToComparableSet(getNestedValue(shift, path));
+    for (const one of values) {
+      if (wanted.has(one)) return true;
+    }
+  }
+
+  return false;
+}
+
+function validateExplicitShiftForHelper({
+  shift,
+  workDate,
+  principalId,
+  userId,
+  staffId,
+}) {
+  if (!shift) {
+    return buildCodeResponse(404, "SHIFT_NOT_FOUND", "ไม่พบกะงานที่เลือก");
+  }
+
+  if (!shiftBelongsToHelper(shift, { principalId, userId, staffId })) {
+    return buildCodeResponse(
+      403,
+      "SHIFT_NOT_ASSIGNED_TO_HELPER",
+      "กะงานนี้ไม่ได้ถูกมอบหมายให้ผู้ใช้งานคนนี้"
+    );
+  }
+
+  const shiftDate = s(shift.date);
+  if (isYmd(workDate) && shiftDate && shiftDate !== workDate) {
+    return buildCodeResponse(
+      409,
+      "SHIFT_DATE_MISMATCH",
+      "กะงานที่เลือกไม่ตรงกับวันที่สแกน",
+      {
+        requestedWorkDate: workDate,
+        shiftDate,
+      }
+    );
+  }
+
+  const shiftClinicId = s(shift.clinicId);
+  if (!shiftClinicId) {
+    return buildCodeResponse(
+      409,
+      "SHIFT_CLINIC_MISSING",
+      "กะงานที่เลือกไม่มี clinicId"
+    );
+  }
+
+  return {
+    ok: true,
+    shift,
+    clinicId: shiftClinicId,
+  };
+}
+
 function getShiftStartDateTime(shift) {
   if (!shift || !isYmd(shift.date) || !isHHmm(shift.start)) return null;
   return makeLocalDateTime(shift.date, shift.start);
@@ -1235,7 +1359,6 @@ async function loadShiftForSession({ clinicId, staffId, userId, workDate, shiftI
   if (picked?._conflict) return null;
   return picked || null;
 }
-
 async function findPreviousOpenSession({ principalId, workDate }) {
   return AttendanceSession.findOne({
     principalId: s(principalId),
@@ -1396,6 +1519,7 @@ function detectEarlyCheckOut({ policy, shift, checkOutAt, role, workDate }) {
   }
   return checkOutAt.getTime() < getClinicCloseDateTime(workDate, policy).getTime();
 }
+
 function detectLeftEarlyMinutes({
   shift,
   checkOutAt,
@@ -1809,73 +1933,107 @@ async function resolveRuntimeContext(req, workDate, shiftId = null) {
       return out;
     }
   } else if (role === "helper") {
-    let candidates = await loadShiftCandidatesForSession({
-      clinicId: effectiveClinicId,
-      staffId: effectiveStaffId,
-      userId: effectiveUserId,
-      workDate,
-      shiftId,
-    });
+    const explicitShiftId = s(shiftId);
 
-    if (!candidates.length && effectiveClinicId) {
-      candidates = await loadShiftCandidatesForSession({
+    if (explicitShiftId) {
+      const explicitShift = await loadShiftForSession({
         clinicId: "",
+        staffId: effectiveStaffId,
+        userId: effectiveUserId,
+        workDate,
+        shiftId: explicitShiftId,
+      });
+
+      const explicitCheck = validateExplicitShiftForHelper({
+        shift: explicitShift,
+        workDate,
+        principalId,
+        userId: effectiveUserId,
+        staffId: effectiveStaffId,
+      });
+
+      if (!explicitCheck.ok) {
+        const out = {
+          ok: false,
+          status: explicitCheck.status,
+          body: explicitCheck.body,
+        };
+        memo.runtimeContext.set(runtimeKey, out);
+        return out;
+      }
+
+      shift = explicitCheck.shift;
+      effectiveClinicId = explicitCheck.clinicId;
+    } else {
+      let candidates = await loadShiftCandidatesForSession({
+        clinicId: effectiveClinicId,
         staffId: effectiveStaffId,
         userId: effectiveUserId,
         workDate,
         shiftId,
       });
-    }
 
-    if (!candidates.length) {
-      const out = {
-        ok: false,
-        status: 409,
-        body: {
-          ok: false,
-          code: "NO_SHIFT_TODAY",
-          message: "วันนี้ไม่มีตารางงาน",
+      if (!candidates.length && effectiveClinicId) {
+        candidates = await loadShiftCandidatesForSession({
+          clinicId: "",
+          staffId: effectiveStaffId,
+          userId: effectiveUserId,
           workDate,
-        },
-      };
-      memo.runtimeContext.set(runtimeKey, out);
-      return out;
-    }
+          shiftId,
+        });
+      }
 
-    const picked = pickBestShiftForTime(candidates, new Date());
-    if (picked?._conflict) {
-      const out = {
-        ok: false,
-        status: 409,
-        body: {
+      if (!candidates.length) {
+        const out = {
           ok: false,
-          code: "MULTIPLE_ACTIVE_SHIFTS",
-          message: "พบหลายกะงานในช่วงเวลาเดียวกัน กรุณาเลือกกะงาน/คลินิกก่อนสแกน",
-          workDate,
-          candidates: picked.candidates,
-        },
-      };
-      memo.runtimeContext.set(runtimeKey, out);
-      return out;
-    }
+          status: 409,
+          body: {
+            ok: false,
+            code: "NO_SHIFT_TODAY",
+            message: "วันนี้ไม่มีตารางงาน",
+            workDate,
+          },
+        };
+        memo.runtimeContext.set(runtimeKey, out);
+        return out;
+      }
 
-    shift = picked;
-    if (!shift) {
-      const out = {
-        ok: false,
-        status: 409,
-        body: {
+      const picked = pickBestShiftForTime(candidates, new Date());
+      if (picked?._conflict) {
+        const out = {
           ok: false,
-          code: "SHIFT_NOT_RESOLVED",
-          message: "ไม่สามารถระบุกะงานที่กำลังทำอยู่ได้ กรุณาเลือกกะงานก่อนสแกน",
-          workDate,
-        },
-      };
-      memo.runtimeContext.set(runtimeKey, out);
-      return out;
+          status: 409,
+          body: {
+            ok: false,
+            code: "MULTIPLE_ACTIVE_SHIFTS",
+            message: "พบหลายกะงานในช่วงเวลาเดียวกัน กรุณาเลือกกะงาน/คลินิกก่อนสแกน",
+            workDate,
+            candidates: picked.candidates,
+          },
+        };
+        memo.runtimeContext.set(runtimeKey, out);
+        return out;
+      }
+
+      shift = picked;
+      if (!shift) {
+        const out = {
+          ok: false,
+          status: 409,
+          body: {
+            ok: false,
+            code: "SHIFT_NOT_RESOLVED",
+            message: "ไม่สามารถระบุกะงานที่กำลังทำอยู่ได้ กรุณาเลือกกะงานก่อนสแกน",
+            workDate,
+          },
+        };
+        memo.runtimeContext.set(runtimeKey, out);
+        return out;
+      }
+
+      effectiveClinicId = s(shift.clinicId) || effectiveClinicId;
     }
 
-    effectiveClinicId = s(shift.clinicId) || effectiveClinicId;
     if (!effectiveClinicId) {
       const out = {
         ok: false,
@@ -1915,7 +2073,7 @@ async function resolveRuntimeContext(req, workDate, shiftId = null) {
 async function checkIn(req, res) {
   try {
     const workDate = s(req.body?.workDate);
-    const shiftId = req.body?.shiftId || null;
+    const shiftId = getRequestedShiftId(req);
 
     if (!isYmd(workDate)) {
       return res.status(400).json({ ok: false, message: "workDate required (yyyy-MM-dd)" });
@@ -2143,7 +2301,11 @@ async function checkIn(req, res) {
     ensureSecurityFields(created);
     if (lateMinutes > 0) addSuspiciousFlag(created, "LATE_CHECKIN", 5);
     if (inMocked) addSuspiciousFlag(created, "MOCK_LOCATION_IN", 50);
-    maybeFlagDistanceRisk(created, Number.isFinite(inDistanceMeters) ? inDistanceMeters : null, Number(policy.geoRadiusMeters || 200));
+    maybeFlagDistanceRisk(
+      created,
+      Number.isFinite(inDistanceMeters) ? inDistanceMeters : null,
+      Number(policy.geoRadiusMeters || 200)
+    );
 
     await created.save();
 
@@ -2403,7 +2565,11 @@ async function checkOut(req, res) {
     });
 
     if (outMocked) addSuspiciousFlag(session, "MOCK_LOCATION_OUT", 50);
-    maybeFlagDistanceRisk(session, Number.isFinite(outDistanceMeters) ? outDistanceMeters : null, Number(policy.geoRadiusMeters || 200));
+    maybeFlagDistanceRisk(
+      session,
+      Number.isFinite(outDistanceMeters) ? outDistanceMeters : null,
+      Number(policy.geoRadiusMeters || 200)
+    );
 
     await recalcSessionByTimes({ session, policy, shift });
 
@@ -2452,7 +2618,7 @@ async function submitManualRequest(req, res) {
 
     const workDate = s(req.body?.workDate);
     const manualRequestType = normalizeManualRequestType(req.body?.manualRequestType);
-    const shiftId = req.body?.shiftId || null;
+    const shiftId = getRequestedShiftId(req);
 
     if (!isYmd(workDate)) {
       return res.status(400).json({ ok: false, message: "workDate required (yyyy-MM-dd)" });
@@ -3079,11 +3245,13 @@ async function listClinicSessions(req, res) {
 async function myDayPreview(req, res) {
   try {
     const workDate = s(req.query?.workDate);
+    const shiftId = getRequestedShiftId(req);
+
     if (!isYmd(workDate)) {
       return res.status(400).json({ ok: false, message: "workDate required (yyyy-MM-dd)" });
     }
 
-    const ctx = await resolveRuntimeContext(req, workDate, null);
+    const ctx = await resolveRuntimeContext(req, workDate, shiftId);
     if (!ctx.ok) return res.status(ctx.status).json(ctx.body);
 
     const { role, userId, principalId, clinicId, staffId, employee: ctxEmployee } = ctx;
@@ -3146,7 +3314,7 @@ async function myDayPreview(req, res) {
         staffId,
         userId,
         workDate,
-        shiftId: null,
+        shiftId,
       });
     }
 
