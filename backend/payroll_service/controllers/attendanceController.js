@@ -9,36 +9,314 @@ const {
 } = require("../utils/staffClient");
 
 // ======================================================
-// TRUST SCORE EVENT CLIENT
+// basic helpers
+// ======================================================
+function s(v) {
+  return String(v || "").trim();
+}
+
+function n(v, fallback = null) {
+  const x = Number(v);
+  return Number.isFinite(x) ? x : fallback;
+}
+
+function isHHmm(v) {
+  return /^([01]\d|2[0-3]):([0-5]\d)$/.test(s(v));
+}
+
+function isYmd(v) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(s(v));
+}
+
+function clampMinutes(v) {
+  const x = Math.floor(Number(v || 0));
+  return Number.isFinite(x) ? Math.max(0, x) : 0;
+}
+
+function clampRisk(v) {
+  const x = Math.floor(Number(v || 0));
+  if (!Number.isFinite(x)) return 0;
+  return Math.max(0, Math.min(100, x));
+}
+
+function makeLocalDateTime(dateYmd, timeHHmm) {
+  return new Date(`${dateYmd}T${timeHHmm}:00+07:00`);
+}
+
+function minutesDiff(a, b) {
+  return Math.floor((b.getTime() - a.getTime()) / 60000);
+}
+
+function parseDateOrNull(v) {
+  if (!v) return null;
+  const d = new Date(v);
+  return Number.isFinite(d.getTime()) ? d : null;
+}
+
+function firstValidDate(...values) {
+  for (const v of values) {
+    const d = parseDateOrNull(v);
+    if (d) return d;
+  }
+  return null;
+}
+
+function floorToStepMinutes(minutes, step) {
+  if (!step || step <= 0) return minutes;
+  return Math.floor(minutes / step) * step;
+}
+
+function roundOtMinutes(minutes, rounding) {
+  const m = clampMinutes(minutes);
+  const r = s(rounding);
+  if (r === "NONE") return m;
+  if (r === "15MIN") return floorToStepMinutes(m, 15);
+  if (r === "30MIN") return floorToStepMinutes(m, 30);
+  if (r === "HOUR") return floorToStepMinutes(m, 60);
+  return floorToStepMinutes(m, 15);
+}
+
+function monthKeyFromYmd(workDate) {
+  return isYmd(workDate) ? s(workDate).slice(0, 7) : "";
+}
+
+function haversineMeters(lat1, lon1, lat2, lon2) {
+  const toRad = (d) => (d * Math.PI) / 180;
+  const R = 6371000;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) *
+      Math.cos(toRad(lat2)) *
+      Math.sin(dLon / 2) ** 2;
+  return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
+}
+
+function normalizeStringArray(value, fallback = []) {
+  if (Array.isArray(value)) return value.map((x) => s(x)).filter(Boolean);
+  if (typeof value === "string") return s(value) ? [s(value)] : fallback;
+  return fallback;
+}
+
+function truthyBool(v) {
+  if (v === true) return true;
+  const t = s(v).toLowerCase();
+  return t === "true" || t === "1" || t === "yes";
+}
+
+function normalizeManualRequestType(v) {
+  const t = s(v);
+  return ["check_in", "check_out", "edit_both", "forgot_checkout"].includes(t)
+    ? t
+    : "";
+}
+
+function normalizeApprovalFilter(v) {
+  const t = s(v).toLowerCase();
+  return ["pending", "approved", "rejected", "history"].includes(t) ? t : "";
+}
+
+function buildCodeResponse(status, code, message, extra = {}) {
+  return { status, body: { ok: false, code, message, ...extra } };
+}
+
+function isTooManyRequestsError(err) {
+  return Number(err?.status || 0) === 429;
+}
+
+function getBearerToken(req) {
+  return s(req.headers?.authorization);
+}
+
+function getBodyStaffId(req) {
+  return (
+    s(req.body?.staffId) ||
+    s(req.body?.employeeId) ||
+    s(req.params?.staffId) ||
+    s(req.params?.employeeId) ||
+    s(req.query?.staffId) ||
+    s(req.query?.employeeId)
+  );
+}
+
+function getPrincipal(req) {
+  const clinicId = s(req.user?.clinicId);
+  const role = s(req.user?.role);
+  const userId = s(req.user?.userId);
+  const staffId = s(req.user?.staffId) || getBodyStaffId(req);
+  const principalId = staffId || userId;
+  const principalType = staffId ? "staff" : "user";
+  return { clinicId, role, userId, staffId, principalId, principalType };
+}
+
+function buildAttendanceActorOr({ principalId = "", userId = "", staffId = "" }) {
+  const pid = s(principalId);
+  const uid = s(userId);
+  const sid = s(staffId);
+  const out = [];
+  if (pid) {
+    out.push({ principalId: pid });
+    out.push({ userId: pid });
+    out.push({ helperUserId: pid });
+    out.push({ assignedUserId: pid });
+    out.push({ actorUserId: pid });
+    out.push({ helperId: pid });
+  }
+  if (uid) {
+    out.push({ userId: uid });
+    out.push({ helperUserId: uid });
+    out.push({ assignedUserId: uid });
+    out.push({ actorUserId: uid });
+    out.push({ helperId: uid });
+    out.push({ principalId: uid });
+  }
+  if (sid) {
+    out.push({ staffId: sid });
+    out.push({ employeeId: sid });
+    out.push({ principalId: sid });
+  }
+  const seen = new Set();
+  return out.filter((x) => {
+    const key = JSON.stringify(x);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function buildMyAttendanceQuery({
+  clinicId = "",
+  principalId = "",
+  userId = "",
+  staffId = "",
+  dateFrom = "",
+  dateTo = "",
+}) {
+  const and = [];
+  if (s(clinicId)) and.push({ clinicId: s(clinicId) });
+
+  const actorOr = buildAttendanceActorOr({ principalId, userId, staffId });
+  if (actorOr.length) and.push({ $or: actorOr });
+
+  if (isYmd(dateFrom) && isYmd(dateTo)) {
+    and.push({ workDate: { $gte: dateFrom, $lte: dateTo } });
+  } else if (isYmd(dateFrom)) {
+    and.push({ workDate: { $gte: dateFrom } });
+  } else if (isYmd(dateTo)) {
+    and.push({ workDate: { $lte: dateTo } });
+  }
+
+  if (!and.length) return {};
+  if (and.length === 1) return and[0];
+  return { $and: and };
+}
+
+function getLocationSource(req, prefix = "in") {
+  return (
+    s(req.body?.[`${prefix}LocationSource`]) ||
+    s(req.body?.locationSource) ||
+    s(req.body?.gpsProvider) ||
+    ""
+  );
+}
+
+function isMockLocation(req, prefix = "in") {
+  return (
+    truthyBool(req.body?.[`${prefix}Mocked`]) ||
+    truthyBool(req.body?.isMocked) ||
+    truthyBool(req.body?.mockLocation) ||
+    truthyBool(req.body?.isMockLocation)
+  );
+}
+
+function ensureSecurityFields(session) {
+  if (!Array.isArray(session.suspiciousFlags)) session.suspiciousFlags = [];
+  if (!session.securityMeta || typeof session.securityMeta !== "object") {
+    session.securityMeta = {
+      inDistanceMeters: null,
+      outDistanceMeters: null,
+      inLocationSource: "",
+      outLocationSource: "",
+      inMocked: false,
+      outMocked: false,
+    };
+  }
+  if (!Number.isFinite(Number(session.riskScore))) session.riskScore = 0;
+}
+
+function addSuspiciousFlag(session, flag, risk = 0) {
+  ensureSecurityFields(session);
+  const f = s(flag);
+  if (!f) return;
+  if (!session.suspiciousFlags.includes(f)) session.suspiciousFlags.push(f);
+  session.riskScore = clampRisk(Number(session.riskScore || 0) + clampRisk(risk));
+}
+
+function setLocationSecurityMeta({
+  session,
+  phase,
+  distanceMeters = null,
+  locationSource = "",
+  mocked = false,
+}) {
+  ensureSecurityFields(session);
+  if (phase === "in") {
+    session.securityMeta.inDistanceMeters = Number.isFinite(distanceMeters)
+      ? Math.round(distanceMeters)
+      : null;
+    session.securityMeta.inLocationSource = s(locationSource);
+    session.securityMeta.inMocked = !!mocked;
+  } else {
+    session.securityMeta.outDistanceMeters = Number.isFinite(distanceMeters)
+      ? Math.round(distanceMeters)
+      : null;
+    session.securityMeta.outLocationSource = s(locationSource);
+    session.securityMeta.outMocked = !!mocked;
+  }
+}
+
+function maybeFlagDistanceRisk(session, distanceMeters, allowedRadius) {
+  if (!Number.isFinite(distanceMeters) || !Number.isFinite(allowedRadius)) return;
+  const ratio = distanceMeters / Math.max(1, allowedRadius);
+  if (ratio >= 0.9 && ratio <= 1) addSuspiciousFlag(session, "NEAR_GEOFENCE_EDGE", 5);
+  if (distanceMeters > allowedRadius) addSuspiciousFlag(session, "OUTSIDE_ALLOWED_RADIUS", 40);
+}
+
+function normalizeSessionItem(x) {
+  if (!Array.isArray(x.suspiciousFlags)) x.suspiciousFlags = [];
+  if (!x.securityMeta) {
+    x.securityMeta = {
+      inDistanceMeters: null,
+      outDistanceMeters: null,
+      inLocationSource: "",
+      outLocationSource: "",
+      inMocked: false,
+      outMocked: false,
+    };
+  }
+  x.riskScore = clampRisk(x.riskScore || 0);
+  return x;
+}
+
+// ======================================================
+// score service
 // ======================================================
 function getScoreServiceBaseUrl() {
   return s(process.env.SCORE_SERVICE_URL).replace(/\/+$/, "");
 }
 
 function getScoreServiceInternalKey() {
-  return (
-    s(process.env.SCORE_SERVICE_INTERNAL_KEY) ||
-    s(process.env.INTERNAL_SERVICE_KEY)
-  );
+  return s(process.env.SCORE_SERVICE_INTERNAL_KEY) || s(process.env.INTERNAL_SERVICE_KEY);
 }
 
 async function postTrustScoreEvent(payload) {
   try {
     const base = getScoreServiceBaseUrl();
-    if (!base) {
-      console.log("⚠️ Missing SCORE_SERVICE_URL");
-      return;
-    }
-
     const internalKey = getScoreServiceInternalKey();
-    if (!internalKey) {
-      console.log("⚠️ Missing SCORE_SERVICE_INTERNAL_KEY / INTERNAL_SERVICE_KEY");
-      return;
-    }
+    if (!base || !internalKey) return;
 
-    const url = `${base}/events/attendance`;
-
-    const r = await fetch(url, {
+    const r = await fetch(`${base}/events/attendance`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -61,12 +339,10 @@ async function buildTrustScorePayloadFromSession(session) {
 
   const clinicId = s(session.clinicId);
   const staffId = s(session.staffId);
-
   if (!clinicId || !staffId) return null;
 
-  const ownerUserId = s(session.userId) || "";
+  const ownerUserId = s(session.userId);
   let emp = null;
-
   if (ownerUserId) {
     try {
       emp = await getEmployeeByUserId(ownerUserId);
@@ -76,14 +352,8 @@ async function buildTrustScorePayloadFromSession(session) {
   }
 
   let status = "completed";
-
-  if (Number(session.lateMinutes || 0) > 0) {
-    status = "late";
-  }
-
-  if (Number(session.leftEarlyMinutes || 0) > 0) {
-    status = "cancelled_early";
-  }
+  if (Number(session.lateMinutes || 0) > 0) status = "late";
+  if (Number(session.leftEarlyMinutes || 0) > 0) status = "cancelled_early";
 
   return {
     clinicId,
@@ -111,134 +381,236 @@ async function maybePostTrustScoreFromSession(session) {
 }
 
 // ======================================================
-// basic helpers
+// policy / clinic helpers
 // ======================================================
-function s(v) {
-  return String(v || "").trim();
-}
-
-function n(v, fallback = null) {
-  const x = Number(v);
-  return Number.isFinite(x) ? x : fallback;
-}
-
-function isHHmm(v) {
-  return /^([01]\d|2[0-3]):([0-5]\d)$/.test(String(v || "").trim());
-}
-
-function isYmd(v) {
-  return /^\d{4}-\d{2}-\d{2}$/.test(String(v || "").trim());
-}
-
-function clampMinutes(m) {
-  const x = Math.max(0, Math.floor(Number(m || 0)));
-  return Number.isFinite(x) ? x : 0;
-}
-
-function clampRisk(v) {
-  const x = Math.max(0, Math.floor(Number(v || 0)));
-  return Math.min(100, Number.isFinite(x) ? x : 0);
-}
-
-function monthKeyFromYmd(workDate) {
-  const d = s(workDate);
-  return isYmd(d) ? d.slice(0, 7) : "";
-}
-
-// Thailand fixed offset
-function makeLocalDateTime(dateYmd, timeHHmm) {
-  return new Date(`${dateYmd}T${timeHHmm}:00+07:00`);
-}
-
-function minutesDiff(a, b) {
-  return Math.floor((b.getTime() - a.getTime()) / 60000);
-}
-
-function floorToStepMinutes(minutes, step) {
-  if (!step || step <= 0) return minutes;
-  return Math.floor(minutes / step) * step;
-}
-
-function roundOtMinutes(minutes, rounding) {
-  const m = clampMinutes(minutes);
-  const r = s(rounding);
-
-  if (r === "NONE") return m;
-  if (r === "15MIN") return floorToStepMinutes(m, 15);
-  if (r === "30MIN") return floorToStepMinutes(m, 30);
-  if (r === "HOUR") return floorToStepMinutes(m, 60);
-  return floorToStepMinutes(m, 15);
-}
-
-function haversineMeters(lat1, lon1, lat2, lon2) {
-  const toRad = (d) => (d * Math.PI) / 180;
-  const R = 6371000;
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) *
-      Math.cos(toRad(lat2)) *
-      Math.sin(dLon / 2) ** 2;
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
-}
-
-function normalizeStringArray(value, fallback = []) {
-  if (Array.isArray(value)) {
-    return value.map((x) => s(x)).filter(Boolean);
-  }
-  if (typeof value === "string") {
-    const one = s(value);
-    return one ? [one] : fallback;
-  }
-  return fallback;
-}
-
-function parseDateOrNull(v) {
-  if (!v) return null;
-  const d = new Date(v);
-  return Number.isFinite(d.getTime()) ? d : null;
-}
-
-function firstValidDate(...values) {
-  for (const v of values) {
-    const d = parseDateOrNull(v);
-    if (d) return d;
-  }
-  return null;
-}
-
-function normalizeManualRequestType(v) {
-  const t = s(v);
-  if (["check_in", "check_out", "edit_both", "forgot_checkout"].includes(t)) {
-    return t;
-  }
-  return "";
-}
-
-function normalizeApprovalFilter(v) {
-  const t = s(v).toLowerCase();
-  if (["pending", "approved", "rejected", "history"].includes(t)) return t;
-  return "";
-}
-
-function buildCodeResponse(status, code, message, extra = {}) {
+function withFeatureDefaults(features) {
   return {
-    status,
-    body: {
-      ok: false,
-      code,
-      message,
-      ...extra,
-    },
+    manualAttendance: true,
+    fingerprintAttendance: true,
+    autoOtCalculation: true,
+    otApprovalWorkflow: true,
+    attendanceApproval: true,
+    payrollLock: true,
+    policyHumanReadable: true,
+    ...(features || {}),
   };
 }
 
-function isTooManyRequestsError(err) {
-  return Number(err?.status || 0) === 429;
+function attendanceRuleDefaults(policy) {
+  return {
+    cutoffTime: isHHmm(policy?.cutoffTime) ? s(policy.cutoffTime) : "03:00",
+    minMinutesBeforeCheckout: clampMinutes(policy?.minMinutesBeforeCheckout || 1),
+    blockNewCheckInIfPreviousOpen:
+      policy?.blockNewCheckInIfPreviousOpen === undefined
+        ? true
+        : !!policy.blockNewCheckInIfPreviousOpen,
+    forgotCheckoutManualOnly:
+      policy?.forgotCheckoutManualOnly === undefined
+        ? true
+        : !!policy.forgotCheckoutManualOnly,
+    requireReasonForEarlyCheckIn:
+      policy?.requireReasonForEarlyCheckIn === undefined
+        ? true
+        : !!policy.requireReasonForEarlyCheckIn,
+    requireReasonForEarlyCheckOut:
+      policy?.requireReasonForEarlyCheckOut === undefined
+        ? true
+        : !!policy.requireReasonForEarlyCheckOut,
+  };
 }
 
+function buildHumanReadablePolicy(policy) {
+  const lines = [];
+  if (policy?.realTimeAttendanceOnly) lines.push("การลงเวลางานต้องเป็นแบบเรียลไทม์");
+  if (policy?.manualAttendanceRequireApproval) lines.push("หากลืมลงเวลา ต้องส่งคำขอแก้ไขเวลาและรอผู้ดูแลอนุมัติ");
+  if (policy?.manualReasonRequired) lines.push("การแก้ไขเวลาทำงานต้องระบุเหตุผล");
+  if (policy?.employeeOnlyOt) lines.push("ระบบ OT ใช้กับพนักงานประจำเท่านั้น");
+  if (isHHmm(policy?.otWindowStart) && isHHmm(policy?.otWindowEnd)) {
+    lines.push(`OT จะคิดเฉพาะช่วง ${policy.otWindowStart} - ${policy.otWindowEnd}`);
+    lines.push("เวลานอกช่วงดังกล่าวจะไม่ถูกนำมาคิดเป็น OT");
+  }
+  if (policy?.requireOtApproval) lines.push("OT ต้องได้รับการอนุมัติก่อนจึงจะถูกนำไปคิดเงิน");
+  if (policy?.lockAfterPayrollClose) lines.push("เมื่อปิดงวดเงินเดือนแล้ว จะไม่สามารถแก้ไขเวลาทำงานย้อนหลังได้");
+  return lines;
+}
+
+function getWeekdayKey(dateYmd) {
+  const d = new Date(`${dateYmd}T00:00:00+07:00`);
+  return [
+    "sunday",
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+  ][d.getDay()];
+}
+
+function getWeeklyDaySchedule(policy, workDate) {
+  return policy?.weeklySchedule?.[getWeekdayKey(workDate)] || null;
+}
+
+function isClinicOpenDay(policy, workDate) {
+  const day = getWeeklyDaySchedule(policy, workDate);
+  if (!day) return true;
+  return day.enabled !== false;
+}
+
+function pickClinicOpenTime(policy, workDate) {
+  const day = getWeeklyDaySchedule(policy, workDate);
+  if (day?.enabled && isHHmm(day?.start)) return s(day.start);
+
+  const candidates = [
+    policy?.shiftStart,
+    policy?.openTime,
+    policy?.clinicOpenTime,
+    policy?.workingDayStart,
+    policy?.businessOpenTime,
+    policy?.startTime,
+  ]
+    .map((v) => s(v))
+    .filter((v) => isHHmm(v));
+
+  return candidates[0] || "09:00";
+}
+
+function pickClinicCloseTime(policy, workDate) {
+  const day = getWeeklyDaySchedule(policy, workDate);
+  if (day?.enabled && isHHmm(day?.end)) return s(day.end);
+
+  const candidates = [
+    policy?.shiftEnd,
+    policy?.closeTime,
+    policy?.clinicCloseTime,
+    policy?.workingDayEnd,
+    policy?.businessCloseTime,
+    policy?.endTime,
+  ]
+    .map((v) => s(v))
+    .filter((v) => isHHmm(v));
+
+  return candidates[0] || "18:00";
+}
+
+function getClinicOpenDateTime(workDate, policy) {
+  return makeLocalDateTime(workDate, pickClinicOpenTime(policy, workDate));
+}
+
+function getClinicCloseDateTime(workDate, policy) {
+  const startAt = getClinicOpenDateTime(workDate, policy);
+  let endAt = makeLocalDateTime(workDate, pickClinicCloseTime(policy, workDate));
+  if (endAt.getTime() <= startAt.getTime()) {
+    endAt = new Date(endAt.getTime() + 24 * 60 * 60000);
+  }
+  return endAt;
+}
+
+function buildPublicPolicy(policy, workDate = "") {
+  const features = withFeatureDefaults(policy?.features || {});
+  const rules = attendanceRuleDefaults(policy);
+  const wd = isYmd(workDate) ? workDate : "";
+  const openTime = wd ? pickClinicOpenTime(policy, wd) : s(policy?.shiftStart || policy?.openTime || "09:00");
+  const closeTime = wd ? pickClinicCloseTime(policy, wd) : s(policy?.shiftEnd || policy?.closeTime || "18:00");
+
+  return {
+    otRule: s(policy?.otRule),
+    otRounding: s(policy?.otRounding),
+    otMultiplier: Number(policy?.otMultiplier || 1.5),
+    version: Number(policy?.version || 1),
+    fullTimeOtClockTime: s(policy?.fullTimeOtClockTime),
+    partTimeOtClockTime: s(policy?.partTimeOtClockTime),
+    otClockTime: s(policy?.otClockTime),
+    otWindowStart: s(policy?.otWindowStart),
+    otWindowEnd: s(policy?.otWindowEnd),
+    openTime,
+    closeTime,
+    clinicOpenDay: wd ? isClinicOpenDay(policy, wd) : true,
+    employeeOnlyOt: !!policy?.employeeOnlyOt,
+    requireOtApproval: !!policy?.requireOtApproval,
+    realTimeAttendanceOnly: !!policy?.realTimeAttendanceOnly,
+    manualAttendanceRequireApproval: !!policy?.manualAttendanceRequireApproval,
+    manualReasonRequired: !!policy?.manualReasonRequired,
+    lockAfterPayrollClose: !!policy?.lockAfterPayrollClose,
+    cutoffTime: rules.cutoffTime,
+    minMinutesBeforeCheckout: rules.minMinutesBeforeCheckout,
+    blockNewCheckInIfPreviousOpen: rules.blockNewCheckInIfPreviousOpen,
+    forgotCheckoutManualOnly: rules.forgotCheckoutManualOnly,
+    requireReasonForEarlyCheckIn: rules.requireReasonForEarlyCheckIn,
+    requireReasonForEarlyCheckOut: rules.requireReasonForEarlyCheckOut,
+    attendanceApprovalRoles: normalizeStringArray(policy?.attendanceApprovalRoles, ["clinic_admin"]),
+    otApprovalRoles: normalizeStringArray(policy?.otApprovalRoles, ["clinic_admin"]),
+    features,
+    humanReadable: features.policyHumanReadable ? buildHumanReadablePolicy(policy) : [],
+  };
+}
+
+async function getOrCreatePolicy(clinicId, userId) {
+  let p = await ClinicPolicy.findOne({ clinicId });
+  if (!p) {
+    p = await ClinicPolicy.create({
+      clinicId,
+      timezone: "Asia/Bangkok",
+      requireBiometric: true,
+      requireLocation: false,
+      geoRadiusMeters: 200,
+      graceLateMinutes: 10,
+      cutoffTime: "03:00",
+      minMinutesBeforeCheckout: 1,
+      blockNewCheckInIfPreviousOpen: true,
+      forgotCheckoutManualOnly: true,
+      requireReasonForEarlyCheckIn: true,
+      requireReasonForEarlyCheckOut: true,
+      leaveEarlyToleranceMinutes: 0,
+      shiftStart: "09:00",
+      shiftEnd: "18:00",
+      weeklySchedule: {
+        monday: { enabled: true, start: "09:00", end: "18:00" },
+        tuesday: { enabled: true, start: "09:00", end: "18:00" },
+        wednesday: { enabled: true, start: "09:00", end: "18:00" },
+        thursday: { enabled: true, start: "09:00", end: "18:00" },
+        friday: { enabled: true, start: "09:00", end: "18:00" },
+        saturday: { enabled: false, start: "09:00", end: "13:00" },
+        sunday: { enabled: false, start: "09:00", end: "13:00" },
+      },
+      otRule: "AFTER_CLOCK_TIME",
+      regularHoursPerDay: 8,
+      otClockTime: "18:00",
+      fullTimeOtClockTime: "18:00",
+      partTimeOtClockTime: "18:00",
+      otWindowStart: "18:00",
+      otWindowEnd: "21:00",
+      otStartAfterMinutes: 0,
+      otRounding: "15MIN",
+      otMultiplier: 1.5,
+      holidayMultiplier: 2.0,
+      weekendAllDayOT: false,
+      employeeOnlyOt: true,
+      requireOtApproval: true,
+      realTimeAttendanceOnly: true,
+      manualAttendanceRequireApproval: true,
+      manualReasonRequired: true,
+      lockAfterPayrollClose: true,
+      attendanceApprovalRoles: ["clinic_admin"],
+      otApprovalRoles: ["clinic_admin"],
+      features: {
+        manualAttendance: true,
+        fingerprintAttendance: true,
+        autoOtCalculation: true,
+        otApprovalWorkflow: true,
+        attendanceApproval: true,
+        payrollLock: true,
+        policyHumanReadable: true,
+      },
+      version: 1,
+      updatedBy: s(userId),
+    });
+  }
+  return p;
+}
+// ======================================================
+// employee helpers / memo
+// ======================================================
 function createRequestMemo(req) {
   if (!req._attendanceMemo || typeof req._attendanceMemo !== "object") {
     req._attendanceMemo = {
@@ -268,159 +640,7 @@ function buildBusyEmployeeServiceResponse(extra = {}) {
     503,
     "EMPLOYEE_SERVICE_BUSY",
     "ระบบข้อมูลพนักงานกำลังถูกใช้งานหนาแน่น กรุณาลองใหม่อีกครั้ง",
-    {
-      upstreamStatus: 429,
-      ...extra,
-    }
-  );
-}
-
-function normalizeSessionItem(x) {
-  if (!Array.isArray(x.suspiciousFlags)) x.suspiciousFlags = [];
-  if (!x.securityMeta) {
-    x.securityMeta = {
-      inDistanceMeters: null,
-      outDistanceMeters: null,
-      inLocationSource: "",
-      outLocationSource: "",
-      inMocked: false,
-      outMocked: false,
-    };
-  }
-  x.riskScore = clampRisk(x.riskScore || 0);
-  return x;
-}
-
-function buildAttendanceActorOr({ principalId = "", userId = "", staffId = "" }) {
-  const pid = s(principalId);
-  const uid = s(userId);
-  const sid = s(staffId);
-
-  const or = [];
-
-  if (pid) {
-    or.push({ principalId: pid });
-    or.push({ userId: pid });
-    or.push({ helperUserId: pid });
-    or.push({ assignedUserId: pid });
-    or.push({ actorUserId: pid });
-    or.push({ helperId: pid });
-  }
-
-  if (uid) {
-    or.push({ userId: uid });
-    or.push({ helperUserId: uid });
-    or.push({ assignedUserId: uid });
-    or.push({ actorUserId: uid });
-    or.push({ helperId: uid });
-    or.push({ principalId: uid });
-  }
-
-  if (sid) {
-    or.push({ staffId: sid });
-    or.push({ employeeId: sid });
-    or.push({ principalId: sid });
-  }
-
-  const seen = new Set();
-  return or.filter((item) => {
-    const key = JSON.stringify(item);
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-function buildMyAttendanceQuery({
-  clinicId = "",
-  principalId = "",
-  userId = "",
-  staffId = "",
-  dateFrom = "",
-  dateTo = "",
-}) {
-  const and = [];
-  const cid = s(clinicId);
-
-  if (cid) {
-    and.push({ clinicId: cid });
-  }
-
-  const actorOr = buildAttendanceActorOr({ principalId, userId, staffId });
-  if (actorOr.length) {
-    and.push({ $or: actorOr });
-  }
-
-  if (isYmd(dateFrom) && isYmd(dateTo)) {
-    and.push({ workDate: { $gte: dateFrom, $lte: dateTo } });
-  } else if (isYmd(dateFrom)) {
-    and.push({ workDate: { $gte: dateFrom } });
-  } else if (isYmd(dateTo)) {
-    and.push({ workDate: { $lte: dateTo } });
-  }
-
-  if (!and.length) return {};
-  if (and.length === 1) return and[0];
-  return { $and: and };
-}
-
-async function memoizedGetEmployeeByStaffId(req, staffId, token = "") {
-  const key = s(staffId);
-  if (!key) return null;
-
-  const memo = createRequestMemo(req);
-  if (memo.employeeByStaffId.has(key)) {
-    const cached = memo.employeeByStaffId.get(key);
-    if (cached.ok) return cached.value;
-    throw cached.error;
-  }
-
-  try {
-    const value = await getEmployeeByStaffId(key, token);
-    memo.employeeByStaffId.set(key, { ok: true, value });
-    return value;
-  } catch (error) {
-    memo.employeeByStaffId.set(key, { ok: false, error });
-    throw error;
-  }
-}
-
-async function memoizedGetEmployeeByUserId(req, userId, token = "") {
-  const key = s(userId);
-  if (!key) return null;
-
-  const memo = createRequestMemo(req);
-  if (memo.employeeByUserId.has(key)) {
-    const cached = memo.employeeByUserId.get(key);
-    if (cached.ok) return cached.value;
-    throw cached.error;
-  }
-
-  try {
-    const value = await getEmployeeByUserId(key, token);
-    memo.employeeByUserId.set(key, { ok: true, value });
-    return value;
-  } catch (error) {
-    memo.employeeByUserId.set(key, { ok: false, error });
-    throw error;
-  }
-}
-
-// ======================================================
-// employee verification helpers
-// ======================================================
-function getBearerToken(req) {
-  return s(req.headers?.authorization);
-}
-
-function getBodyStaffId(req) {
-  return (
-    s(req.body?.staffId) ||
-    s(req.body?.employeeId) ||
-    s(req.params?.staffId) ||
-    s(req.params?.employeeId) ||
-    s(req.query?.staffId) ||
-    s(req.query?.employeeId)
+    { upstreamStatus: 429, ...extra }
   );
 }
 
@@ -435,6 +655,44 @@ function shouldContinueLookupAfterError(err) {
   return [400, 401, 403, 404].includes(status);
 }
 
+async function memoizedGetEmployeeByStaffId(req, staffId, token = "") {
+  const key = s(staffId);
+  if (!key) return null;
+  const memo = createRequestMemo(req);
+  if (memo.employeeByStaffId.has(key)) {
+    const cached = memo.employeeByStaffId.get(key);
+    if (cached.ok) return cached.value;
+    throw cached.error;
+  }
+  try {
+    const value = await getEmployeeByStaffId(key, token);
+    memo.employeeByStaffId.set(key, { ok: true, value });
+    return value;
+  } catch (error) {
+    memo.employeeByStaffId.set(key, { ok: false, error });
+    throw error;
+  }
+}
+
+async function memoizedGetEmployeeByUserId(req, userId, token = "") {
+  const key = s(userId);
+  if (!key) return null;
+  const memo = createRequestMemo(req);
+  if (memo.employeeByUserId.has(key)) {
+    const cached = memo.employeeByUserId.get(key);
+    if (cached.ok) return cached.value;
+    throw cached.error;
+  }
+  try {
+    const value = await getEmployeeByUserId(key, token);
+    memo.employeeByUserId.set(key, { ok: true, value });
+    return value;
+  } catch (error) {
+    memo.employeeByUserId.set(key, { ok: false, error });
+    throw error;
+  }
+}
+
 function normalizeEmployeeRecord(emp) {
   if (!emp || typeof emp !== "object") return null;
 
@@ -442,8 +700,7 @@ function normalizeEmployeeRecord(emp) {
     emp.clinicId ||
       emp.clinic?._id ||
       emp.clinic?.id ||
-      emp.clinic?.clinicId ||
-      ""
+      emp.clinic?.clinicId
   );
 
   const userId = s(
@@ -451,8 +708,7 @@ function normalizeEmployeeRecord(emp) {
       emp.linkedUserId ||
       emp.user?._id ||
       emp.user?.id ||
-      emp.accountUserId ||
-      ""
+      emp.accountUserId
   );
 
   const staffId = s(
@@ -460,15 +716,11 @@ function normalizeEmployeeRecord(emp) {
       emp.employeeCode ||
       emp.code ||
       emp._id ||
-      emp.id ||
-      ""
+      emp.id
   );
 
   const rawStatus = s(
-    emp.status ||
-      emp.employeeStatus ||
-      emp.employmentStatus ||
-      ""
+    emp.status || emp.employeeStatus || emp.employmentStatus
   ).toLowerCase();
 
   const activeFlag =
@@ -476,22 +728,9 @@ function normalizeEmployeeRecord(emp) {
       ? null
       : !!(emp.active ?? emp.isActive);
 
-  const deleted =
-    !!emp.deleted ||
-    !!emp.isDeleted ||
-    !!emp.archived ||
-    !!emp.isArchived;
-
-  const suspended =
-    !!emp.suspended ||
-    !!emp.isSuspended ||
-    rawStatus === "suspended";
-
-  const terminated =
-    !!emp.terminated ||
-    !!emp.isTerminated ||
-    rawStatus === "terminated";
-
+  const deleted = !!emp.deleted || !!emp.isDeleted || !!emp.archived || !!emp.isArchived;
+  const suspended = !!emp.suspended || !!emp.isSuspended || rawStatus === "suspended";
+  const terminated = !!emp.terminated || !!emp.isTerminated || rawStatus === "terminated";
   const inactive =
     activeFlag === false ||
     !!emp.inactive ||
@@ -523,15 +762,11 @@ function normalizeEmployeeRecord(emp) {
 }
 
 function buildFallbackEmployeeFromToken(req, fallbackClinicId = "") {
-  const tokenClinicId = s(fallbackClinicId || req.user?.clinicId);
-  const tokenUserId = s(req.user?.userId);
-  const tokenStaffId = s(req.user?.staffId) || getBodyStaffId(req);
-
   return normalizeEmployeeRecord({
     _fallback: true,
-    clinicId: tokenClinicId,
-    userId: tokenUserId,
-    staffId: tokenStaffId,
+    clinicId: s(fallbackClinicId || req.user?.clinicId),
+    userId: s(req.user?.userId),
+    staffId: s(req.user?.staffId) || getBodyStaffId(req),
     fullName: s(req.user?.fullName || req.user?.name),
     name: s(req.user?.name || req.user?.fullName),
     employmentType: s(req.user?.employmentType || "fullTime"),
@@ -547,52 +782,14 @@ function buildFallbackEmployeeFromToken(req, fallbackClinicId = "") {
 
 function isEmployeeAttendanceAllowed(employee) {
   if (!employee) {
-    return {
-      ok: false,
-      code: "EMPLOYEE_NOT_FOUND",
-      message: "Employee not found",
-    };
+    return { ok: false, code: "EMPLOYEE_NOT_FOUND", message: "Employee not found" };
   }
-
-  if (employee._fallback === true) {
-    return { ok: true, code: "", message: "" };
-  }
-
-  if (employee.deleted) {
-    return {
-      ok: false,
-      code: "EMPLOYEE_DELETED",
-      message: "Employee record is deleted/archived",
-    };
-  }
-  if (employee.suspended) {
-    return {
-      ok: false,
-      code: "EMPLOYEE_SUSPENDED",
-      message: "Employee is suspended",
-    };
-  }
-  if (employee.terminated) {
-    return {
-      ok: false,
-      code: "EMPLOYEE_TERMINATED",
-      message: "Employee is terminated",
-    };
-  }
-  if (employee.inactive) {
-    return {
-      ok: false,
-      code: "EMPLOYEE_INACTIVE",
-      message: "Employee is inactive",
-    };
-  }
-  if (!employee.verified) {
-    return {
-      ok: false,
-      code: "EMPLOYEE_NOT_VERIFIED",
-      message: "Employee is not verified yet",
-    };
-  }
+  if (employee._fallback === true) return { ok: true, code: "", message: "" };
+  if (employee.deleted) return { ok: false, code: "EMPLOYEE_DELETED", message: "Employee record is deleted/archived" };
+  if (employee.suspended) return { ok: false, code: "EMPLOYEE_SUSPENDED", message: "Employee is suspended" };
+  if (employee.terminated) return { ok: false, code: "EMPLOYEE_TERMINATED", message: "Employee is terminated" };
+  if (employee.inactive) return { ok: false, code: "EMPLOYEE_INACTIVE", message: "Employee is inactive" };
+  if (!employee.verified) return { ok: false, code: "EMPLOYEE_NOT_VERIFIED", message: "Employee is not verified yet" };
   return { ok: true, code: "", message: "" };
 }
 
@@ -604,98 +801,54 @@ async function fetchEmployeeForRequest(
   const tokenUserId = s(req.user?.userId);
   const staffCandidates = getStaffCandidates(req);
 
-  console.log("🔎 fetchEmployeeForRequest", {
-    preferStaffId,
-    tokenUserId,
-    staffCandidates,
-    bodyStaffId: getBodyStaffId(req),
-    tokenStaffId: s(req.user?.staffId),
-  });
-
   let raw = null;
   let lastHardError = null;
   let saw429 = false;
 
-  const tryByStaff = async (candidateStaffId, label = "by-staff") => {
+  const tryByStaff = async (candidateStaffId) => {
     try {
-      console.log(`➡️ try ${label}:`, candidateStaffId);
-      const result = await memoizedGetEmployeeByStaffId(
-        req,
-        candidateStaffId,
-        token
-      );
-      console.log(`⬅️ ${label} result:`, result ? "FOUND" : "NULL");
-      return result;
+      return await memoizedGetEmployeeByStaffId(req, candidateStaffId, token);
     } catch (e) {
-      console.log(`⚠️ ${label} lookup failed:`, {
-        staffId: candidateStaffId,
-        status: e?.status || 0,
-        message: e?.message || "",
-      });
-
       if (isTooManyRequestsError(e)) {
         saw429 = true;
         return null;
       }
-
-      if (!shouldContinueLookupAfterError(e)) {
-        lastHardError = e;
-      }
+      if (!shouldContinueLookupAfterError(e)) lastHardError = e;
       return null;
     }
   };
 
   const tryByUser = async (candidateUserId) => {
     try {
-      console.log("➡️ try getEmployeeByUserId:", candidateUserId);
-      const result = await memoizedGetEmployeeByUserId(req, candidateUserId, token);
-      console.log("⬅️ by-user result:", result ? "FOUND" : "NULL");
-      return result;
+      return await memoizedGetEmployeeByUserId(req, candidateUserId, token);
     } catch (e) {
-      console.log("⚠️ by-user lookup failed:", {
-        userId: candidateUserId,
-        status: e?.status || 0,
-        message: e?.message || "",
-      });
-
       if (isTooManyRequestsError(e)) {
         saw429 = true;
         return null;
       }
-
-      if (!shouldContinueLookupAfterError(e)) {
-        lastHardError = e;
-      }
+      if (!shouldContinueLookupAfterError(e)) lastHardError = e;
       return null;
     }
   };
 
   if (preferStaffId) {
-    for (const candidateStaffId of staffCandidates) {
-      raw = await tryByStaff(candidateStaffId, "getEmployeeByStaffId");
+    for (const sid of staffCandidates) {
+      raw = await tryByStaff(sid);
       if (raw || lastHardError) break;
     }
   }
 
-  if (!raw && !lastHardError && tokenUserId) {
-    raw = await tryByUser(tokenUserId);
-  }
+  if (!raw && !lastHardError && tokenUserId) raw = await tryByUser(tokenUserId);
 
   if (!raw && !lastHardError && !preferStaffId) {
-    for (const candidateStaffId of staffCandidates) {
-      raw = await tryByStaff(candidateStaffId, "fallback getEmployeeByStaffId");
+    for (const sid of staffCandidates) {
+      raw = await tryByStaff(sid);
       if (raw || lastHardError) break;
     }
   }
 
-  if (!raw && lastHardError) {
-    throw lastHardError;
-  }
-
-  if (!raw && saw429) {
-    console.log("⚠️ Employee service 429 -> using token fallback employee");
-    return buildFallbackEmployeeFromToken(req, fallbackClinicId);
-  }
+  if (!raw && lastHardError) throw lastHardError;
+  if (!raw && saw429) return buildFallbackEmployeeFromToken(req, fallbackClinicId);
 
   return normalizeEmployeeRecord(raw);
 }
@@ -737,12 +890,7 @@ async function ensureVerifiedEmployeeFromRequest(req, fallbackClinicId = "") {
           Number(e?.status || 503),
           "EMPLOYEE_LOOKUP_FAILED",
           e?.message || "Cannot verify employee from token",
-          {
-            tokenUserId,
-            tokenStaffId,
-            bodyStaffId,
-            tokenClinicId,
-          }
+          { tokenUserId, tokenStaffId, bodyStaffId, tokenClinicId }
         );
     memo.verifiedEmployee = { key: cacheKey, value: out };
     return out;
@@ -771,77 +919,45 @@ async function ensureVerifiedEmployeeFromRequest(req, fallbackClinicId = "") {
     return out;
   }
 
-  if (
-    bodyStaffId &&
-    employee.staffId &&
-    employee.staffId !== bodyStaffId &&
-    !employee._fallback
-  ) {
+  if (bodyStaffId && employee.staffId && employee.staffId !== bodyStaffId && !employee._fallback) {
     const out = buildCodeResponse(
       403,
       "REQUEST_STAFF_MISMATCH",
       "Requested staffId does not match employee record",
-      {
-        requestStaffId: bodyStaffId,
-        employeeStaffId: employee.staffId,
-      }
+      { requestStaffId: bodyStaffId, employeeStaffId: employee.staffId }
     );
     memo.verifiedEmployee = { key: cacheKey, value: out };
     return out;
   }
 
-  if (
-    tokenStaffId &&
-    employee.staffId &&
-    employee.staffId !== tokenStaffId &&
-    !employee._fallback
-  ) {
+  if (tokenStaffId && employee.staffId && employee.staffId !== tokenStaffId && !employee._fallback) {
     const out = buildCodeResponse(
       403,
       "EMPLOYEE_STAFF_MISMATCH",
       "Token staffId does not match employee record",
-      {
-        tokenStaffId,
-        employeeStaffId: employee.staffId,
-      }
+      { tokenStaffId, employeeStaffId: employee.staffId }
     );
     memo.verifiedEmployee = { key: cacheKey, value: out };
     return out;
   }
 
-  if (
-    tokenUserId &&
-    employee.userId &&
-    employee.userId !== tokenUserId &&
-    !employee._fallback
-  ) {
+  if (tokenUserId && employee.userId && employee.userId !== tokenUserId && !employee._fallback) {
     const out = buildCodeResponse(
       403,
       "EMPLOYEE_USER_MISMATCH",
       "Token userId does not match employee record",
-      {
-        tokenUserId,
-        employeeUserId: employee.userId,
-      }
+      { tokenUserId, employeeUserId: employee.userId }
     );
     memo.verifiedEmployee = { key: cacheKey, value: out };
     return out;
   }
 
-  if (
-    tokenClinicId &&
-    employee.clinicId &&
-    employee.clinicId !== tokenClinicId &&
-    !employee._fallback
-  ) {
+  if (tokenClinicId && employee.clinicId && employee.clinicId !== tokenClinicId && !employee._fallback) {
     const out = buildCodeResponse(
       403,
       "EMPLOYEE_CLINIC_MISMATCH",
       "Employee does not belong to this clinic",
-      {
-        tokenClinicId,
-        employeeClinicId: employee.clinicId,
-      }
+      { tokenClinicId, employeeClinicId: employee.clinicId }
     );
     memo.verifiedEmployee = { key: cacheKey, value: out };
     return out;
@@ -876,15 +992,8 @@ async function ensureSessionEmployeeAccess(req, session) {
     try {
       raw = await memoizedGetEmployeeByStaffId(req, sessionStaffId, token);
     } catch (e) {
-      console.log("⚠️ ensureSessionEmployeeAccess by-staff failed:", {
-        sessionStaffId,
-        status: e?.status || 0,
-        message: e?.message || "",
-      });
-
-      if (isTooManyRequestsError(e)) {
-        saw429 = true;
-      } else if (!shouldContinueLookupAfterError(e)) {
+      if (isTooManyRequestsError(e)) saw429 = true;
+      else if (!shouldContinueLookupAfterError(e)) {
         return buildCodeResponse(
           Number(e?.status || 503),
           "SESSION_EMPLOYEE_LOOKUP_FAILED",
@@ -898,15 +1007,8 @@ async function ensureSessionEmployeeAccess(req, session) {
     try {
       raw = await memoizedGetEmployeeByUserId(req, sessionUserId, token);
     } catch (e) {
-      console.log("⚠️ ensureSessionEmployeeAccess by-user failed:", {
-        sessionUserId,
-        status: e?.status || 0,
-        message: e?.message || "",
-      });
-
-      if (isTooManyRequestsError(e)) {
-        saw429 = true;
-      } else if (!shouldContinueLookupAfterError(e)) {
+      if (isTooManyRequestsError(e)) saw429 = true;
+      else if (!shouldContinueLookupAfterError(e)) {
         return buildCodeResponse(
           Number(e?.status || 503),
           "SESSION_EMPLOYEE_LOOKUP_FAILED",
@@ -917,620 +1019,103 @@ async function ensureSessionEmployeeAccess(req, session) {
   }
 
   if (!raw && saw429) {
-    const fallbackEmployee = buildFallbackEmployeeFromToken(
-      req,
-      sessionClinicId || tokenClinicId
-    );
+    const fallbackEmployee = buildFallbackEmployeeFromToken(req, sessionClinicId || tokenClinicId);
+    if (!fallbackEmployee) return buildBusyEmployeeServiceResponse();
 
-    if (!fallbackEmployee) {
-      return buildBusyEmployeeServiceResponse();
+    if (sessionStaffId && fallbackEmployee.staffId && fallbackEmployee.staffId !== sessionStaffId) {
+      return buildCodeResponse(403, "SESSION_EMPLOYEE_STAFF_MISMATCH", "Session staffId does not match employee record");
     }
-
-    if (
-      sessionStaffId &&
-      fallbackEmployee.staffId &&
-      fallbackEmployee.staffId !== sessionStaffId
-    ) {
-      return buildCodeResponse(
-        403,
-        "SESSION_EMPLOYEE_STAFF_MISMATCH",
-        "Session staffId does not match employee record"
-      );
+    if (sessionUserId && fallbackEmployee.userId && fallbackEmployee.userId !== sessionUserId) {
+      return buildCodeResponse(403, "SESSION_EMPLOYEE_USER_MISMATCH", "Session userId does not match employee record");
     }
-
-    if (
-      sessionUserId &&
-      fallbackEmployee.userId &&
-      fallbackEmployee.userId !== sessionUserId
-    ) {
-      return buildCodeResponse(
-        403,
-        "SESSION_EMPLOYEE_USER_MISMATCH",
-        "Session userId does not match employee record"
-      );
+    if (sessionClinicId && fallbackEmployee.clinicId && fallbackEmployee.clinicId !== sessionClinicId) {
+      return buildCodeResponse(403, "SESSION_EMPLOYEE_CLINIC_MISMATCH", "Session clinicId does not match employee record");
     }
-
-    if (
-      sessionClinicId &&
-      fallbackEmployee.clinicId &&
-      fallbackEmployee.clinicId !== sessionClinicId
-    ) {
-      return buildCodeResponse(
-        403,
-        "SESSION_EMPLOYEE_CLINIC_MISMATCH",
-        "Session clinicId does not match employee record"
-      );
-    }
-
     return { ok: true, employee: fallbackEmployee };
   }
 
   const employee = normalizeEmployeeRecord(raw);
   if (!employee) {
-    return buildCodeResponse(
-      404,
-      "SESSION_EMPLOYEE_NOT_FOUND",
-      "Employee not found for this session"
-    );
+    return buildCodeResponse(404, "SESSION_EMPLOYEE_NOT_FOUND", "Employee not found for this session");
   }
 
   const allow = isEmployeeAttendanceAllowed(employee);
-  if (!allow.ok) {
-    return buildCodeResponse(403, allow.code, allow.message);
-  }
+  if (!allow.ok) return buildCodeResponse(403, allow.code, allow.message);
 
   if (bodyStaffId && employee.staffId && employee.staffId !== bodyStaffId) {
     return buildCodeResponse(
       403,
       "REQUEST_STAFF_MISMATCH",
       "Requested staffId does not match employee record",
-      {
-        requestStaffId: bodyStaffId,
-        employeeStaffId: employee.staffId,
-      }
+      { requestStaffId: bodyStaffId, employeeStaffId: employee.staffId }
     );
   }
 
   if (sessionStaffId && employee.staffId && employee.staffId !== sessionStaffId) {
-    return buildCodeResponse(
-      403,
-      "SESSION_EMPLOYEE_STAFF_MISMATCH",
-      "Session staffId does not match employee record"
-    );
+    return buildCodeResponse(403, "SESSION_EMPLOYEE_STAFF_MISMATCH", "Session staffId does not match employee record");
   }
-
   if (sessionUserId && employee.userId && employee.userId !== sessionUserId) {
-    return buildCodeResponse(
-      403,
-      "SESSION_EMPLOYEE_USER_MISMATCH",
-      "Session userId does not match employee record"
-    );
+    return buildCodeResponse(403, "SESSION_EMPLOYEE_USER_MISMATCH", "Session userId does not match employee record");
   }
-
-  if (
-    sessionClinicId &&
-    employee.clinicId &&
-    employee.clinicId !== sessionClinicId
-  ) {
-    return buildCodeResponse(
-      403,
-      "SESSION_EMPLOYEE_CLINIC_MISMATCH",
-      "Session clinicId does not match employee record"
-    );
+  if (sessionClinicId && employee.clinicId && employee.clinicId !== sessionClinicId) {
+    return buildCodeResponse(403, "SESSION_EMPLOYEE_CLINIC_MISMATCH", "Session clinicId does not match employee record");
   }
-
   if (tokenStaffId && employee.staffId && tokenStaffId !== employee.staffId) {
-    return buildCodeResponse(
-      403,
-      "TOKEN_EMPLOYEE_STAFF_MISMATCH",
-      "Current user is not the owner of this employee session"
-    );
+    return buildCodeResponse(403, "TOKEN_EMPLOYEE_STAFF_MISMATCH", "Current user is not the owner of this employee session");
   }
-
   if (tokenUserId && employee.userId && tokenUserId !== employee.userId) {
-    return buildCodeResponse(
-      403,
-      "TOKEN_EMPLOYEE_USER_MISMATCH",
-      "Current user is not the owner of this employee session"
-    );
+    return buildCodeResponse(403, "TOKEN_EMPLOYEE_USER_MISMATCH", "Current user is not the owner of this employee session");
   }
-
-  if (
-    tokenClinicId &&
-    employee.clinicId &&
-    tokenClinicId !== employee.clinicId
-  ) {
-    return buildCodeResponse(
-      403,
-      "TOKEN_EMPLOYEE_CLINIC_MISMATCH",
-      "Current user clinic does not match employee clinic"
-    );
+  if (tokenClinicId && employee.clinicId && tokenClinicId !== employee.clinicId) {
+    return buildCodeResponse(403, "TOKEN_EMPLOYEE_CLINIC_MISMATCH", "Current user clinic does not match employee clinic");
   }
 
   return { ok: true, employee };
 }
 
 // ======================================================
-// security helpers
+// self clinic scope
 // ======================================================
-function truthyBool(v) {
-  if (v === true) return true;
-  const t = s(v).toLowerCase();
-  return t === "true" || t === "1" || t === "yes";
-}
-
-function getLocationSource(req, prefix = "in") {
-  return (
-    s(req.body?.[`${prefix}LocationSource`]) ||
-    s(req.body?.locationSource) ||
-    s(req.body?.gpsProvider) ||
-    ""
-  );
-}
-
-function isMockLocation(req, prefix = "in") {
-  return (
-    truthyBool(req.body?.[`${prefix}Mocked`]) ||
-    truthyBool(req.body?.isMocked) ||
-    truthyBool(req.body?.mockLocation) ||
-    truthyBool(req.body?.isMockLocation)
-  );
-}
-
-function ensureSecurityFields(session) {
-  if (!Array.isArray(session.suspiciousFlags)) {
-    session.suspiciousFlags = [];
-  }
-  if (!session.securityMeta || typeof session.securityMeta !== "object") {
-    session.securityMeta = {
-      inDistanceMeters: null,
-      outDistanceMeters: null,
-      inLocationSource: "",
-      outLocationSource: "",
-      inMocked: false,
-      outMocked: false,
-    };
-  }
-  if (!Number.isFinite(Number(session.riskScore))) {
-    session.riskScore = 0;
-  }
-}
-
-function addSuspiciousFlag(session, flag, risk = 0) {
-  ensureSecurityFields(session);
-  const f = s(flag);
-  if (!f) return;
-
-  if (!session.suspiciousFlags.includes(f)) {
-    session.suspiciousFlags.push(f);
-  }
-  session.riskScore = clampRisk(Number(session.riskScore || 0) + clampRisk(risk));
-}
-
-function setLocationSecurityMeta({
-  session,
-  phase,
-  distanceMeters = null,
-  locationSource = "",
-  mocked = false,
-}) {
-  ensureSecurityFields(session);
-
-  if (phase === "in") {
-    session.securityMeta.inDistanceMeters = Number.isFinite(distanceMeters)
-      ? Math.round(distanceMeters)
-      : null;
-    session.securityMeta.inLocationSource = s(locationSource);
-    session.securityMeta.inMocked = !!mocked;
-  } else {
-    session.securityMeta.outDistanceMeters = Number.isFinite(distanceMeters)
-      ? Math.round(distanceMeters)
-      : null;
-    session.securityMeta.outLocationSource = s(locationSource);
-    session.securityMeta.outMocked = !!mocked;
-  }
-}
-
-function maybeFlagDistanceRisk(session, distanceMeters, allowedRadius) {
-  if (!Number.isFinite(distanceMeters) || !Number.isFinite(allowedRadius)) return;
-
-  const ratio = distanceMeters / Math.max(1, allowedRadius);
-
-  if (ratio >= 0.9 && ratio <= 1) {
-    addSuspiciousFlag(session, "NEAR_GEOFENCE_EDGE", 5);
-  }
-
-  if (distanceMeters > allowedRadius) {
-    addSuspiciousFlag(session, "OUTSIDE_ALLOWED_RADIUS", 40);
-  }
-}
-
-function detectCheckoutRiskFlags({
-  session,
-  policy,
-  shift,
-  checkOutAt,
-  role,
-  workDate,
-}) {
-  const flags = [];
-  const rules = attendanceRuleDefaults(policy);
-  const worked = clampMinutes(computeWorkedMinutes(session.checkInAt, checkOutAt));
-
-  if (worked > 0 && worked < Math.max(10, rules.minMinutesBeforeCheckout)) {
-    flags.push({ code: "VERY_SHORT_SESSION", risk: 25 });
-  }
-
-  const earlyMinutes = detectLeftEarlyMinutes({
-    shift,
-    checkOutAt,
-    toleranceMinutes:
-      clampMinutes(session.leaveEarlyToleranceMinutes) ||
-      clampMinutes(policy.leaveEarlyToleranceMinutes || 0),
-    role,
-    policy,
-    workDate,
-  });
-
-  if (earlyMinutes >= 30) {
-    flags.push({ code: "SUSPICIOUS_EARLY_CHECKOUT", risk: 20 });
-  }
-
-  if (clampMinutes(session.otMinutes) >= 300) {
-    flags.push({ code: "UNUSUAL_HIGH_OT", risk: 15 });
-  }
-
-  return flags;
-}
-
-// ======================================================
-// feature / policy helpers
-// ======================================================
-function withFeatureDefaults(features) {
-  return {
-    manualAttendance: true,
-    fingerprintAttendance: true,
-    autoOtCalculation: true,
-    otApprovalWorkflow: true,
-    attendanceApproval: true,
-    payrollLock: true,
-    policyHumanReadable: true,
-    ...(features || {}),
-  };
-}
-
-function attendanceRuleDefaults(policy) {
-  return {
-    cutoffTime: isHHmm(policy?.cutoffTime) ? s(policy.cutoffTime) : "03:00",
-    minMinutesBeforeCheckout: clampMinutes(
-      policy?.minMinutesBeforeCheckout || 1
-    ),
-    blockNewCheckInIfPreviousOpen:
-      policy?.blockNewCheckInIfPreviousOpen === undefined
-        ? true
-        : !!policy.blockNewCheckInIfPreviousOpen,
-    forgotCheckoutManualOnly:
-      policy?.forgotCheckoutManualOnly === undefined
-        ? true
-        : !!policy.forgotCheckoutManualOnly,
-    requireReasonForEarlyCheckIn:
-      policy?.requireReasonForEarlyCheckIn === undefined
-        ? true
-        : !!policy.requireReasonForEarlyCheckIn,
-    requireReasonForEarlyCheckOut:
-      policy?.requireReasonForEarlyCheckOut === undefined
-        ? true
-        : !!policy.requireReasonForEarlyCheckOut,
-  };
-}
-
-function buildHumanReadablePolicy(policy) {
-  const lines = [];
-
-  if (policy?.realTimeAttendanceOnly) {
-    lines.push("การลงเวลางานต้องเป็นแบบเรียลไทม์");
-  }
-
-  if (policy?.manualAttendanceRequireApproval) {
-    lines.push("หากลืมลงเวลา ต้องส่งคำขอแก้ไขเวลาและรอผู้ดูแลอนุมัติ");
-  }
-
-  if (policy?.manualReasonRequired) {
-    lines.push("การแก้ไขเวลาทำงานต้องระบุเหตุผล");
-  }
-
-  if (policy?.employeeOnlyOt) {
-    lines.push("ระบบ OT ใช้กับพนักงานประจำเท่านั้น");
-  }
-
-  if (isHHmm(policy?.otWindowStart) && isHHmm(policy?.otWindowEnd)) {
-    lines.push(`OT จะคิดเฉพาะช่วง ${policy.otWindowStart} - ${policy.otWindowEnd}`);
-    lines.push("เวลานอกช่วงดังกล่าวจะไม่ถูกนำมาคิดเป็น OT");
-  }
-
-  if (policy?.requireOtApproval) {
-    lines.push("OT ต้องได้รับการอนุมัติก่อนจึงจะถูกนำไปคิดเงิน");
-  }
-
-  if (policy?.lockAfterPayrollClose) {
-    lines.push("เมื่อปิดงวดเงินเดือนแล้ว จะไม่สามารถแก้ไขเวลาทำงานย้อนหลังได้");
-  }
-
-  return lines;
-}
-
-function getWeekdayKey(dateYmd) {
-  const d = new Date(`${dateYmd}T00:00:00+07:00`);
-  const map = [
-    "sunday",
-    "monday",
-    "tuesday",
-    "wednesday",
-    "thursday",
-    "friday",
-    "saturday",
-  ];
-  return map[d.getDay()];
-}
-
-function getWeeklyDaySchedule(policy, workDate) {
-  const dayKey = getWeekdayKey(workDate);
-  return policy?.weeklySchedule?.[dayKey] || null;
-}
-
-function isClinicOpenDay(policy, workDate) {
-  const day = getWeeklyDaySchedule(policy, workDate);
-  if (!day) return true;
-  return day.enabled !== false;
-}
-
-function pickClinicOpenTime(policy, workDate) {
-  const day = getWeeklyDaySchedule(policy, workDate);
-  if (day?.enabled && isHHmm(day?.start)) {
-    return s(day.start);
-  }
-
-  const candidates = [
-    policy?.shiftStart,
-    policy?.openTime,
-    policy?.clinicOpenTime,
-    policy?.workingDayStart,
-    policy?.businessOpenTime,
-    policy?.startTime,
-  ]
-    .map((v) => s(v))
-    .filter((v) => isHHmm(v));
-
-  return candidates[0] || "09:00";
-}
-
-function pickClinicCloseTime(policy, workDate) {
-  const day = getWeeklyDaySchedule(policy, workDate);
-  if (day?.enabled && isHHmm(day?.end)) {
-    return s(day.end);
-  }
-
-  const candidates = [
-    policy?.shiftEnd,
-    policy?.closeTime,
-    policy?.clinicCloseTime,
-    policy?.workingDayEnd,
-    policy?.businessCloseTime,
-    policy?.endTime,
-  ]
-    .map((v) => s(v))
-    .filter((v) => isHHmm(v));
-
-  return candidates[0] || "18:00";
-}
-
-function getClinicOpenDateTime(workDate, policy) {
-  return makeLocalDateTime(workDate, pickClinicOpenTime(policy, workDate));
-}
-
-function getClinicCloseDateTime(workDate, policy) {
-  const startAt = getClinicOpenDateTime(workDate, policy);
-  let endAt = makeLocalDateTime(workDate, pickClinicCloseTime(policy, workDate));
-
-  if (endAt.getTime() <= startAt.getTime()) {
-    endAt = new Date(endAt.getTime() + 24 * 60 * 60000);
-  }
-  return endAt;
-}
-
-function buildPublicPolicy(policy, workDate = "") {
-  const features = withFeatureDefaults(policy?.features || {});
-  const rules = attendanceRuleDefaults(policy);
-
-  const wd = isYmd(workDate) ? workDate : null;
-  const openTime = wd
-    ? pickClinicOpenTime(policy, wd)
-    : s(policy?.shiftStart || policy?.openTime || "09:00");
-  const closeTime = wd
-    ? pickClinicCloseTime(policy, wd)
-    : s(policy?.shiftEnd || policy?.closeTime || "18:00");
-
-  return {
-    otRule: s(policy?.otRule),
-    otRounding: s(policy?.otRounding),
-    otMultiplier: Number(policy?.otMultiplier || 1.5),
-    version: Number(policy?.version || 1),
-
-    fullTimeOtClockTime: s(policy?.fullTimeOtClockTime),
-    partTimeOtClockTime: s(policy?.partTimeOtClockTime),
-    otClockTime: s(policy?.otClockTime),
-
-    otWindowStart: s(policy?.otWindowStart),
-    otWindowEnd: s(policy?.otWindowEnd),
-
-    openTime,
-    closeTime,
-    clinicOpenDay: wd ? isClinicOpenDay(policy, wd) : true,
-
-    employeeOnlyOt: !!policy?.employeeOnlyOt,
-    requireOtApproval: !!policy?.requireOtApproval,
-    realTimeAttendanceOnly: !!policy?.realTimeAttendanceOnly,
-    manualAttendanceRequireApproval: !!policy?.manualAttendanceRequireApproval,
-    manualReasonRequired: !!policy?.manualReasonRequired,
-    lockAfterPayrollClose: !!policy?.lockAfterPayrollClose,
-
-    cutoffTime: rules.cutoffTime,
-    minMinutesBeforeCheckout: rules.minMinutesBeforeCheckout,
-    blockNewCheckInIfPreviousOpen: rules.blockNewCheckInIfPreviousOpen,
-    forgotCheckoutManualOnly: rules.forgotCheckoutManualOnly,
-    requireReasonForEarlyCheckIn: rules.requireReasonForEarlyCheckIn,
-    requireReasonForEarlyCheckOut: rules.requireReasonForEarlyCheckOut,
-
-    attendanceApprovalRoles: normalizeStringArray(
-      policy?.attendanceApprovalRoles,
-      ["clinic_admin"]
-    ),
-    otApprovalRoles: normalizeStringArray(policy?.otApprovalRoles, [
-      "clinic_admin",
-    ]),
-
-    features,
-    humanReadable: features.policyHumanReadable
-      ? buildHumanReadablePolicy(policy)
-      : [],
-  };
-}
-// ======================================================
-// principal / auth helpers
-// ======================================================
-function getPrincipal(req) {
-  const clinicId = s(req.user?.clinicId);
+async function resolveSelfClinicFilter(req, fallbackClinicId = "") {
   const role = s(req.user?.role);
-  const userId = s(req.user?.userId);
-
-  const bodyStaffId = getBodyStaffId(req);
-  const staffId = s(req.user?.staffId) || bodyStaffId;
-
-  const principalId = staffId || userId;
-  const principalType = staffId ? "staff" : "user";
-
-  return { clinicId, role, userId, staffId, principalId, principalType };
-}
-
-function pickEmployeeClinicId(emp) {
-  return s(
-    emp?.clinicId ||
-      emp?.clinic?._id ||
-      emp?.clinic?.id ||
-      emp?.clinic?.clinicId ||
-      ""
-  );
-}
-
-async function resolveEmployeeClinicIdFromStaff(req, fallbackClinicId = "") {
-  const staffId = s(req.user?.staffId) || getBodyStaffId(req);
-  if (!staffId) return s(fallbackClinicId);
-
-  try {
-    const emp = await memoizedGetEmployeeByStaffId(
-      req,
-      staffId,
-      s(req.headers?.authorization)
-    );
-    const clinicId = pickEmployeeClinicId(emp);
-    return clinicId || s(fallbackClinicId);
-  } catch (_) {
-    return s(fallbackClinicId);
-  }
-}
-
-function resolveSelfClinicScope(req, role, fallbackClinicId = "") {
   const requestedClinicId =
     s(req.query?.clinicId) ||
     s(req.body?.clinicId) ||
     s(req.params?.clinicId);
 
   if (role === "helper") {
-    return requestedClinicId;
+    return {
+      ok: true,
+      clinicId: requestedClinicId || "",
+      scope: requestedClinicId ? "requested" : "all",
+    };
   }
 
-  return requestedClinicId || s(fallbackClinicId);
+  if (role === "employee" || role === "staff") {
+    const verify = await ensureVerifiedEmployeeFromRequest(req, fallbackClinicId);
+    if (!verify.ok) {
+      return { ok: false, status: verify.status, body: verify.body };
+    }
+    return {
+      ok: true,
+      clinicId: s(verify.clinicId),
+      scope: "employee_home_clinic",
+    };
+  }
+
+  return {
+    ok: true,
+    clinicId: requestedClinicId || s(fallbackClinicId),
+    scope: requestedClinicId ? "requested" : "token_default",
+  };
 }
 
 // ======================================================
-// db / loader helpers
+// shift / time helpers
 // ======================================================
-async function getOrCreatePolicy(clinicId, userId) {
-  let p = await ClinicPolicy.findOne({ clinicId });
-  if (!p) {
-    p = await ClinicPolicy.create({
-      clinicId,
-      timezone: "Asia/Bangkok",
-      requireBiometric: true,
-      requireLocation: false,
-      geoRadiusMeters: 200,
-      graceLateMinutes: 10,
-
-      cutoffTime: "03:00",
-      minMinutesBeforeCheckout: 1,
-      blockNewCheckInIfPreviousOpen: true,
-      forgotCheckoutManualOnly: true,
-      requireReasonForEarlyCheckIn: true,
-      requireReasonForEarlyCheckOut: true,
-      leaveEarlyToleranceMinutes: 0,
-
-      shiftStart: "09:00",
-      shiftEnd: "18:00",
-
-      weeklySchedule: {
-        monday: { enabled: true, start: "09:00", end: "18:00" },
-        tuesday: { enabled: true, start: "09:00", end: "18:00" },
-        wednesday: { enabled: true, start: "09:00", end: "18:00" },
-        thursday: { enabled: true, start: "09:00", end: "18:00" },
-        friday: { enabled: true, start: "09:00", end: "18:00" },
-        saturday: { enabled: false, start: "09:00", end: "13:00" },
-        sunday: { enabled: false, start: "09:00", end: "13:00" },
-      },
-
-      otRule: "AFTER_CLOCK_TIME",
-      regularHoursPerDay: 8,
-      otClockTime: "18:00",
-      fullTimeOtClockTime: "18:00",
-      partTimeOtClockTime: "18:00",
-      otWindowStart: "18:00",
-      otWindowEnd: "21:00",
-      otStartAfterMinutes: 0,
-      otRounding: "15MIN",
-      otMultiplier: 1.5,
-      holidayMultiplier: 2.0,
-      weekendAllDayOT: false,
-
-      employeeOnlyOt: true,
-      requireOtApproval: true,
-      realTimeAttendanceOnly: true,
-      manualAttendanceRequireApproval: true,
-      manualReasonRequired: true,
-      lockAfterPayrollClose: true,
-
-      attendanceApprovalRoles: ["clinic_admin"],
-      otApprovalRoles: ["clinic_admin"],
-
-      features: {
-        manualAttendance: true,
-        fingerprintAttendance: true,
-        autoOtCalculation: true,
-        otApprovalWorkflow: true,
-        attendanceApproval: true,
-        payrollLock: true,
-        policyHumanReadable: true,
-      },
-
-      version: 1,
-      updatedBy: s(userId),
-    });
-  }
-  return p;
-}
-
 function buildHelperShiftUserOr(userId) {
   const uid = s(userId);
   if (!uid) return [];
-
   return [
     { helperUserId: uid },
     { userId: uid },
@@ -1548,42 +1133,63 @@ function buildHelperShiftUserOr(userId) {
 function dedupeShifts(shifts) {
   const out = [];
   const seen = new Set();
-
   for (const sh of Array.isArray(shifts) ? shifts : []) {
     const key = String(sh?._id || "");
     if (!key || seen.has(key)) continue;
     seen.add(key);
     out.push(sh);
   }
-
   return out;
 }
 
-async function loadShiftForSession({
-  clinicId,
-  staffId,
-  userId,
-  workDate,
-  shiftId,
-}) {
-  if (shiftId && mongoose.Types.ObjectId.isValid(String(shiftId))) {
-    const sh = await Shift.findById(shiftId).lean();
-    return sh || null;
+function getShiftStartDateTime(shift) {
+  if (!shift || !isYmd(shift.date) || !isHHmm(shift.start)) return null;
+  return makeLocalDateTime(shift.date, shift.start);
+}
+
+function getShiftEndDateTime(shift) {
+  if (!shift || !isYmd(shift.date) || !isHHmm(shift.end)) return null;
+  const startAt = isHHmm(shift.start) ? makeLocalDateTime(shift.date, shift.start) : null;
+  let endAt = makeLocalDateTime(shift.date, shift.end);
+  if (startAt && endAt.getTime() <= startAt.getTime()) {
+    endAt = new Date(endAt.getTime() + 24 * 60 * 60000);
   }
+  return endAt;
+}
 
-  const candidates = await loadShiftCandidatesForSession({
-    clinicId,
-    staffId,
-    userId,
-    workDate,
-    shiftId: null,
-  });
+function pickBestShiftForTime(shifts, now = new Date()) {
+  if (!Array.isArray(shifts) || !shifts.length) return null;
 
-  if (!candidates.length) return null;
+  const prepared = shifts
+    .map((sh) => ({ sh, startAt: getShiftStartDateTime(sh), endAt: getShiftEndDateTime(sh) }))
+    .filter((x) => x.startAt && x.endAt);
 
-  const picked = pickBestShiftForTime(candidates, new Date());
-  if (picked?._conflict) return null;
-  return picked || null;
+  if (!prepared.length) return shifts[0] || null;
+
+  const active = prepared.filter(
+    (x) => now.getTime() >= x.startAt.getTime() && now.getTime() <= x.endAt.getTime()
+  );
+
+  if (active.length === 1) return active[0].sh;
+  if (active.length > 1) return { _conflict: true, candidates: active.map((x) => x.sh) };
+
+  const graceMinutes = 120;
+  const near = prepared
+    .map((x) => ({
+      ...x,
+      distanceMs: Math.min(
+        Math.abs(now.getTime() - x.startAt.getTime()),
+        Math.abs(now.getTime() - x.endAt.getTime())
+      ),
+    }))
+    .filter((x) => x.distanceMs <= graceMinutes * 60000)
+    .sort((a, b) => a.distanceMs - b.distanceMs);
+
+  if (near.length === 1) return near[0].sh;
+  if (near.length > 1 && near[0].distanceMs === near[1].distanceMs) {
+    return { _conflict: true, candidates: near.map((x) => x.sh) };
+  }
+  return near[0]?.sh || null;
 }
 
 async function loadShiftCandidatesForSession({
@@ -1602,7 +1208,6 @@ async function loadShiftCandidatesForSession({
   const date = s(workDate);
   const sid = s(staffId);
   const uid = s(userId);
-
   if (!date) return [];
 
   const queries = [];
@@ -1629,61 +1234,29 @@ async function loadShiftCandidatesForSession({
   return dedupeShifts(results.flat());
 }
 
-function pickBestShiftForTime(shifts, now = new Date()) {
-  if (!Array.isArray(shifts) || !shifts.length) return null;
-
-  const prepared = shifts
-    .map((sh) => {
-      const startAt = getShiftStartDateTime(sh);
-      const endAt = getShiftEndDateTime(sh);
-      return { sh, startAt, endAt };
-    })
-    .filter((x) => x.startAt && x.endAt);
-
-  if (!prepared.length) return shifts[0] || null;
-
-  const active = prepared.filter(
-    (x) =>
-      now.getTime() >= x.startAt.getTime() &&
-      now.getTime() <= x.endAt.getTime()
-  );
-
-  if (active.length === 1) return active[0].sh;
-
-  if (active.length > 1) {
-    return {
-      _conflict: true,
-      candidates: active.map((x) => x.sh),
-    };
+async function loadShiftForSession({ clinicId, staffId, userId, workDate, shiftId }) {
+  if (shiftId && mongoose.Types.ObjectId.isValid(String(shiftId))) {
+    const sh = await Shift.findById(shiftId).lean();
+    return sh || null;
   }
 
-  const graceMinutes = 120;
-  const near = prepared
-    .map((x) => ({
-      ...x,
-      distanceMs: Math.min(
-        Math.abs(now.getTime() - x.startAt.getTime()),
-        Math.abs(now.getTime() - x.endAt.getTime())
-      ),
-    }))
-    .filter((x) => x.distanceMs <= graceMinutes * 60000)
-    .sort((a, b) => a.distanceMs - b.distanceMs);
+  const candidates = await loadShiftCandidatesForSession({
+    clinicId,
+    staffId,
+    userId,
+    workDate,
+    shiftId: null,
+  });
 
-  if (near.length === 1) return near[0].sh;
-
-  if (near.length > 1 && near[0].distanceMs === near[1].distanceMs) {
-    return {
-      _conflict: true,
-      candidates: near.map((x) => x.sh),
-    };
-  }
-
-  return near[0]?.sh || null;
+  if (!candidates.length) return null;
+  const picked = pickBestShiftForTime(candidates, new Date());
+  if (picked?._conflict) return null;
+  return picked || null;
 }
 
 async function findPreviousOpenSession({ principalId, workDate }) {
   return AttendanceSession.findOne({
-    principalId,
+    principalId: s(principalId),
     status: "open",
     workDate: { $lt: workDate },
   })
@@ -1692,37 +1265,9 @@ async function findPreviousOpenSession({ principalId, workDate }) {
 }
 
 async function findOpenSessionsForPrincipal(principalId, workDate = "") {
-  const q = {
-    principalId: s(principalId),
-    status: "open",
-  };
-
+  const q = { principalId: s(principalId), status: "open" };
   if (isYmd(workDate)) q.workDate = workDate;
-
   return AttendanceSession.find(q).sort({ checkInAt: -1 }).lean();
-}
-
-// ======================================================
-// time / business-rule helpers
-// ======================================================
-function getShiftStartDateTime(shift) {
-  if (!shift || !isYmd(shift.date) || !isHHmm(shift.start)) return null;
-  return makeLocalDateTime(shift.date, shift.start);
-}
-
-function getShiftEndDateTime(shift) {
-  if (!shift || !isYmd(shift.date) || !isHHmm(shift.end)) return null;
-
-  const startAt = isHHmm(shift.start)
-    ? makeLocalDateTime(shift.date, shift.start)
-    : null;
-  let endAt = makeLocalDateTime(shift.date, shift.end);
-
-  if (startAt && endAt.getTime() <= startAt.getTime()) {
-    endAt = new Date(endAt.getTime() + 24 * 60 * 60000);
-  }
-
-  return endAt;
 }
 
 function getCutoffDateTime(workDate, cutoffTime) {
@@ -1730,57 +1275,34 @@ function getCutoffDateTime(workDate, cutoffTime) {
   const base = makeLocalDateTime(workDate, cutoff);
   return new Date(base.getTime() + 24 * 60 * 60000);
 }
-
 function computeLateMinutes(policy, shift, checkInAt) {
-  if (!shift) return 0;
-  if (!isYmd(shift.date) || !isHHmm(shift.start)) return 0;
-
+  if (!shift || !isYmd(shift.date) || !isHHmm(shift.start)) return 0;
   const shiftStart = makeLocalDateTime(shift.date, shift.start);
-  const diff = minutesDiff(shiftStart, checkInAt);
-  const late = Math.max(0, diff - clampMinutes(policy.graceLateMinutes));
-  return clampMinutes(late);
+  return clampMinutes(Math.max(0, minutesDiff(shiftStart, checkInAt) - clampMinutes(policy.graceLateMinutes)));
 }
 
 function computeWorkedMinutes(checkInAt, checkOutAt) {
   if (!checkInAt || !checkOutAt) return 0;
-  const m = minutesDiff(checkInAt, checkOutAt);
-  return clampMinutes(m);
+  return clampMinutes(minutesDiff(checkInAt, checkOutAt));
 }
 
-function computeWindowOverlapMinutes(
-  windowStartAt,
-  windowEndAt,
-  actualStartAt,
-  actualEndAt
-) {
-  if (!windowStartAt || !windowEndAt || !actualStartAt || !actualEndAt) {
-    return 0;
-  }
-
-  const startAt = new Date(
-    Math.max(windowStartAt.getTime(), actualStartAt.getTime())
-  );
-  const endAt = new Date(
-    Math.min(windowEndAt.getTime(), actualEndAt.getTime())
-  );
-
+function computeWindowOverlapMinutes(windowStartAt, windowEndAt, actualStartAt, actualEndAt) {
+  if (!windowStartAt || !windowEndAt || !actualStartAt || !actualEndAt) return 0;
+  const startAt = new Date(Math.max(windowStartAt.getTime(), actualStartAt.getTime()));
+  const endAt = new Date(Math.min(windowEndAt.getTime(), actualEndAt.getTime()));
   if (endAt.getTime() <= startAt.getTime()) return 0;
   return clampMinutes(minutesDiff(startAt, endAt));
 }
 
 function computeOtMinutes(policy, shift, checkInAt, checkOutAt) {
   if (!checkInAt || !checkOutAt) return 0;
-
   const rule = s(policy.otRule);
 
   if (rule === "AFTER_SHIFT_END") {
     if (!shift || !isYmd(shift.date) || !isHHmm(shift.end)) return 0;
 
-    const startLocal = isHHmm(shift.start)
-      ? makeLocalDateTime(shift.date, shift.start)
-      : null;
+    const startLocal = isHHmm(shift.start) ? makeLocalDateTime(shift.date, shift.start) : null;
     let endLocal = makeLocalDateTime(shift.date, shift.end);
-
     if (startLocal && endLocal.getTime() <= startLocal.getTime()) {
       endLocal = new Date(endLocal.getTime() + 24 * 60 * 60000);
     }
@@ -1788,51 +1310,35 @@ function computeOtMinutes(policy, shift, checkInAt, checkOutAt) {
     const otStartAt = new Date(
       endLocal.getTime() + clampMinutes(policy.otStartAfterMinutes) * 60000
     );
-
-    const raw = Math.max(0, minutesDiff(otStartAt, checkOutAt));
-    return roundOtMinutes(raw, policy.otRounding);
+    return roundOtMinutes(Math.max(0, minutesDiff(otStartAt, checkOutAt)), policy.otRounding);
   }
 
   if (rule === "AFTER_CLOCK_TIME") {
-    const ymd = shift?.date && isYmd(shift.date) ? shift.date : null;
-    const baseDate = ymd || null;
+    const baseDate = shift?.date && isYmd(shift.date) ? shift.date : null;
     if (!baseDate) return 0;
 
-    const hasWindow =
-      isHHmm(policy.otWindowStart) && isHHmm(policy.otWindowEnd);
-
-    if (hasWindow) {
+    if (isHHmm(policy.otWindowStart) && isHHmm(policy.otWindowEnd)) {
       let windowStartAt = makeLocalDateTime(baseDate, policy.otWindowStart);
       let windowEndAt = makeLocalDateTime(baseDate, policy.otWindowEnd);
-
       if (windowEndAt.getTime() <= windowStartAt.getTime()) {
         windowEndAt = new Date(windowEndAt.getTime() + 24 * 60 * 60000);
       }
-
-      const raw = computeWindowOverlapMinutes(
-        windowStartAt,
-        windowEndAt,
-        checkInAt,
-        checkOutAt
+      return roundOtMinutes(
+        computeWindowOverlapMinutes(windowStartAt, windowEndAt, checkInAt, checkOutAt),
+        policy.otRounding
       );
-      return roundOtMinutes(raw, policy.otRounding);
     }
 
     const clock = isHHmm(policy.otClockTime) ? policy.otClockTime : "18:00";
     const clockAt = makeLocalDateTime(baseDate, clock);
-    const otStartAt = new Date(
-      clockAt.getTime() + clampMinutes(policy.otStartAfterMinutes) * 60000
-    );
-
-    const raw = Math.max(0, minutesDiff(otStartAt, checkOutAt));
-    return roundOtMinutes(raw, policy.otRounding);
+    const otStartAt = new Date(clockAt.getTime() + clampMinutes(policy.otStartAfterMinutes) * 60000);
+    return roundOtMinutes(Math.max(0, minutesDiff(otStartAt, checkOutAt)), policy.otRounding);
   }
 
   if (rule === "AFTER_DAILY_HOURS") {
     const worked = computeWorkedMinutes(checkInAt, checkOutAt);
     const regular = clampMinutes(Number(policy.regularHoursPerDay || 8) * 60);
-    const raw = Math.max(0, worked - regular);
-    return roundOtMinutes(raw, policy.otRounding);
+    return roundOtMinutes(Math.max(0, worked - regular), policy.otRounding);
   }
 
   return 0;
@@ -1841,37 +1347,16 @@ function computeOtMinutes(policy, shift, checkInAt, checkOutAt) {
 function normalizeEmploymentType(v) {
   const t = s(v).toLowerCase();
   if (!t) return "";
-  if (
-    t === "fulltime" ||
-    t === "full_time" ||
-    t === "full-time" ||
-    t === "ft"
-  ) {
-    return "fullTime";
-  }
-  if (
-    t === "parttime" ||
-    t === "part_time" ||
-    t === "part-time" ||
-    t === "pt"
-  ) {
-    return "partTime";
-  }
+  if (["fulltime", "full_time", "full-time", "ft"].includes(t)) return "fullTime";
+  if (["parttime", "part_time", "part-time", "pt"].includes(t)) return "partTime";
   return s(v);
 }
 
 function pickOtClockByType(policy, empTypeRaw) {
   const empType = normalizeEmploymentType(empTypeRaw);
   const legacy = isHHmm(policy?.otClockTime) ? policy.otClockTime : "18:00";
-
-  if (empType === "fullTime") {
-    const v = s(policy?.fullTimeOtClockTime);
-    return isHHmm(v) ? v : legacy;
-  }
-  if (empType === "partTime") {
-    const v = s(policy?.partTimeOtClockTime);
-    return isHHmm(v) ? v : legacy;
-  }
+  if (empType === "fullTime") return isHHmm(policy?.fullTimeOtClockTime) ? policy.fullTimeOtClockTime : legacy;
+  if (empType === "partTime") return isHHmm(policy?.partTimeOtClockTime) ? policy.partTimeOtClockTime : legacy;
   return legacy;
 }
 
@@ -1884,27 +1369,15 @@ function resolveAttendanceMethod(reqMethod, biometricVerified) {
 
 function ensureAttendanceMethodAllowed(policy, method) {
   const features = withFeatureDefaults(policy?.features || {});
-
-  if (method === "biometric" && !features.fingerprintAttendance) {
-    return "Fingerprint attendance is not enabled";
-  }
-
-  if (method === "manual" && !features.manualAttendance) {
-    return "Manual attendance is not enabled";
-  }
-
-  if (policy?.realTimeAttendanceOnly && method !== "biometric") {
-    return "Real-time attendance only";
-  }
-
+  if (method === "biometric" && !features.fingerprintAttendance) return "Fingerprint attendance is not enabled";
+  if (method === "manual" && !features.manualAttendance) return "Manual attendance is not enabled";
+  if (policy?.realTimeAttendanceOnly && method !== "biometric") return "Real-time attendance only";
   return "";
 }
 
 function requireManualReasonIfNeeded(policy, method, note) {
   if (method !== "manual") return "";
-  if (policy?.manualReasonRequired && !s(note)) {
-    return "Manual attendance reason is required";
-  }
+  if (policy?.manualReasonRequired && !s(note)) return "Manual attendance reason is required";
   return "";
 }
 
@@ -1922,29 +1395,23 @@ function inferRoleFromSession(session) {
 function detectEarlyCheckIn({ policy, shift, checkInAt, role, workDate }) {
   const rules = attendanceRuleDefaults(policy);
   if (!rules.requireReasonForEarlyCheckIn) return false;
-
   if (s(role) === "helper") {
     const startAt = getShiftStartDateTime(shift);
     if (!startAt) return false;
     return checkInAt.getTime() < startAt.getTime();
   }
-
-  const clinicOpenAt = getClinicOpenDateTime(workDate, policy);
-  return checkInAt.getTime() < clinicOpenAt.getTime();
+  return checkInAt.getTime() < getClinicOpenDateTime(workDate, policy).getTime();
 }
 
 function detectEarlyCheckOut({ policy, shift, checkOutAt, role, workDate }) {
   const rules = attendanceRuleDefaults(policy);
   if (!rules.requireReasonForEarlyCheckOut) return false;
-
   if (s(role) === "helper") {
     const endAt = getShiftEndDateTime(shift);
     if (!endAt) return false;
     return checkOutAt.getTime() < endAt.getTime();
   }
-
-  const clinicCloseAt = getClinicCloseDateTime(workDate, policy);
-  return checkOutAt.getTime() < clinicCloseAt.getTime();
+  return checkOutAt.getTime() < getClinicCloseDateTime(workDate, policy).getTime();
 }
 
 function detectLeftEarlyMinutes({
@@ -1955,37 +1422,46 @@ function detectLeftEarlyMinutes({
   policy,
   workDate,
 }) {
-  let endAt = null;
-
-  if (s(role) === "helper") {
-    endAt = getShiftEndDateTime(shift);
-  } else {
-    endAt = getClinicCloseDateTime(workDate, policy);
-  }
+  const endAt = s(role) === "helper"
+    ? getShiftEndDateTime(shift)
+    : getClinicCloseDateTime(workDate, policy);
 
   if (!endAt || !checkOutAt) return 0;
-
-  const raw = minutesDiff(checkOutAt, endAt);
-  const early = Math.max(0, raw - clampMinutes(toleranceMinutes));
-  return clampMinutes(early);
+  return clampMinutes(Math.max(0, minutesDiff(checkOutAt, endAt) - clampMinutes(toleranceMinutes)));
 }
 
 function hasEarlyCheckoutReason(req) {
-  return (
-    !!s(req.body?.reasonCode) ||
-    !!s(req.body?.reasonText) ||
-    !!s(req.body?.note)
-  );
+  return !!s(req.body?.reasonCode) || !!s(req.body?.reasonText) || !!s(req.body?.note);
 }
 
-// ======================================================
-// manual request helpers
-// ======================================================
+function detectCheckoutRiskFlags({ session, policy, shift, checkOutAt, role, workDate }) {
+  const flags = [];
+  const rules = attendanceRuleDefaults(policy);
+  const worked = clampMinutes(computeWorkedMinutes(session.checkInAt, checkOutAt));
+
+  if (worked > 0 && worked < Math.max(10, rules.minMinutesBeforeCheckout)) {
+    flags.push({ code: "VERY_SHORT_SESSION", risk: 25 });
+  }
+
+  const earlyMinutes = detectLeftEarlyMinutes({
+    shift,
+    checkOutAt,
+    toleranceMinutes:
+      clampMinutes(session.leaveEarlyToleranceMinutes) ||
+      clampMinutes(policy.leaveEarlyToleranceMinutes || 0),
+    role,
+    policy,
+    workDate,
+  });
+
+  if (earlyMinutes >= 30) flags.push({ code: "SUSPICIOUS_EARLY_CHECKOUT", risk: 20 });
+  if (clampMinutes(session.otMinutes) >= 300) flags.push({ code: "UNUSUAL_HIGH_OT", risk: 15 });
+
+  return flags;
+}
+
 function isStatusPendingManual(session) {
-  return (
-    s(session?.status) === "pending_manual" &&
-    s(session?.approvalStatus) === "pending"
-  );
+  return s(session?.status) === "pending_manual" && s(session?.approvalStatus) === "pending";
 }
 
 function buildRequestedReason(req) {
@@ -1996,32 +1472,25 @@ function buildRequestedReason(req) {
 }
 
 function shouldRequireReason(policy, req) {
-  return (
-    !!policy?.manualReasonRequired &&
+  return !!policy?.manualReasonRequired &&
     !s(req.body?.reasonCode) &&
     !s(req.body?.reasonText) &&
-    !s(req.body?.note)
-  );
+    !s(req.body?.note);
 }
 
 function getScheduleSnapshot({ policy, shift, workDate }) {
   const rules = attendanceRuleDefaults(policy);
-
   return {
     scheduledStart: s(shift?.start),
     scheduledEnd: s(shift?.end),
     clinicOpenTime: pickClinicOpenTime(policy, workDate),
     clinicCloseTime: pickClinicCloseTime(policy, workDate),
-    normalMinutesBeforeOt: clampMinutes(
-      Number(policy?.regularHoursPerDay || 8) * 60
-    ),
+    normalMinutesBeforeOt: clampMinutes(Number(policy?.regularHoursPerDay || 8) * 60),
     otWindowStart: s(policy?.otWindowStart),
     otWindowEnd: s(policy?.otWindowEnd),
     cutoffTime: rules.cutoffTime,
     graceMinutes: clampMinutes(policy?.graceLateMinutes || 0),
-    leaveEarlyToleranceMinutes: clampMinutes(
-      policy?.leaveEarlyToleranceMinutes || 0
-    ),
+    leaveEarlyToleranceMinutes: clampMinutes(policy?.leaveEarlyToleranceMinutes || 0),
   };
 }
 
@@ -2036,8 +1505,6 @@ function buildSessionBaseForCreate({
   policy,
   req,
 }) {
-  const snapshot = getScheduleSnapshot({ policy, shift, workDate });
-
   return {
     clinicId,
     principalId,
@@ -2067,7 +1534,7 @@ function buildSessionBaseForCreate({
       inMocked: isMockLocation(req, "in"),
       outMocked: isMockLocation(req, "out"),
     },
-    ...snapshot,
+    ...getScheduleSnapshot({ policy, shift, workDate }),
   };
 }
 
@@ -2080,7 +1547,6 @@ function applyManualRequestFields(
   requesterId
 ) {
   const { requestReasonCode, requestReasonText } = buildRequestedReason(req);
-
   session.status = "pending_manual";
   session.approvalStatus = "pending";
   session.manualRequestType = manualRequestType;
@@ -2118,80 +1584,45 @@ function clearManualRequestFields(session) {
   session.manualLocked = false;
 }
 
-function buildManualRequestQueryForSelf({
-  clinicId,
-  principalId,
-  workDate,
-  approvalStatus,
-}) {
-  const q = {
-    manualRequestType: { $ne: "" },
-  };
-
+function buildManualRequestQueryForSelf({ clinicId, principalId, workDate, approvalStatus }) {
+  const q = { manualRequestType: { $ne: "" } };
   if (s(clinicId)) q.clinicId = s(clinicId);
   if (s(principalId)) q.principalId = s(principalId);
   if (isYmd(workDate)) q.workDate = workDate;
 
   const filter = normalizeApprovalFilter(approvalStatus);
-  if (filter === "history") {
-    q.approvalStatus = { $in: ["approved", "rejected"] };
-  } else if (filter) {
-    q.approvalStatus = filter;
-  }
+  if (filter === "history") q.approvalStatus = { $in: ["approved", "rejected"] };
+  else if (filter) q.approvalStatus = filter;
 
   return q;
 }
 
-function buildManualRequestQueryForClinic({
-  clinicId,
-  workDate,
-  approvalStatus,
-  staffIdOrPrincipal,
-}) {
-  const q = {
-    clinicId,
-    manualRequestType: { $ne: "" },
-  };
-
+function buildManualRequestQueryForClinic({ clinicId, workDate, approvalStatus, staffIdOrPrincipal }) {
+  const q = { clinicId, manualRequestType: { $ne: "" } };
   if (isYmd(workDate)) q.workDate = workDate;
 
   const filter = normalizeApprovalFilter(approvalStatus) || "pending";
-  if (filter === "history") {
-    q.approvalStatus = { $in: ["approved", "rejected"] };
-  } else {
-    q.approvalStatus = filter;
-  }
+  if (filter === "history") q.approvalStatus = { $in: ["approved", "rejected"] };
+  else q.approvalStatus = filter;
 
   if (staffIdOrPrincipal) {
-    q.$or = [
-      { staffId: staffIdOrPrincipal },
-      { principalId: staffIdOrPrincipal },
-    ];
+    q.$or = [{ staffId: staffIdOrPrincipal }, { principalId: staffIdOrPrincipal }];
   }
-
   return q;
 }
 
 function determineRejectedStatus(session) {
   if (session.checkOutAt) return "closed";
-  if (
-    s(session.source) === "manual" &&
-    s(session.checkInMethod) === "manual" &&
-    !session.biometricVerifiedIn
-  ) {
+  if (s(session.source) === "manual" && s(session.checkInMethod) === "manual" && !session.biometricVerifiedIn) {
     return "cancelled";
   }
   return "open";
 }
 
-// ======================================================
-// overtime sync
-// ======================================================
 async function syncOvertimeForSession({ session, policy, shift }) {
   try {
-    const ownerUserId = s(session.userId) || "";
+    const ownerUserId = s(session.userId);
     let emp = null;
-
     if (ownerUserId) {
       try {
         emp = await getEmployeeByUserId(ownerUserId);
@@ -2209,23 +1640,12 @@ async function syncOvertimeForSession({ session, policy, shift }) {
       otClockTime: selectedClock,
     };
 
-    const allowOtCalc = !!withFeatureDefaults(policy.features || {})
-      .autoOtCalculation;
+    const allowOtCalc = !!withFeatureDefaults(policy.features || {}).autoOtCalculation;
     const allowOtForThisUser = isEmployeeEligibleForOt(role, empType, policy);
 
     let otMinutes = 0;
-    if (
-      session.checkInAt &&
-      session.checkOutAt &&
-      allowOtCalc &&
-      allowOtForThisUser
-    ) {
-      otMinutes = computeOtMinutes(
-        policyForOt,
-        shift,
-        session.checkInAt,
-        session.checkOutAt
-      );
+    if (session.checkInAt && session.checkOutAt && allowOtCalc && allowOtForThisUser) {
+      otMinutes = computeOtMinutes(policyForOt, shift, session.checkInAt, session.checkOutAt);
     }
 
     session.otMinutes = clampMinutes(otMinutes);
@@ -2243,15 +1663,10 @@ async function syncOvertimeForSession({ session, policy, shift }) {
     const mul = Number.isFinite(otMul) && otMul > 0 ? otMul : 1.5;
 
     const principalIdForOt = s(session.principalId);
-    const principalTypeForOt =
-      s(session.principalType) || (s(session.staffId) ? "staff" : "user");
+    const principalTypeForOt = s(session.principalType) || (s(session.staffId) ? "staff" : "user");
     const staffIdForOt = s(session.staffId);
 
-    if (
-      clampMinutes(session.otMinutes) > 0 &&
-      monthKey &&
-      s(session.status) === "closed"
-    ) {
+    if (clampMinutes(session.otMinutes) > 0 && monthKey && s(session.status) === "closed") {
       await Overtime.updateOne(
         { clinicId: clinicIdOfSession, attendanceSessionId: session._id },
         {
@@ -2317,14 +1732,12 @@ async function recalcSessionByTimes({ session, policy, shift }) {
 
   ensureSecurityFields(session);
 
-  session.lateMinutes =
-    role === "helper" ? computeLateMinutes(policy, shift, session.checkInAt) : 0;
+  session.lateMinutes = role === "helper"
+    ? computeLateMinutes(policy, shift, session.checkInAt)
+    : 0;
 
   if (session.checkOutAt) {
-    session.workedMinutes = computeWorkedMinutes(
-      session.checkInAt,
-      session.checkOutAt
-    );
+    session.workedMinutes = computeWorkedMinutes(session.checkInAt, session.checkOutAt);
 
     const leftEarlyMinutes = detectLeftEarlyMinutes({
       shift,
@@ -2343,8 +1756,7 @@ async function recalcSessionByTimes({ session, policy, shift }) {
     if (leftEarlyMinutes > 0) {
       session.abnormal = true;
       session.abnormalReasonCode = "LEFT_EARLY";
-      session.abnormalReasonText =
-        "Employee checked out before allowed end time";
+      session.abnormalReasonText = "Employee checked out before allowed end time";
       addSuspiciousFlag(session, "LEFT_EARLY", 10);
     } else if (s(session.abnormalReasonCode) === "LEFT_EARLY") {
       session.abnormal = false;
@@ -2352,14 +1764,10 @@ async function recalcSessionByTimes({ session, policy, shift }) {
       session.abnormalReasonText = "";
     }
 
-    if (
-      session.workedMinutes > 0 &&
-      session.workedMinutes < rules.minMinutesBeforeCheckout
-    ) {
+    if (session.workedMinutes > 0 && session.workedMinutes < rules.minMinutesBeforeCheckout) {
       session.abnormal = true;
       session.abnormalReasonCode = "CHECKOUT_TOO_FAST";
-      session.abnormalReasonText =
-        "Worked time is below minimum before checkout";
+      session.abnormalReasonText = "Worked time is below minimum before checkout";
       addSuspiciousFlag(session, "CHECKOUT_TOO_FAST", 30);
     }
   } else {
@@ -2374,26 +1782,14 @@ async function recalcSessionByTimes({ session, policy, shift }) {
 }
 
 // ======================================================
-// runtime resolution
+// runtime context
 // ======================================================
 async function resolveRuntimeContext(req, workDate, shiftId = null) {
   const memo = createRequestMemo(req);
   const runtimeKey = makeRuntimeContextKey(req, workDate, shiftId);
-  if (memo.runtimeContext.has(runtimeKey)) {
-    return memo.runtimeContext.get(runtimeKey);
-  }
+  if (memo.runtimeContext.has(runtimeKey)) return memo.runtimeContext.get(runtimeKey);
 
-  const { clinicId, role, userId, staffId, principalId, principalType } =
-    getPrincipal(req);
-
-  console.log("🧭 resolveRuntimeContext", {
-    role,
-    clinicId,
-    userId,
-    staffId,
-    principalId,
-    principalType,
-  });
+  const { clinicId, role, userId, staffId, principalId, principalType } = getPrincipal(req);
 
   if (!principalId) {
     const out = {
@@ -2414,11 +1810,7 @@ async function resolveRuntimeContext(req, workDate, shiftId = null) {
   if (role === "employee" || role === "staff") {
     const verify = await ensureVerifiedEmployeeFromRequest(req, effectiveClinicId);
     if (!verify.ok) {
-      const out = {
-        ok: false,
-        status: verify.status,
-        body: verify.body,
-      };
+      const out = { ok: false, status: verify.status, body: verify.body };
       memo.runtimeContext.set(runtimeKey, out);
       return out;
     }
@@ -2456,15 +1848,6 @@ async function resolveRuntimeContext(req, workDate, shiftId = null) {
       });
     }
 
-    console.log("🧪 helper shift candidates", {
-      requestedClinicId: effectiveClinicId,
-      userId: effectiveUserId,
-      staffId: effectiveStaffId,
-      workDate,
-      count: candidates.length,
-      candidateIds: candidates.map((x) => String(x?._id || "")),
-    });
-
     if (!candidates.length) {
       const out = {
         ok: false,
@@ -2481,7 +1864,6 @@ async function resolveRuntimeContext(req, workDate, shiftId = null) {
     }
 
     const picked = pickBestShiftForTime(candidates, new Date());
-
     if (picked?._conflict) {
       const out = {
         ok: false,
@@ -2489,8 +1871,7 @@ async function resolveRuntimeContext(req, workDate, shiftId = null) {
         body: {
           ok: false,
           code: "MULTIPLE_ACTIVE_SHIFTS",
-          message:
-            "พบหลายกะงานในช่วงเวลาเดียวกัน กรุณาเลือกกะงาน/คลินิกก่อนสแกน",
+          message: "พบหลายกะงานในช่วงเวลาเดียวกัน กรุณาเลือกกะงาน/คลินิกก่อนสแกน",
           workDate,
           candidates: picked.candidates,
         },
@@ -2500,7 +1881,6 @@ async function resolveRuntimeContext(req, workDate, shiftId = null) {
     }
 
     shift = picked;
-
     if (!shift) {
       const out = {
         ok: false,
@@ -2517,7 +1897,6 @@ async function resolveRuntimeContext(req, workDate, shiftId = null) {
     }
 
     effectiveClinicId = s(shift.clinicId) || effectiveClinicId;
-
     if (!effectiveClinicId) {
       const out = {
         ok: false,
@@ -2554,47 +1933,28 @@ async function resolveRuntimeContext(req, workDate, shiftId = null) {
   memo.runtimeContext.set(runtimeKey, out);
   return out;
 }
-
 // ======================================================
-// POST /attendance/check-in
+// controllers
 // ======================================================
 async function checkIn(req, res) {
   try {
     const workDate = s(req.body?.workDate);
     const shiftId = req.body?.shiftId || null;
 
-    console.log("🚀 CHECK-IN START", {
-      authUser: req.user,
-      body: req.body,
-    });
-
     if (!isYmd(workDate)) {
-      return res
-        .status(400)
-        .json({ ok: false, message: "workDate required (yyyy-MM-dd)" });
+      return res.status(400).json({ ok: false, message: "workDate required (yyyy-MM-dd)" });
     }
 
     const ctx = await resolveRuntimeContext(req, workDate, shiftId);
     if (!ctx.ok) return res.status(ctx.status).json(ctx.body);
 
-    const {
-      role,
-      userId,
-      staffId,
-      principalId,
-      principalType,
-      clinicId,
-    } = ctx;
-
+    const { role, userId, staffId, principalId, principalType, clinicId } = ctx;
     let shift = ctx.shift || null;
 
     const policy = await getOrCreatePolicy(clinicId, userId || principalId);
     const rules = attendanceRuleDefaults(policy);
 
-    if (
-      (role === "employee" || role === "staff") &&
-      !isClinicOpenDay(policy, workDate)
-    ) {
+    if ((role === "employee" || role === "staff") && !isClinicOpenDay(policy, workDate)) {
       return res.status(409).json({
         ok: false,
         code: "CLINIC_CLOSED_DAY",
@@ -2605,33 +1965,19 @@ async function checkIn(req, res) {
 
     const biometricVerified = !!req.body?.biometricVerified;
     const method = resolveAttendanceMethod(req.body?.method, biometricVerified);
+
     const methodErr = ensureAttendanceMethodAllowed(policy, method);
-    if (methodErr) {
-      return res.status(400).json({ ok: false, message: methodErr });
-    }
+    if (methodErr) return res.status(400).json({ ok: false, message: methodErr });
 
-    const manualReasonErr = requireManualReasonIfNeeded(
-      policy,
-      method,
-      req.body?.note
-    );
-    if (manualReasonErr) {
-      return res.status(400).json({ ok: false, message: manualReasonErr });
-    }
+    const manualReasonErr = requireManualReasonIfNeeded(policy, method, req.body?.note);
+    if (manualReasonErr) return res.status(400).json({ ok: false, message: manualReasonErr });
 
-    if (
-      method === "biometric" &&
-      policy.requireBiometric &&
-      !biometricVerified
-    ) {
+    if (method === "biometric" && policy.requireBiometric && !biometricVerified) {
       return res.status(400).json({ ok: false, message: "Biometric required" });
     }
 
     const previousOpen = rules.blockNewCheckInIfPreviousOpen
-      ? await findPreviousOpenSession({
-          principalId,
-          workDate,
-        })
+      ? await findPreviousOpenSession({ principalId, workDate })
       : null;
 
     if (previousOpen) {
@@ -2648,27 +1994,20 @@ async function checkIn(req, res) {
       return res.status(out.status).json(out.body);
     }
 
+    if (!shift) {
+      shift = await loadShiftForSession({ clinicId, staffId, userId, workDate, shiftId });
+    }
+
     const lat = n(req.body?.lat, null);
     const lng = n(req.body?.lng, null);
     const inLocationSource = getLocationSource(req, "in");
     const inMocked = isMockLocation(req, "in");
-
-    if (!shift) {
-      shift = await loadShiftForSession({
-        clinicId,
-        staffId,
-        userId,
-        workDate,
-        shiftId,
-      });
-    }
 
     let inDistanceMeters = null;
     if (policy.requireLocation) {
       if (!(Number.isFinite(lat) && Number.isFinite(lng))) {
         return res.status(400).json({ ok: false, message: "Location required" });
       }
-
       if (inMocked) {
         return res.status(400).json({
           ok: false,
@@ -2679,7 +2018,6 @@ async function checkIn(req, res) {
 
       const refLat = shift?.clinicLat;
       const refLng = shift?.clinicLng;
-
       if (Number.isFinite(refLat) && Number.isFinite(refLng)) {
         const dist = haversineMeters(refLat, refLng, lat, lng);
         inDistanceMeters = dist;
@@ -2695,21 +2033,15 @@ async function checkIn(req, res) {
       }
     }
 
-    const existingOpenAnywhere = await findOpenSessionsForPrincipal(
-      principalId,
-      ""
-    );
-
+    const existingOpenAnywhere = await findOpenSessionsForPrincipal(principalId, "");
     if (existingOpenAnywhere.length > 1) {
       return res.status(409).json({
         ok: false,
         code: "MULTIPLE_OPEN_SESSIONS",
-        message:
-          "พบ open session มากกว่าหนึ่งรายการ กรุณาให้ผู้ดูแลตรวจสอบข้อมูลก่อน",
+        message: "พบ open session มากกว่าหนึ่งรายการ กรุณาให้ผู้ดูแลตรวจสอบข้อมูลก่อน",
         sessions: existingOpenAnywhere,
       });
     }
-
     if (existingOpenAnywhere.length === 1) {
       const open = existingOpenAnywhere[0];
       return res.status(409).json({
@@ -2781,13 +2113,7 @@ async function checkIn(req, res) {
 
     if (
       method === "biometric" &&
-      detectEarlyCheckIn({
-        policy,
-        shift,
-        checkInAt,
-        role,
-        workDate,
-      })
+      detectEarlyCheckIn({ policy, shift, checkInAt, role, workDate })
     ) {
       const out = buildCodeResponse(
         409,
@@ -2802,10 +2128,7 @@ async function checkIn(req, res) {
       return res.status(out.status).json(out.body);
     }
 
-    const lateMinutes =
-      role === "helper" ? computeLateMinutes(policy, shift, checkInAt) : 0;
-
-    const snapshot = getScheduleSnapshot({ policy, shift, workDate });
+    const lateMinutes = role === "helper" ? computeLateMinutes(policy, shift, checkInAt) : 0;
 
     const created = await AttendanceSession.create({
       clinicId,
@@ -2831,31 +2154,20 @@ async function checkIn(req, res) {
       suspiciousFlags: [],
       riskScore: 0,
       securityMeta: {
-        inDistanceMeters: Number.isFinite(inDistanceMeters)
-          ? Math.round(inDistanceMeters)
-          : null,
+        inDistanceMeters: Number.isFinite(inDistanceMeters) ? Math.round(inDistanceMeters) : null,
         outDistanceMeters: null,
         inLocationSource,
         outLocationSource: "",
         inMocked,
         outMocked: false,
       },
-      ...snapshot,
+      ...getScheduleSnapshot({ policy, shift, workDate }),
     });
 
     ensureSecurityFields(created);
-
-    if (lateMinutes > 0) {
-      addSuspiciousFlag(created, "LATE_CHECKIN", 5);
-    }
-    if (inMocked) {
-      addSuspiciousFlag(created, "MOCK_LOCATION_IN", 50);
-    }
-    maybeFlagDistanceRisk(
-      created,
-      Number.isFinite(inDistanceMeters) ? inDistanceMeters : null,
-      Number(policy.geoRadiusMeters || 200)
-    );
+    if (lateMinutes > 0) addSuspiciousFlag(created, "LATE_CHECKIN", 5);
+    if (inMocked) addSuspiciousFlag(created, "MOCK_LOCATION_IN", 50);
+    maybeFlagDistanceRisk(created, Number.isFinite(inDistanceMeters) ? inDistanceMeters : null, Number(policy.geoRadiusMeters || 200));
 
     await created.save();
 
@@ -2867,60 +2179,36 @@ async function checkIn(req, res) {
     });
   } catch (e) {
     console.log("❌ check-in failed:", e?.message || e);
-    return res.status(500).json({
-      ok: false,
-      message: "check-in failed",
-      error: e.message,
-    });
+    return res.status(500).json({ ok: false, message: "check-in failed", error: e.message });
   }
 }
-// ======================================================
-// POST /attendance/check-out
-// POST /attendance/:id/check-out
-// ======================================================
+
 async function checkOut(req, res) {
   try {
     const { userId, staffId, principalId } = getPrincipal(req);
-
     if (!principalId) {
-      return res
-        .status(401)
-        .json({ ok: false, message: "Missing userId/staffId in token" });
+      return res.status(401).json({ ok: false, message: "Missing userId/staffId in token" });
     }
 
     const id = s(req.params?.id);
     const bodyWorkDate = s(req.body?.workDate);
-
     let session = null;
 
     if (id) {
       session = await AttendanceSession.findById(id);
-      if (!session) {
-        return res.status(404).json({ ok: false, message: "Session not found" });
-      }
+      if (!session) return res.status(404).json({ ok: false, message: "Session not found" });
 
-      if (
-        bodyWorkDate &&
-        isYmd(bodyWorkDate) &&
-        s(session.workDate) !== bodyWorkDate
-      ) {
+      if (bodyWorkDate && isYmd(bodyWorkDate) && s(session.workDate) !== bodyWorkDate) {
         return res.status(409).json({
           ok: false,
           message: "Session workDate does not match requested workDate",
         });
       }
     } else {
-      const q = {
-        principalId,
-        status: "open",
-      };
-
+      const q = { principalId, status: "open" };
       if (isYmd(bodyWorkDate)) q.workDate = bodyWorkDate;
 
-      const openSessions = await AttendanceSession.find(q).sort({
-        checkInAt: -1,
-      });
-
+      const openSessions = await AttendanceSession.find(q).sort({ checkInAt: -1 });
       if (!openSessions.length) {
         return res.status(409).json({
           ok: false,
@@ -2928,13 +2216,11 @@ async function checkOut(req, res) {
           message: "No open session to check-out",
         });
       }
-
       if (openSessions.length > 1) {
         return res.status(409).json({
           ok: false,
           code: "MULTIPLE_OPEN_SESSIONS",
-          message:
-            "พบ open session มากกว่าหนึ่งรายการ กรุณาระบุ session ที่ต้องการปิด",
+          message: "พบ open session มากกว่าหนึ่งรายการ กรุณาระบุ session ที่ต้องการปิด",
           sessions: openSessions.map((x) => ({
             _id: String(x._id || ""),
             clinicId: s(x.clinicId),
@@ -2943,16 +2229,12 @@ async function checkOut(req, res) {
           })),
         });
       }
-
       session = openSessions[0];
     }
 
     if (s(session.principalId) !== principalId) {
-      return res
-        .status(403)
-        .json({ ok: false, message: "Forbidden (not your session)" });
+      return res.status(403).json({ ok: false, message: "Forbidden (not your session)" });
     }
-
     if (session.status !== "open") {
       return res.status(409).json({
         ok: false,
@@ -2963,30 +2245,19 @@ async function checkOut(req, res) {
 
     const effectiveClinicId = s(session.clinicId);
     if (!effectiveClinicId) {
-      return res
-        .status(400)
-        .json({ ok: false, message: "Session clinicId is missing" });
+      return res.status(400).json({ ok: false, message: "Session clinicId is missing" });
     }
 
     const sessionRole = inferRoleFromSession(session);
-
     if (sessionRole === "employee") {
       const verify = await ensureSessionEmployeeAccess(req, session);
-      if (!verify.ok) {
-        return res.status(verify.status).json(verify.body);
-      }
+      if (!verify.ok) return res.status(verify.status).json(verify.body);
     }
 
-    const policy = await getOrCreatePolicy(
-      effectiveClinicId,
-      userId || principalId
-    );
+    const policy = await getOrCreatePolicy(effectiveClinicId, userId || principalId);
     const rules = attendanceRuleDefaults(policy);
 
-    if (
-      sessionRole === "employee" &&
-      !isClinicOpenDay(policy, s(session.workDate))
-    ) {
+    if (sessionRole === "employee" && !isClinicOpenDay(policy, s(session.workDate))) {
       return res.status(409).json({
         ok: false,
         code: "CLINIC_CLOSED_DAY",
@@ -2997,25 +2268,14 @@ async function checkOut(req, res) {
 
     const biometricVerified = !!req.body?.biometricVerified;
     const method = resolveAttendanceMethod(req.body?.method, biometricVerified);
+
     const methodErr = ensureAttendanceMethodAllowed(policy, method);
-    if (methodErr) {
-      return res.status(400).json({ ok: false, message: methodErr });
-    }
+    if (methodErr) return res.status(400).json({ ok: false, message: methodErr });
 
-    const manualReasonErr = requireManualReasonIfNeeded(
-      policy,
-      method,
-      req.body?.note
-    );
-    if (manualReasonErr) {
-      return res.status(400).json({ ok: false, message: manualReasonErr });
-    }
+    const manualReasonErr = requireManualReasonIfNeeded(policy, method, req.body?.note);
+    if (manualReasonErr) return res.status(400).json({ ok: false, message: manualReasonErr });
 
-    if (
-      method === "biometric" &&
-      policy.requireBiometric &&
-      !biometricVerified
-    ) {
+    if (method === "biometric" && policy.requireBiometric && !biometricVerified) {
       return res.status(400).json({ ok: false, message: "Biometric required" });
     }
 
@@ -3037,7 +2297,6 @@ async function checkOut(req, res) {
       if (!(Number.isFinite(lat) && Number.isFinite(lng))) {
         return res.status(400).json({ ok: false, message: "Location required" });
       }
-
       if (outMocked) {
         return res.status(400).json({
           ok: false,
@@ -3048,7 +2307,6 @@ async function checkOut(req, res) {
 
       const refLat = shift?.clinicLat;
       const refLng = shift?.clinicLng;
-
       if (Number.isFinite(refLat) && Number.isFinite(refLng)) {
         const dist = haversineMeters(refLat, refLng, lat, lng);
         outDistanceMeters = dist;
@@ -3094,17 +2352,13 @@ async function checkOut(req, res) {
     if (
       method === "biometric" &&
       rules.forgotCheckoutManualOnly &&
-      checkOutAt.getTime() >
-        getCutoffDateTime(s(session.workDate), rules.cutoffTime).getTime()
+      checkOutAt.getTime() > getCutoffDateTime(s(session.workDate), rules.cutoffTime).getTime()
     ) {
       const out = buildCodeResponse(
         409,
         "MANUAL_REQUIRED_AFTER_CUTOFF",
         "Check-out after cutoff is not allowed by biometric. Please submit manual request.",
-        {
-          workDate: s(session.workDate),
-          cutoffTime: rules.cutoffTime,
-        }
+        { workDate: s(session.workDate), cutoffTime: rules.cutoffTime }
       );
       return res.status(out.status).json(out.body);
     }
@@ -3151,11 +2405,9 @@ async function checkOut(req, res) {
     session.checkOutAt = checkOutAt;
     session.status = "closed";
     session.checkOutMethod = method;
-    session.biometricVerifiedOut =
-      method === "biometric" ? biometricVerified : false;
+    session.biometricVerifiedOut = method === "biometric" ? biometricVerified : false;
 
     if (s(req.body?.deviceId)) session.deviceId = s(req.body?.deviceId);
-
     session.outLat = Number.isFinite(lat) ? lat : session.outLat;
     session.outLng = Number.isFinite(lng) ? lng : session.outLng;
 
@@ -3169,29 +2421,20 @@ async function checkOut(req, res) {
     setLocationSecurityMeta({
       session,
       phase: "out",
-      distanceMeters: Number.isFinite(outDistanceMeters)
-        ? outDistanceMeters
-        : null,
+      distanceMeters: Number.isFinite(outDistanceMeters) ? outDistanceMeters : null,
       locationSource: outLocationSource,
       mocked: outMocked,
     });
 
-    if (outMocked) {
-      addSuspiciousFlag(session, "MOCK_LOCATION_OUT", 50);
-    }
-    maybeFlagDistanceRisk(
-      session,
-      Number.isFinite(outDistanceMeters) ? outDistanceMeters : null,
-      Number(policy.geoRadiusMeters || 200)
-    );
+    if (outMocked) addSuspiciousFlag(session, "MOCK_LOCATION_OUT", 50);
+    maybeFlagDistanceRisk(session, Number.isFinite(outDistanceMeters) ? outDistanceMeters : null, Number(policy.geoRadiusMeters || 200));
 
     await recalcSessionByTimes({ session, policy, shift });
 
     if (isEarlyCheckout) {
       session.abnormal = true;
       session.abnormalReasonCode = "EARLY_CHECKOUT";
-      session.abnormalReasonText =
-        "Employee checked out before scheduled end time with reason";
+      session.abnormalReasonText = "Employee checked out before scheduled end time with reason";
       addSuspiciousFlag(session, "EARLY_CHECKOUT", 10);
     }
 
@@ -3203,19 +2446,13 @@ async function checkOut(req, res) {
       role: sessionRole,
       workDate: s(session.workDate),
     });
-
-    for (const item of riskFlags) {
-      addSuspiciousFlag(session, item.code, item.risk);
-    }
+    for (const item of riskFlags) addSuspiciousFlag(session, item.code, item.risk);
 
     session.riskScore = clampRisk(session.riskScore);
 
     await session.save();
-
     const otMeta = await syncOvertimeForSession({ session, policy, shift });
-
     await session.save();
-
     await maybePostTrustScoreFromSession(session);
 
     return res.json({
@@ -3226,44 +2463,28 @@ async function checkOut(req, res) {
     });
   } catch (e) {
     console.log("❌ check-out failed:", e?.message || e);
-    return res.status(500).json({
-      ok: false,
-      message: "check-out failed",
-      error: e.message,
-    });
+    return res.status(500).json({ ok: false, message: "check-out failed", error: e.message });
   }
 }
 
-// ======================================================
-// POST /attendance/manual-request
-// ======================================================
 async function submitManualRequest(req, res) {
   try {
     const { principalId } = getPrincipal(req);
-
     if (!principalId) {
-      return res
-        .status(401)
-        .json({ ok: false, message: "Missing userId/staffId in token" });
+      return res.status(401).json({ ok: false, message: "Missing userId/staffId in token" });
     }
 
     const workDate = s(req.body?.workDate);
-    const manualRequestType = normalizeManualRequestType(
-      req.body?.manualRequestType
-    );
+    const manualRequestType = normalizeManualRequestType(req.body?.manualRequestType);
     const shiftId = req.body?.shiftId || null;
 
     if (!isYmd(workDate)) {
-      return res
-        .status(400)
-        .json({ ok: false, message: "workDate required (yyyy-MM-dd)" });
+      return res.status(400).json({ ok: false, message: "workDate required (yyyy-MM-dd)" });
     }
-
     if (!manualRequestType) {
       return res.status(400).json({
         ok: false,
-        message:
-          "manualRequestType required (check_in | check_out | edit_both | forgot_checkout)",
+        message: "manualRequestType required (check_in | check_out | edit_both | forgot_checkout)",
       });
     }
 
@@ -3280,50 +2501,28 @@ async function submitManualRequest(req, res) {
 
     let shift = ctx.shift || null;
 
-    const policy = await getOrCreatePolicy(
-      clinicId,
-      userId || resolvedPrincipalId
-    );
+    const policy = await getOrCreatePolicy(clinicId, userId || resolvedPrincipalId);
     const features = withFeatureDefaults(policy?.features || {});
     if (!features.manualAttendance) {
-      return res
-        .status(400)
-        .json({ ok: false, message: "Manual attendance is not enabled" });
+      return res.status(400).json({ ok: false, message: "Manual attendance is not enabled" });
     }
 
     if (shouldRequireReason(policy, req)) {
-      return res.status(400).json({
-        ok: false,
-        message: "Manual attendance reason is required",
-      });
+      return res.status(400).json({ ok: false, message: "Manual attendance reason is required" });
     }
 
-    const requestedCheckInAt = firstValidDate(
-      req.body?.requestedCheckInAt,
-      req.body?.checkInAt
-    );
-    const requestedCheckOutAt = firstValidDate(
-      req.body?.requestedCheckOutAt,
-      req.body?.checkOutAt
-    );
+    const requestedCheckInAt = firstValidDate(req.body?.requestedCheckInAt, req.body?.checkInAt);
+    const requestedCheckOutAt = firstValidDate(req.body?.requestedCheckOutAt, req.body?.checkOutAt);
 
     if (!shift) {
-      shift = await loadShiftForSession({
-        clinicId,
-        staffId,
-        userId,
-        workDate,
-        shiftId,
-      });
+      shift = await loadShiftForSession({ clinicId, staffId, userId, workDate, shiftId });
     }
 
     const sameDaySessions = await AttendanceSession.find({
       clinicId,
       principalId: resolvedPrincipalId,
       workDate,
-    })
-      .sort({ createdAt: -1, checkInAt: -1 })
-      .exec();
+    }).sort({ createdAt: -1, checkInAt: -1 });
 
     const pendingExisting = sameDaySessions.find((x) => isStatusPendingManual(x));
     if (pendingExisting) {
@@ -3335,10 +2534,8 @@ async function submitManualRequest(req, res) {
       });
     }
 
-    const openSession =
-      sameDaySessions.find((x) => s(x.status) === "open") || null;
-    const closedSession =
-      sameDaySessions.find((x) => s(x.status) === "closed") || null;
+    const openSession = sameDaySessions.find((x) => s(x.status) === "open") || null;
+    const closedSession = sameDaySessions.find((x) => s(x.status) === "closed") || null;
     let targetSession = openSession || closedSession || null;
 
     if (manualRequestType === "check_in") {
@@ -3346,11 +2543,9 @@ async function submitManualRequest(req, res) {
         return res.status(409).json({
           ok: false,
           code: "SESSION_ALREADY_EXISTS",
-          message:
-            "A session already exists for this date. Use edit_both instead.",
+          message: "A session already exists for this date. Use edit_both instead.",
         });
       }
-
       if (!requestedCheckInAt) {
         return res.status(400).json({
           ok: false,
@@ -3381,9 +2576,7 @@ async function submitManualRequest(req, res) {
         userId || resolvedPrincipalId
       );
 
-      created.approvalStatus = policy.manualAttendanceRequireApproval
-        ? "pending"
-        : "approved";
+      created.approvalStatus = policy.manualAttendanceRequireApproval ? "pending" : "approved";
 
       if (created.approvalStatus === "approved") {
         created.status = requestedCheckOutAt ? "closed" : "open";
@@ -3397,11 +2590,7 @@ async function submitManualRequest(req, res) {
 
       let otMeta = null;
       if (s(created.status) === "closed") {
-        otMeta = await syncOvertimeForSession({
-          session: created,
-          policy,
-          shift,
-        });
+        otMeta = await syncOvertimeForSession({ session: created, policy, shift });
         await created.save();
       }
 
@@ -3419,19 +2608,15 @@ async function submitManualRequest(req, res) {
         return res.status(409).json({
           ok: false,
           code: "OPEN_SESSION_REQUIRED",
-          message:
-            "Manual checkout request requires an open session for this date",
+          message: "Manual checkout request requires an open session for this date",
         });
       }
-
       if (!requestedCheckOutAt) {
         return res.status(400).json({
           ok: false,
-          message:
-            "requestedCheckOutAt is required for manual checkout request",
+          message: "requestedCheckOutAt is required for manual checkout request",
         });
       }
-
       targetSession = openSession;
     }
 
@@ -3439,32 +2624,22 @@ async function submitManualRequest(req, res) {
       if (!requestedCheckOutAt) {
         return res.status(400).json({
           ok: false,
-          message:
-            "requestedCheckOutAt is required for forgot checkout request",
+          message: "requestedCheckOutAt is required for forgot checkout request",
         });
       }
 
-      if (openSession) {
-        targetSession = openSession;
-      } else if (closedSession) {
+      if (openSession) targetSession = openSession;
+      else if (closedSession) {
         return res.status(409).json({
           ok: false,
           code: "ATTENDANCE_ALREADY_COMPLETED",
-          message:
-            "Attendance already completed for this date. Use edit_both instead if correction is needed.",
+          message: "Attendance already completed for this date. Use edit_both instead if correction is needed.",
         });
-      } else if (
-        targetSession &&
-        targetSession.checkInAt &&
-        !targetSession.checkOutAt
-      ) {
-        targetSession = targetSession;
-      } else {
+      } else if (!(targetSession && targetSession.checkInAt && !targetSession.checkOutAt)) {
         return res.status(409).json({
           ok: false,
           code: "CHECKIN_SESSION_REQUIRED",
-          message:
-            "Forgot checkout request requires an existing check-in session for this date",
+          message: "Forgot checkout request requires an existing check-in session for this date",
         });
       }
     }
@@ -3473,8 +2648,7 @@ async function submitManualRequest(req, res) {
       if (!targetSession && !requestedCheckInAt) {
         return res.status(400).json({
           ok: false,
-          message:
-            "requestedCheckInAt is required when no session exists for edit_both",
+          message: "requestedCheckInAt is required when no session exists for edit_both",
         });
       }
 
@@ -3508,14 +2682,11 @@ async function submitManualRequest(req, res) {
     if (!s(targetSession.checkInMethod)) targetSession.checkInMethod = "manual";
     if (!s(targetSession.checkOutMethod)) targetSession.checkOutMethod = "manual";
 
-    targetSession.approvalStatus = policy.manualAttendanceRequireApproval
-      ? "pending"
-      : "approved";
+    targetSession.approvalStatus = policy.manualAttendanceRequireApproval ? "pending" : "approved";
 
     if (targetSession.approvalStatus === "approved") {
       if (requestedCheckInAt) targetSession.checkInAt = requestedCheckInAt;
       if (requestedCheckOutAt) targetSession.checkOutAt = requestedCheckOutAt;
-
       targetSession.status = targetSession.checkOutAt ? "closed" : "open";
       clearManualRequestFields(targetSession);
       await recalcSessionByTimes({ session: targetSession, policy, shift });
@@ -3525,11 +2696,7 @@ async function submitManualRequest(req, res) {
 
     let otMeta = null;
     if (s(targetSession.status) === "closed") {
-      otMeta = await syncOvertimeForSession({
-        session: targetSession,
-        policy,
-        shift,
-      });
+      otMeta = await syncOvertimeForSession({ session: targetSession, policy, shift });
       await targetSession.save();
     }
 
@@ -3556,29 +2723,20 @@ async function submitManualRequest(req, res) {
   }
 }
 
-// ======================================================
-// GET /attendance/manual-request/my
-// ======================================================
 async function listMyManualRequests(req, res) {
   try {
     const { clinicId, principalId, userId } = getPrincipal(req);
-
     if (!principalId) {
-      return res
-        .status(401)
-        .json({ ok: false, message: "Missing userId/staffId in token" });
+      return res.status(401).json({ ok: false, message: "Missing userId/staffId in token" });
     }
 
     const workDate = s(req.query?.workDate);
     const approvalStatus = s(req.query?.approvalStatus);
 
     const clinicScope = await resolveSelfClinicFilter(req, clinicId);
-    if (!clinicScope.ok) {
-      return res.status(clinicScope.status).json(clinicScope.body);
-    }
+    if (!clinicScope.ok) return res.status(clinicScope.status).json(clinicScope.body);
 
     const effectiveClinicId = s(clinicScope.clinicId);
-
     const q = buildManualRequestQueryForSelf({
       clinicId: effectiveClinicId,
       principalId,
@@ -3601,10 +2759,7 @@ async function listMyManualRequests(req, res) {
       ok: true,
       items: normalizedItems,
       filter: {
-        view:
-          normalizedFilter === "history"
-            ? "history"
-            : normalizedFilter || "all",
+        view: normalizedFilter === "history" ? "history" : normalizedFilter || "all",
         approvalStatus: normalizedFilter || "",
       },
       clinicScope: {
@@ -3622,24 +2777,15 @@ async function listMyManualRequests(req, res) {
   }
 }
 
-// ======================================================
-// GET /attendance/manual-request/clinic
-// ======================================================
 async function listClinicManualRequests(req, res) {
   try {
     const clinicId = s(req.user?.clinicId);
     const role = s(req.user?.role);
     const actorUserId = s(req.user?.userId);
 
-    if (!clinicId) {
-      return res
-        .status(401)
-        .json({ ok: false, message: "Missing clinicId in token" });
-    }
+    if (!clinicId) return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
     if (role !== "admin" && role !== "clinic_admin") {
-      return res
-        .status(403)
-        .json({ ok: false, message: "Forbidden (admin only)" });
+      return res.status(403).json({ ok: false, message: "Forbidden (admin only)" });
     }
 
     const workDate = s(req.query?.workDate);
@@ -3659,8 +2805,7 @@ async function listClinicManualRequests(req, res) {
 
     const policy = await getOrCreatePolicy(clinicId, actorUserId);
     const normalizedItems = items.map(normalizeSessionItem);
-    const normalizedFilter =
-      normalizeApprovalFilter(approvalStatus) || "pending";
+    const normalizedFilter = normalizeApprovalFilter(approvalStatus) || "pending";
 
     return res.json({
       ok: true,
@@ -3680,9 +2825,6 @@ async function listClinicManualRequests(req, res) {
   }
 }
 
-// ======================================================
-// POST /attendance/manual-request/:id/approve
-// ======================================================
 async function approveManualRequest(req, res) {
   try {
     const clinicId = s(req.user?.clinicId);
@@ -3690,38 +2832,19 @@ async function approveManualRequest(req, res) {
     const actorUserId = s(req.user?.userId);
     const id = s(req.params?.id);
 
-    if (!clinicId) {
-      return res
-        .status(401)
-        .json({ ok: false, message: "Missing clinicId in token" });
-    }
+    if (!clinicId) return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
     if (role !== "admin" && role !== "clinic_admin") {
-      return res
-        .status(403)
-        .json({ ok: false, message: "Forbidden (admin only)" });
+      return res.status(403).json({ ok: false, message: "Forbidden (admin only)" });
     }
-    if (!id) {
-      return res
-        .status(400)
-        .json({ ok: false, message: "Request id is required" });
-    }
+    if (!id) return res.status(400).json({ ok: false, message: "Request id is required" });
 
     const session = await AttendanceSession.findById(id);
-    if (!session) {
-      return res
-        .status(404)
-        .json({ ok: false, message: "Manual request not found" });
-    }
+    if (!session) return res.status(404).json({ ok: false, message: "Manual request not found" });
     if (s(session.clinicId) !== clinicId) {
-      return res
-        .status(403)
-        .json({ ok: false, message: "Forbidden (cross-clinic request)" });
+      return res.status(403).json({ ok: false, message: "Forbidden (cross-clinic request)" });
     }
     if (!isStatusPendingManual(session)) {
-      return res.status(409).json({
-        ok: false,
-        message: "Manual request is not pending approval",
-      });
+      return res.status(409).json({ ok: false, message: "Manual request is not pending approval" });
     }
 
     const policy = await getOrCreatePolicy(clinicId, actorUserId);
@@ -3745,30 +2868,14 @@ async function approveManualRequest(req, res) {
     const requestReasonCodeBeforeClear = s(session.requestReasonCode);
     const requestReasonTextBeforeClear = s(session.requestReasonText);
 
-    const finalCheckInAt =
-      session.requestedCheckInAt || session.checkInAt || null;
-    const finalCheckOutAt =
-      session.requestedCheckOutAt || session.checkOutAt || null;
+    const finalCheckInAt = session.requestedCheckInAt || session.checkInAt || null;
+    const finalCheckOutAt = session.requestedCheckOutAt || session.checkOutAt || null;
 
-    if (
-      (requestedType === "check_in" || requestedType === "edit_both") &&
-      !finalCheckInAt
-    ) {
-      return res.status(400).json({
-        ok: false,
-        message: "Requested check-in time is missing",
-      });
+    if ((requestedType === "check_in" || requestedType === "edit_both") && !finalCheckInAt) {
+      return res.status(400).json({ ok: false, message: "Requested check-in time is missing" });
     }
-
-    if (
-      (requestedType === "check_out" ||
-        requestedType === "forgot_checkout") &&
-      !finalCheckOutAt
-    ) {
-      return res.status(400).json({
-        ok: false,
-        message: "Requested check-out time is missing",
-      });
+    if ((requestedType === "check_out" || requestedType === "forgot_checkout") && !finalCheckOutAt) {
+      return res.status(400).json({ ok: false, message: "Requested check-out time is missing" });
     }
 
     if (finalCheckInAt) {
@@ -3791,7 +2898,6 @@ async function approveManualRequest(req, res) {
     session.manualLocked = false;
 
     clearManualRequestFields(session);
-
     await recalcSessionByTimes({ session, policy, shift });
 
     if (!s(session.reasonCode) && requestReasonCodeBeforeClear) {
@@ -3806,9 +2912,7 @@ async function approveManualRequest(req, res) {
     const otMeta = await syncOvertimeForSession({ session, policy, shift });
     await session.save();
 
-    if (s(session.status) === "closed") {
-      await maybePostTrustScoreFromSession(session);
-    }
+    if (s(session.status) === "closed") await maybePostTrustScoreFromSession(session);
 
     return res.json({
       ok: true,
@@ -3825,9 +2929,6 @@ async function approveManualRequest(req, res) {
   }
 }
 
-// ======================================================
-// POST /attendance/manual-request/:id/reject
-// ======================================================
 async function rejectManualRequest(req, res) {
   try {
     const clinicId = s(req.user?.clinicId);
@@ -3835,43 +2936,22 @@ async function rejectManualRequest(req, res) {
     const actorUserId = s(req.user?.userId);
     const id = s(req.params?.id);
 
-    if (!clinicId) {
-      return res
-        .status(401)
-        .json({ ok: false, message: "Missing clinicId in token" });
-    }
+    if (!clinicId) return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
     if (role !== "admin" && role !== "clinic_admin") {
-      return res
-        .status(403)
-        .json({ ok: false, message: "Forbidden (admin only)" });
+      return res.status(403).json({ ok: false, message: "Forbidden (admin only)" });
     }
-    if (!id) {
-      return res
-        .status(400)
-        .json({ ok: false, message: "Request id is required" });
-    }
+    if (!id) return res.status(400).json({ ok: false, message: "Request id is required" });
     if (!s(req.body?.rejectReason)) {
-      return res
-        .status(400)
-        .json({ ok: false, message: "rejectReason is required" });
+      return res.status(400).json({ ok: false, message: "rejectReason is required" });
     }
 
     const session = await AttendanceSession.findById(id);
-    if (!session) {
-      return res
-        .status(404)
-        .json({ ok: false, message: "Manual request not found" });
-    }
+    if (!session) return res.status(404).json({ ok: false, message: "Manual request not found" });
     if (s(session.clinicId) !== clinicId) {
-      return res
-        .status(403)
-        .json({ ok: false, message: "Forbidden (cross-clinic request)" });
+      return res.status(403).json({ ok: false, message: "Forbidden (cross-clinic request)" });
     }
     if (!isStatusPendingManual(session)) {
-      return res.status(409).json({
-        ok: false,
-        message: "Manual request is not pending rejection",
-      });
+      return res.status(409).json({ ok: false, message: "Manual request is not pending rejection" });
     }
 
     session.approvalStatus = "rejected";
@@ -3879,7 +2959,6 @@ async function rejectManualRequest(req, res) {
     session.rejectedAt = new Date();
     session.rejectReason = s(req.body?.rejectReason);
     session.manualLocked = false;
-
     session.status = determineRejectedStatus(session);
 
     if (s(session.status) === "cancelled") {
@@ -3902,11 +2981,7 @@ async function rejectManualRequest(req, res) {
     }
 
     await session.save();
-
-    return res.json({
-      ok: true,
-      session,
-    });
+    return res.json({ ok: true, session });
   } catch (e) {
     return res.status(500).json({
       ok: false,
@@ -3916,26 +2991,19 @@ async function rejectManualRequest(req, res) {
   }
 }
 
-// ======================================================
-// GET /attendance/me
-// ======================================================
 async function listMySessions(req, res) {
   try {
     const { clinicId, principalId, userId, staffId } = getPrincipal(req);
 
     if (!principalId && !userId && !staffId) {
-      return res
-        .status(401)
-        .json({ ok: false, message: "Missing userId/staffId in token" });
+      return res.status(401).json({ ok: false, message: "Missing userId/staffId in token" });
     }
 
     const dateFrom = s(req.query?.dateFrom);
     const dateTo = s(req.query?.dateTo);
 
     const clinicScope = await resolveSelfClinicFilter(req, clinicId);
-    if (!clinicScope.ok) {
-      return res.status(clinicScope.status).json(clinicScope.body);
-    }
+    if (!clinicScope.ok) return res.status(clinicScope.status).json(clinicScope.body);
 
     const effectiveClinicId = s(clinicScope.clinicId);
 
@@ -3948,25 +3016,17 @@ async function listMySessions(req, res) {
       dateTo,
     });
 
-    console.log("📘 listMySessions clinicScope =", clinicScope);
-    console.log("📘 listMySessions query =", JSON.stringify(q, null, 2));
-
     const items = await AttendanceSession.find(q)
       .sort({ workDate: -1, checkInAt: -1, createdAt: -1 })
       .lean();
 
     const policy = effectiveClinicId
-      ? await getOrCreatePolicy(
-          effectiveClinicId,
-          userId || principalId || staffId
-        )
+      ? await getOrCreatePolicy(effectiveClinicId, userId || principalId || staffId)
       : null;
-
-    const normalizedItems = items.map(normalizeSessionItem);
 
     return res.json({
       ok: true,
-      items: normalizedItems,
+      items: items.map(normalizeSessionItem),
       clinicScope: {
         clinicId: effectiveClinicId || "",
         scope: clinicScope.scope,
@@ -3974,30 +3034,18 @@ async function listMySessions(req, res) {
       policy: policy ? buildPublicPolicy(policy) : null,
     });
   } catch (e) {
-    return res
-      .status(500)
-      .json({ ok: false, message: "list failed", error: e.message });
+    return res.status(500).json({ ok: false, message: "list failed", error: e.message });
   }
 }
 
-// ======================================================
-// GET /attendance/clinic
-// ======================================================
 async function listClinicSessions(req, res) {
   try {
     const clinicId = s(req.user?.clinicId);
     const role = s(req.user?.role);
 
-    if (!clinicId) {
-      return res
-        .status(401)
-        .json({ ok: false, message: "Missing clinicId in token" });
-    }
-
+    if (!clinicId) return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
     if (role !== "admin" && role !== "clinic_admin") {
-      return res
-        .status(403)
-        .json({ ok: false, message: "Forbidden (admin only)" });
+      return res.status(403).json({ ok: false, message: "Forbidden (admin only)" });
     }
 
     const workDate = s(req.query?.workDate);
@@ -4016,15 +3064,12 @@ async function listClinicSessions(req, res) {
       ];
     }
 
-    const items = await AttendanceSession.find(q)
-      .sort({ checkInAt: -1 })
-      .lean();
+    const items = await AttendanceSession.find(q).sort({ checkInAt: -1 }).lean();
     const policy = await getOrCreatePolicy(clinicId, s(req.user?.userId));
-    const normalizedItems = items.map(normalizeSessionItem);
 
     return res.json({
       ok: true,
-      items: normalizedItems,
+      items: items.map(normalizeSessionItem),
       policy: buildPublicPolicy(policy, workDate),
     });
   } catch (e) {
@@ -4036,30 +3081,17 @@ async function listClinicSessions(req, res) {
   }
 }
 
-// ======================================================
-// GET /attendance/me-preview
-// ======================================================
 async function myDayPreview(req, res) {
   try {
     const workDate = s(req.query?.workDate);
     if (!isYmd(workDate)) {
-      return res
-        .status(400)
-        .json({ ok: false, message: "workDate required (yyyy-MM-dd)" });
+      return res.status(400).json({ ok: false, message: "workDate required (yyyy-MM-dd)" });
     }
 
     const ctx = await resolveRuntimeContext(req, workDate, null);
     if (!ctx.ok) return res.status(ctx.status).json(ctx.body);
 
-    const {
-      role,
-      userId,
-      principalId,
-      clinicId,
-      staffId,
-      employee: ctxEmployee,
-    } = ctx;
-
+    const { role, userId, principalId, clinicId, staffId, employee: ctxEmployee } = ctx;
     let shift = ctx.shift || null;
 
     const policy = await getOrCreatePolicy(clinicId, userId || principalId);
@@ -4075,31 +3107,20 @@ async function myDayPreview(req, res) {
     const normalizedSessions = sessions.map(normalizeSessionItem);
 
     const openSession =
-      normalizedSessions.find((x) => s(x.status).toLowerCase() === "open") ||
-      null;
+      normalizedSessions.find((x) => s(x.status).toLowerCase() === "open") || null;
 
     const pendingManualSession =
-      normalizedSessions.find(
-        (x) => s(x.status).toLowerCase() === "pending_manual"
-      ) || null;
+      normalizedSessions.find((x) => s(x.status).toLowerCase() === "pending_manual") || null;
 
     const closedSessions = normalizedSessions.filter(
       (x) => s(x.status).toLowerCase() === "closed"
     );
 
-    const checkedIn =
-      !!openSession || closedSessions.length > 0 || !!pendingManualSession;
+    const checkedIn = !!openSession || closedSessions.length > 0 || !!pendingManualSession;
     const checkedOut = !openSession && closedSessions.length > 0;
 
-    const workedMinutes = closedSessions.reduce(
-      (sum, x) => sum + clampMinutes(x.workedMinutes),
-      0
-    );
-
-    const otMinutesRawFromSessions = closedSessions.reduce(
-      (sum, x) => sum + clampMinutes(x.otMinutes),
-      0
-    );
+    const workedMinutes = closedSessions.reduce((sum, x) => sum + clampMinutes(x.workedMinutes), 0);
+    const otMinutesRawFromSessions = closedSessions.reduce((sum, x) => sum + clampMinutes(x.otMinutes), 0);
 
     const approvedOt = await Overtime.find({
       clinicId,
@@ -4108,33 +3129,17 @@ async function myDayPreview(req, res) {
       status: "approved",
     }).lean();
 
-    const otMinutesApproved = approvedOt.reduce(
-      (sum, x) => sum + clampMinutes(x.minutes),
-      0
-    );
-
+    const otMinutesApproved = approvedOt.reduce((sum, x) => sum + clampMinutes(x.minutes), 0);
     const suspiciousCount = normalizedSessions.reduce(
-      (sum, x) =>
-        sum +
-        (Array.isArray(x.suspiciousFlags) && x.suspiciousFlags.length > 0
-          ? 1
-          : 0),
+      (sum, x) => sum + (Array.isArray(x.suspiciousFlags) && x.suspiciousFlags.length > 0 ? 1 : 0),
       0
     );
-
-    const totalRiskScore = normalizedSessions.reduce(
-      (sum, x) => sum + clampRisk(x.riskScore || 0),
-      0
-    );
+    const totalRiskScore = normalizedSessions.reduce((sum, x) => sum + clampRisk(x.riskScore || 0), 0);
 
     let emp = ctxEmployee?.raw || null;
     if (!emp && userId) {
       try {
-        emp = await memoizedGetEmployeeByUserId(
-          req,
-          userId,
-          getBearerToken(req)
-        );
+        emp = await memoizedGetEmployeeByUserId(req, userId, getBearerToken(req));
       } catch (_) {
         emp = null;
       }
@@ -4176,13 +3181,10 @@ async function myDayPreview(req, res) {
     const checkOutAt = closedSessions[0]?.checkOutAt || null;
 
     let message = "วันนี้ยังไม่ได้เช็คอิน";
-    if (pendingManualSession) {
-      message = "วันนี้มีคำขอแก้ไขเวลา รออนุมัติ";
-    } else if (checkedIn) {
-      message = checkedOut
-        ? "วันนี้เช็คอินและเช็คเอาท์แล้ว"
-        : "วันนี้เช็คอินแล้ว (ยังไม่เช็คเอาท์)";
-    }
+    if (pendingManualSession) message = "วันนี้มีคำขอแก้ไขเวลา รออนุมัติ";
+    else if (checkedIn) message = checkedOut
+      ? "วันนี้เช็คอินและเช็คเอาท์แล้ว"
+      : "วันนี้เช็คอินแล้ว (ยังไม่เช็คเอาท์)";
 
     return res.json({
       ok: true,
@@ -4200,11 +3202,7 @@ async function myDayPreview(req, res) {
         currentSessionId: openSession ? String(openSession._id || "") : "",
       },
       employee: emp || null,
-      principal: {
-        principalId,
-        staffId,
-        userId,
-      },
+      principal: { principalId, staffId, userId },
       policy: buildPublicPolicy(policy, workDate),
       summary: {
         workedMinutes,
@@ -4229,9 +3227,7 @@ async function myDayPreview(req, res) {
       },
     });
   } catch (e) {
-    return res
-      .status(500)
-      .json({ ok: false, message: "preview failed", error: e.message });
+    return res.status(500).json({ ok: false, message: "preview failed", error: e.message });
   }
 }
 
