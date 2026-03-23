@@ -416,6 +416,22 @@ async function me(req, res) {
       return res.status(401).json({ message: "Missing token payload" });
     }
 
+    console.log(
+      "📘 /me req.user =",
+      JSON.stringify(
+        {
+          userId: req.user?.userId || "",
+          role: req.user?.role || "",
+          activeRole: req.user?.activeRole || "",
+          clinicId: req.user?.clinicId || "",
+          staffId: req.user?.staffId || "",
+          roles: Array.isArray(req.user?.roles) ? req.user.roles : [],
+        },
+        null,
+        2
+      )
+    );
+
     let user = await User.findOne({ userId }).select("-passwordHash").lean();
     if (!user) {
       return res.status(404).json({ message: "User not found" });
@@ -423,8 +439,27 @@ async function me(req, res) {
 
     user = await ensureStaffIdIfEmployee(user);
 
-    return res.json({ user: safeUser(user) });
+    const payload = { user: safeUser(user) };
+
+    console.log(
+      "📘 /me response body =",
+      JSON.stringify(
+        {
+          userId: payload.user?.userId || "",
+          role: payload.user?.role || "",
+          activeRole: payload.user?.activeRole || "",
+          clinicId: payload.user?.clinicId || "",
+          staffId: payload.user?.staffId || "",
+          roles: Array.isArray(payload.user?.roles) ? payload.user.roles : [],
+        },
+        null,
+        2
+      )
+    );
+
+    return res.json(payload);
   } catch (e) {
+    console.log("❌ /me failed:", e?.message || e);
     return res.status(500).json({
       message: "me failed",
       error: e.message,
@@ -626,7 +661,6 @@ async function registerClinicAdmin(req, res) {
     });
   }
 }
-
 /* ======================================================
    REGISTER WITH INVITE
    - employee: ผูก clinicId ถาวร + ensure employee (non-blocking)
