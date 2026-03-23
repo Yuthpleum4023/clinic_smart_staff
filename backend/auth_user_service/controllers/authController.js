@@ -155,6 +155,27 @@ function pickActiveRole(user, requested) {
   return "employee";
 }
 
+function isHelperUser(userLike) {
+  const fixed = ensureRolesAndActive(
+    userLike || {},
+    userLike?.activeRole || userLike?.role
+  );
+
+  return (
+    fixed.activeRole === "helper" ||
+    fixed.legacyRole === "helper" ||
+    fixed.roles.includes("helper")
+  );
+}
+
+function helperSafeClinicId(userLike) {
+  return isHelperUser(userLike) ? "" : normStr(userLike?.clinicId);
+}
+
+function helperSafeStaffId(userLike) {
+  return isHelperUser(userLike) ? "" : normStr(userLike?.staffId);
+}
+
 function safeUser(u) {
   if (!u) return null;
 
@@ -165,11 +186,21 @@ function safeUser(u) {
 
   return {
     userId: u.userId,
-    clinicId: u.clinicId,
+    clinicId: helperSafeClinicId({
+      ...u,
+      activeRole: fixed.activeRole,
+      role: fixed.legacyRole,
+      roles: fixed.roles,
+    }),
     role: fixed.legacyRole,
     activeRole: fixed.activeRole,
     roles: fixed.roles,
-    staffId: u.staffId || "",
+    staffId: helperSafeStaffId({
+      ...u,
+      activeRole: fixed.activeRole,
+      role: fixed.legacyRole,
+      roles: fixed.roles,
+    }),
     email: u.email || "",
     phone: u.phone || "",
     fullName: u.fullName || "",
@@ -203,13 +234,20 @@ function makeJwtPayload(user) {
   const premiumUntil = toDateOrNull(user?.premiumUntil);
   const premium = isPremiumActive({ plan, premiumUntil });
 
+  const normalizedForRole = {
+    ...user,
+    activeRole: fixed.activeRole,
+    role: fixed.legacyRole,
+    roles: fixed.roles,
+  };
+
   const payload = {
     userId: normStr(user?.userId),
-    clinicId: normStr(user?.clinicId),
+    clinicId: helperSafeClinicId(normalizedForRole),
     role: fixed.activeRole,
     activeRole: fixed.activeRole,
     roles: fixed.roles,
-    staffId: normStr(user?.staffId),
+    staffId: helperSafeStaffId(normalizedForRole),
     fullName: normStr(user?.fullName),
     phone: normStr(user?.phone),
     email: normStr(user?.email),
