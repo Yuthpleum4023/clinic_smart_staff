@@ -126,6 +126,12 @@ function getBearerToken(req) {
   return s(req.headers?.authorization);
 }
 
+function normalizeObjectIdString(value) {
+  const text = s(value);
+  if (!text) return "";
+  return mongoose.Types.ObjectId.isValid(text) ? text : "";
+}
+
 function getBodyStaffId(req) {
   return (
     s(req.body?.staffId) ||
@@ -138,7 +144,12 @@ function getBodyStaffId(req) {
 }
 
 function getRequestedShiftId(req) {
-  return req.body?.shiftId || req.params?.shiftId || req.query?.shiftId || null;
+  return (
+    req.body?.shiftId ||
+    req.params?.shiftId ||
+    req.query?.shiftId ||
+    null
+  );
 }
 
 function getPrincipal(req) {
@@ -151,7 +162,11 @@ function getPrincipal(req) {
   return { clinicId, role, userId, staffId, principalId, principalType };
 }
 
-function buildAttendanceActorOr({ principalId = "", userId = "", staffId = "" }) {
+function buildAttendanceActorOr({
+  principalId = "",
+  userId = "",
+  staffId = "",
+}) {
   const pid = s(principalId);
   const uid = s(userId);
   const sid = s(staffId);
@@ -190,6 +205,31 @@ function buildAttendanceActorOr({ principalId = "", userId = "", staffId = "" })
   });
 }
 
+function buildDateRangeClause(dateFrom = "", dateTo = "") {
+  if (isYmd(dateFrom) && isYmd(dateTo)) {
+    return { workDate: { $gte: dateFrom, $lte: dateTo } };
+  }
+  if (isYmd(dateFrom)) {
+    return { workDate: { $gte: dateFrom } };
+  }
+  if (isYmd(dateTo)) {
+    return { workDate: { $lte: dateTo } };
+  }
+  return null;
+}
+
+function buildShiftMatchClause(shiftId = "") {
+  const normalizedShiftId = normalizeObjectIdString(shiftId);
+  if (!normalizedShiftId) return null;
+
+  return {
+    $or: [
+      { shiftId: normalizedShiftId },
+      { shiftId: new mongoose.Types.ObjectId(normalizedShiftId) },
+    ],
+  };
+}
+
 function buildMyAttendanceQuery({
   clinicId = "",
   principalId = "",
@@ -197,6 +237,7 @@ function buildMyAttendanceQuery({
   staffId = "",
   dateFrom = "",
   dateTo = "",
+  shiftId = "",
 }) {
   const and = [];
 
@@ -205,13 +246,11 @@ function buildMyAttendanceQuery({
   const actorOr = buildAttendanceActorOr({ principalId, userId, staffId });
   if (actorOr.length) and.push({ $or: actorOr });
 
-  if (isYmd(dateFrom) && isYmd(dateTo)) {
-    and.push({ workDate: { $gte: dateFrom, $lte: dateTo } });
-  } else if (isYmd(dateFrom)) {
-    and.push({ workDate: { $gte: dateFrom } });
-  } else if (isYmd(dateTo)) {
-    and.push({ workDate: { $lte: dateTo } });
-  }
+  const dateClause = buildDateRangeClause(dateFrom, dateTo);
+  if (dateClause) and.push(dateClause);
+
+  const shiftClause = buildShiftMatchClause(shiftId);
+  if (shiftClause) and.push(shiftClause);
 
   if (!and.length) return {};
   if (and.length === 1) return and[0];
@@ -308,10 +347,19 @@ function normalizeSessionItem(x) {
       outMocked: false,
     };
   }
+
   x.riskScore = clampRisk(x.riskScore || 0);
+
+  const shiftIdText =
+    typeof x.shiftId === "object" && x.shiftId !== null
+      ? s(x.shiftId._id || x.shiftId.id)
+      : s(x.shiftId);
+
+  x.shiftId = shiftIdText || x.shiftId || null;
+  x.clinicId = s(x.clinicId);
+
   return x;
 }
-
 function getScoreServiceBaseUrl() {
   return s(process.env.SCORE_SERVICE_URL).replace(/\/+$/, "");
 }
@@ -448,7 +496,9 @@ function buildHumanReadablePolicy(policy) {
     lines.push("ระบบ OT ใช้กับพนักงานประจำเท่านั้น");
   }
   if (isHHmm(policy?.otWindowStart) && isHHmm(policy?.otWindowEnd)) {
-    lines.push(`OT จะคิดเฉพาะช่วง ${policy.otWindowStart} - ${policy.otWindowEnd}`);
+    lines.push(
+      `OT จะคิดเฉพาะช่วง ${policy.otWindowStart} - ${policy.otWindowEnd}`
+    );
     lines.push("เวลานอกช่วงดังกล่าวจะไม่ถูกนำมาคิดเป็น OT");
   }
   if (policy?.requireOtApproval) {
@@ -460,6 +510,7 @@ function buildHumanReadablePolicy(policy) {
 
   return lines;
 }
+
 function getWeekdayKey(dateYmd) {
   const d = new Date(`${dateYmd}T00:00:00+07:00`);
   return [
@@ -650,6 +701,7 @@ async function getOrCreatePolicy(clinicId, userId) {
 
   return p;
 }
+
 function createRequestMemo(req) {
   if (!req._attendanceMemo || typeof req._attendanceMemo !== "object") {
     req._attendanceMemo = {
@@ -657,6 +709,7 @@ function createRequestMemo(req) {
       employeeByUserId: new Map(),
       verifiedEmployee: null,
       runtimeContext: new Map(),
+      helperShiftAssignments: new Map(),
     };
   }
   return req._attendanceMemo;
@@ -735,7 +788,6 @@ async function memoizedGetEmployeeByUserId(req, userId, token = "") {
     throw error;
   }
 }
-
 function normalizeEmployeeRecord(emp) {
   if (!emp || typeof emp !== "object") return null;
 
@@ -1045,73 +1097,74 @@ async function ensureVerifiedEmployeeFromRequest(req, fallbackClinicId = "") {
     memo.verifiedEmployee = { key: cacheKey, value: out };
     return out;
   }
+
   if (
-  tokenStaffId &&
-  employee.staffId &&
-  employee.staffId !== tokenStaffId &&
-  !employee._fallback
-) {
-  const out = buildCodeResponse(
-    403,
-    "EMPLOYEE_STAFF_MISMATCH",
-    "Token staffId does not match employee record",
-    {
-      tokenStaffId,
-      employeeStaffId: employee.staffId,
-    }
-  );
+    tokenStaffId &&
+    employee.staffId &&
+    employee.staffId !== tokenStaffId &&
+    !employee._fallback
+  ) {
+    const out = buildCodeResponse(
+      403,
+      "EMPLOYEE_STAFF_MISMATCH",
+      "Token staffId does not match employee record",
+      {
+        tokenStaffId,
+        employeeStaffId: employee.staffId,
+      }
+    );
+    memo.verifiedEmployee = { key: cacheKey, value: out };
+    return out;
+  }
+
+  if (
+    tokenUserId &&
+    employee.userId &&
+    employee.userId !== tokenUserId &&
+    !employee._fallback
+  ) {
+    const out = buildCodeResponse(
+      403,
+      "EMPLOYEE_USER_MISMATCH",
+      "Token userId does not match employee record",
+      {
+        tokenUserId,
+        employeeUserId: employee.userId,
+      }
+    );
+    memo.verifiedEmployee = { key: cacheKey, value: out };
+    return out;
+  }
+
+  if (
+    tokenClinicId &&
+    employee.clinicId &&
+    employee.clinicId !== tokenClinicId &&
+    !employee._fallback
+  ) {
+    const out = buildCodeResponse(
+      403,
+      "EMPLOYEE_CLINIC_MISMATCH",
+      "Employee does not belong to this clinic",
+      {
+        tokenClinicId,
+        employeeClinicId: employee.clinicId,
+      }
+    );
+    memo.verifiedEmployee = { key: cacheKey, value: out };
+    return out;
+  }
+
+  const out = {
+    ok: true,
+    employee,
+    clinicId: employee.clinicId || tokenClinicId,
+    userId: employee.userId || tokenUserId,
+    staffId: employee.staffId || tokenStaffId || bodyStaffId,
+  };
+
   memo.verifiedEmployee = { key: cacheKey, value: out };
   return out;
-}
-
-if (
-  tokenUserId &&
-  employee.userId &&
-  employee.userId !== tokenUserId &&
-  !employee._fallback
-) {
-  const out = buildCodeResponse(
-    403,
-    "EMPLOYEE_USER_MISMATCH",
-    "Token userId does not match employee record",
-    {
-      tokenUserId,
-      employeeUserId: employee.userId,
-    }
-  );
-  memo.verifiedEmployee = { key: cacheKey, value: out };
-  return out;
-}
-
-if (
-  tokenClinicId &&
-  employee.clinicId &&
-  employee.clinicId !== tokenClinicId &&
-  !employee._fallback
-) {
-  const out = buildCodeResponse(
-    403,
-    "EMPLOYEE_CLINIC_MISMATCH",
-    "Employee does not belong to this clinic",
-    {
-      tokenClinicId,
-      employeeClinicId: employee.clinicId,
-    }
-  );
-  memo.verifiedEmployee = { key: cacheKey, value: out };
-  return out;
-}
-
-const out = {
-  ok: true,
-  employee,
-  clinicId: employee.clinicId || tokenClinicId,
-  userId: employee.userId || tokenUserId,
-  staffId: employee.staffId || tokenStaffId || bodyStaffId,
-};
-
-memo.verifiedEmployee = { key: cacheKey, value: out };
-return out;
 }
 
 async function ensureSessionEmployeeAccess(req, session) {
@@ -1280,7 +1333,6 @@ async function ensureSessionEmployeeAccess(req, session) {
 
   return { ok: true, employee };
 }
-
 function rejectIfMockLocationAnywhere(req) {
   const inMock = isMockLocation(req, "in");
   const outMock = isMockLocation(req, "out");
@@ -1295,6 +1347,7 @@ function rejectIfMockLocationAnywhere(req) {
 
   return null;
 }
+
 async function resolveSelfClinicFilter(req, fallbackClinicId = "") {
   const role = s(req.user?.role);
   const requestedClinicId =
@@ -1430,6 +1483,7 @@ function shiftBelongsToHelper(
 
   return false;
 }
+
 function validateExplicitShiftForHelper({
   shift,
   workDate,
@@ -1537,6 +1591,57 @@ function pickBestShiftForTime(shifts, now = new Date()) {
   return near[0]?.sh || null;
 }
 
+function normalizeShiftClinicId(shift) {
+  return s(
+    shift?.clinicId ||
+      shift?.clinic?._id ||
+      shift?.clinic?.id ||
+      shift?.clinic?.clinicId
+  );
+}
+
+function normalizeShiftDate(shift) {
+  return s(shift?.date || shift?.workDate || shift?.shiftDate);
+}
+
+function normalizeShiftTimeValue(value) {
+  const text = s(value);
+  return isHHmm(text) ? text : "";
+}
+
+function normalizeShiftLite(shift) {
+  if (!shift || typeof shift !== "object") return null;
+
+  const _id = s(shift._id || shift.id);
+  if (!_id) return null;
+
+  return {
+    ...shift,
+    _id,
+    id: _id,
+    clinicId: normalizeShiftClinicId(shift),
+    date: normalizeShiftDate(shift),
+    start: normalizeShiftTimeValue(shift.start || shift.startTime),
+    end: normalizeShiftTimeValue(shift.end || shift.endTime),
+  };
+}
+
+function getShiftMemoKey({
+  clinicId = "",
+  staffId = "",
+  userId = "",
+  workDate = "",
+  shiftId = "",
+}) {
+  return [
+    s(clinicId),
+    s(staffId),
+    s(userId),
+    s(workDate),
+    s(shiftId),
+  ].join("|");
+}
+
 async function loadShiftCandidatesForSession({
   clinicId,
   staffId,
@@ -1544,9 +1649,11 @@ async function loadShiftCandidatesForSession({
   workDate,
   shiftId,
 }) {
-  if (shiftId && mongoose.Types.ObjectId.isValid(String(shiftId))) {
-    const one = await Shift.findById(shiftId).lean();
-    return one ? [one] : [];
+  const normalizedShiftId = normalizeObjectIdString(shiftId);
+  if (normalizedShiftId) {
+    const one = await Shift.findById(normalizedShiftId).lean();
+    const lite = normalizeShiftLite(one);
+    return lite ? [lite] : [];
   }
 
   const cid = s(clinicId);
@@ -1579,8 +1686,9 @@ async function loadShiftCandidatesForSession({
     )
   );
 
-  return dedupeShifts(results.flat());
+  return dedupeShifts(results.flat().map(normalizeShiftLite).filter(Boolean));
 }
+
 async function loadShiftForSession({
   clinicId,
   staffId,
@@ -1588,9 +1696,10 @@ async function loadShiftForSession({
   workDate,
   shiftId,
 }) {
-  if (shiftId && mongoose.Types.ObjectId.isValid(String(shiftId))) {
-    const sh = await Shift.findById(shiftId).lean();
-    return sh || null;
+  const normalizedShiftId = normalizeObjectIdString(shiftId);
+  if (normalizedShiftId) {
+    const sh = await Shift.findById(normalizedShiftId).lean();
+    return normalizeShiftLite(sh);
   }
 
   const candidates = await loadShiftCandidatesForSession({
@@ -1598,7 +1707,7 @@ async function loadShiftForSession({
     staffId,
     userId,
     workDate,
-    shiftId: null,
+    shiftId: "",
   });
 
   if (!candidates.length) return null;
@@ -1606,7 +1715,153 @@ async function loadShiftForSession({
   const picked = pickBestShiftForTime(candidates, new Date());
   if (picked?._conflict) return null;
 
-  return picked || null;
+  return normalizeShiftLite(picked || null);
+}
+async function loadHelperAssignedShifts(req, { userId, workDate, clinicId = "" }) {
+  const memo = createRequestMemo(req);
+  const key = getShiftMemoKey({
+    clinicId,
+    staffId: "",
+    userId,
+    workDate,
+    shiftId: "",
+  });
+
+  if (memo.helperShiftAssignments.has(key)) {
+    return memo.helperShiftAssignments.get(key);
+  }
+
+  let items = await loadShiftCandidatesForSession({
+    clinicId,
+    staffId: "",
+    userId,
+    workDate,
+    shiftId: "",
+  });
+
+  if (!items.length && clinicId) {
+    items = await loadShiftCandidatesForSession({
+      clinicId: "",
+      staffId: "",
+      userId,
+      workDate,
+      shiftId: "",
+    });
+  }
+
+  const out = dedupeShifts(items.map(normalizeShiftLite).filter(Boolean));
+  memo.helperShiftAssignments.set(key, out);
+  return out;
+}
+
+async function resolveHelperShiftForRuntime(req, {
+  principalId,
+  userId,
+  staffId,
+  workDate,
+  explicitShiftId = "",
+  fallbackClinicId = "",
+}) {
+  const normalizedExplicitShiftId = normalizeObjectIdString(explicitShiftId);
+
+  if (normalizedExplicitShiftId) {
+    const explicitShift = await loadShiftForSession({
+      clinicId: "",
+      staffId,
+      userId,
+      workDate,
+      shiftId: normalizedExplicitShiftId,
+    });
+
+    const explicitCheck = validateExplicitShiftForHelper({
+      shift: explicitShift,
+      workDate,
+      principalId,
+      userId,
+      staffId,
+    });
+
+    if (!explicitCheck.ok) return explicitCheck;
+
+    return {
+      ok: true,
+      shift: normalizeShiftLite(explicitCheck.shift),
+      clinicId: s(explicitCheck.clinicId),
+      shiftSelectionMode: "explicit",
+      availableShifts: [normalizeShiftLite(explicitCheck.shift)].filter(Boolean),
+    };
+  }
+
+  let candidates = await loadHelperAssignedShifts(req, {
+    userId,
+    workDate,
+    clinicId: fallbackClinicId,
+  });
+
+  if (!candidates.length && fallbackClinicId) {
+    candidates = await loadHelperAssignedShifts(req, {
+      userId,
+      workDate,
+      clinicId: "",
+    });
+  }
+
+  if (!candidates.length) {
+    return buildCodeResponse(
+      409,
+      "NO_SHIFT_TODAY",
+      "วันนี้ไม่มีตารางงาน",
+      { workDate }
+    );
+  }
+
+  if (candidates.length === 1) {
+    const only = normalizeShiftLite(candidates[0]);
+    return {
+      ok: true,
+      shift: only,
+      clinicId: s(only?.clinicId),
+      shiftSelectionMode: "single_auto",
+      availableShifts: only ? [only] : [],
+    };
+  }
+
+  const picked = pickBestShiftForTime(candidates, new Date());
+
+  if (picked?._conflict) {
+    return buildCodeResponse(
+      409,
+      "MULTIPLE_ACTIVE_SHIFTS",
+      "พบหลายกะงานในช่วงเวลาเดียวกัน กรุณาเลือกกะงาน/คลินิกก่อนสแกน",
+      {
+        workDate,
+        candidates: (picked.candidates || [])
+          .map(normalizeShiftLite)
+          .filter(Boolean),
+      }
+    );
+  }
+
+  const pickedShift = normalizeShiftLite(picked);
+  if (!pickedShift) {
+    return buildCodeResponse(
+      409,
+      "SHIFT_NOT_RESOLVED",
+      "ไม่สามารถระบุกะงานที่กำลังทำอยู่ได้ กรุณาเลือกกะงานก่อนสแกน",
+      {
+        workDate,
+        candidates: candidates.map(normalizeShiftLite).filter(Boolean),
+      }
+    );
+  }
+
+  return {
+    ok: true,
+    shift: pickedShift,
+    clinicId: s(pickedShift.clinicId),
+    shiftSelectionMode: "time_auto",
+    availableShifts: candidates.map(normalizeShiftLite).filter(Boolean),
+  };
 }
 
 async function findPreviousOpenSession({ principalId, workDate }) {
@@ -1624,6 +1879,8 @@ async function findOpenSessionsForPrincipal({
   userId = "",
   staffId = "",
   workDate = "",
+  clinicId = "",
+  shiftId = "",
 }) {
   const actorOr = buildAttendanceActorOr({ principalId, userId, staffId });
   if (!actorOr.length) return [];
@@ -1634,6 +1891,12 @@ async function findOpenSessionsForPrincipal({
   };
 
   if (isYmd(workDate)) q.workDate = workDate;
+  if (s(clinicId)) q.clinicId = s(clinicId);
+
+  const normalizedShiftId = normalizeObjectIdString(shiftId);
+  if (normalizedShiftId) {
+    q.$and = [buildShiftMatchClause(normalizedShiftId)];
+  }
 
   return AttendanceSession.find(q).sort({ checkInAt: -1 }).lean();
 }
@@ -1958,6 +2221,7 @@ function getScheduleSnapshot({ policy, shift, workDate }) {
     ),
   };
 }
+
 function buildSessionBaseForCreate({
   clinicId,
   principalId,
@@ -2052,7 +2316,6 @@ function clearManualRequestFields(session) {
   session.requestReasonText = "";
   session.manualLocked = false;
 }
-
 function buildManualRequestQueryForSelf({
   clinicId,
   principalId,
@@ -2223,6 +2486,7 @@ async function syncOvertimeForSession({ session, policy, shift }) {
     };
   }
 }
+
 async function recalcSessionByTimes({ session, policy, shift }) {
   const rules = attendanceRuleDefaults(policy);
   const role = inferRoleFromSession(session);
@@ -2317,6 +2581,8 @@ async function resolveRuntimeContext(req, workDate, shiftId = null) {
   let effectiveStaffId = s(staffId);
   let shift = null;
   let employee = null;
+  let availableShifts = [];
+  let shiftSelectionMode = "";
 
   if (role === "employee" || role === "staff") {
     const verify = await ensureVerifiedEmployeeFromRequest(req, effectiveClinicId);
@@ -2341,106 +2607,31 @@ async function resolveRuntimeContext(req, workDate, shiftId = null) {
       return out;
     }
   } else if (role === "helper") {
-    const explicitShiftId = s(shiftId);
+    const helperShiftResult = await resolveHelperShiftForRuntime(req, {
+      principalId,
+      userId: effectiveUserId,
+      staffId: effectiveStaffId,
+      workDate,
+      explicitShiftId: shiftId,
+      fallbackClinicId: effectiveClinicId,
+    });
 
-    if (explicitShiftId) {
-      const explicitShift = await loadShiftForSession({
-        clinicId: "",
-        staffId: effectiveStaffId,
-        userId: effectiveUserId,
-        workDate,
-        shiftId: explicitShiftId,
-      });
-
-      const explicitCheck = validateExplicitShiftForHelper({
-        shift: explicitShift,
-        workDate,
-        principalId,
-        userId: effectiveUserId,
-        staffId: effectiveStaffId,
-      });
-
-      if (!explicitCheck.ok) {
-        const out = {
-          ok: false,
-          status: explicitCheck.status,
-          body: explicitCheck.body,
-        };
-        memo.runtimeContext.set(runtimeKey, out);
-        return out;
-      }
-
-      shift = explicitCheck.shift;
-      effectiveClinicId = explicitCheck.clinicId;
-    } else {
-      let candidates = await loadShiftCandidatesForSession({
-        clinicId: effectiveClinicId,
-        staffId: effectiveStaffId,
-        userId: effectiveUserId,
-        workDate,
-        shiftId,
-      });
-
-      if (!candidates.length && effectiveClinicId) {
-        candidates = await loadShiftCandidatesForSession({
-          clinicId: "",
-          staffId: effectiveStaffId,
-          userId: effectiveUserId,
-          workDate,
-          shiftId,
-        });
-      }
-
-      if (!candidates.length) {
-        const out = {
-          ok: false,
-          status: 409,
-          body: {
-            ok: false,
-            code: "NO_SHIFT_TODAY",
-            message: "วันนี้ไม่มีตารางงาน",
-            workDate,
-          },
-        };
-        memo.runtimeContext.set(runtimeKey, out);
-        return out;
-      }
-
-      const picked = pickBestShiftForTime(candidates, new Date());
-      if (picked?._conflict) {
-        const out = {
-          ok: false,
-          status: 409,
-          body: {
-            ok: false,
-            code: "MULTIPLE_ACTIVE_SHIFTS",
-            message: "พบหลายกะงานในช่วงเวลาเดียวกัน กรุณาเลือกกะงาน/คลินิกก่อนสแกน",
-            workDate,
-            candidates: picked.candidates,
-          },
-        };
-        memo.runtimeContext.set(runtimeKey, out);
-        return out;
-      }
-
-      shift = picked;
-      if (!shift) {
-        const out = {
-          ok: false,
-          status: 409,
-          body: {
-            ok: false,
-            code: "SHIFT_NOT_RESOLVED",
-            message: "ไม่สามารถระบุกะงานที่กำลังทำอยู่ได้ กรุณาเลือกกะงานก่อนสแกน",
-            workDate,
-          },
-        };
-        memo.runtimeContext.set(runtimeKey, out);
-        return out;
-      }
-
-      effectiveClinicId = s(shift.clinicId) || effectiveClinicId;
+    if (!helperShiftResult.ok) {
+      const out = {
+        ok: false,
+        status: helperShiftResult.status,
+        body: helperShiftResult.body,
+      };
+      memo.runtimeContext.set(runtimeKey, out);
+      return out;
     }
+
+    shift = normalizeShiftLite(helperShiftResult.shift);
+    availableShifts = Array.isArray(helperShiftResult.availableShifts)
+      ? helperShiftResult.availableShifts.map(normalizeShiftLite).filter(Boolean)
+      : [];
+    shiftSelectionMode = s(helperShiftResult.shiftSelectionMode);
+    effectiveClinicId = s(helperShiftResult.clinicId) || effectiveClinicId;
 
     if (!effectiveClinicId) {
       const out = {
@@ -2473,12 +2664,13 @@ async function resolveRuntimeContext(req, workDate, shiftId = null) {
     clinicId: effectiveClinicId,
     shift,
     employee,
+    availableShifts,
+    shiftSelectionMode,
   };
 
   memo.runtimeContext.set(runtimeKey, out);
   return out;
 }
-
 async function checkIn(req, res) {
   try {
     const mockErr = rejectIfMockLocationAnywhere(req);
@@ -2496,8 +2688,18 @@ async function checkIn(req, res) {
     const ctx = await resolveRuntimeContext(req, workDate, shiftId);
     if (!ctx.ok) return res.status(ctx.status).json(ctx.body);
 
-    const { role, userId, staffId, principalId, principalType, clinicId } = ctx;
-    let shift = ctx.shift || null;
+    const {
+      role,
+      userId,
+      staffId,
+      principalId,
+      principalType,
+      clinicId,
+      availableShifts,
+      shiftSelectionMode,
+    } = ctx;
+
+    let shift = normalizeShiftLite(ctx.shift) || null;
 
     const policy = await getOrCreatePolicy(clinicId, userId || principalId);
     const rules = attendanceRuleDefaults(policy);
@@ -2561,6 +2763,17 @@ async function checkIn(req, res) {
         workDate,
         shiftId,
       });
+      shift = normalizeShiftLite(shift);
+    }
+
+    if (role === "helper" && !shift) {
+      return res.status(409).json({
+        ok: false,
+        code: "SHIFT_NOT_RESOLVED",
+        message: "ไม่สามารถระบุกะงานที่กำลังทำอยู่ได้ กรุณาเลือกกะงานก่อนสแกน",
+        workDate,
+        availableShifts,
+      });
     }
 
     const lat = n(req.body?.lat, null);
@@ -2618,6 +2831,10 @@ async function checkIn(req, res) {
         existingSessionId: String(open._id || ""),
         existingClinicId: s(open.clinicId),
         existingWorkDate: s(open.workDate),
+        existingShiftId:
+          typeof open.shiftId === "object"
+            ? s(open.shiftId?._id || open.shiftId?.id)
+            : s(open.shiftId),
       });
     }
 
@@ -2625,13 +2842,19 @@ async function checkIn(req, res) {
       $or: buildAttendanceActorOr({ principalId, userId, staffId }),
       workDate,
       status: "closed",
+      ...(role === "helper" && shift?._id
+        ? { $and: [buildShiftMatchClause(shift._id)] }
+        : {}),
     }).lean();
 
     if (existingClosed) {
       return res.status(409).json({
         ok: false,
         code: "ATTENDANCE_ALREADY_COMPLETED",
-        message: "Attendance already completed for today",
+        message:
+          role === "helper"
+            ? "Attendance already completed for this shift/date"
+            : "Attendance already completed for today",
       });
     }
 
@@ -2639,6 +2862,9 @@ async function checkIn(req, res) {
       $or: buildAttendanceActorOr({ principalId, userId, staffId }),
       workDate,
       status: "pending_manual",
+      ...(role === "helper" && shift?._id
+        ? { $and: [buildShiftMatchClause(shift._id)] }
+        : {}),
     }).lean();
 
     if (existingPendingManual) {
@@ -2753,6 +2979,13 @@ async function checkIn(req, res) {
       session: created,
       currentSessionId: String(created._id || ""),
       policy: buildPublicPolicy(policy, workDate),
+      runtime: {
+        role,
+        clinicId,
+        shift: shift || null,
+        shiftSelectionMode: shiftSelectionMode || "",
+        availableShifts,
+      },
     });
   } catch (e) {
     console.log("❌ check-in failed:", e?.message || e);
@@ -2802,6 +3035,11 @@ async function checkOut(req, res) {
       };
       if (isYmd(bodyWorkDate)) q.workDate = bodyWorkDate;
 
+      const requestedShiftId = normalizeObjectIdString(getRequestedShiftId(req));
+      if (requestedShiftId) {
+        q.$and = [buildShiftMatchClause(requestedShiftId)];
+      }
+
       const openSessions = await AttendanceSession.find(q).sort({ checkInAt: -1 });
 
       if (!openSessions.length) {
@@ -2821,6 +3059,10 @@ async function checkOut(req, res) {
             _id: String(x._id || ""),
             clinicId: s(x.clinicId),
             workDate: s(x.workDate),
+            shiftId:
+              typeof x.shiftId === "object"
+                ? s(x.shiftId?._id || x.shiftId?.id)
+                : s(x.shiftId),
             checkInAt: x.checkInAt,
           })),
         });
@@ -2828,8 +3070,7 @@ async function checkOut(req, res) {
 
       session = openSessions[0];
     }
-
-    const ownershipOr = buildAttendanceActorOr({ principalId, userId, staffId });
+        const ownershipOr = buildAttendanceActorOr({ principalId, userId, staffId });
     const owned = ownershipOr.some((cond) =>
       Object.entries(cond).every(([k, v]) => s(session?.[k]) === s(v))
     );
@@ -2850,7 +3091,9 @@ async function checkOut(req, res) {
 
     const effectiveClinicId = s(session.clinicId);
     if (!effectiveClinicId) {
-      return res.status(400).json({ ok: false, message: "Session clinicId is missing" });
+      return res
+        .status(400)
+        .json({ ok: false, message: "Session clinicId is missing" });
     }
 
     const sessionRole = inferRoleFromSession(session);
@@ -2859,10 +3102,16 @@ async function checkOut(req, res) {
       if (!verify.ok) return res.status(verify.status).json(verify.body);
     }
 
-    const policy = await getOrCreatePolicy(effectiveClinicId, userId || principalId);
+    const policy = await getOrCreatePolicy(
+      effectiveClinicId,
+      userId || principalId
+    );
     const rules = attendanceRuleDefaults(policy);
 
-    if (sessionRole === "employee" && !isClinicOpenDay(policy, s(session.workDate))) {
+    if (
+      sessionRole === "employee" &&
+      !isClinicOpenDay(policy, s(session.workDate))
+    ) {
       return res.status(409).json({
         ok: false,
         code: "CLINIC_CLOSED_DAY",
@@ -2897,13 +3146,15 @@ async function checkOut(req, res) {
     const outLocationSource = getLocationSource(req, "out");
     const outMocked = isMockLocation(req, "out");
 
-    const shift = await loadShiftForSession({
-      clinicId: effectiveClinicId,
-      staffId: s(session.staffId) || staffId,
-      userId: s(session.userId) || userId || "",
-      workDate: s(session.workDate),
-      shiftId: session.shiftId,
-    });
+    const shift = normalizeShiftLite(
+      await loadShiftForSession({
+        clinicId: effectiveClinicId,
+        staffId: s(session.staffId) || staffId,
+        userId: s(session.userId) || userId || "",
+        workDate: s(session.workDate),
+        shiftId: session.shiftId,
+      })
+    );
 
     let outDistanceMeters = null;
     if (policy.requireLocation) {
@@ -3030,7 +3281,9 @@ async function checkOut(req, res) {
     setLocationSecurityMeta({
       session,
       phase: "out",
-      distanceMeters: Number.isFinite(outDistanceMeters) ? outDistanceMeters : null,
+      distanceMeters: Number.isFinite(outDistanceMeters)
+        ? outDistanceMeters
+        : null,
       locationSource: outLocationSource,
       mocked: outMocked,
     });
@@ -3075,6 +3328,11 @@ async function checkOut(req, res) {
       session,
       otMeta,
       policy: buildPublicPolicy(policy, s(session.workDate)),
+      runtime: {
+        role: sessionRole,
+        clinicId: effectiveClinicId,
+        shift: shift || null,
+      },
     });
   } catch (e) {
     console.log("❌ check-out failed:", e?.message || e);
@@ -3095,7 +3353,9 @@ async function submitManualRequest(req, res) {
     }
 
     const workDate = s(req.body?.workDate);
-    const manualRequestType = normalizeManualRequestType(req.body?.manualRequestType);
+    const manualRequestType = normalizeManualRequestType(
+      req.body?.manualRequestType
+    );
     const shiftId = getRequestedShiftId(req);
 
     if (!isYmd(workDate)) {
@@ -3121,13 +3381,16 @@ async function submitManualRequest(req, res) {
       principalId: resolvedPrincipalId,
       principalType,
       clinicId,
+      role,
     } = ctx;
 
-    let shift = ctx.shift || null;
-    const policy = await getOrCreatePolicy(clinicId, userId || resolvedPrincipalId);
+    let shift = normalizeShiftLite(ctx.shift) || null;
+    const policy = await getOrCreatePolicy(
+      clinicId,
+      userId || resolvedPrincipalId
+    );
     const features = withFeatureDefaults(policy?.features || {});
-
-    if (!features.manualAttendance) {
+        if (!features.manualAttendance) {
       return res
         .status(400)
         .json({ ok: false, message: "Manual attendance is not enabled" });
@@ -3156,31 +3419,43 @@ async function submitManualRequest(req, res) {
         workDate,
         shiftId,
       });
+      shift = normalizeShiftLite(shift);
     }
 
-    const sameDaySessions = await AttendanceSession.find({
+    const sameDayQuery = {
       $or: buildAttendanceActorOr({
         principalId: resolvedPrincipalId,
         userId,
         staffId,
       }),
       workDate,
-    }).sort({
+    };
+
+    if (role === "helper" && shift?._id) {
+      sameDayQuery.$and = [buildShiftMatchClause(shift._id)];
+    }
+
+    const sameDaySessions = await AttendanceSession.find(sameDayQuery).sort({
       createdAt: -1,
       checkInAt: -1,
     });
 
-    const pendingExisting = sameDaySessions.find((x) => isStatusPendingManual(x));
+    const pendingExisting =
+      sameDaySessions.find((x) => isStatusPendingManual(x)) || null;
     if (pendingExisting) {
       return res.status(409).json({
         ok: false,
         code: "MANUAL_REQUEST_PENDING",
-        message: "Manual attendance request is already pending for this date",
+        message:
+          role === "helper"
+            ? "Manual attendance request is already pending for this shift/date"
+            : "Manual attendance request is already pending for this date",
         sessionId: String(pendingExisting._id || ""),
       });
     }
 
-    const openSession = sameDaySessions.find((x) => s(x.status) === "open") || null;
+    const openSession =
+      sameDaySessions.find((x) => s(x.status) === "open") || null;
     const closedSession =
       sameDaySessions.find((x) => s(x.status) === "closed") || null;
     let targetSession = openSession || closedSession || null;
@@ -3190,7 +3465,10 @@ async function submitManualRequest(req, res) {
         return res.status(409).json({
           ok: false,
           code: "SESSION_ALREADY_EXISTS",
-          message: "A session already exists for this date. Use edit_both instead.",
+          message:
+            role === "helper"
+              ? "A session already exists for this shift/date. Use edit_both instead."
+              : "A session already exists for this date. Use edit_both instead.",
         });
       }
 
@@ -3250,6 +3528,11 @@ async function submitManualRequest(req, res) {
         requiresApproval: created.approvalStatus === "pending",
         otMeta,
         policy: buildPublicPolicy(policy, workDate),
+        runtime: {
+          role,
+          clinicId,
+          shift: shift || null,
+        },
       });
     }
 
@@ -3258,7 +3541,10 @@ async function submitManualRequest(req, res) {
         return res.status(409).json({
           ok: false,
           code: "OPEN_SESSION_REQUIRED",
-          message: "Manual checkout request requires an open session for this date",
+          message:
+            role === "helper"
+              ? "Manual checkout request requires an open session for this shift/date"
+              : "Manual checkout request requires an open session for this date",
         });
       }
 
@@ -3287,14 +3573,20 @@ async function submitManualRequest(req, res) {
           ok: false,
           code: "ATTENDANCE_ALREADY_COMPLETED",
           message:
-            "Attendance already completed for this date. Use edit_both instead if correction is needed.",
+            role === "helper"
+              ? "Attendance already completed for this shift/date. Use edit_both instead if correction is needed."
+              : "Attendance already completed for this date. Use edit_both instead if correction is needed.",
         });
-      } else if (!(targetSession && targetSession.checkInAt && !targetSession.checkOutAt)) {
+      } else if (
+        !(targetSession && targetSession.checkInAt && !targetSession.checkOutAt)
+      ) {
         return res.status(409).json({
           ok: false,
           code: "CHECKIN_SESSION_REQUIRED",
           message:
-            "Forgot checkout request requires an existing check-in session for this date",
+            role === "helper"
+              ? "Forgot checkout request requires an existing check-in session for this shift/date"
+              : "Forgot checkout request requires an existing check-in session for this date",
         });
       }
     }
@@ -3303,7 +3595,8 @@ async function submitManualRequest(req, res) {
       if (!targetSession && !requestedCheckInAt) {
         return res.status(400).json({
           ok: false,
-          message: "requestedCheckInAt is required when no session exists for edit_both",
+          message:
+            "requestedCheckInAt is required when no session exists for edit_both",
         });
       }
 
@@ -3367,6 +3660,11 @@ async function submitManualRequest(req, res) {
       requiresApproval: targetSession.approvalStatus === "pending",
       otMeta,
       policy: buildPublicPolicy(policy, workDate),
+      runtime: {
+        role,
+        clinicId,
+        shift: shift || null,
+      },
     });
   } catch (e) {
     if (e?.code === 11000) {
@@ -3387,7 +3685,7 @@ async function submitManualRequest(req, res) {
 
 async function listMyManualRequests(req, res) {
   try {
-    const { clinicId, principalId, userId } = getPrincipal(req);
+    const { clinicId, principalId, userId, role } = getPrincipal(req);
 
     if (!principalId) {
       return res
@@ -3397,9 +3695,12 @@ async function listMyManualRequests(req, res) {
 
     const workDate = s(req.query?.workDate);
     const approvalStatus = s(req.query?.approvalStatus);
+    const shiftId = normalizeObjectIdString(getRequestedShiftId(req));
 
     const clinicScope = await resolveSelfClinicFilter(req, clinicId);
-    if (!clinicScope.ok) return res.status(clinicScope.status).json(clinicScope.body);
+    if (!clinicScope.ok) {
+      return res.status(clinicScope.status).json(clinicScope.body);
+    }
 
     const effectiveClinicId = s(clinicScope.clinicId);
     const q = buildManualRequestQueryForSelf({
@@ -3408,6 +3709,10 @@ async function listMyManualRequests(req, res) {
       workDate,
       approvalStatus,
     });
+
+    if (role === "helper" && shiftId) {
+      q.$and = [...(Array.isArray(q.$and) ? q.$and : []), buildShiftMatchClause(shiftId)];
+    }
 
     const items = await AttendanceSession.find(q)
       .sort({ workDate: -1, requestedAt: -1, createdAt: -1 })
@@ -3447,8 +3752,7 @@ async function listClinicManualRequests(req, res) {
     const clinicId = s(req.user?.clinicId);
     const role = s(req.user?.role);
     const actorUserId = s(req.user?.userId);
-
-    if (!clinicId) {
+       if (!clinicId) {
       return res.status(401).json({ ok: false, message: "Missing clinicId in token" });
     }
 
@@ -3534,13 +3838,15 @@ async function approveManualRequest(req, res) {
       });
     }
 
-    const shift = await loadShiftForSession({
-      clinicId: s(session.clinicId),
-      staffId: s(session.staffId),
-      userId: s(session.userId),
-      workDate: s(session.workDate),
-      shiftId: session.shiftId,
-    });
+    const shift = normalizeShiftLite(
+      await loadShiftForSession({
+        clinicId: s(session.clinicId),
+        staffId: s(session.staffId),
+        userId: s(session.userId),
+        workDate: s(session.workDate),
+        shiftId: session.shiftId,
+      })
+    );
 
     const requestedType = s(session.manualRequestType);
     const requestReasonCodeBeforeClear = s(session.requestReasonCode);
@@ -3702,6 +4008,7 @@ async function listMySessions(req, res) {
 
     const dateFrom = s(req.query?.dateFrom);
     const dateTo = s(req.query?.dateTo);
+    const requestedShiftId = normalizeObjectIdString(getRequestedShiftId(req));
 
     const clinicScope = await resolveSelfClinicFilter(req, clinicId);
     if (!clinicScope.ok) return res.status(clinicScope.status).json(clinicScope.body);
@@ -3715,6 +4022,7 @@ async function listMySessions(req, res) {
       staffId,
       dateFrom,
       dateTo,
+      shiftId: role === "helper" ? requestedShiftId : "",
     });
 
     const items = await AttendanceSession.find(q)
@@ -3729,15 +4037,22 @@ async function listMySessions(req, res) {
           )
         : null;
 
+    const normalizedItems = items.map(normalizeSessionItem);
+
     return res.json({
       ok: true,
-      items: items.map(normalizeSessionItem),
+      items: normalizedItems,
       clinicScope: {
         clinicId: requestedClinicId || "",
         scope:
           role === "helper" && !requestedClinicId
             ? "all_clinics"
             : clinicScope.scope,
+      },
+      filters: {
+        dateFrom: isYmd(dateFrom) ? dateFrom : "",
+        dateTo: isYmd(dateTo) ? dateTo : "",
+        shiftId: role === "helper" ? requestedShiftId || "" : "",
       },
       policy: policy ? buildPublicPolicy(policy) : null,
     });
@@ -3758,9 +4073,9 @@ async function listClinicSessions(req, res) {
     if (role !== "admin" && role !== "clinic_admin") {
       return res.status(403).json({ ok: false, message: "Forbidden (admin only)" });
     }
-
-    const workDate = s(req.query?.workDate);
+        const workDate = s(req.query?.workDate);
     const staffIdOrPrincipal = s(req.query?.staffId);
+    const requestedShiftId = normalizeObjectIdString(getRequestedShiftId(req));
 
     const q = { clinicId };
     if (isYmd(workDate)) q.workDate = workDate;
@@ -3775,12 +4090,21 @@ async function listClinicSessions(req, res) {
       ];
     }
 
+    if (requestedShiftId) {
+      q.$and = [buildShiftMatchClause(requestedShiftId)];
+    }
+
     const items = await AttendanceSession.find(q).sort({ checkInAt: -1 }).lean();
     const policy = await getOrCreatePolicy(clinicId, s(req.user?.userId));
 
     return res.json({
       ok: true,
       items: items.map(normalizeSessionItem),
+      filters: {
+        workDate: isYmd(workDate) ? workDate : "",
+        staffId: staffIdOrPrincipal || "",
+        shiftId: requestedShiftId || "",
+      },
       policy: buildPublicPolicy(policy, workDate),
     });
   } catch (e) {
@@ -3813,16 +4137,24 @@ async function myDayPreview(req, res) {
       clinicId,
       staffId,
       employee: ctxEmployee,
+      availableShifts,
+      shiftSelectionMode,
     } = ctx;
 
-    let shift = ctx.shift || null;
+    let shift = normalizeShiftLite(ctx.shift) || null;
     const policy = await getOrCreatePolicy(clinicId, userId || principalId);
 
-    const sessions = await AttendanceSession.find({
+    const sessionsQuery = {
       clinicId,
       $or: buildAttendanceActorOr({ principalId, userId, staffId }),
       workDate,
-    })
+    };
+
+    if (role === "helper" && shift?._id) {
+      sessionsQuery.$and = [buildShiftMatchClause(shift._id)];
+    }
+
+    const sessions = await AttendanceSession.find(sessionsQuery)
       .sort({ checkInAt: -1, createdAt: -1 })
       .lean();
 
@@ -3853,12 +4185,24 @@ async function myDayPreview(req, res) {
       0
     );
 
-    const approvedOt = await Overtime.find({
+    const approvedOtQuery = {
       clinicId,
       principalId,
       workDate,
       status: "approved",
-    }).lean();
+    };
+
+    const normalizedShiftId = normalizeObjectIdString(shift?._id);
+    if (role === "helper" && normalizedShiftId) {
+      approvedOtQuery.attendanceSessionId = {
+        $in: closedSessions
+          .map((x) => normalizeObjectIdString(x._id))
+          .filter(Boolean)
+          .map((id) => new mongoose.Types.ObjectId(id)),
+      };
+    }
+
+    const approvedOt = await Overtime.find(approvedOtQuery).lean();
 
     const otMinutesApproved = approvedOt.reduce(
       (sum, x) => sum + clampMinutes(x.minutes),
@@ -3887,13 +4231,18 @@ async function myDayPreview(req, res) {
     }
 
     if (!shift && role === "helper") {
-      shift = await loadShiftForSession({
-        clinicId,
-        staffId,
+      const helperShiftResult = await resolveHelperShiftForRuntime(req, {
+        principalId,
         userId,
+        staffId,
         workDate,
-        shiftId,
+        explicitShiftId: shiftId,
+        fallbackClinicId: clinicId,
       });
+
+      if (helperShiftResult.ok) {
+        shift = normalizeShiftLite(helperShiftResult.shift);
+      }
     }
 
     const type = normalizeEmploymentType(emp?.employmentType);
@@ -3968,6 +4317,8 @@ async function myDayPreview(req, res) {
         clinicOpenTime: pickClinicOpenTime(policy, workDate),
         clinicCloseTime: pickClinicCloseTime(policy, workDate),
         shift: shift || null,
+        shiftSelectionMode: shiftSelectionMode || "",
+        availableShifts: availableShifts || [],
       },
     });
   } catch (e) {
