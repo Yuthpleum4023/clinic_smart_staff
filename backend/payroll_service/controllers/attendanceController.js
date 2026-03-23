@@ -8,10 +8,6 @@ const {
   getEmployeeByStaffId,
 } = require("../utils/staffClient");
 
-// ======================================================
-// BASIC UTILS
-// ======================================================
-
 function s(v) {
   return String(v || "").trim();
 }
@@ -61,6 +57,7 @@ function firstValidDate(...values) {
   }
   return null;
 }
+
 function floorToStepMinutes(minutes, step) {
   if (!step || step <= 0) return minutes;
   return Math.floor(minutes / step) * step;
@@ -149,7 +146,7 @@ function getPrincipal(req) {
   const role = s(req.user?.role);
   const userId = s(req.user?.userId);
   const staffId = s(req.user?.staffId) || getBodyStaffId(req);
-  const principalId = staffId || userId;
+  const principalId = userId || staffId;
   const principalType = staffId ? "staff" : "user";
   return { clinicId, role, userId, staffId, principalId, principalType };
 }
@@ -314,6 +311,7 @@ function normalizeSessionItem(x) {
   x.riskScore = clampRisk(x.riskScore || 0);
   return x;
 }
+
 function getScoreServiceBaseUrl() {
   return s(process.env.SCORE_SERVICE_URL).replace(/\/+$/, "");
 }
@@ -462,7 +460,6 @@ function buildHumanReadablePolicy(policy) {
 
   return lines;
 }
-
 function getWeekdayKey(dateYmd) {
   const d = new Date(`${dateYmd}T00:00:00+07:00`);
   return [
@@ -653,7 +650,6 @@ async function getOrCreatePolicy(clinicId, userId) {
 
   return p;
 }
-
 function createRequestMemo(req) {
   if (!req._attendanceMemo || typeof req._attendanceMemo !== "object") {
     req._attendanceMemo = {
@@ -697,6 +693,7 @@ function shouldContinueLookupAfterError(err) {
   const status = Number(err?.status || 0);
   return [400, 401, 403, 404].includes(status);
 }
+
 async function memoizedGetEmployeeByStaffId(req, staffId, token = "") {
   const key = s(staffId);
   if (!key) return null;
@@ -1048,74 +1045,73 @@ async function ensureVerifiedEmployeeFromRequest(req, fallbackClinicId = "") {
     memo.verifiedEmployee = { key: cacheKey, value: out };
     return out;
   }
-
   if (
-    tokenStaffId &&
-    employee.staffId &&
-    employee.staffId !== tokenStaffId &&
-    !employee._fallback
-  ) {
-    const out = buildCodeResponse(
-      403,
-      "EMPLOYEE_STAFF_MISMATCH",
-      "Token staffId does not match employee record",
-      {
-        tokenStaffId,
-        employeeStaffId: employee.staffId,
-      }
-    );
-    memo.verifiedEmployee = { key: cacheKey, value: out };
-    return out;
-  }
-
-  if (
-    tokenUserId &&
-    employee.userId &&
-    employee.userId !== tokenUserId &&
-    !employee._fallback
-  ) {
-    const out = buildCodeResponse(
-      403,
-      "EMPLOYEE_USER_MISMATCH",
-      "Token userId does not match employee record",
-      {
-        tokenUserId,
-        employeeUserId: employee.userId,
-      }
-    );
-    memo.verifiedEmployee = { key: cacheKey, value: out };
-    return out;
-  }
-
-  if (
-    tokenClinicId &&
-    employee.clinicId &&
-    employee.clinicId !== tokenClinicId &&
-    !employee._fallback
-  ) {
-    const out = buildCodeResponse(
-      403,
-      "EMPLOYEE_CLINIC_MISMATCH",
-      "Employee does not belong to this clinic",
-      {
-        tokenClinicId,
-        employeeClinicId: employee.clinicId,
-      }
-    );
-    memo.verifiedEmployee = { key: cacheKey, value: out };
-    return out;
-  }
-
-  const out = {
-    ok: true,
-    employee,
-    clinicId: employee.clinicId || tokenClinicId,
-    userId: employee.userId || tokenUserId,
-    staffId: employee.staffId || tokenStaffId || bodyStaffId,
-  };
-
+  tokenStaffId &&
+  employee.staffId &&
+  employee.staffId !== tokenStaffId &&
+  !employee._fallback
+) {
+  const out = buildCodeResponse(
+    403,
+    "EMPLOYEE_STAFF_MISMATCH",
+    "Token staffId does not match employee record",
+    {
+      tokenStaffId,
+      employeeStaffId: employee.staffId,
+    }
+  );
   memo.verifiedEmployee = { key: cacheKey, value: out };
   return out;
+}
+
+if (
+  tokenUserId &&
+  employee.userId &&
+  employee.userId !== tokenUserId &&
+  !employee._fallback
+) {
+  const out = buildCodeResponse(
+    403,
+    "EMPLOYEE_USER_MISMATCH",
+    "Token userId does not match employee record",
+    {
+      tokenUserId,
+      employeeUserId: employee.userId,
+    }
+  );
+  memo.verifiedEmployee = { key: cacheKey, value: out };
+  return out;
+}
+
+if (
+  tokenClinicId &&
+  employee.clinicId &&
+  employee.clinicId !== tokenClinicId &&
+  !employee._fallback
+) {
+  const out = buildCodeResponse(
+    403,
+    "EMPLOYEE_CLINIC_MISMATCH",
+    "Employee does not belong to this clinic",
+    {
+      tokenClinicId,
+      employeeClinicId: employee.clinicId,
+    }
+  );
+  memo.verifiedEmployee = { key: cacheKey, value: out };
+  return out;
+}
+
+const out = {
+  ok: true,
+  employee,
+  clinicId: employee.clinicId || tokenClinicId,
+  userId: employee.userId || tokenUserId,
+  staffId: employee.staffId || tokenStaffId || bodyStaffId,
+};
+
+memo.verifiedEmployee = { key: cacheKey, value: out };
+return out;
 }
 
 async function ensureSessionEmployeeAccess(req, session) {
@@ -1284,6 +1280,21 @@ async function ensureSessionEmployeeAccess(req, session) {
 
   return { ok: true, employee };
 }
+
+function rejectIfMockLocationAnywhere(req) {
+  const inMock = isMockLocation(req, "in");
+  const outMock = isMockLocation(req, "out");
+
+  if (inMock || outMock) {
+    return buildCodeResponse(
+      400,
+      "FAKE_GPS_DETECTED",
+      "ตรวจพบการใช้ตำแหน่งปลอม (Mock Location) ระบบไม่อนุญาตให้ลงเวลา"
+    );
+  }
+
+  return null;
+}
 async function resolveSelfClinicFilter(req, fallbackClinicId = "") {
   const role = s(req.user?.role);
   const requestedClinicId =
@@ -1338,12 +1349,14 @@ function buildHelperShiftUserOr(userId) {
 function dedupeShifts(shifts) {
   const out = [];
   const seen = new Set();
+
   for (const sh of Array.isArray(shifts) ? shifts : []) {
     const key = String(sh?._id || "");
     if (!key || seen.has(key)) continue;
     seen.add(key);
     out.push(sh);
   }
+
   return out;
 }
 
@@ -1406,15 +1419,6 @@ function shiftBelongsToHelper(
     "helper.userId",
     "helper.id",
     "helper._id",
-    "assignedHelper.userId",
-    "assignedHelper.id",
-    "assignedHelper._id",
-    "selectedHelper.userId",
-    "selectedHelper.id",
-    "selectedHelper._id",
-    "acceptedHelper.userId",
-    "acceptedHelper.id",
-    "acceptedHelper._id",
   ];
 
   for (const path of candidatePaths) {
@@ -1426,7 +1430,6 @@ function shiftBelongsToHelper(
 
   return false;
 }
-
 function validateExplicitShiftForHelper({
   shift,
   workDate,
@@ -1488,9 +1491,11 @@ function getShiftEndDateTime(shift) {
     : null;
 
   let endAt = makeLocalDateTime(shift.date, shift.end);
+
   if (startAt && endAt.getTime() <= startAt.getTime()) {
     endAt = new Date(endAt.getTime() + 24 * 60 * 60000);
   }
+
   return endAt;
 }
 
@@ -1514,11 +1519,11 @@ function pickBestShiftForTime(shifts, now = new Date()) {
   );
 
   if (active.length === 1) return active[0].sh;
+
   if (active.length > 1) {
     return { _conflict: true, candidates: active.map((x) => x.sh) };
   }
 
-  const graceMinutes = 120;
   const near = prepared
     .map((x) => ({
       ...x,
@@ -1527,13 +1532,7 @@ function pickBestShiftForTime(shifts, now = new Date()) {
         Math.abs(now.getTime() - x.endAt.getTime())
       ),
     }))
-    .filter((x) => x.distanceMs <= graceMinutes * 60000)
     .sort((a, b) => a.distanceMs - b.distanceMs);
-
-  if (near.length === 1) return near[0].sh;
-  if (near.length > 1 && near[0].distanceMs === near[1].distanceMs) {
-    return { _conflict: true, candidates: near.map((x) => x.sh) };
-  }
 
   return near[0]?.sh || null;
 }
@@ -1582,7 +1581,6 @@ async function loadShiftCandidatesForSession({
 
   return dedupeShifts(results.flat());
 }
-
 async function loadShiftForSession({
   clinicId,
   staffId,
@@ -1621,9 +1619,22 @@ async function findPreviousOpenSession({ principalId, workDate }) {
     .lean();
 }
 
-async function findOpenSessionsForPrincipal(principalId, workDate = "") {
-  const q = { principalId: s(principalId), status: "open" };
+async function findOpenSessionsForPrincipal({
+  principalId = "",
+  userId = "",
+  staffId = "",
+  workDate = "",
+}) {
+  const actorOr = buildAttendanceActorOr({ principalId, userId, staffId });
+  if (!actorOr.length) return [];
+
+  const q = {
+    status: "open",
+    $or: actorOr,
+  };
+
   if (isYmd(workDate)) q.workDate = workDate;
+
   return AttendanceSession.find(q).sort({ checkInAt: -1 }).lean();
 }
 
@@ -1947,7 +1958,6 @@ function getScheduleSnapshot({ policy, shift, workDate }) {
     ),
   };
 }
-
 function buildSessionBaseForCreate({
   clinicId,
   principalId,
@@ -1965,6 +1975,10 @@ function buildSessionBaseForCreate({
     principalType,
     staffId: staffId || "",
     userId: userId || "",
+    helperUserId: userId || "",
+    actorUserId: userId || "",
+    assignedUserId: userId || "",
+    helperId: userId || "",
     shiftId: shift ? shift._id : null,
     workDate,
     checkInMethod: "manual",
@@ -2179,16 +2193,6 @@ async function syncOvertimeForSession({ session, policy, shift }) {
             attendanceSessionId: session._id,
             note: s(session.note),
           },
-          $setOnInsert: {
-            approvedBy: "",
-            approvedAt: null,
-            rejectedBy: "",
-            rejectedAt: null,
-            rejectReason: "",
-            lockedBy: "",
-            lockedAt: null,
-            lockedMonth: "",
-          },
         },
         { upsert: true }
       );
@@ -2219,7 +2223,6 @@ async function syncOvertimeForSession({ session, policy, shift }) {
     };
   }
 }
-
 async function recalcSessionByTimes({ session, policy, shift }) {
   const rules = attendanceRuleDefaults(policy);
   const role = inferRoleFromSession(session);
@@ -2281,6 +2284,7 @@ async function recalcSessionByTimes({ session, policy, shift }) {
   session.policyVersion = Number(policy.version || session.policyVersion || 0);
   session.riskScore = clampRisk(session.riskScore);
 }
+
 async function resolveRuntimeContext(req, workDate, shiftId = null) {
   const memo = createRequestMemo(req);
   const runtimeKey = makeRuntimeContextKey(req, workDate, shiftId);
@@ -2477,6 +2481,9 @@ async function resolveRuntimeContext(req, workDate, shiftId = null) {
 
 async function checkIn(req, res) {
   try {
+    const mockErr = rejectIfMockLocationAnywhere(req);
+    if (mockErr) return res.status(mockErr.status).json(mockErr.body);
+
     const workDate = s(req.body?.workDate);
     const shiftId = getRequestedShiftId(req);
 
@@ -2489,15 +2496,7 @@ async function checkIn(req, res) {
     const ctx = await resolveRuntimeContext(req, workDate, shiftId);
     if (!ctx.ok) return res.status(ctx.status).json(ctx.body);
 
-    const {
-      role,
-      userId,
-      staffId,
-      principalId,
-      principalType,
-      clinicId,
-    } = ctx;
-
+    const { role, userId, staffId, principalId, principalType, clinicId } = ctx;
     let shift = ctx.shift || null;
 
     const policy = await getOrCreatePolicy(clinicId, userId || principalId);
@@ -2575,16 +2574,9 @@ async function checkIn(req, res) {
         return res.status(400).json({ ok: false, message: "Location required" });
       }
 
-      if (inMocked) {
-        return res.status(400).json({
-          ok: false,
-          code: "FAKE_GPS_DETECTED",
-          message: "ตรวจพบตำแหน่งที่อาจไม่ถูกต้องจากอุปกรณ์",
-        });
-      }
-
       const refLat = shift?.clinicLat;
       const refLng = shift?.clinicLng;
+
       if (Number.isFinite(refLat) && Number.isFinite(refLng)) {
         const dist = haversineMeters(refLat, refLng, lat, lng);
         inDistanceMeters = dist;
@@ -2601,7 +2593,13 @@ async function checkIn(req, res) {
       }
     }
 
-    const existingOpenAnywhere = await findOpenSessionsForPrincipal(principalId, "");
+    const existingOpenAnywhere = await findOpenSessionsForPrincipal({
+      principalId,
+      userId,
+      staffId,
+      workDate: "",
+    });
+
     if (existingOpenAnywhere.length > 1) {
       return res.status(409).json({
         ok: false,
@@ -2624,7 +2622,7 @@ async function checkIn(req, res) {
     }
 
     const existingClosed = await AttendanceSession.findOne({
-      principalId,
+      $or: buildAttendanceActorOr({ principalId, userId, staffId }),
       workDate,
       status: "closed",
     }).lean();
@@ -2638,7 +2636,7 @@ async function checkIn(req, res) {
     }
 
     const existingPendingManual = await AttendanceSession.findOne({
-      principalId,
+      $or: buildAttendanceActorOr({ principalId, userId, staffId }),
       workDate,
       status: "pending_manual",
     }).lean();
@@ -2698,12 +2696,16 @@ async function checkIn(req, res) {
     const lateMinutes =
       role === "helper" ? computeLateMinutes(policy, shift, checkInAt) : 0;
 
-    const created = await AttendanceSession.create({
+    const payload = {
       clinicId,
       principalId,
       principalType,
       staffId: staffId || "",
       userId: userId || "",
+      helperUserId: userId || "",
+      actorUserId: userId || "",
+      assignedUserId: userId || "",
+      helperId: userId || "",
       shiftId: shift ? shift._id : null,
       workDate,
       checkInAt,
@@ -2732,13 +2734,12 @@ async function checkIn(req, res) {
         outMocked: false,
       },
       ...getScheduleSnapshot({ policy, shift, workDate }),
-    });
+    };
 
+    const created = new AttendanceSession(payload);
     ensureSecurityFields(created);
 
     if (lateMinutes > 0) addSuspiciousFlag(created, "LATE_CHECKIN", 5);
-    if (inMocked) addSuspiciousFlag(created, "MOCK_LOCATION_IN", 50);
-
     maybeFlagDistanceRisk(
       created,
       Number.isFinite(inDistanceMeters) ? inDistanceMeters : null,
@@ -2760,8 +2761,12 @@ async function checkIn(req, res) {
       .json({ ok: false, message: "check-in failed", error: e.message });
   }
 }
+
 async function checkOut(req, res) {
   try {
+    const mockErr = rejectIfMockLocationAnywhere(req);
+    if (mockErr) return res.status(mockErr.status).json(mockErr.body);
+
     const { userId, staffId, principalId } = getPrincipal(req);
 
     if (!principalId) {
@@ -2791,7 +2796,10 @@ async function checkOut(req, res) {
         });
       }
     } else {
-      const q = { principalId, status: "open" };
+      const q = {
+        status: "open",
+        $or: buildAttendanceActorOr({ principalId, userId, staffId }),
+      };
       if (isYmd(bodyWorkDate)) q.workDate = bodyWorkDate;
 
       const openSessions = await AttendanceSession.find(q).sort({ checkInAt: -1 });
@@ -2821,7 +2829,12 @@ async function checkOut(req, res) {
       session = openSessions[0];
     }
 
-    if (s(session.principalId) !== principalId) {
+    const ownershipOr = buildAttendanceActorOr({ principalId, userId, staffId });
+    const owned = ownershipOr.some((cond) =>
+      Object.entries(cond).every(([k, v]) => s(session?.[k]) === s(v))
+    );
+
+    if (!owned) {
       return res
         .status(403)
         .json({ ok: false, message: "Forbidden (not your session)" });
@@ -2896,14 +2909,6 @@ async function checkOut(req, res) {
     if (policy.requireLocation) {
       if (!(Number.isFinite(lat) && Number.isFinite(lng))) {
         return res.status(400).json({ ok: false, message: "Location required" });
-      }
-
-      if (outMocked) {
-        return res.status(400).json({
-          ok: false,
-          code: "FAKE_GPS_DETECTED",
-          message: "ตรวจพบตำแหน่งที่อาจไม่ถูกต้องจากอุปกรณ์",
-        });
       }
 
       const refLat = shift?.clinicLat;
@@ -3030,7 +3035,6 @@ async function checkOut(req, res) {
       mocked: outMocked,
     });
 
-    if (outMocked) addSuspiciousFlag(session, "MOCK_LOCATION_OUT", 50);
     maybeFlagDistanceRisk(
       session,
       Number.isFinite(outDistanceMeters) ? outDistanceMeters : null,
@@ -3120,7 +3124,6 @@ async function submitManualRequest(req, res) {
     } = ctx;
 
     let shift = ctx.shift || null;
-
     const policy = await getOrCreatePolicy(clinicId, userId || resolvedPrincipalId);
     const features = withFeatureDefaults(policy?.features || {});
 
@@ -3156,7 +3159,11 @@ async function submitManualRequest(req, res) {
     }
 
     const sameDaySessions = await AttendanceSession.find({
-      principalId: resolvedPrincipalId,
+      $or: buildAttendanceActorOr({
+        principalId: resolvedPrincipalId,
+        userId,
+        staffId,
+      }),
       workDate,
     }).sort({
       createdAt: -1,
@@ -3702,7 +3709,7 @@ async function listMySessions(req, res) {
     const requestedClinicId = s(clinicScope.clinicId);
 
     const q = buildMyAttendanceQuery({
-      clinicId: role === "helper" ? requestedClinicId : requestedClinicId,
+      clinicId: requestedClinicId,
       principalId,
       userId,
       staffId,
@@ -3710,21 +3717,9 @@ async function listMySessions(req, res) {
       dateTo,
     });
 
-    console.log("📘 listMySessions principal =", {
-      role,
-      clinicId,
-      requestedClinicId,
-      principalId,
-      userId,
-      staffId,
-    });
-    console.log("📘 listMySessions query =", JSON.stringify(q, null, 2));
-
     const items = await AttendanceSession.find(q)
       .sort({ workDate: -1, checkInAt: -1, createdAt: -1 })
       .lean();
-
-    console.log("📘 listMySessions resultCount =", items.length);
 
     const policy =
       requestedClinicId && role !== "helper"
@@ -3821,12 +3816,11 @@ async function myDayPreview(req, res) {
     } = ctx;
 
     let shift = ctx.shift || null;
-
     const policy = await getOrCreatePolicy(clinicId, userId || principalId);
 
     const sessions = await AttendanceSession.find({
       clinicId,
-      principalId,
+      $or: buildAttendanceActorOr({ principalId, userId, staffId }),
       workDate,
     })
       .sort({ checkInAt: -1, createdAt: -1 })
