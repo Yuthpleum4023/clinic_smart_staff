@@ -1,11 +1,13 @@
 // backend/payroll_service/middleware/auth.js
 const jwt = require("jsonwebtoken");
 
-const AUTH_LOG = String(process.env.AUTH_LOG || "false").toLowerCase() === "true";
+const AUTH_LOG =
+  String(process.env.AUTH_LOG || "false").toLowerCase() === "true";
 
 function normStr(v) {
   return String(v || "").trim();
 }
+
 function normLower(v) {
   return normStr(v).toLowerCase();
 }
@@ -54,7 +56,7 @@ function canonicalRole(roleRaw) {
     return "helper";
   }
 
-  return r; // unknown -> keep
+  return r;
 }
 
 function canonicalRolesList(v) {
@@ -74,7 +76,6 @@ function extractToken(req) {
 
   let cleaned = raw;
 
-  // ตัด quote ครอบทั้งก้อน เช่น "aaa.bbb.ccc"
   if (
     (cleaned.startsWith('"') && cleaned.endsWith('"')) ||
     (cleaned.startsWith("'") && cleaned.endsWith("'"))
@@ -84,21 +85,21 @@ function extractToken(req) {
 
   const parts = cleaned.split(" ").filter(Boolean);
 
-  // รองรับ Bearer case-insensitive
   if (parts.length >= 2 && parts[0].toLowerCase() === "bearer") {
     return normStr(parts.slice(1).join(" "));
   }
 
-  // เผื่อ client ส่ง token ตรง ๆ
   return cleaned;
 }
 
 function extractClinicIdFromPayload(payload) {
-  // 1) direct fields
-  let clinicId = pickFirstNonEmpty(payload.clinicId, payload.clinic_id, payload.cid);
+  let clinicId = pickFirstNonEmpty(
+    payload.clinicId,
+    payload.clinic_id,
+    payload.cid
+  );
   if (clinicId) return clinicId;
 
-  // 2) payload.clinic (string/object)
   const clinic = payload.clinic;
   if (typeof clinic === "string") {
     clinicId = normStr(clinic);
@@ -109,7 +110,6 @@ function extractClinicIdFromPayload(payload) {
     if (clinicId) return clinicId;
   }
 
-  // 3) payload.clinics (array)
   const clinics = payload.clinics;
   if (Array.isArray(clinics) && clinics.length > 0) {
     const first = clinics[0];
@@ -130,8 +130,8 @@ function extractClinicIdFromPayload(payload) {
  * ✅ AUTH middleware
  * - verify JWT
  * - normalize user ctx
- * - IMPORTANT: helper อาจไม่มี staffId => "ไม่ทำให้เป็น 403 ที่นี่"
- *   แต่จะติด flag req.user.staffIdMissing = true
+ * - IMPORTANT: helper อาจไม่มี staffId / clinicId
+ *   แต่จะไม่โดน block ที่นี่
  */
 function auth(req, res, next) {
   try {
@@ -140,7 +140,10 @@ function auth(req, res, next) {
     if (AUTH_LOG) {
       console.log("======================================");
       console.log("🔐 AUTH CHECK");
-      console.log("🔐 Authorization:", req.headers.authorization ? "YES" : "NO");
+      console.log(
+        "🔐 Authorization:",
+        req.headers.authorization ? "YES" : "NO"
+      );
       console.log("🔐 Token Preview:", String(token).slice(0, 30));
       console.log("🔐 Token Dots:", (String(token).match(/\./g) || []).length);
     }
@@ -150,7 +153,6 @@ function auth(req, res, next) {
       return res.status(401).json({ message: "Missing token" });
     }
 
-    // JWT ต้องมี dot อย่างน้อย 2 จุด
     const dotCount = (String(token).match(/\./g) || []).length;
     if (dotCount < 2) {
       if (AUTH_LOG) console.log("❌ JWT malformed (structure)");
@@ -163,7 +165,6 @@ function auth(req, res, next) {
       console.log("✅ JWT OK payload:", payload);
     }
 
-    // ✅ staffId fallback (กัน payload คนละชื่อ field)
     const staffId = pickFirstNonEmpty(
       payload.staffId,
       payload.employeeId,
@@ -172,14 +173,20 @@ function auth(req, res, next) {
       payload.employee_id
     );
 
-    // ✅ userId fallback (รองรับ id/_id ด้วย)
-    const userId = pickFirstNonEmpty(payload.userId, payload.user_id, payload.uid, payload.id, payload._id);
+    const userId = pickFirstNonEmpty(
+      payload.userId,
+      payload.user_id,
+      payload.uid,
+      payload.id,
+      payload._id
+    );
 
-    // ✅ clinicId fallback (รองรับ clinic/clinics)
     const clinicId = extractClinicIdFromPayload(payload);
 
-    // ✅ roles: activeRole > role > roles[]
-    const activeRoleRaw = pickFirstNonEmpty(payload.activeRole, payload.active_role);
+    const activeRoleRaw = pickFirstNonEmpty(
+      payload.activeRole,
+      payload.active_role
+    );
     const roleRaw = pickFirstNonEmpty(payload.role, payload.userRole);
 
     const activeRole = canonicalRole(activeRoleRaw);
@@ -193,11 +200,7 @@ function auth(req, res, next) {
 
     const roles = Array.from(rolesAllSet).filter(Boolean);
 
-    // ✅ effective role priority: activeRole > role > roles[0]
     const effectiveRole = activeRole || roleCanonical || roles[0] || "";
-
-    // ✅ IMPORTANT (durable contract):
-    // principalId = staffId ถ้ามี, ถ้าไม่มีให้ fallback = userId
     const principalId = staffId || userId;
     const principalType = staffId ? "staff" : "user";
 
@@ -211,6 +214,7 @@ function auth(req, res, next) {
 
       staffId,
       staffIdMissing: !normStr(staffId),
+      clinicIdMissing: !normStr(clinicId),
 
       principalId,
       principalType,
@@ -228,7 +232,9 @@ function auth(req, res, next) {
     return next();
   } catch (err) {
     if (AUTH_LOG) console.log("❌ JWT ERROR:", err.name, err.message);
-    return res.status(401).json({ message: "Invalid token", error: err.message });
+    return res
+      .status(401)
+      .json({ message: "Invalid token", error: err.message });
   }
 }
 
@@ -236,14 +242,20 @@ function auth(req, res, next) {
  * ✅ Role guard (canonical + รองรับ roles array)
  */
 function requireRole(roles = []) {
-  const allowed = (Array.isArray(roles) ? roles : [roles]).map((r) => canonicalRole(r)).filter(Boolean);
+  const allowed = (Array.isArray(roles) ? roles : [roles])
+    .map((r) => canonicalRole(r))
+    .filter(Boolean);
 
   return (req, res, next) => {
     const effective = canonicalRole(req.user?.role);
-    const roleList = Array.isArray(req.user?.roles) ? req.user.roles.map(canonicalRole) : [];
+    const roleList = Array.isArray(req.user?.roles)
+      ? req.user.roles.map(canonicalRole)
+      : [];
     const have = new Set([effective, ...roleList].filter(Boolean));
 
-    if (have.size === 0) return res.status(401).json({ message: "Unauthorized" });
+    if (have.size === 0) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
 
     const ok = allowed.some((r) => have.has(r));
     if (!ok) {
@@ -271,17 +283,15 @@ function requireStaffId() {
 
 /**
  * ✅ Ensure staff self-access (เดิม)
- * NOTE: helper ไม่ควรใช้ middleware นี้ (เพราะ helper อาจไม่มี staffId)
+ * NOTE: helper ไม่ควรใช้ middleware นี้
  */
 function requireSelfStaff({ allowClinic = true } = {}) {
   return (req, res, next) => {
     const role = canonicalRole(req.user?.role);
     if (!role) return res.status(401).json({ message: "Unauthorized" });
 
-    // admin bypass
     if (allowClinic && role === "admin") return next();
 
-    // ถ้าไม่อนุญาต clinic -> ต้องเป็น employee เท่านั้น (เดิม)
     if (!allowClinic && role !== "employee") {
       return res.status(403).json({ message: "Forbidden" });
     }
@@ -331,16 +341,16 @@ function requireSelfStaff({ allowClinic = true } = {}) {
 /**
  * ✅ NEW: Self-attendance guard (รองรับ employee + helper)
  * - กัน spoof clinicId/staffId/userId
- * - เติม clinicId ให้เสมอ
- * - เติม staffId ให้ถ้ามี (employee มักมี, helper อาจมีหรือไม่มี)
- * - ไม่บังคับ staffId (ให้ controller/logic ตัดสินเอง)
+ * - employee: ยังบังคับ clinicId ใน token
+ * - helper: ไม่บังคับ clinicId ใน token (resolve จาก shiftId ใน controller)
+ * - เติม staffId ให้ถ้ามี
+ * - ไม่บังคับ staffId
  */
 function requireSelfAttendance() {
   return (req, res, next) => {
     const role = canonicalRole(req.user?.role);
     if (!role) return res.status(401).json({ message: "Unauthorized" });
 
-    // ✅ self-attendance only: employee/helper เท่านั้น
     if (role !== "employee" && role !== "helper") {
       return res.status(403).json({ message: "Forbidden" });
     }
@@ -349,11 +359,64 @@ function requireSelfAttendance() {
     const tokenStaffId = normStr(req.user?.staffId);
     const tokenUserId = normStr(req.user?.userId);
 
-    if (!tokenClinicId) return res.status(401).json({ message: "Missing clinicId in token" });
-
     if (!req.body) req.body = {};
 
-    // ---- clinicId: ถ้าส่งมาแล้วต้องตรง / ถ้าไม่ส่งให้เติม ----
+    // =====================================================
+    // ✅ HELPER FLOW
+    // - helper อาจไม่มี clinicId ใน token ได้
+    // - ห้าม user spoof clinicId/userId/staffId
+    // - ถ้ามี staffId ใน token ค่อย enforce
+    // - clinic จะไป resolve ใน controller จาก shiftId
+    // =====================================================
+    if (role === "helper") {
+      const reqClinicId =
+        normStr(req.body?.clinicId) ||
+        normStr(req.body?.clinic_id) ||
+        normStr(req.query?.clinicId) ||
+        normStr(req.query?.clinic_id);
+
+      if (reqClinicId && tokenClinicId && reqClinicId !== tokenClinicId) {
+        return res.status(403).json({ message: "Forbidden (clinic mismatch)" });
+      }
+
+      const reqStaffId =
+        normStr(req.params?.staffId) ||
+        normStr(req.params?.employeeId) ||
+        normStr(req.body?.staffId) ||
+        normStr(req.body?.employeeId) ||
+        normStr(req.query?.staffId) ||
+        normStr(req.query?.employeeId);
+
+      if (reqStaffId && tokenStaffId && reqStaffId !== tokenStaffId) {
+        return res.status(403).json({ message: "Forbidden (staff mismatch)" });
+      }
+
+      if (!reqStaffId && tokenStaffId) {
+        req.body.staffId = tokenStaffId;
+      }
+
+      const reqUserId =
+        normStr(req.body?.userId) ||
+        normStr(req.body?.user_id) ||
+        normStr(req.query?.userId) ||
+        normStr(req.query?.user_id);
+
+      if (reqUserId && tokenUserId && reqUserId !== tokenUserId) {
+        return res.status(403).json({ message: "Forbidden (user mismatch)" });
+      }
+
+      return next();
+    }
+
+    // =====================================================
+    // ✅ EMPLOYEE FLOW
+    // - employee ยังต้องมี clinicId ใน token
+    // - guard เดิมคงไว้
+    // =====================================================
+    if (!tokenClinicId) {
+      return res.status(401).json({ message: "Missing clinicId in token" });
+    }
+
     const reqClinicId =
       normStr(req.body?.clinicId) ||
       normStr(req.body?.clinic_id) ||
@@ -363,9 +426,11 @@ function requireSelfAttendance() {
     if (reqClinicId && reqClinicId !== tokenClinicId) {
       return res.status(403).json({ message: "Forbidden (clinic mismatch)" });
     }
-    if (!normStr(req.body.clinicId)) req.body.clinicId = tokenClinicId;
 
-    // ---- staffId: ถ้าส่งมาแล้วต้องตรง (กัน spoof) / ถ้าไม่ส่งและ token มี -> เติม ----
+    if (!normStr(req.body.clinicId)) {
+      req.body.clinicId = tokenClinicId;
+    }
+
     const reqStaffId =
       normStr(req.params?.staffId) ||
       normStr(req.params?.employeeId) ||
@@ -377,13 +442,16 @@ function requireSelfAttendance() {
     if (reqStaffId && tokenStaffId && reqStaffId !== tokenStaffId) {
       return res.status(403).json({ message: "Forbidden (staff mismatch)" });
     }
+
     if (!reqStaffId && tokenStaffId) {
       req.body.staffId = tokenStaffId;
     }
 
-    // ---- userId: ถ้ามีส่งมาแล้วต้องตรง (กัน spoof) ----
     const reqUserId =
-      normStr(req.body?.userId) || normStr(req.body?.user_id) || normStr(req.query?.userId) || normStr(req.query?.user_id);
+      normStr(req.body?.userId) ||
+      normStr(req.body?.user_id) ||
+      normStr(req.query?.userId) ||
+      normStr(req.query?.user_id);
 
     if (reqUserId && tokenUserId && reqUserId !== tokenUserId) {
       return res.status(403).json({ message: "Forbidden (user mismatch)" });
@@ -398,5 +466,5 @@ module.exports = {
   requireRole,
   requireStaffId,
   requireSelfStaff,
-  requireSelfAttendance, // ✅ NEW
+  requireSelfAttendance,
 };
