@@ -29,6 +29,12 @@ const mongoose = require("mongoose");
  * - suspiciousFlags
  * - riskScore
  * - securityMeta
+ *
+ * ✅ PATCH
+ * - รองรับ pending manual session ที่ยังไม่มี checkInAt/checkOutAt จริง
+ * - จึงเปลี่ยน checkInAt จาก required:true เป็น default:null
+ * - เพื่อให้ manual request แบบ edit_both / check_in / forgot_checkout
+ *   สามารถสร้าง session รออนุมัติได้โดยไม่ 500
  */
 
 const AttendanceSessionSchema = new mongoose.Schema(
@@ -63,7 +69,15 @@ const AttendanceSessionSchema = new mongoose.Schema(
     // ======================================================
     // Attendance timestamps (actual)
     // ======================================================
-    checkInAt: { type: Date, required: true },
+    /**
+     * ✅ PATCH
+     * เดิม required:true ทำให้ session แบบ pending_manual ที่ยังไม่ approve พังตอน save
+     * เช่น:
+     * - manualRequestType = edit_both
+     * - มี requestedCheckInAt / requestedCheckOutAt แล้ว
+     * - แต่ยังไม่มี checkInAt จริง
+     */
+    checkInAt: { type: Date, default: null },
     checkOutAt: { type: Date, default: null },
 
     /**
@@ -258,13 +272,6 @@ const AttendanceSessionSchema = new mongoose.Schema(
  * - pending_manual
  *
  * cancelled ไม่นับเป็น main session
- *
- * หมายเหตุ:
- * index นี้จะกันไม่ให้มี session หลักมากกว่า 1 อันต่อวันใน clinic เดียว
- * เช่น:
- * - open แล้วสร้าง closed ซ้ำใน clinic/date เดิมไม่ได้
- * - closed แล้วกลับมาเปิดใหม่ใน clinic/date เดิมไม่ได้
- * - pending_manual ซ้ำอีกอันใน clinic/date เดิมไม่ได้
  */
 AttendanceSessionSchema.index(
   { clinicId: 1, principalId: 1, workDate: 1 },
@@ -280,10 +287,6 @@ AttendanceSessionSchema.index(
 /**
  * ✅ NEW:
  * 1 principal มี open session ได้พร้อมกันแค่ 1 อันทั้งระบบ
- * ไม่ว่าจะเป็นคลินิกไหน
- *
- * สำคัญมากสำหรับ helper ที่ทำหลายคลินิก
- * เพื่อกัน race condition / request ซ้ำ / check-in พร้อมกันหลายที่
  */
 AttendanceSessionSchema.index(
   { principalId: 1, status: 1 },
