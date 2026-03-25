@@ -29,6 +29,10 @@
 // - กัน helper/employee มี shift ชนเวลา
 // - รองรับ requiredCount มากกว่า 1
 //
+// ✅ PATCH NEW (SHIFT OVERLAP DETAIL):
+// - ถ้าผู้ช่วยมี shift ชนเวลา จะคืน code=SHIFT_OVERLAP
+// - ส่ง conflictShift + conflictText กลับไปให้ Flutter แสดงไทยได้ชัดเจน
+//
 // helper call example:
 //   GET /shift-needs/open?helperLat=7.0084&helperLng=100.4747
 //
@@ -89,9 +93,12 @@ function getUserId(req) {
   );
 }
 
-function bad(msg, code = 400) {
+function bad(msg, code = 400, details = null) {
   const err = new Error(msg);
   err.statusCode = code;
+  if (details && typeof details === "object") {
+    err.details = details;
+  }
   throw err;
 }
 
@@ -533,7 +540,37 @@ function overlaps(aStart, aEnd, bStart, bEnd) {
   return Math.max(a1, b1) < Math.min(a2, b2);
 }
 
-async function hasOverlappingShift({
+function buildShiftConflictPayload(shiftDoc) {
+  const row = shiftDoc?.toObject ? shiftDoc.toObject() : shiftDoc || {};
+
+  return {
+    shiftId: s(row._id || row.id),
+    clinicId: s(row.clinicId),
+    clinicName: s(row.clinicName),
+    clinicPhone: s(row.clinicPhone),
+    clinicAddress: s(row.clinicAddress),
+    date: s(row.date),
+    start: s(row.start),
+    end: s(row.end),
+    status: s(row.status),
+    note: s(row.note),
+  };
+}
+
+function buildShiftOverlapThaiMessage(conflictShift) {
+  const c = conflictShift || {};
+  const clinicName = s(c.clinicName) || s(c.clinicId) || "อีกคลินิกหนึ่ง";
+  const date = s(c.date);
+  const start = s(c.start) || "--:--";
+  const end = s(c.end) || "--:--";
+
+  let msg = `ผู้ช่วยคนนี้มีงานกะอื่นเวลา ${start}-${end} อยู่แล้ว`;
+  if (clinicName) msg += ` ที่${clinicName}`;
+  if (date) msg += ` วันที่ ${date}`;
+  return msg;
+}
+
+async function findOverlappingShift({
   staffId = "",
   helperUserId = "",
   date = "",
@@ -551,14 +588,25 @@ async function hasOverlappingShift({
   } else if (s(helperUserId)) {
     q.helperUserId = s(helperUserId);
   } else {
-    return false;
+    return null;
   }
 
   let query = Shift.find(q);
   if (session) query = query.session(session);
 
   const rows = await query.lean();
-  return (rows || []).some((x) => overlaps(x.start, x.end, start, end));
+
+  const conflict = (rows || []).find((x) =>
+    overlaps(x.start, x.end, start, end)
+  );
+
+  if (!conflict) return null;
+
+  const conflictShift = buildShiftConflictPayload(conflict);
+  return {
+    conflictShift,
+    conflictText: buildShiftOverlapThaiMessage(conflictShift),
+  };
 }
 
 // ---------------- admin: create need ----------------
@@ -1099,10 +1147,13 @@ async function approveApplicant(req, res) {
         .lean();
 
       if (existingShiftFromNeed) {
-        bad("shift already created for this applicant", 409);
+        bad("shift already created for this applicant", 409, {
+          code: "SHIFT_ALREADY_CREATED",
+          existingShift: buildShiftConflictPayload(existingShiftFromNeed),
+        });
       }
 
-      const overlap = await hasOverlappingShift({
+      const overlap = await findOverlappingShift({
         staffId: applicantStaffId,
         helperUserId: applicantUserId,
         date: need.date,
@@ -1112,7 +1163,11 @@ async function approveApplicant(req, res) {
       });
 
       if (overlap) {
-        bad("applicant already has overlapping shift", 409);
+        bad(overlap.conflictText, 409, {
+          code: "SHIFT_OVERLAP",
+          conflictShift: overlap.conflictShift,
+          conflictText: overlap.conflictText,
+        });
       }
 
       const requiredCountNum = Math.max(1, Number(need.requiredCount || 1));
@@ -1123,7 +1178,9 @@ async function approveApplicant(req, res) {
       if (approvedCount >= requiredCountNum) {
         need.status = "filled";
         await need.save({ session });
-        bad("need is already filled", 409);
+        bad("need is already filled", 409, {
+          code: "NEED_ALREADY_FILLED",
+        });
       }
 
       const key = pickApplicantKey(a);
@@ -1218,9 +1275,13 @@ async function approveApplicant(req, res) {
 
     return res.json(result);
   } catch (e) {
+    const details =
+      e?.details && typeof e.details === "object" ? e.details : {};
+
     return res.status(e.statusCode || 500).json({
       message: "approveApplicant failed",
       error: e.message || String(e),
+      ...details,
     });
   } finally {
     if (session) {
