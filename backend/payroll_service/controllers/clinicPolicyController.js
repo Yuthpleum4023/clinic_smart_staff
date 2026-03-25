@@ -1,6 +1,10 @@
 // backend/payroll_service/controllers/clinicPolicyController.js
 const ClinicPolicy = require("../models/ClinicPolicy");
 
+const ATTENDANCE_TIMEZONE = "Asia/Bangkok";
+const ENFORCED_REQUIRE_LOCATION = true;
+const ENFORCED_GEO_RADIUS_METERS = 200;
+
 function normStr(v) {
   return String(v || "").trim();
 }
@@ -107,8 +111,8 @@ function sanitizeFeatures(value, fallback = {}) {
 function defaultDaySchedule(start = "09:00", end = "18:00", enabled = true) {
   return {
     enabled: !!enabled,
-    start: start,
-    end: end,
+    start,
+    end,
   };
 }
 
@@ -130,19 +134,22 @@ function normalizeDaySchedule(raw, fallback = defaultDaySchedule()) {
   const end = normStr(src.end || fallback.end || "18:00") || "18:00";
 
   return {
-    enabled:
-      src.enabled === undefined ? !!fallback.enabled : !!src.enabled,
+    enabled: src.enabled === undefined ? !!fallback.enabled : !!src.enabled,
     start,
     end,
   };
 }
 
 function normalizeWeeklySchedule(value, fallback = defaultWeeklySchedule()) {
-  const src = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const src =
+    value && typeof value === "object" && !Array.isArray(value) ? value : {};
   const out = {};
 
   for (const day of WEEK_DAYS) {
-    out[day] = normalizeDaySchedule(src[day], fallback[day] || defaultDaySchedule());
+    out[day] = normalizeDaySchedule(
+      src[day],
+      fallback[day] || defaultDaySchedule()
+    );
   }
 
   return out;
@@ -153,11 +160,11 @@ function defaultPolicy(clinicId, updatedByUserId = "") {
 
   return {
     clinicId,
-    timezone: "Asia/Bangkok",
+    timezone: ATTENDANCE_TIMEZONE,
 
     requireBiometric: true,
-    requireLocation: false,
-    geoRadiusMeters: 200,
+    requireLocation: ENFORCED_REQUIRE_LOCATION,
+    geoRadiusMeters: ENFORCED_GEO_RADIUS_METERS,
 
     graceLateMinutes: 10,
 
@@ -189,7 +196,6 @@ function defaultPolicy(clinicId, updatedByUserId = "") {
     attendanceApprovalRoles: ["clinic_admin"],
     otApprovalRoles: ["clinic_admin"],
 
-    // ✅ Attendance policy (legacy/global)
     shiftStart: "09:00",
     shiftEnd: "18:00",
     cutoffTime: "03:00",
@@ -199,7 +205,6 @@ function defaultPolicy(clinicId, updatedByUserId = "") {
     forgotCheckoutManualOnly: true,
     blockNewCheckInIfPreviousOpen: true,
 
-    // ✅ NEW: per-day schedule
     weeklySchedule,
 
     features: {
@@ -239,19 +244,17 @@ function normalizePolicyShape(raw, clinicId, updatedByUserId = "") {
     ...src,
 
     clinicId: normStr(src.clinicId || clinicId),
-    timezone: normStr(src.timezone || defaults.timezone) || "Asia/Bangkok",
+    timezone: ATTENDANCE_TIMEZONE,
 
     requireBiometric:
       src.requireBiometric === undefined
         ? defaults.requireBiometric
         : !!src.requireBiometric,
 
-    requireLocation:
-      src.requireLocation === undefined
-        ? defaults.requireLocation
-        : !!src.requireLocation,
+    requireLocation: ENFORCED_REQUIRE_LOCATION,
 
-    geoRadiusMeters: toNum(src.geoRadiusMeters, defaults.geoRadiusMeters),
+    geoRadiusMeters: ENFORCED_GEO_RADIUS_METERS,
+
     graceLateMinutes: toNum(src.graceLateMinutes, defaults.graceLateMinutes),
 
     otRule: normalizeOtRule(src.otRule || defaults.otRule),
@@ -336,7 +339,6 @@ function normalizePolicyShape(raw, clinicId, updatedByUserId = "") {
       defaults.otApprovalRoles
     ),
 
-    // ✅ Attendance policy (legacy/global)
     shiftStart: normStr(src.shiftStart || defaults.shiftStart) || "09:00",
     shiftEnd: normStr(src.shiftEnd || defaults.shiftEnd) || "18:00",
     cutoffTime: normStr(src.cutoffTime || defaults.cutoffTime) || "03:00",
@@ -366,13 +368,12 @@ function normalizePolicyShape(raw, clinicId, updatedByUserId = "") {
         ? defaults.blockNewCheckInIfPreviousOpen
         : !!src.blockNewCheckInIfPreviousOpen,
 
-    // ✅ NEW: per-day schedule
     weeklySchedule: normalizeWeeklySchedule(
       src.weeklySchedule,
       defaults.weeklySchedule
     ),
 
-    features: sanitizeFeatures(src.features, defaults.features),
+    features: mergeFeatures(defaults.features, src.features),
 
     version: Math.max(1, toNum(src.version, defaults.version)),
     updatedBy: normStr(src.updatedBy || updatedByUserId || ""),
@@ -381,11 +382,11 @@ function normalizePolicyShape(raw, clinicId, updatedByUserId = "") {
 
 function applyPolicyToDoc(doc, normalized, updatedByUserId = "") {
   doc.clinicId = normStr(normalized.clinicId);
-  doc.timezone = normStr(normalized.timezone) || "Asia/Bangkok";
+  doc.timezone = ATTENDANCE_TIMEZONE;
 
   doc.requireBiometric = !!normalized.requireBiometric;
-  doc.requireLocation = !!normalized.requireLocation;
-  doc.geoRadiusMeters = Number(normalized.geoRadiusMeters);
+  doc.requireLocation = ENFORCED_REQUIRE_LOCATION;
+  doc.geoRadiusMeters = ENFORCED_GEO_RADIUS_METERS;
 
   doc.graceLateMinutes = Number(normalized.graceLateMinutes);
 
@@ -422,7 +423,6 @@ function applyPolicyToDoc(doc, normalized, updatedByUserId = "") {
     ["clinic_admin"]
   );
 
-  // ✅ Attendance policy (legacy/global)
   doc.shiftStart = normStr(normalized.shiftStart) || "09:00";
   doc.shiftEnd = normStr(normalized.shiftEnd) || "18:00";
   doc.cutoffTime = normStr(normalized.cutoffTime) || "03:00";
@@ -432,13 +432,12 @@ function applyPolicyToDoc(doc, normalized, updatedByUserId = "") {
   doc.forgotCheckoutManualOnly = !!normalized.forgotCheckoutManualOnly;
   doc.blockNewCheckInIfPreviousOpen = !!normalized.blockNewCheckInIfPreviousOpen;
 
-  // ✅ NEW: per-day schedule
   doc.weeklySchedule = normalizeWeeklySchedule(
     normalized.weeklySchedule,
     defaultWeeklySchedule()
   );
 
-  doc.features = sanitizeFeatures(normalized.features, doc.features || {});
+  doc.features = mergeFeatures(doc.features || {}, normalized.features || {});
   doc.updatedBy = normStr(updatedByUserId || normalized.updatedBy || "");
 }
 
@@ -478,14 +477,21 @@ function validatePolicy(p) {
     return "Invalid otRounding";
   }
 
-  const grace = toNum(p.graceLateMinutes, NaN);
-  if (!Number.isFinite(grace) || grace < 0 || grace > 180) {
-    return "graceLateMinutes must be 0..180";
+  if (p.requireLocation !== ENFORCED_REQUIRE_LOCATION) {
+    return `requireLocation must be ${String(ENFORCED_REQUIRE_LOCATION)}`;
   }
 
   const radius = toNum(p.geoRadiusMeters, NaN);
-  if (!Number.isFinite(radius) || radius < 0 || radius > 5000) {
-    return "geoRadiusMeters must be 0..5000";
+  if (
+    !Number.isFinite(radius) ||
+    radius !== ENFORCED_GEO_RADIUS_METERS
+  ) {
+    return `geoRadiusMeters must be ${ENFORCED_GEO_RADIUS_METERS}`;
+  }
+
+  const grace = toNum(p.graceLateMinutes, NaN);
+  if (!Number.isFinite(grace) || grace < 0 || grace > 180) {
+    return "graceLateMinutes must be 0..180";
   }
 
   const otStartAfter = toNum(p.otStartAfterMinutes, NaN);
@@ -497,7 +503,9 @@ function validatePolicy(p) {
   if (!Number.isFinite(otM) || otM <= 0) return "otMultiplier must be > 0";
 
   const holM = toNum(p.holidayMultiplier, NaN);
-  if (!Number.isFinite(holM) || holM <= 0) return "holidayMultiplier must be > 0";
+  if (!Number.isFinite(holM) || holM <= 0) {
+    return "holidayMultiplier must be > 0";
+  }
 
   if (otRule === "AFTER_DAILY_HOURS") {
     const h = toNum(p.regularHoursPerDay, NaN);
@@ -528,7 +536,6 @@ function validatePolicy(p) {
     return "otWindowEnd must be HH:mm";
   }
 
-  // ✅ Attendance validation (legacy/global)
   if (p.shiftStart && !isHHmm(p.shiftStart)) {
     return "shiftStart must be HH:mm";
   }
@@ -546,7 +553,6 @@ function validatePolicy(p) {
     return "minMinutesBeforeCheckout must be 1..1440";
   }
 
-  // ✅ NEW: weeklySchedule validation
   if (
     p.weeklySchedule !== undefined &&
     (typeof p.weeklySchedule !== "object" || Array.isArray(p.weeklySchedule))
@@ -608,7 +614,11 @@ async function getMyClinicPolicy(req, res) {
     if (!policyDoc) {
       policyDoc = await ClinicPolicy.create(defaultPolicy(clinicId, userId));
     } else {
-      const normalized = normalizePolicyShape(policyDoc.toObject(), clinicId, userId);
+      const normalized = normalizePolicyShape(
+        policyDoc.toObject(),
+        clinicId,
+        userId
+      );
       const err = validatePolicy(normalized);
 
       if (!err) {
@@ -654,12 +664,14 @@ async function updateMyClinicPolicy(req, res) {
       {
         ...base,
         ...body,
-        features: sanitizeFeatures(body.features, base.features),
+        requireLocation: ENFORCED_REQUIRE_LOCATION,
+        geoRadiusMeters: ENFORCED_GEO_RADIUS_METERS,
+        timezone: ATTENDANCE_TIMEZONE,
+        features: mergeFeatures(base.features, body.features || {}),
         attendanceApprovalRoles:
           body.attendanceApprovalRoles ?? base.attendanceApprovalRoles,
         otApprovalRoles: body.otApprovalRoles ?? base.otApprovalRoles,
-        weeklySchedule:
-          body.weeklySchedule ?? base.weeklySchedule,
+        weeklySchedule: body.weeklySchedule ?? base.weeklySchedule,
       },
       clinicId,
       userId
