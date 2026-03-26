@@ -357,6 +357,7 @@ function normalizeSessionItem(x) {
 
   return x;
 }
+
 const ATTENDANCE_TIMEZONE = "Asia/Bangkok";
 const ENFORCED_GEOFENCE_RADIUS_METERS = 200;
 
@@ -530,7 +531,9 @@ function buildHumanReadablePolicy(policy) {
     lines.push("OT ต้องได้รับการอนุมัติก่อนจึงจะถูกนำไปคิดเงิน");
   }
   if (policy?.lockAfterPayrollClose) {
-    lines.push("เมื่อปิดงวดเงินเดือนแล้ว จะไม่สามารถแก้ไขเวลาทำงานย้อนหลังได้");
+    lines.push(
+      "เมื่อปิดงวดเงินเดือนแล้ว จะไม่สามารถแก้ไขเวลาทำงานย้อนหลังได้"
+    );
   }
 
   return lines;
@@ -667,6 +670,7 @@ function buildOutsideRadiusError(distanceMeters, radiusMeters) {
     }
   );
 }
+
 function buildPublicPolicy(policy, workDate = "") {
   const features = withFeatureDefaults(policy?.features || {});
   const rules = attendanceRuleDefaults(policy);
@@ -1486,6 +1490,7 @@ async function ensureSessionEmployeeAccess(req, session) {
 
   return { ok: true, employee };
 }
+
 function rejectIfMockLocationAnywhere(req) {
   const inMock = isMockLocation(req, "in");
   const outMock = isMockLocation(req, "out");
@@ -1636,7 +1641,6 @@ function shiftBelongsToHelper(
 
   return false;
 }
-
 function extractShiftClinicName(shift) {
   return s(
     shift?.clinicName ||
@@ -1895,6 +1899,7 @@ async function loadShiftForSession({
 
   return normalizeShiftLite(picked || null);
 }
+
 async function loadHelperAssignedShifts(req, { userId, workDate, clinicId = "" }) {
   const memo = createRequestMemo(req);
   const key = getShiftMemoKey({
@@ -2081,6 +2086,57 @@ async function findPreviousOpenSession({ principalId, workDate }) {
     .lean();
 }
 
+async function findPreviousPendingManualSession({ principalId, workDate }) {
+  return AttendanceSession.findOne({
+    principalId: s(principalId),
+    status: "pending_manual",
+    approvalStatus: "pending",
+    workDate: { $lt: workDate },
+  })
+    .sort({ workDate: -1, requestedAt: -1, createdAt: -1 })
+    .lean();
+}
+
+function toBlockedPreviousSessionPayload(session) {
+  if (!session) return null;
+
+  const shiftId =
+    typeof session.shiftId === "object"
+      ? s(session.shiftId?._id || session.shiftId?.id)
+      : s(session.shiftId);
+
+  return {
+    sessionId: String(session._id || ""),
+    clinicId: s(session.clinicId),
+    workDate: s(session.workDate),
+    shiftId,
+    status: s(session.status),
+    approvalStatus: s(session.approvalStatus),
+    manualRequestType: s(session.manualRequestType),
+    requestedAt: session.requestedAt || null,
+    checkInAt: session.checkInAt || null,
+    checkOutAt: session.checkOutAt || null,
+  };
+}
+
+function buildPreviousAttendancePendingResponse(previousSession) {
+  const previous = toBlockedPreviousSessionPayload(previousSession);
+
+  return buildCodeResponse(
+    409,
+    "PREVIOUS_ATTENDANCE_PENDING",
+    "ยังมีรายการลงเวลาจากวันก่อนค้างอยู่ กรุณาส่งคำขอแก้ไขรายการเดิมและรออนุมัติก่อนจึงจะเริ่มรายการใหม่ได้",
+    {
+      action: "REQUIRE_FIX_PREVIOUS",
+      previousSession: previous,
+      previousSessionId: previous?.sessionId || "",
+      previousClinicId: previous?.clinicId || "",
+      previousWorkDate: previous?.workDate || "",
+      previousShiftId: previous?.shiftId || "",
+    }
+  );
+}
+
 async function findOpenSessionsForPrincipal({
   principalId = "",
   userId = "",
@@ -2151,6 +2207,7 @@ function computeWindowOverlapMinutes(
   if (endAt.getTime() <= startAt.getTime()) return 0;
   return clampMinutes(minutesDiff(startAt, endAt));
 }
+
 function computeOtMinutes(policy, shift, checkInAt, checkOutAt) {
   if (!checkInAt || !checkOutAt) return 0;
 
@@ -2221,7 +2278,6 @@ function computeOtMinutes(policy, shift, checkInAt, checkOutAt) {
 
   return 0;
 }
-
 function normalizeEmploymentType(v) {
   const t = s(v).toLowerCase();
   if (!t) return "";
@@ -2432,6 +2488,7 @@ function getScheduleSnapshot({ policy, shift, workDate }) {
     ),
   };
 }
+
 function buildSessionBaseForCreate({
   clinicId,
   principalId,
@@ -2607,6 +2664,7 @@ function determineRejectedStatus(session) {
 
   return "open";
 }
+
 async function syncOvertimeForSession({ session, policy, shift }) {
   try {
     const ownerUserId = s(session.userId);
@@ -2804,7 +2862,6 @@ function buildRuntimeSessionQuery({
 
   return q;
 }
-
 async function resolveRuntimeContext(req, workDate, shiftId = null) {
   const memo = createRequestMemo(req);
   const runtimeKey = makeRuntimeContextKey(req, workDate, shiftId);
@@ -2931,6 +2988,7 @@ async function resolveRuntimeContext(req, workDate, shiftId = null) {
   memo.runtimeContext.set(runtimeKey, out);
   return out;
 }
+
 async function checkIn(req, res) {
   try {
     const mockErr = rejectIfMockLocationAnywhere(req);
@@ -2974,6 +3032,25 @@ async function checkIn(req, res) {
       });
     }
 
+    const previousOpen = rules.blockNewCheckInIfPreviousOpen
+      ? await findPreviousOpenSession({ principalId, workDate })
+      : null;
+
+    if (previousOpen) {
+      const out = buildPreviousAttendancePendingResponse(previousOpen);
+      return res.status(out.status).json(out.body);
+    }
+
+    const previousPendingManual = await findPreviousPendingManualSession({
+      principalId,
+      workDate,
+    });
+
+    if (previousPendingManual) {
+      const out = buildPreviousAttendancePendingResponse(previousPendingManual);
+      return res.status(out.status).json(out.body);
+    }
+
     const biometricVerified = !!req.body?.biometricVerified;
     const method = resolveAttendanceMethod(req.body?.method, biometricVerified);
 
@@ -2993,24 +3070,6 @@ async function checkIn(req, res) {
 
     if (method === "biometric" && policy.requireBiometric && !biometricVerified) {
       return res.status(400).json({ ok: false, message: "Biometric required" });
-    }
-
-    const previousOpen = rules.blockNewCheckInIfPreviousOpen
-      ? await findPreviousOpenSession({ principalId, workDate })
-      : null;
-
-    if (previousOpen) {
-      const out = buildCodeResponse(
-        409,
-        "MANUAL_REQUIRED_PREVIOUS_OPEN_SESSION",
-        "Previous day session is still open. Please submit manual attendance request.",
-        {
-          previousSessionId: String(previousOpen._id || ""),
-          previousClinicId: s(previousOpen.clinicId),
-          previousWorkDate: s(previousOpen.workDate),
-        }
-      );
-      return res.status(out.status).json(out.body);
     }
 
     if (!shift && role === "helper") {
@@ -3112,15 +3171,8 @@ async function checkIn(req, res) {
         });
       }
 
-      return res.status(409).json({
-        ok: false,
-        code: "ALREADY_CHECKED_IN_OTHER_SESSION",
-        message: "มี session ที่ยังไม่ปิดอยู่แล้ว",
-        existingSessionId: String(open._id || ""),
-        existingClinicId: s(open.clinicId),
-        existingWorkDate: s(open.workDate),
-        existingShiftId: openShiftId,
-      });
+      const out = buildPreviousAttendancePendingResponse(open);
+      return res.status(out.status).json(out.body);
     }
 
     const sameDayBaseQuery = buildRuntimeSessionQuery({
@@ -3161,6 +3213,7 @@ async function checkIn(req, res) {
           role === "helper"
             ? "Manual attendance request is pending for this shift/date"
             : "Manual attendance request is pending for this date",
+        sessionId: String(existingPendingManual._id || ""),
       });
     }
 
@@ -3259,8 +3312,7 @@ async function checkIn(req, res) {
 
       ...getScheduleSnapshot({ policy, shift, workDate }),
     };
-
-    const created = new AttendanceSession(payload);
+        const created = new AttendanceSession(payload);
     ensureSecurityFields(created);
 
     if (lateMinutes > 0) addSuspiciousFlag(created, "LATE_CHECKIN", 5);
@@ -3292,6 +3344,7 @@ async function checkIn(req, res) {
       .json({ ok: false, message: "check-in failed", error: e.message });
   }
 }
+
 async function checkOut(req, res) {
   try {
     const mockErr = rejectIfMockLocationAnywhere(req);
@@ -3428,6 +3481,19 @@ async function checkOut(req, res) {
       });
     }
 
+    const previousPendingManual = await findPreviousPendingManualSession({
+      principalId,
+      workDate: s(session.workDate),
+    });
+
+    if (
+      previousPendingManual &&
+      String(previousPendingManual._id || "") !== String(session._id || "")
+    ) {
+      const out = buildPreviousAttendancePendingResponse(previousPendingManual);
+      return res.status(out.status).json(out.body);
+    }
+
     const biometricVerified = !!req.body?.biometricVerified;
     const method = resolveAttendanceMethod(req.body?.method, biometricVerified);
 
@@ -3548,8 +3614,7 @@ async function checkOut(req, res) {
         });
       }
     }
-
-    if (
+        if (
       method === "biometric" &&
       rules.forgotCheckoutManualOnly &&
       checkOutAt.getTime() >
@@ -3683,6 +3748,7 @@ async function checkOut(req, res) {
       .json({ ok: false, message: "check-out failed", error: e.message });
   }
 }
+
 async function submitManualRequest(req, res) {
   try {
     const { principalId } = getPrincipal(req);
@@ -3774,6 +3840,11 @@ async function submitManualRequest(req, res) {
       );
     }
 
+    const previousPendingManual = await findPreviousPendingManualSession({
+      principalId: resolvedPrincipalId,
+      workDate,
+    });
+
     const sameDayQuery = buildRuntimeSessionQuery({
       clinicId,
       principalId: resolvedPrincipalId,
@@ -3808,7 +3879,108 @@ async function submitManualRequest(req, res) {
       sameDaySessions.find((x) => s(x.status) === "closed") || null;
     let targetSession = openSession || closedSession || null;
 
-    if (manualRequestType === "check_in") {
+    const previousDaySession =
+      previousPendingManual &&
+      s(previousPendingManual.workDate) !== workDate
+        ? await AttendanceSession.findById(previousPendingManual._id)
+        : null;
+
+    if (
+      previousDaySession &&
+      s(previousDaySession.principalId) === s(resolvedPrincipalId) &&
+      isStatusPendingManual(previousDaySession)
+    ) {
+      const previousType = s(previousDaySession.manualRequestType);
+      const requestReasonCode = s(req.body?.reasonCode);
+      const requestReasonText = s(req.body?.reasonText || req.body?.note);
+
+      const requestedAtFromBody = firstValidDate(
+        req.body?.requestedCheckOutAt,
+        req.body?.checkOutAt,
+        req.body?.requestedCheckInAt,
+        req.body?.checkInAt
+      );
+
+      if (!requestedAtFromBody) {
+        return res.status(400).json({
+          ok: false,
+          code: "PREVIOUS_REQUEST_TIME_REQUIRED",
+          message: "กรุณาระบุเวลาที่ต้องการแก้ไขสำหรับรายการค้างของวันก่อน",
+          previousSessionId: String(previousDaySession._id || ""),
+          previousWorkDate: s(previousDaySession.workDate),
+        });
+      }
+
+      if (
+        ![
+          "forgot_checkout",
+          "check_out",
+          "edit_both",
+          "check_in",
+          "",
+        ].includes(previousType)
+      ) {
+        return res.status(409).json({
+          ok: false,
+          code: "PREVIOUS_REQUEST_NOT_EDITABLE",
+          message: "รายการค้างของวันก่อนอยู่ในสถานะที่ไม่สามารถแก้ไขต่อได้",
+          previousSessionId: String(previousDaySession._id || ""),
+          previousWorkDate: s(previousDaySession.workDate),
+        });
+      }
+
+      if (
+        previousType === "forgot_checkout" ||
+        previousType === "check_out" ||
+        (previousDaySession.checkInAt && !previousDaySession.checkOutAt)
+      ) {
+        previousDaySession.manualRequestType = "forgot_checkout";
+        previousDaySession.requestedCheckOutAt = requestedAtFromBody;
+      } else if (!previousDaySession.checkInAt) {
+        previousDaySession.manualRequestType = "check_in";
+        previousDaySession.requestedCheckInAt = requestedAtFromBody;
+      } else {
+        previousDaySession.manualRequestType = "edit_both";
+        if (!previousDaySession.requestedCheckInAt && previousDaySession.checkInAt) {
+          previousDaySession.requestedCheckInAt = previousDaySession.checkInAt;
+        }
+        previousDaySession.requestedCheckOutAt = requestedAtFromBody;
+      }
+
+      previousDaySession.status = "pending_manual";
+      previousDaySession.approvalStatus = "pending";
+      previousDaySession.manualLocked = true;
+      previousDaySession.requestedBy = s(userId || resolvedPrincipalId);
+      previousDaySession.requestedAt = new Date();
+
+      if (requestReasonCode) {
+        previousDaySession.requestReasonCode = requestReasonCode;
+        previousDaySession.reasonCode = requestReasonCode;
+      }
+
+      if (requestReasonText) {
+        previousDaySession.requestReasonText = requestReasonText;
+        previousDaySession.reasonText = requestReasonText;
+        previousDaySession.note = requestReasonText;
+        previousDaySession.manualReason = requestReasonText;
+      }
+
+      await previousDaySession.save();
+
+      return res.status(200).json({
+        ok: true,
+        updatedPreviousPendingRequest: true,
+        requiresApproval: true,
+        session: previousDaySession,
+        message:
+          "อัปเดตรายการค้างของวันก่อนเรียบร้อยแล้ว กรุณารอการอนุมัติก่อนจึงจะเริ่มรายการใหม่ได้",
+        blockNewAttendanceUntilApproved: true,
+        previousSessionId: String(previousDaySession._id || ""),
+        previousWorkDate: s(previousDaySession.workDate),
+        policy: buildPublicPolicy(policy, s(previousDaySession.workDate)),
+      });
+    }
+        if (manualRequestType === "check_in") {
       if (targetSession) {
         return res.status(409).json({
           ok: false,
@@ -4154,7 +4326,6 @@ async function listClinicManualRequests(req, res) {
     });
   }
 }
-
 async function approveManualRequest(req, res) {
   try {
     const clinicId = s(req.user?.clinicId);
@@ -4524,7 +4695,6 @@ async function listClinicSessions(req, res) {
     });
   }
 }
-
 async function myDayPreview(req, res) {
   try {
     const workDate = s(req.query?.workDate);
@@ -4552,6 +4722,66 @@ async function myDayPreview(req, res) {
 
     let shift = buildRuntimeShiftSnapshot(ctx.shift) || null;
     const policy = await getOrCreatePolicy(clinicId, userId || principalId);
+
+    const previousOpen = await findPreviousOpenSession({ principalId, workDate });
+    if (previousOpen) {
+      const out = buildPreviousAttendancePendingResponse(previousOpen);
+      return res.status(out.status).json({
+        ...out.body,
+        workDate,
+        attendance: {
+          checkedIn: false,
+          checkedOut: false,
+          openSession: null,
+          pendingManualSession: null,
+          currentSessionId: "",
+        },
+        sessions: [],
+        runtime: {
+          role,
+          clinicId,
+          clinicOpenDay: isClinicOpenDay(policy, workDate),
+          clinicOpenTime: pickClinicOpenTime(policy, workDate),
+          clinicCloseTime: pickClinicCloseTime(policy, workDate),
+          shift: shift || null,
+          shiftSelectionMode: shiftSelectionMode || "",
+          availableShifts: availableShifts || [],
+        },
+        policy: buildPublicPolicy(policy, workDate),
+      });
+    }
+
+    const previousPendingManual = await findPreviousPendingManualSession({
+      principalId,
+      workDate,
+    });
+
+    if (previousPendingManual) {
+      const out = buildPreviousAttendancePendingResponse(previousPendingManual);
+      return res.status(out.status).json({
+        ...out.body,
+        workDate,
+        attendance: {
+          checkedIn: false,
+          checkedOut: false,
+          openSession: null,
+          pendingManualSession: previousPendingManual,
+          currentSessionId: "",
+        },
+        sessions: [],
+        runtime: {
+          role,
+          clinicId,
+          clinicOpenDay: isClinicOpenDay(policy, workDate),
+          clinicOpenTime: pickClinicOpenTime(policy, workDate),
+          clinicCloseTime: pickClinicCloseTime(policy, workDate),
+          shift: shift || null,
+          shiftSelectionMode: shiftSelectionMode || "",
+          availableShifts: availableShifts || [],
+        },
+        policy: buildPublicPolicy(policy, workDate),
+      });
+    }
 
     const sessionsQuery = buildRuntimeSessionQuery({
       clinicId,
@@ -4690,15 +4920,18 @@ async function myDayPreview(req, res) {
 
     if (role === "helper" && shift) {
       if (checkedIn && !checkedOut) {
-        message = `เช็คอินแล้วสำหรับกะ ${s(shift.clinicName || shift.title || shift._id)}`;
+        message = `เช็คอินแล้วสำหรับกะ ${s(
+          shift.clinicName || shift.title || shift._id
+        )}`;
       } else if (checkedIn && checkedOut) {
-        message = `กะนี้เสร็จสิ้นแล้ว`;
+        message = "กะนี้เสร็จสิ้นแล้ว";
       } else {
-        message = `พร้อมสแกนสำหรับกะ ${s(shift.clinicName || shift.title || shift._id)}`;
+        message = `พร้อมสแกนสำหรับกะ ${s(
+          shift.clinicName || shift.title || shift._id
+        )}`;
       }
     }
-
-    return res.json({
+        return res.json({
       ok: true,
       workDate,
       checkedIn,
@@ -4749,6 +4982,191 @@ async function myDayPreview(req, res) {
   }
 }
 
+async function backfillPreviousPendingRequestIfNeeded({
+  principalId,
+  currentWorkDate,
+  requestedCheckOutAt,
+  reasonCode = "",
+  reasonText = "",
+  requesterId = "",
+}) {
+  const previousPending = await findPreviousPendingManualSession({
+    principalId,
+    workDate: currentWorkDate,
+  });
+
+  if (!previousPending) {
+    return {
+      ok: false,
+      reason: "NO_PREVIOUS_PENDING",
+    };
+  }
+
+  if (s(previousPending.workDate) === s(currentWorkDate)) {
+    return {
+      ok: false,
+      reason: "SAME_DAY_PENDING",
+    };
+  }
+
+  const session = await AttendanceSession.findById(previousPending._id);
+  if (!session) {
+    return {
+      ok: false,
+      reason: "PREVIOUS_PENDING_NOT_FOUND",
+    };
+  }
+
+  if (!isStatusPendingManual(session)) {
+    return {
+      ok: false,
+      reason: "PREVIOUS_PENDING_NOT_ACTIVE",
+    };
+  }
+
+  if (!requestedCheckOutAt) {
+    return {
+      ok: false,
+      reason: "REQUESTED_CHECKOUT_REQUIRED",
+      session,
+    };
+  }
+
+  const prevType = s(session.manualRequestType);
+
+  if (
+    prevType === "forgot_checkout" ||
+    prevType === "check_out" ||
+    (session.checkInAt && !session.checkOutAt)
+  ) {
+    session.manualRequestType = "forgot_checkout";
+    session.requestedCheckOutAt = requestedCheckOutAt;
+  } else if (!session.checkInAt) {
+    session.manualRequestType = "check_in";
+    session.requestedCheckInAt = requestedCheckOutAt;
+  } else {
+    session.manualRequestType = "edit_both";
+    if (!session.requestedCheckInAt && session.checkInAt) {
+      session.requestedCheckInAt = session.checkInAt;
+    }
+    session.requestedCheckOutAt = requestedCheckOutAt;
+  }
+
+  session.status = "pending_manual";
+  session.approvalStatus = "pending";
+  session.manualLocked = true;
+  session.requestedBy = s(requesterId);
+  session.requestedAt = new Date();
+
+  if (s(reasonCode)) {
+    session.requestReasonCode = s(reasonCode);
+    session.reasonCode = s(reasonCode);
+  }
+
+  if (s(reasonText)) {
+    session.requestReasonText = s(reasonText);
+    session.reasonText = s(reasonText);
+    session.note = s(reasonText);
+    session.manualReason = s(reasonText);
+  }
+
+  await session.save();
+
+  return {
+    ok: true,
+    updated: true,
+    session,
+  };
+}
+
+async function rebuildPendingPreviousByCurrentRequest(req, currentWorkDate, principalId) {
+  const requestedCheckOutAt = firstValidDate(
+    req.body?.requestedCheckOutAt,
+    req.body?.checkOutAt,
+    req.body?.requestedCheckInAt,
+    req.body?.checkInAt
+  );
+
+  return backfillPreviousPendingRequestIfNeeded({
+    principalId,
+    currentWorkDate,
+    requestedCheckOutAt,
+    reasonCode: s(req.body?.reasonCode),
+    reasonText: s(req.body?.reasonText || req.body?.note),
+    requesterId:
+      s(req.user?.userId) || s(req.user?.staffId) || s(principalId),
+  });
+}
+
+async function explainPreviousPendingForPreview(req, res, workDate, ctx, policy) {
+  const previousPendingManual = await findPreviousPendingManualSession({
+    principalId: s(ctx.principalId),
+    workDate,
+  });
+
+  if (!previousPendingManual) return false;
+
+  const out = buildPreviousAttendancePendingResponse(previousPendingManual);
+  res.status(out.status).json({
+    ...out.body,
+    workDate,
+    attendance: {
+      checkedIn: false,
+      checkedOut: false,
+      openSession: null,
+      pendingManualSession: previousPendingManual,
+      currentSessionId: "",
+    },
+    sessions: [],
+    runtime: {
+      role: ctx.role,
+      clinicId: ctx.clinicId,
+      clinicOpenDay: isClinicOpenDay(policy, workDate),
+      clinicOpenTime: pickClinicOpenTime(policy, workDate),
+      clinicCloseTime: pickClinicCloseTime(policy, workDate),
+      shift: ctx.shift || null,
+      shiftSelectionMode: ctx.shiftSelectionMode || "",
+      availableShifts: ctx.availableShifts || [],
+    },
+    policy: buildPublicPolicy(policy, workDate),
+  });
+  return true;
+}
+
+async function explainPreviousOpenForPreview(req, res, workDate, ctx, policy) {
+  const previousOpen = await findPreviousOpenSession({
+    principalId: s(ctx.principalId),
+    workDate,
+  });
+
+  if (!previousOpen) return false;
+
+  const out = buildPreviousAttendancePendingResponse(previousOpen);
+  res.status(out.status).json({
+    ...out.body,
+    workDate,
+    attendance: {
+      checkedIn: false,
+      checkedOut: false,
+      openSession: null,
+      pendingManualSession: null,
+      currentSessionId: "",
+    },
+    sessions: [],
+    runtime: {
+      role: ctx.role,
+      clinicId: ctx.clinicId,
+      clinicOpenDay: isClinicOpenDay(policy, workDate),
+      clinicOpenTime: pickClinicOpenTime(policy, workDate),
+      clinicCloseTime: pickClinicCloseTime(policy, workDate),
+      shift: ctx.shift || null,
+      shiftSelectionMode: ctx.shiftSelectionMode || "",
+      availableShifts: ctx.availableShifts || [],
+    },
+    policy: buildPublicPolicy(policy, workDate),
+  });
+  return true;
+}
 module.exports = {
   checkIn,
   checkOut,
