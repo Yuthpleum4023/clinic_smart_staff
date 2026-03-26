@@ -332,6 +332,72 @@ function maybeFlagDistanceRisk(session, distanceMeters, allowedRadius) {
   }
 }
 
+function extractClinicDisplayName(value) {
+  if (!value || typeof value !== "object") return "";
+
+  return s(
+    value.clinicName ||
+      value.clinic?.name ||
+      value.clinic?.clinicName ||
+      value.clinic?.title ||
+      value.clinicTitle ||
+      value.clinicDisplayName ||
+      value.locationName ||
+      value.workplaceName ||
+      value.hospitalName ||
+      value.branchName ||
+      value.name
+  );
+}
+
+function extractShiftDisplayName(value) {
+  if (!value || typeof value !== "object") return "";
+
+  return s(
+    value.shiftName ||
+      value.title ||
+      value.shiftTitle ||
+      value.position ||
+      value.roleName ||
+      value.jobTitle ||
+      value.label
+  );
+}
+
+function buildManualRequestRouteHint(sessionLike = {}) {
+  const sessionId = s(sessionLike._id || sessionLike.sessionId);
+  const clinicId = s(sessionLike.clinicId);
+  const workDate = s(sessionLike.workDate);
+
+  return {
+    action: "OPEN_PENDING_MANUAL_REQUEST",
+    screen: "AttendanceHistoryDetail",
+    tab: "manual_requests",
+    sessionId,
+    clinicId,
+    workDate,
+  };
+}
+
+function buildResolveAttendanceRouteHint(sessionLike = {}) {
+  const sessionId = s(sessionLike._id || sessionLike.sessionId);
+  const clinicId = s(sessionLike.clinicId);
+  const workDate = s(sessionLike.workDate);
+  const shiftId =
+    typeof sessionLike.shiftId === "object"
+      ? s(sessionLike.shiftId?._id || sessionLike.shiftId?.id)
+      : s(sessionLike.shiftId);
+
+  return {
+    action: "OPEN_ATTENDANCE_HISTORY_DETAIL",
+    screen: "AttendanceHistoryDetail",
+    sessionId,
+    clinicId,
+    workDate,
+    shiftId,
+  };
+}
+
 function normalizeSessionItem(x) {
   if (!Array.isArray(x.suspiciousFlags)) x.suspiciousFlags = [];
   if (!x.securityMeta) {
@@ -354,6 +420,8 @@ function normalizeSessionItem(x) {
 
   x.shiftId = shiftIdText || x.shiftId || null;
   x.clinicId = s(x.clinicId);
+  x.clinicName = s(x.clinicName || extractClinicDisplayName(x));
+  x.shiftName = s(x.shiftName || extractShiftDisplayName(x));
 
   return x;
 }
@@ -945,6 +1013,7 @@ async function memoizedGetEmployeeByUserId(req, userId, token = "") {
     throw error;
   }
 }
+
 function normalizeEmployeeRecord(emp) {
   if (!emp || typeof emp !== "object") return null;
 
@@ -1158,7 +1227,9 @@ async function fetchEmployeeForRequest(
   }
 
   if (!raw && lastHardError) throw lastHardError;
-  if (!raw && saw429) return buildFallbackEmployeeFromToken(req, fallbackClinicId);
+  if (!raw && saw429) {
+    return buildFallbackEmployeeFromToken(req, fallbackClinicId);
+  }
 
   return normalizeEmployeeRecord(raw);
 }
@@ -1490,7 +1561,6 @@ async function ensureSessionEmployeeAccess(req, session) {
 
   return { ok: true, employee };
 }
-
 function rejectIfMockLocationAnywhere(req) {
   const inMock = isMockLocation(req, "in");
   const outMock = isMockLocation(req, "out");
@@ -1641,6 +1711,7 @@ function shiftBelongsToHelper(
 
   return false;
 }
+
 function extractShiftClinicName(shift) {
   return s(
     shift?.clinicName ||
@@ -1900,7 +1971,10 @@ async function loadShiftForSession({
   return normalizeShiftLite(picked || null);
 }
 
-async function loadHelperAssignedShifts(req, { userId, workDate, clinicId = "" }) {
+async function loadHelperAssignedShifts(
+  req,
+  { userId, workDate, clinicId = "" }
+) {
   const memo = createRequestMemo(req);
   const key = getShiftMemoKey({
     clinicId,
@@ -2021,12 +2095,9 @@ async function resolveHelperShiftForRuntime(
   }
 
   if (!candidates.length) {
-    return buildCodeResponse(
-      409,
-      "NO_SHIFT_TODAY",
-      "วันนี้ไม่มีตารางงาน",
-      { workDate }
-    );
+    return buildCodeResponse(409, "NO_SHIFT_TODAY", "วันนี้ไม่มีตารางงาน", {
+      workDate,
+    });
   }
 
   if (candidates.length === 1) {
@@ -2105,22 +2176,35 @@ function toBlockedPreviousSessionPayload(session) {
       ? s(session.shiftId?._id || session.shiftId?.id)
       : s(session.shiftId);
 
+  const clinicName = s(session.clinicName || extractClinicDisplayName(session));
+  const shiftName = s(session.shiftName || extractShiftDisplayName(session));
+  const routeHint =
+    s(session.status) === "pending_manual"
+      ? buildManualRequestRouteHint(session)
+      : buildResolveAttendanceRouteHint(session);
+
   return {
     sessionId: String(session._id || ""),
     clinicId: s(session.clinicId),
+    clinicName,
     workDate: s(session.workDate),
     shiftId,
+    shiftName,
     status: s(session.status),
     approvalStatus: s(session.approvalStatus),
     manualRequestType: s(session.manualRequestType),
     requestedAt: session.requestedAt || null,
     checkInAt: session.checkInAt || null,
     checkOutAt: session.checkOutAt || null,
+    routeHint,
   };
 }
 
 function buildPreviousAttendancePendingResponse(previousSession) {
   const previous = toBlockedPreviousSessionPayload(previousSession);
+  const routeHint =
+    previous?.routeHint ||
+    buildResolveAttendanceRouteHint(previousSession || {});
 
   return buildCodeResponse(
     409,
@@ -2128,11 +2212,16 @@ function buildPreviousAttendancePendingResponse(previousSession) {
     "ยังมีรายการลงเวลาจากวันก่อนค้างอยู่ กรุณาส่งคำขอแก้ไขรายการเดิมและรออนุมัติก่อนจึงจะเริ่มรายการใหม่ได้",
     {
       action: "REQUIRE_FIX_PREVIOUS",
+      nextAction: routeHint.action,
+      routeHint,
       previousSession: previous,
+      pendingContext: previous,
       previousSessionId: previous?.sessionId || "",
       previousClinicId: previous?.clinicId || "",
+      previousClinicName: previous?.clinicName || "",
       previousWorkDate: previous?.workDate || "",
       previousShiftId: previous?.shiftId || "",
+      previousShiftName: previous?.shiftName || "",
     }
   );
 }
@@ -2278,6 +2367,7 @@ function computeOtMinutes(policy, shift, checkInAt, checkOutAt) {
 
   return 0;
 }
+
 function normalizeEmploymentType(v) {
   const t = s(v).toLowerCase();
   if (!t) return "";
@@ -2502,6 +2592,8 @@ function buildSessionBaseForCreate({
 }) {
   return {
     clinicId,
+    clinicName: s(shift?.clinicName),
+    shiftName: s(shift?.title),
     principalId,
     principalType,
     staffId: staffId || "",
@@ -2862,6 +2954,7 @@ function buildRuntimeSessionQuery({
 
   return q;
 }
+
 async function resolveRuntimeContext(req, workDate, shiftId = null) {
   const memo = createRequestMemo(req);
   const runtimeKey = makeRuntimeContextKey(req, workDate, shiftId);
@@ -2988,7 +3081,6 @@ async function resolveRuntimeContext(req, workDate, shiftId = null) {
   memo.runtimeContext.set(runtimeKey, out);
   return out;
 }
-
 async function checkIn(req, res) {
   try {
     const mockErr = rejectIfMockLocationAnywhere(req);
@@ -3137,7 +3229,9 @@ async function checkIn(req, res) {
         code: "MULTIPLE_OPEN_SESSIONS",
         message:
           "พบ open session มากกว่าหนึ่งรายการ กรุณาให้ผู้ดูแลตรวจสอบข้อมูลก่อน",
-        sessions: existingOpenAnywhere,
+        sessions: existingOpenAnywhere.map((x) =>
+          toBlockedPreviousSessionPayload(x)
+        ),
       });
     }
 
@@ -3166,8 +3260,15 @@ async function checkIn(req, res) {
               : "เช็คอินวันนี้แล้ว",
           existingSessionId: String(open._id || ""),
           existingClinicId: s(open.clinicId),
+          existingClinicName: s(
+            open.clinicName || extractClinicDisplayName(open)
+          ),
           existingWorkDate: s(open.workDate),
           existingShiftId: openShiftId,
+          existingShiftName: s(
+            open.shiftName || extractShiftDisplayName(open)
+          ),
+          routeHint: buildResolveAttendanceRouteHint(open),
         });
       }
 
@@ -3197,6 +3298,20 @@ async function checkIn(req, res) {
           role === "helper"
             ? "Attendance already completed for this shift/date"
             : "Attendance already completed for today",
+        sessionId: String(existingClosed._id || ""),
+        clinicId: s(existingClosed.clinicId),
+        clinicName: s(
+          existingClosed.clinicName || extractClinicDisplayName(existingClosed)
+        ),
+        workDate: s(existingClosed.workDate),
+        shiftId:
+          typeof existingClosed.shiftId === "object"
+            ? s(existingClosed.shiftId?._id || existingClosed.shiftId?.id)
+            : s(existingClosed.shiftId),
+        shiftName: s(
+          existingClosed.shiftName || extractShiftDisplayName(existingClosed)
+        ),
+        routeHint: buildResolveAttendanceRouteHint(existingClosed),
       });
     }
 
@@ -3214,6 +3329,25 @@ async function checkIn(req, res) {
             ? "Manual attendance request is pending for this shift/date"
             : "Manual attendance request is pending for this date",
         sessionId: String(existingPendingManual._id || ""),
+        clinicId: s(existingPendingManual.clinicId),
+        clinicName: s(
+          existingPendingManual.clinicName ||
+            extractClinicDisplayName(existingPendingManual)
+        ),
+        workDate: s(existingPendingManual.workDate),
+        shiftId:
+          typeof existingPendingManual.shiftId === "object"
+            ? s(
+                existingPendingManual.shiftId?._id ||
+                  existingPendingManual.shiftId?.id
+              )
+            : s(existingPendingManual.shiftId),
+        shiftName: s(
+          existingPendingManual.shiftName ||
+            extractShiftDisplayName(existingPendingManual)
+        ),
+        routeHint: buildManualRequestRouteHint(existingPendingManual),
+        pendingContext: toBlockedPreviousSessionPayload(existingPendingManual),
       });
     }
 
@@ -3268,6 +3402,8 @@ async function checkIn(req, res) {
 
     const payload = {
       clinicId,
+      clinicName: s(shift?.clinicName),
+      shiftName: s(shift?.title),
       principalId,
       principalType,
       staffId: staffId || "",
@@ -3312,7 +3448,8 @@ async function checkIn(req, res) {
 
       ...getScheduleSnapshot({ policy, shift, workDate }),
     };
-        const created = new AttendanceSession(payload);
+
+    const created = new AttendanceSession(payload);
     ensureSecurityFields(created);
 
     if (lateMinutes > 0) addSuspiciousFlag(created, "LATE_CHECKIN", 5);
@@ -3363,7 +3500,6 @@ async function checkOut(req, res) {
     const requestedShiftId = normalizeObjectIdString(getRequestedShiftId(req));
 
     let session = null;
-
     if (id) {
       session = await AttendanceSession.findById(id);
       if (!session) {
@@ -3416,12 +3552,15 @@ async function checkOut(req, res) {
           sessions: openSessions.map((x) => ({
             _id: String(x._id || ""),
             clinicId: s(x.clinicId),
+            clinicName: s(x.clinicName || extractClinicDisplayName(x)),
             workDate: s(x.workDate),
             shiftId:
               typeof x.shiftId === "object"
                 ? s(x.shiftId?._id || x.shiftId?.id)
                 : s(x.shiftId),
+            shiftName: s(x.shiftName || extractShiftDisplayName(x)),
             checkInAt: x.checkInAt,
+            routeHint: buildResolveAttendanceRouteHint(x),
           })),
         });
       }
@@ -3614,7 +3753,8 @@ async function checkOut(req, res) {
         });
       }
     }
-        if (
+
+    if (
       method === "biometric" &&
       rules.forgotCheckoutManualOnly &&
       checkOutAt.getTime() >
@@ -3677,6 +3817,15 @@ async function checkOut(req, res) {
     if (s(req.body?.deviceId)) session.deviceId = s(req.body?.deviceId);
     session.outLat = Number.isFinite(lat) ? lat : session.outLat;
     session.outLng = Number.isFinite(lng) ? lng : session.outLng;
+
+    if (!s(session.clinicName)) {
+      session.clinicName = s(
+        shift?.clinicName || extractClinicDisplayName(session)
+      );
+    }
+    if (!s(session.shiftName)) {
+      session.shiftName = s(shift?.title || extractShiftDisplayName(session));
+    }
 
     if (s(req.body?.reasonCode)) session.reasonCode = s(req.body?.reasonCode);
     if (s(req.body?.reasonText)) session.reasonText = s(req.body?.reasonText);
@@ -3749,6 +3898,9 @@ async function checkOut(req, res) {
   }
 }
 
+// ======================================================
+// POST /attendance/manual-request
+// ======================================================
 async function submitManualRequest(req, res) {
   try {
     const { principalId } = getPrincipal(req);
@@ -3870,6 +4022,20 @@ async function submitManualRequest(req, res) {
             ? "Manual attendance request is already pending for this shift/date"
             : "Manual attendance request is already pending for this date",
         sessionId: String(pendingExisting._id || ""),
+        clinicId: s(pendingExisting.clinicId),
+        clinicName: s(
+          pendingExisting.clinicName || extractClinicDisplayName(pendingExisting)
+        ),
+        workDate: s(pendingExisting.workDate),
+        shiftId:
+          typeof pendingExisting.shiftId === "object"
+            ? s(pendingExisting.shiftId?._id || pendingExisting.shiftId?.id)
+            : s(pendingExisting.shiftId),
+        shiftName: s(
+          pendingExisting.shiftName || extractShiftDisplayName(pendingExisting)
+        ),
+        routeHint: buildManualRequestRouteHint(pendingExisting),
+        pendingContext: toBlockedPreviousSessionPayload(pendingExisting),
       });
     }
 
@@ -3908,6 +4074,23 @@ async function submitManualRequest(req, res) {
           message: "กรุณาระบุเวลาที่ต้องการแก้ไขสำหรับรายการค้างของวันก่อน",
           previousSessionId: String(previousDaySession._id || ""),
           previousWorkDate: s(previousDaySession.workDate),
+          previousClinicId: s(previousDaySession.clinicId),
+          previousClinicName: s(
+            previousDaySession.clinicName ||
+              extractClinicDisplayName(previousDaySession)
+          ),
+          previousShiftId:
+            typeof previousDaySession.shiftId === "object"
+              ? s(
+                  previousDaySession.shiftId?._id ||
+                    previousDaySession.shiftId?.id
+                )
+              : s(previousDaySession.shiftId),
+          previousShiftName: s(
+            previousDaySession.shiftName ||
+              extractShiftDisplayName(previousDaySession)
+          ),
+          routeHint: buildManualRequestRouteHint(previousDaySession),
         });
       }
 
@@ -3926,6 +4109,23 @@ async function submitManualRequest(req, res) {
           message: "รายการค้างของวันก่อนอยู่ในสถานะที่ไม่สามารถแก้ไขต่อได้",
           previousSessionId: String(previousDaySession._id || ""),
           previousWorkDate: s(previousDaySession.workDate),
+          previousClinicId: s(previousDaySession.clinicId),
+          previousClinicName: s(
+            previousDaySession.clinicName ||
+              extractClinicDisplayName(previousDaySession)
+          ),
+          previousShiftId:
+            typeof previousDaySession.shiftId === "object"
+              ? s(
+                  previousDaySession.shiftId?._id ||
+                    previousDaySession.shiftId?.id
+                )
+              : s(previousDaySession.shiftId),
+          previousShiftName: s(
+            previousDaySession.shiftName ||
+              extractShiftDisplayName(previousDaySession)
+          ),
+          routeHint: buildManualRequestRouteHint(previousDaySession),
         });
       }
 
@@ -3941,8 +4141,12 @@ async function submitManualRequest(req, res) {
         previousDaySession.requestedCheckInAt = requestedAtFromBody;
       } else {
         previousDaySession.manualRequestType = "edit_both";
-        if (!previousDaySession.requestedCheckInAt && previousDaySession.checkInAt) {
-          previousDaySession.requestedCheckInAt = previousDaySession.checkInAt;
+        if (
+          !previousDaySession.requestedCheckInAt &&
+          previousDaySession.checkInAt
+        ) {
+          previousDaySession.requestedCheckInAt =
+            previousDaySession.checkInAt;
         }
         previousDaySession.requestedCheckOutAt = requestedAtFromBody;
       }
@@ -3965,6 +4169,17 @@ async function submitManualRequest(req, res) {
         previousDaySession.manualReason = requestReasonText;
       }
 
+      if (!s(previousDaySession.clinicName)) {
+        previousDaySession.clinicName = s(
+          extractClinicDisplayName(previousDaySession)
+        );
+      }
+      if (!s(previousDaySession.shiftName)) {
+        previousDaySession.shiftName = s(
+          extractShiftDisplayName(previousDaySession)
+        );
+      }
+
       await previousDaySession.save();
 
       return res.status(200).json({
@@ -3977,10 +4192,29 @@ async function submitManualRequest(req, res) {
         blockNewAttendanceUntilApproved: true,
         previousSessionId: String(previousDaySession._id || ""),
         previousWorkDate: s(previousDaySession.workDate),
+        previousClinicId: s(previousDaySession.clinicId),
+        previousClinicName: s(
+          previousDaySession.clinicName ||
+            extractClinicDisplayName(previousDaySession)
+        ),
+        previousShiftId:
+          typeof previousDaySession.shiftId === "object"
+            ? s(
+                previousDaySession.shiftId?._id ||
+                  previousDaySession.shiftId?.id
+              )
+            : s(previousDaySession.shiftId),
+        previousShiftName: s(
+          previousDaySession.shiftName ||
+            extractShiftDisplayName(previousDaySession)
+        ),
+        routeHint: buildManualRequestRouteHint(previousDaySession),
+        pendingContext: toBlockedPreviousSessionPayload(previousDaySession),
         policy: buildPublicPolicy(policy, s(previousDaySession.workDate)),
       });
     }
-        if (manualRequestType === "check_in") {
+
+    if (manualRequestType === "check_in") {
       if (targetSession) {
         return res.status(409).json({
           ok: false,
@@ -3989,6 +4223,20 @@ async function submitManualRequest(req, res) {
             role === "helper"
               ? "A session already exists for this shift/date. Use edit_both instead."
               : "A session already exists for this date. Use edit_both instead.",
+          sessionId: String(targetSession._id || ""),
+          clinicId: s(targetSession.clinicId),
+          clinicName: s(
+            targetSession.clinicName || extractClinicDisplayName(targetSession)
+          ),
+          workDate: s(targetSession.workDate),
+          shiftId:
+            typeof targetSession.shiftId === "object"
+              ? s(targetSession.shiftId?._id || targetSession.shiftId?.id)
+              : s(targetSession.shiftId),
+          shiftName: s(
+            targetSession.shiftName || extractShiftDisplayName(targetSession)
+          ),
+          routeHint: buildResolveAttendanceRouteHint(targetSession),
         });
       }
 
@@ -4038,7 +4286,11 @@ async function submitManualRequest(req, res) {
 
       let otMeta = null;
       if (s(created.status) === "closed") {
-        otMeta = await syncOvertimeForSession({ session: created, policy, shift });
+        otMeta = await syncOvertimeForSession({
+          session: created,
+          policy,
+          shift,
+        });
         await created.save();
       }
 
@@ -4096,6 +4348,20 @@ async function submitManualRequest(req, res) {
             role === "helper"
               ? "Attendance already completed for this shift/date. Use edit_both instead if correction is needed."
               : "Attendance already completed for this date. Use edit_both instead if correction is needed.",
+          sessionId: String(closedSession._id || ""),
+          clinicId: s(closedSession.clinicId),
+          clinicName: s(
+            closedSession.clinicName || extractClinicDisplayName(closedSession)
+          ),
+          workDate: s(closedSession.workDate),
+          shiftId:
+            typeof closedSession.shiftId === "object"
+              ? s(closedSession.shiftId?._id || closedSession.shiftId?.id)
+              : s(closedSession.shiftId),
+          shiftName: s(
+            closedSession.shiftName || extractShiftDisplayName(closedSession)
+          ),
+          routeHint: buildResolveAttendanceRouteHint(closedSession),
         });
       } else if (
         !(targetSession && targetSession.checkInAt && !targetSession.checkOutAt)
@@ -4135,6 +4401,17 @@ async function submitManualRequest(req, res) {
           })
         );
       }
+    }
+
+    if (targetSession && !s(targetSession.clinicName)) {
+      targetSession.clinicName = s(
+        shift?.clinicName || extractClinicDisplayName(targetSession)
+      );
+    }
+    if (targetSession && !s(targetSession.shiftName)) {
+      targetSession.shiftName = s(
+        shift?.title || extractShiftDisplayName(targetSession)
+      );
     }
 
     applyManualRequestFields(
@@ -4204,7 +4481,6 @@ async function submitManualRequest(req, res) {
     });
   }
 }
-
 async function listMyManualRequests(req, res) {
   try {
     const { clinicId, principalId, userId, role } = getPrincipal(req);
@@ -4254,7 +4530,10 @@ async function listMyManualRequests(req, res) {
       ok: true,
       items: normalizedItems,
       filter: {
-        view: normalizedFilter === "history" ? "history" : normalizedFilter || "all",
+        view:
+          normalizedFilter === "history"
+            ? "history"
+            : normalizedFilter || "all",
         approvalStatus: normalizedFilter || "",
       },
       clinicScope: {
@@ -4326,6 +4605,7 @@ async function listClinicManualRequests(req, res) {
     });
   }
 }
+
 async function approveManualRequest(req, res) {
   try {
     const clinicId = s(req.user?.clinicId);
@@ -4420,6 +4700,8 @@ async function approveManualRequest(req, res) {
         .json({ ok: false, message: "Requested check-out time is missing" });
     }
 
+    ensureSecurityFields(session);
+
     if (finalCheckInAt) {
       session.checkInAt = finalCheckInAt;
       session.checkInMethod = "manual";
@@ -4430,6 +4712,15 @@ async function approveManualRequest(req, res) {
       session.checkOutAt = finalCheckOutAt;
       session.checkOutMethod = "manual";
       session.biometricVerifiedOut = false;
+    }
+
+    if (!s(session.clinicName)) {
+      session.clinicName = s(
+        shift?.clinicName || extractClinicDisplayName(session)
+      );
+    }
+    if (!s(session.shiftName)) {
+      session.shiftName = s(shift?.title || extractShiftDisplayName(session));
     }
 
     session.status = session.checkOutAt ? "closed" : "open";
@@ -4523,6 +4814,13 @@ async function rejectManualRequest(req, res) {
         ok: false,
         message: "Manual request is not pending rejection",
       });
+    }
+
+    if (!s(session.clinicName)) {
+      session.clinicName = s(extractClinicDisplayName(session));
+    }
+    if (!s(session.shiftName)) {
+      session.shiftName = s(extractShiftDisplayName(session));
     }
 
     session.approvalStatus = "rejected";
@@ -4695,6 +4993,7 @@ async function listClinicSessions(req, res) {
     });
   }
 }
+
 async function myDayPreview(req, res) {
   try {
     const workDate = s(req.query?.workDate);
@@ -4851,7 +5150,9 @@ async function myDayPreview(req, res) {
     const suspiciousCount = normalizedSessions.reduce(
       (sum, x) =>
         sum +
-        (Array.isArray(x.suspiciousFlags) && x.suspiciousFlags.length > 0 ? 1 : 0),
+        (Array.isArray(x.suspiciousFlags) && x.suspiciousFlags.length > 0
+          ? 1
+          : 0),
       0
     );
 
@@ -4931,7 +5232,8 @@ async function myDayPreview(req, res) {
         )}`;
       }
     }
-        return res.json({
+
+    return res.json({
       ok: true,
       workDate,
       checkedIn,
@@ -5058,6 +5360,13 @@ async function backfillPreviousPendingRequestIfNeeded({
   session.requestedBy = s(requesterId);
   session.requestedAt = new Date();
 
+  if (!s(session.clinicName)) {
+    session.clinicName = s(extractClinicDisplayName(session));
+  }
+  if (!s(session.shiftName)) {
+    session.shiftName = s(extractShiftDisplayName(session));
+  }
+
   if (s(reasonCode)) {
     session.requestReasonCode = s(reasonCode);
     session.reasonCode = s(reasonCode);
@@ -5079,7 +5388,11 @@ async function backfillPreviousPendingRequestIfNeeded({
   };
 }
 
-async function rebuildPendingPreviousByCurrentRequest(req, currentWorkDate, principalId) {
+async function rebuildPendingPreviousByCurrentRequest(
+  req,
+  currentWorkDate,
+  principalId
+) {
   const requestedCheckOutAt = firstValidDate(
     req.body?.requestedCheckOutAt,
     req.body?.checkOutAt,
@@ -5167,6 +5480,7 @@ async function explainPreviousOpenForPreview(req, res, workDate, ctx, policy) {
   });
   return true;
 }
+
 module.exports = {
   checkIn,
   checkOut,
