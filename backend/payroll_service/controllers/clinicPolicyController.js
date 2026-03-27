@@ -155,8 +155,140 @@ function normalizeWeeklySchedule(value, fallback = defaultWeeklySchedule()) {
   return out;
 }
 
+// ==============================
+// NEW: location helpers
+// ==============================
+
+function sanitizeLat(v, fallback = null) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  if (n < -90 || n > 90) return fallback;
+  return n;
+}
+
+function sanitizeLng(v, fallback = null) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  if (n < -180 || n > 180) return fallback;
+  return n;
+}
+
+function normalizeLocationShape(raw = {}, fallback = {}) {
+  const src = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  const fb =
+    fallback && typeof fallback === "object" && !Array.isArray(fallback)
+      ? fallback
+      : {};
+
+  const lat = sanitizeLat(src.lat ?? src.latitude, sanitizeLat(fb.lat, null));
+  const lng = sanitizeLng(src.lng ?? src.longitude, sanitizeLng(fb.lng, null));
+
+  return {
+    lat,
+    lng,
+    district: normStr(src.district || fb.district || ""),
+    province: normStr(src.province || fb.province || ""),
+    address: normStr(src.address || src.fullAddress || fb.address || ""),
+    label: normStr(src.label || src.locationLabel || fb.label || ""),
+  };
+}
+
+function hasUsableLocation(loc) {
+  if (!loc || typeof loc !== "object") return false;
+  return Number.isFinite(loc.lat) && Number.isFinite(loc.lng);
+}
+
+function defaultClinicLocation() {
+  return {
+    lat: null,
+    lng: null,
+    district: "",
+    province: "",
+    address: "",
+    label: "",
+  };
+}
+
+function buildReferenceLocationFields(raw = {}, fallback = {}) {
+  const base = normalizeLocationShape(raw.location || raw.clinicLocation || raw, {
+    ...(fallback.location || fallback.clinicLocation || {}),
+    lat:
+      fallback.clinicLat ??
+      fallback.referenceLat ??
+      fallback.location?.lat ??
+      fallback.clinicLocation?.lat ??
+      null,
+    lng:
+      fallback.clinicLng ??
+      fallback.referenceLng ??
+      fallback.location?.lng ??
+      fallback.clinicLocation?.lng ??
+      null,
+  });
+
+  const directLat = sanitizeLat(
+    raw.clinicLat ?? raw.referenceLat,
+    sanitizeLat(
+      fallback.clinicLat ?? fallback.referenceLat,
+      base.lat
+    )
+  );
+  const directLng = sanitizeLng(
+    raw.clinicLng ?? raw.referenceLng,
+    sanitizeLng(
+      fallback.clinicLng ?? fallback.referenceLng,
+      base.lng
+    )
+  );
+
+  const effectiveLat = Number.isFinite(directLat) ? directLat : base.lat;
+  const effectiveLng = Number.isFinite(directLng) ? directLng : base.lng;
+
+  const normalizedBase = {
+    ...base,
+    lat: Number.isFinite(effectiveLat) ? effectiveLat : null,
+    lng: Number.isFinite(effectiveLng) ? effectiveLng : null,
+  };
+
+  return {
+    clinicLat: normalizedBase.lat,
+    clinicLng: normalizedBase.lng,
+    referenceLat: normalizedBase.lat,
+    referenceLng: normalizedBase.lng,
+    location: { ...normalizedBase },
+    clinicLocation: { ...normalizedBase },
+  };
+}
+
+function validateLocationFields(p) {
+  const latCandidates = [
+    p?.clinicLat,
+    p?.referenceLat,
+    p?.location?.lat,
+    p?.clinicLocation?.lat,
+  ]
+    .map((x) => sanitizeLat(x, null))
+    .filter((x) => Number.isFinite(x));
+
+  const lngCandidates = [
+    p?.clinicLng,
+    p?.referenceLng,
+    p?.location?.lng,
+    p?.clinicLocation?.lng,
+  ]
+    .map((x) => sanitizeLng(x, null))
+    .filter((x) => Number.isFinite(x));
+
+  if (latCandidates.length !== lngCandidates.length) {
+    return "clinic reference location is incomplete";
+  }
+
+  return null;
+}
+
 function defaultPolicy(clinicId, updatedByUserId = "") {
   const weeklySchedule = defaultWeeklySchedule();
+  const ref = buildReferenceLocationFields({}, {});
 
   return {
     clinicId,
@@ -165,6 +297,14 @@ function defaultPolicy(clinicId, updatedByUserId = "") {
     requireBiometric: true,
     requireLocation: ENFORCED_REQUIRE_LOCATION,
     geoRadiusMeters: ENFORCED_GEO_RADIUS_METERS,
+
+    // NEW: clinic reference location
+    clinicLat: ref.clinicLat,
+    clinicLng: ref.clinicLng,
+    referenceLat: ref.referenceLat,
+    referenceLng: ref.referenceLng,
+    location: ref.location,
+    clinicLocation: ref.clinicLocation,
 
     graceLateMinutes: 10,
 
@@ -238,6 +378,7 @@ function mergeFeatures(currentFeatures = {}, incomingFeatures = {}) {
 function normalizePolicyShape(raw, clinicId, updatedByUserId = "") {
   const defaults = defaultPolicy(clinicId, updatedByUserId);
   const src = raw && typeof raw === "object" ? raw : {};
+  const ref = buildReferenceLocationFields(src, defaults);
 
   return {
     ...defaults,
@@ -254,6 +395,14 @@ function normalizePolicyShape(raw, clinicId, updatedByUserId = "") {
     requireLocation: ENFORCED_REQUIRE_LOCATION,
 
     geoRadiusMeters: ENFORCED_GEO_RADIUS_METERS,
+
+    // NEW: normalized clinic reference location
+    clinicLat: ref.clinicLat,
+    clinicLng: ref.clinicLng,
+    referenceLat: ref.referenceLat,
+    referenceLng: ref.referenceLng,
+    location: ref.location,
+    clinicLocation: ref.clinicLocation,
 
     graceLateMinutes: toNum(src.graceLateMinutes, defaults.graceLateMinutes),
 
@@ -388,6 +537,15 @@ function applyPolicyToDoc(doc, normalized, updatedByUserId = "") {
   doc.requireLocation = ENFORCED_REQUIRE_LOCATION;
   doc.geoRadiusMeters = ENFORCED_GEO_RADIUS_METERS;
 
+  // NEW: clinic reference location
+  const ref = buildReferenceLocationFields(normalized, normalized);
+  doc.clinicLat = ref.clinicLat;
+  doc.clinicLng = ref.clinicLng;
+  doc.referenceLat = ref.referenceLat;
+  doc.referenceLng = ref.referenceLng;
+  doc.location = ref.location;
+  doc.clinicLocation = ref.clinicLocation;
+
   doc.graceLateMinutes = Number(normalized.graceLateMinutes);
 
   doc.otRule = normalizeOtRule(normalized.otRule);
@@ -482,12 +640,12 @@ function validatePolicy(p) {
   }
 
   const radius = toNum(p.geoRadiusMeters, NaN);
-  if (
-    !Number.isFinite(radius) ||
-    radius !== ENFORCED_GEO_RADIUS_METERS
-  ) {
+  if (!Number.isFinite(radius) || radius !== ENFORCED_GEO_RADIUS_METERS) {
     return `geoRadiusMeters must be ${ENFORCED_GEO_RADIUS_METERS}`;
   }
+
+  const locErr = validateLocationFields(p);
+  if (locErr) return locErr;
 
   const grace = toNum(p.graceLateMinutes, NaN);
   if (!Number.isFinite(grace) || grace < 0 || grace > 180) {
@@ -672,6 +830,33 @@ async function updateMyClinicPolicy(req, res) {
           body.attendanceApprovalRoles ?? base.attendanceApprovalRoles,
         otApprovalRoles: body.otApprovalRoles ?? base.otApprovalRoles,
         weeklySchedule: body.weeklySchedule ?? base.weeklySchedule,
+        location: body.location ?? body.clinicLocation ?? base.location,
+        clinicLocation:
+          body.clinicLocation ?? body.location ?? base.clinicLocation,
+        clinicLat:
+          body.clinicLat ??
+          body.referenceLat ??
+          body.location?.lat ??
+          body.clinicLocation?.lat ??
+          base.clinicLat,
+        clinicLng:
+          body.clinicLng ??
+          body.referenceLng ??
+          body.location?.lng ??
+          body.clinicLocation?.lng ??
+          base.clinicLng,
+        referenceLat:
+          body.referenceLat ??
+          body.clinicLat ??
+          body.location?.lat ??
+          body.clinicLocation?.lat ??
+          base.referenceLat,
+        referenceLng:
+          body.referenceLng ??
+          body.clinicLng ??
+          body.location?.lng ??
+          body.clinicLocation?.lng ??
+          base.referenceLng,
       },
       clinicId,
       userId

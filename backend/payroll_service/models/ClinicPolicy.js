@@ -88,6 +88,19 @@ const WeeklyScheduleSchema = new mongoose.Schema(
   { _id: false }
 );
 
+// ✅ NEW: clinic reference location for attendance geofence
+const ClinicLocationSchema = new mongoose.Schema(
+  {
+    lat: { type: Number, default: null },
+    lng: { type: Number, default: null },
+    district: { type: String, default: "" },
+    province: { type: String, default: "" },
+    address: { type: String, default: "" },
+    label: { type: String, default: "" },
+  },
+  { _id: false }
+);
+
 const ClinicPolicySchema = new mongoose.Schema(
   {
     clinicId: { type: String, required: true, unique: true, index: true },
@@ -100,6 +113,43 @@ const ClinicPolicySchema = new mongoose.Schema(
     requireBiometric: { type: Boolean, default: true },
     requireLocation: { type: Boolean, default: false },
     geoRadiusMeters: { type: Number, default: 200 },
+
+    // ✅ NEW: reference location for attendance radius checking
+    // attendanceController currently checks several possible fields:
+    // - clinicLat / clinicLng
+    // - location.lat / location.lng
+    // - clinicLocation.lat / clinicLocation.lng
+    // - referenceLat / referenceLng
+    // so we keep all aliases for backward/forward compatibility
+    clinicLat: { type: Number, default: null },
+    clinicLng: { type: Number, default: null },
+
+    referenceLat: { type: Number, default: null },
+    referenceLng: { type: Number, default: null },
+
+    location: {
+      type: ClinicLocationSchema,
+      default: () => ({
+        lat: null,
+        lng: null,
+        district: "",
+        province: "",
+        address: "",
+        label: "",
+      }),
+    },
+
+    clinicLocation: {
+      type: ClinicLocationSchema,
+      default: () => ({
+        lat: null,
+        lng: null,
+        district: "",
+        province: "",
+        address: "",
+        label: "",
+      }),
+    },
 
     // ======================================================
     // Attendance late / early / cutoff rules
