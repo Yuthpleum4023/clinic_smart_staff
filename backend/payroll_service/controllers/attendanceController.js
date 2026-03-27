@@ -426,6 +426,70 @@ function normalizeSessionItem(x) {
   return x;
 }
 
+function normalizeShiftClinicId(shift) {
+  return s(
+    shift?.clinicId ||
+      shift?.clinic?._id ||
+      shift?.clinic?.id ||
+      shift?.clinic?.clinicId
+  );
+}
+
+function normalizeShiftDate(shift) {
+  return s(shift?.date || shift?.workDate || shift?.shiftDate);
+}
+
+function normalizeShiftTimeValue(value) {
+  const text = s(value);
+  return isHHmm(text) ? text : "";
+}
+
+function extractShiftClinicName(shift) {
+  return s(
+    shift?.clinicName ||
+      shift?.clinic?.name ||
+      shift?.clinic?.clinicName ||
+      shift?.clinic?.title ||
+      shift?.locationName ||
+      shift?.workplaceName ||
+      shift?.hospitalName
+  );
+}
+
+function extractShiftTitle(shift) {
+  return s(
+    shift?.title ||
+      shift?.shiftTitle ||
+      shift?.position ||
+      shift?.roleName ||
+      shift?.jobTitle
+  );
+}
+
+function normalizeShiftLite(shift) {
+  if (!shift || typeof shift !== "object") return null;
+
+  const _id = s(shift._id || shift.id);
+  if (!_id) return null;
+
+  const clinicId = normalizeShiftClinicId(shift);
+  const date = normalizeShiftDate(shift);
+  const start = normalizeShiftTimeValue(shift.start || shift.startTime);
+  const end = normalizeShiftTimeValue(shift.end || shift.endTime);
+
+  return {
+    ...shift,
+    _id,
+    id: _id,
+    clinicId,
+    date,
+    start,
+    end,
+    clinicName: extractShiftClinicName(shift),
+    title: extractShiftTitle(shift),
+  };
+}
+
 async function hydrateSessionDisplayFields(items = []) {
   const out = Array.isArray(items) ? items.map((x) => ({ ...x })) : [];
   if (!out.length) return out;
@@ -469,22 +533,89 @@ async function hydrateSessionDisplayFields(items = []) {
 
     if (!s(item.clinicName)) {
       item.clinicName = s(
-        shift?.clinicName ||
-          item.clinicName ||
-          extractClinicDisplayName(item)
+        shift?.clinicName || item.clinicName || extractClinicDisplayName(item)
       );
     }
 
     if (!s(item.shiftName)) {
       item.shiftName = s(
-        shift?.title ||
-          item.shiftName ||
-          extractShiftDisplayName(item)
+        shift?.title || item.shiftName || extractShiftDisplayName(item)
       );
     }
 
     return normalizeSessionItem(item);
   });
+}
+
+async function hydrateOneSessionDisplayField(session) {
+  if (!session) return null;
+  const [one] = await hydrateSessionDisplayFields([session]);
+  return one || null;
+}
+
+async function toBlockedPreviousSessionPayload(session) {
+  if (!session) return null;
+
+  const hydrated = await hydrateOneSessionDisplayField(session);
+  if (!hydrated) return null;
+
+  const shiftId =
+    typeof hydrated.shiftId === "object"
+      ? s(hydrated.shiftId?._id || hydrated.shiftId?.id)
+      : s(hydrated.shiftId);
+
+  const clinicName = s(
+    hydrated.clinicName || extractClinicDisplayName(hydrated)
+  );
+  const shiftName = s(
+    hydrated.shiftName || extractShiftDisplayName(hydrated)
+  );
+  const routeHint =
+    s(hydrated.status) === "pending_manual"
+      ? buildManualRequestRouteHint(hydrated)
+      : buildResolveAttendanceRouteHint(hydrated);
+
+  return {
+    sessionId: String(hydrated._id || ""),
+    clinicId: s(hydrated.clinicId),
+    clinicName,
+    workDate: s(hydrated.workDate),
+    shiftId,
+    shiftName,
+    status: s(hydrated.status),
+    approvalStatus: s(hydrated.approvalStatus),
+    manualRequestType: s(hydrated.manualRequestType),
+    requestedAt: hydrated.requestedAt || null,
+    checkInAt: hydrated.checkInAt || null,
+    checkOutAt: hydrated.checkOutAt || null,
+    routeHint,
+  };
+}
+
+async function buildPreviousAttendancePendingResponse(previousSession) {
+  const previous = await toBlockedPreviousSessionPayload(previousSession);
+  const routeHint =
+    previous?.routeHint ||
+    buildResolveAttendanceRouteHint(previousSession || {});
+
+  return buildCodeResponse(
+    409,
+    "PREVIOUS_ATTENDANCE_PENDING",
+    "ยังมีรายการลงเวลาจากวันก่อนค้างอยู่ กรุณาส่งคำขอแก้ไขรายการเดิมและรออนุมัติก่อนจึงจะเริ่มรายการใหม่ได้",
+    {
+      action: "REQUIRE_FIX_PREVIOUS",
+      nextAction: routeHint.action,
+      routeHint,
+      previousSession: previous,
+      pendingContext: previous,
+      previousSessionId: previous?.sessionId || "",
+      previousClinicId: previous?.clinicId || "",
+      previousClinicName: previous?.clinicName || "",
+      previousWorkDate: previous?.workDate || "",
+      previousShiftId: previous?.shiftId || "",
+      previousShiftName: previous?.shiftName || "",
+    }
+  );
 }
 
 const ATTENDANCE_TIMEZONE = "Asia/Bangkok";
@@ -651,9 +782,7 @@ function buildHumanReadablePolicy(policy) {
     lines.push("ระบบ OT ใช้กับพนักงานประจำเท่านั้น");
   }
   if (isHHmm(policy?.otWindowStart) && isHHmm(policy?.otWindowEnd)) {
-    lines.push(
-      `OT จะคิดเฉพาะช่วง ${policy.otWindowStart} - ${policy.otWindowEnd}`
-    );
+    lines.push(`OT จะคิดเฉพาะช่วง ${policy.otWindowStart} - ${policy.otWindowEnd}`);
     lines.push("เวลานอกช่วงดังกล่าวจะไม่ถูกนำมาคิดเป็น OT");
   }
   if (policy?.requireOtApproval) {
@@ -1587,7 +1716,11 @@ async function ensureSessionEmployeeAccess(req, session) {
     );
   }
 
-  if (sessionClinicId && employee.clinicId && employee.clinicId !== sessionClinicId) {
+  if (
+    sessionClinicId &&
+    employee.clinicId &&
+    employee.clinicId !== sessionClinicId
+  ) {
     return buildCodeResponse(
       403,
       "SESSION_EMPLOYEE_CLINIC_MISMATCH",
@@ -1773,28 +1906,6 @@ function shiftBelongsToHelper(
   return false;
 }
 
-function extractShiftClinicName(shift) {
-  return s(
-    shift?.clinicName ||
-      shift?.clinic?.name ||
-      shift?.clinic?.clinicName ||
-      shift?.clinic?.title ||
-      shift?.locationName ||
-      shift?.workplaceName ||
-      shift?.hospitalName
-  );
-}
-
-function extractShiftTitle(shift) {
-  return s(
-    shift?.title ||
-      shift?.shiftTitle ||
-      shift?.position ||
-      shift?.roleName ||
-      shift?.jobTitle
-  );
-}
-
 function validateExplicitShiftForHelper({
   shift,
   workDate,
@@ -1900,48 +2011,6 @@ function pickBestShiftForTime(shifts, now = new Date()) {
     .sort((a, b) => a.distanceMs - b.distanceMs);
 
   return near[0]?.sh || null;
-}
-
-function normalizeShiftClinicId(shift) {
-  return s(
-    shift?.clinicId ||
-      shift?.clinic?._id ||
-      shift?.clinic?.id ||
-      shift?.clinic?.clinicId
-  );
-}
-
-function normalizeShiftDate(shift) {
-  return s(shift?.date || shift?.workDate || shift?.shiftDate);
-}
-
-function normalizeShiftTimeValue(value) {
-  const text = s(value);
-  return isHHmm(text) ? text : "";
-}
-
-function normalizeShiftLite(shift) {
-  if (!shift || typeof shift !== "object") return null;
-
-  const _id = s(shift._id || shift.id);
-  if (!_id) return null;
-
-  const clinicId = normalizeShiftClinicId(shift);
-  const date = normalizeShiftDate(shift);
-  const start = normalizeShiftTimeValue(shift.start || shift.startTime);
-  const end = normalizeShiftTimeValue(shift.end || shift.endTime);
-
-  return {
-    ...shift,
-    _id,
-    id: _id,
-    clinicId,
-    date,
-    start,
-    end,
-    clinicName: extractShiftClinicName(shift),
-    title: extractShiftTitle(shift),
-  };
 }
 
 function getShiftMemoKey({
@@ -2207,6 +2276,7 @@ async function resolveHelperShiftForRuntime(
     availableShifts: buildRuntimeAvailableShifts(candidates),
   };
 }
+
 async function findPreviousOpenSession({ principalId, workDate }) {
   return AttendanceSession.findOne({
     principalId: s(principalId),
@@ -2226,64 +2296,6 @@ async function findPreviousPendingManualSession({ principalId, workDate }) {
   })
     .sort({ workDate: -1, requestedAt: -1, createdAt: -1 })
     .lean();
-}
-
-function toBlockedPreviousSessionPayload(session) {
-  if (!session) return null;
-
-  const shiftId =
-    typeof session.shiftId === "object"
-      ? s(session.shiftId?._id || session.shiftId?.id)
-      : s(session.shiftId);
-
-  const clinicName = s(session.clinicName || extractClinicDisplayName(session));
-  const shiftName = s(session.shiftName || extractShiftDisplayName(session));
-  const routeHint =
-    s(session.status) === "pending_manual"
-      ? buildManualRequestRouteHint(session)
-      : buildResolveAttendanceRouteHint(session);
-
-  return {
-    sessionId: String(session._id || ""),
-    clinicId: s(session.clinicId),
-    clinicName,
-    workDate: s(session.workDate),
-    shiftId,
-    shiftName,
-    status: s(session.status),
-    approvalStatus: s(session.approvalStatus),
-    manualRequestType: s(session.manualRequestType),
-    requestedAt: session.requestedAt || null,
-    checkInAt: session.checkInAt || null,
-    checkOutAt: session.checkOutAt || null,
-    routeHint,
-  };
-}
-
-function buildPreviousAttendancePendingResponse(previousSession) {
-  const previous = toBlockedPreviousSessionPayload(previousSession);
-  const routeHint =
-    previous?.routeHint ||
-    buildResolveAttendanceRouteHint(previousSession || {});
-
-  return buildCodeResponse(
-    409,
-    "PREVIOUS_ATTENDANCE_PENDING",
-    "ยังมีรายการลงเวลาจากวันก่อนค้างอยู่ กรุณาส่งคำขอแก้ไขรายการเดิมและรออนุมัติก่อนจึงจะเริ่มรายการใหม่ได้",
-    {
-      action: "REQUIRE_FIX_PREVIOUS",
-      nextAction: routeHint.action,
-      routeHint,
-      previousSession: previous,
-      pendingContext: previous,
-      previousSessionId: previous?.sessionId || "",
-      previousClinicId: previous?.clinicId || "",
-      previousClinicName: previous?.clinicName || "",
-      previousWorkDate: previous?.workDate || "",
-      previousShiftId: previous?.shiftId || "",
-      previousShiftName: previous?.shiftName || "",
-    }
-  );
 }
 
 async function findOpenSessionsForPrincipal({
@@ -2522,7 +2534,9 @@ function detectEarlyCheckOut({ policy, shift, checkOutAt, role, workDate }) {
     return checkOutAt.getTime() < endAt.getTime();
   }
 
-  return checkOutAt.getTime() < getClinicCloseDateTime(workDate, policy).getTime();
+  return (
+    checkOutAt.getTime() < getClinicCloseDateTime(workDate, policy).getTime()
+  );
 }
 
 function detectLeftEarlyMinutes({
@@ -2695,7 +2709,6 @@ function buildSessionBaseForCreate({
     ...getScheduleSnapshot({ policy, shift, workDate }),
   };
 }
-
 function applyManualRequestFields(
   session,
   req,
@@ -3190,7 +3203,7 @@ async function checkIn(req, res) {
       : null;
 
     if (previousOpen) {
-      const out = buildPreviousAttendancePendingResponse(previousOpen);
+      const out = await buildPreviousAttendancePendingResponse(previousOpen);
       return res.status(out.status).json(out.body);
     }
 
@@ -3200,7 +3213,9 @@ async function checkIn(req, res) {
     });
 
     if (previousPendingManual) {
-      const out = buildPreviousAttendancePendingResponse(previousPendingManual);
+      const out = await buildPreviousAttendancePendingResponse(
+        previousPendingManual
+      );
       return res.status(out.status).json(out.body);
     }
 
@@ -3285,14 +3300,16 @@ async function checkIn(req, res) {
     });
 
     if (existingOpenAnywhere.length > 1) {
+      const sessions = await Promise.all(
+        existingOpenAnywhere.map((x) => toBlockedPreviousSessionPayload(x))
+      );
+
       return res.status(409).json({
         ok: false,
         code: "MULTIPLE_OPEN_SESSIONS",
         message:
           "พบ open session มากกว่าหนึ่งรายการ กรุณาให้ผู้ดูแลตรวจสอบข้อมูลก่อน",
-        sessions: existingOpenAnywhere.map((x) =>
-          toBlockedPreviousSessionPayload(x)
-        ),
+        sessions,
       });
     }
 
@@ -3333,7 +3350,7 @@ async function checkIn(req, res) {
         });
       }
 
-      const out = buildPreviousAttendancePendingResponse(open);
+      const out = await buildPreviousAttendancePendingResponse(open);
       return res.status(out.status).json(out.body);
     }
 
@@ -3408,7 +3425,9 @@ async function checkIn(req, res) {
             extractShiftDisplayName(existingPendingManual)
         ),
         routeHint: buildManualRequestRouteHint(existingPendingManual),
-        pendingContext: toBlockedPreviousSessionPayload(existingPendingManual),
+        pendingContext: await toBlockedPreviousSessionPayload(
+          existingPendingManual
+        ),
       });
     }
 
@@ -3542,7 +3561,6 @@ async function checkIn(req, res) {
       .json({ ok: false, message: "check-in failed", error: e.message });
   }
 }
-
 async function checkOut(req, res) {
   try {
     const mockErr = rejectIfMockLocationAnywhere(req);
@@ -3690,7 +3708,9 @@ async function checkOut(req, res) {
       previousPendingManual &&
       String(previousPendingManual._id || "") !== String(session._id || "")
     ) {
-      const out = buildPreviousAttendancePendingResponse(previousPendingManual);
+      const out = await buildPreviousAttendancePendingResponse(
+        previousPendingManual
+      );
       return res.status(out.status).json(out.body);
     }
 
@@ -3958,6 +3978,7 @@ async function checkOut(req, res) {
       .json({ ok: false, message: "check-out failed", error: e.message });
   }
 }
+
 async function submitManualRequest(req, res) {
   try {
     const { principalId } = getPrincipal(req);
@@ -4092,7 +4113,7 @@ async function submitManualRequest(req, res) {
           pendingExisting.shiftName || extractShiftDisplayName(pendingExisting)
         ),
         routeHint: buildManualRequestRouteHint(pendingExisting),
-        pendingContext: toBlockedPreviousSessionPayload(pendingExisting),
+        pendingContext: await toBlockedPreviousSessionPayload(pendingExisting),
       });
     }
 
@@ -4266,7 +4287,7 @@ async function submitManualRequest(req, res) {
             extractShiftDisplayName(previousDaySession)
         ),
         routeHint: buildManualRequestRouteHint(previousDaySession),
-        pendingContext: toBlockedPreviousSessionPayload(previousDaySession),
+        pendingContext: await toBlockedPreviousSessionPayload(previousDaySession),
         policy: buildPublicPolicy(policy, s(previousDaySession.workDate)),
       });
     }
@@ -5083,7 +5104,7 @@ async function myDayPreview(req, res) {
 
     const previousOpen = await findPreviousOpenSession({ principalId, workDate });
     if (previousOpen) {
-      const out = buildPreviousAttendancePendingResponse(previousOpen);
+      const out = await buildPreviousAttendancePendingResponse(previousOpen);
       return res.status(out.status).json({
         ...out.body,
         workDate,
@@ -5115,7 +5136,9 @@ async function myDayPreview(req, res) {
     });
 
     if (previousPendingManual) {
-      const out = buildPreviousAttendancePendingResponse(previousPendingManual);
+      const out = await buildPreviousAttendancePendingResponse(
+        previousPendingManual
+      );
       return res.status(out.status).json({
         ...out.body,
         workDate,
@@ -5341,203 +5364,6 @@ async function myDayPreview(req, res) {
       error: e.message,
     });
   }
-}
-
-async function backfillPreviousPendingRequestIfNeeded({
-  principalId,
-  currentWorkDate,
-  requestedCheckOutAt,
-  reasonCode = "",
-  reasonText = "",
-  requesterId = "",
-}) {
-  const previousPending = await findPreviousPendingManualSession({
-    principalId,
-    workDate: currentWorkDate,
-  });
-
-  if (!previousPending) {
-    return {
-      ok: false,
-      reason: "NO_PREVIOUS_PENDING",
-    };
-  }
-
-  if (s(previousPending.workDate) === s(currentWorkDate)) {
-    return {
-      ok: false,
-      reason: "SAME_DAY_PENDING",
-    };
-  }
-
-  const session = await AttendanceSession.findById(previousPending._id);
-  if (!session) {
-    return {
-      ok: false,
-      reason: "PREVIOUS_PENDING_NOT_FOUND",
-    };
-  }
-
-  if (!isStatusPendingManual(session)) {
-    return {
-      ok: false,
-      reason: "PREVIOUS_PENDING_NOT_ACTIVE",
-    };
-  }
-
-  if (!requestedCheckOutAt) {
-    return {
-      ok: false,
-      reason: "REQUESTED_CHECKOUT_REQUIRED",
-      session,
-    };
-  }
-
-  const prevType = s(session.manualRequestType);
-
-  if (
-    prevType === "forgot_checkout" ||
-    prevType === "check_out" ||
-    (session.checkInAt && !session.checkOutAt)
-  ) {
-    session.manualRequestType = "forgot_checkout";
-    session.requestedCheckOutAt = requestedCheckOutAt;
-  } else if (!session.checkInAt) {
-    session.manualRequestType = "check_in";
-    session.requestedCheckInAt = requestedCheckOutAt;
-  } else {
-    session.manualRequestType = "edit_both";
-    if (!session.requestedCheckInAt && session.checkInAt) {
-      session.requestedCheckInAt = session.checkInAt;
-    }
-    session.requestedCheckOutAt = requestedCheckOutAt;
-  }
-
-  session.status = "pending_manual";
-  session.approvalStatus = "pending";
-  session.manualLocked = true;
-  session.requestedBy = s(requesterId);
-  session.requestedAt = new Date();
-
-  if (!s(session.clinicName)) {
-    session.clinicName = s(extractClinicDisplayName(session));
-  }
-  if (!s(session.shiftName)) {
-    session.shiftName = s(extractShiftDisplayName(session));
-  }
-
-  if (s(reasonCode)) {
-    session.requestReasonCode = s(reasonCode);
-    session.reasonCode = s(reasonCode);
-  }
-
-  if (s(reasonText)) {
-    session.requestReasonText = s(reasonText);
-    session.reasonText = s(reasonText);
-    session.note = s(reasonText);
-    session.manualReason = s(reasonText);
-  }
-
-  await session.save();
-
-  return {
-    ok: true,
-    updated: true,
-    session,
-  };
-}
-
-async function rebuildPendingPreviousByCurrentRequest(
-  req,
-  currentWorkDate,
-  principalId
-) {
-  const requestedCheckOutAt = firstValidDate(
-    req.body?.requestedCheckOutAt,
-    req.body?.checkOutAt,
-    req.body?.requestedCheckInAt,
-    req.body?.checkInAt
-  );
-
-  return backfillPreviousPendingRequestIfNeeded({
-    principalId,
-    currentWorkDate,
-    requestedCheckOutAt,
-    reasonCode: s(req.body?.reasonCode),
-    reasonText: s(req.body?.reasonText || req.body?.note),
-    requesterId:
-      s(req.user?.userId) || s(req.user?.staffId) || s(principalId),
-  });
-}
-
-async function explainPreviousPendingForPreview(req, res, workDate, ctx, policy) {
-  const previousPendingManual = await findPreviousPendingManualSession({
-    principalId: s(ctx.principalId),
-    workDate,
-  });
-
-  if (!previousPendingManual) return false;
-
-  const out = buildPreviousAttendancePendingResponse(previousPendingManual);
-  res.status(out.status).json({
-    ...out.body,
-    workDate,
-    attendance: {
-      checkedIn: false,
-      checkedOut: false,
-      openSession: null,
-      pendingManualSession: previousPendingManual,
-      currentSessionId: "",
-    },
-    sessions: [],
-    runtime: {
-      role: ctx.role,
-      clinicId: ctx.clinicId,
-      clinicOpenDay: isClinicOpenDay(policy, workDate),
-      clinicOpenTime: pickClinicOpenTime(policy, workDate),
-      clinicCloseTime: pickClinicCloseTime(policy, workDate),
-      shift: ctx.shift || null,
-      shiftSelectionMode: ctx.shiftSelectionMode || "",
-      availableShifts: ctx.availableShifts || [],
-    },
-    policy: buildPublicPolicy(policy, workDate),
-  });
-  return true;
-}
-
-async function explainPreviousOpenForPreview(req, res, workDate, ctx, policy) {
-  const previousOpen = await findPreviousOpenSession({
-    principalId: s(ctx.principalId),
-    workDate,
-  });
-
-  if (!previousOpen) return false;
-
-  const out = buildPreviousAttendancePendingResponse(previousOpen);
-  res.status(out.status).json({
-    ...out.body,
-    workDate,
-    attendance: {
-      checkedIn: false,
-      checkedOut: false,
-      openSession: null,
-      pendingManualSession: null,
-      currentSessionId: "",
-    },
-    sessions: [],
-    runtime: {
-      role: ctx.role,
-      clinicId: ctx.clinicId,
-      clinicOpenDay: isClinicOpenDay(policy, workDate),
-      clinicOpenTime: pickClinicOpenTime(policy, workDate),
-      clinicCloseTime: pickClinicCloseTime(policy, workDate),
-      shift: ctx.shift || null,
-      shiftSelectionMode: ctx.shiftSelectionMode || "",
-      availableShifts: ctx.availableShifts || [],
-    },
-    policy: buildPublicPolicy(policy, workDate),
-  });
-  return true;
 }
 
 module.exports = {
