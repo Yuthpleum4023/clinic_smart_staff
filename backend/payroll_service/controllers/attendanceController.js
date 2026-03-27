@@ -426,6 +426,67 @@ function normalizeSessionItem(x) {
   return x;
 }
 
+async function hydrateSessionDisplayFields(items = []) {
+  const out = Array.isArray(items) ? items.map((x) => ({ ...x })) : [];
+  if (!out.length) return out;
+
+  const shiftIds = Array.from(
+    new Set(
+      out
+        .map((x) => {
+          const raw =
+            typeof x.shiftId === "object"
+              ? s(x.shiftId?._id || x.shiftId?.id)
+              : s(x.shiftId);
+          return normalizeObjectIdString(raw);
+        })
+        .filter(Boolean)
+    )
+  );
+
+  const shiftMap = new Map();
+
+  if (shiftIds.length) {
+    const shifts = await Shift.find({
+      _id: { $in: shiftIds.map((id) => new mongoose.Types.ObjectId(id)) },
+    }).lean();
+
+    for (const sh of shifts) {
+      const lite = normalizeShiftLite(sh);
+      if (lite?._id) {
+        shiftMap.set(s(lite._id), lite);
+      }
+    }
+  }
+
+  return out.map((item) => {
+    const shiftId =
+      typeof item.shiftId === "object"
+        ? s(item.shiftId?._id || item.shiftId?.id)
+        : s(item.shiftId);
+
+    const shift = shiftMap.get(shiftId);
+
+    if (!s(item.clinicName)) {
+      item.clinicName = s(
+        shift?.clinicName ||
+          item.clinicName ||
+          extractClinicDisplayName(item)
+      );
+    }
+
+    if (!s(item.shiftName)) {
+      item.shiftName = s(
+        shift?.title ||
+          item.shiftName ||
+          extractShiftDisplayName(item)
+      );
+    }
+
+    return normalizeSessionItem(item);
+  });
+}
+
 const ATTENDANCE_TIMEZONE = "Asia/Bangkok";
 const ENFORCED_GEOFENCE_RADIUS_METERS = 200;
 
@@ -926,7 +987,6 @@ async function getOrCreatePolicy(clinicId, userId) {
 
   return p;
 }
-
 function createRequestMemo(req) {
   if (!req._attendanceMemo || typeof req._attendanceMemo !== "object") {
     req._attendanceMemo = {
@@ -1561,6 +1621,7 @@ async function ensureSessionEmployeeAccess(req, session) {
 
   return { ok: true, employee };
 }
+
 function rejectIfMockLocationAnywhere(req) {
   const inMock = isMockLocation(req, "in");
   const outMock = isMockLocation(req, "out");
@@ -2146,7 +2207,6 @@ async function resolveHelperShiftForRuntime(
     availableShifts: buildRuntimeAvailableShifts(candidates),
   };
 }
-
 async function findPreviousOpenSession({ principalId, workDate }) {
   return AttendanceSession.findOne({
     principalId: s(principalId),
@@ -3081,6 +3141,7 @@ async function resolveRuntimeContext(req, workDate, shiftId = null) {
   memo.runtimeContext.set(runtimeKey, out);
   return out;
 }
+
 async function checkIn(req, res) {
   try {
     const mockErr = rejectIfMockLocationAnywhere(req);
@@ -3897,10 +3958,6 @@ async function checkOut(req, res) {
       .json({ ok: false, message: "check-out failed", error: e.message });
   }
 }
-
-// ======================================================
-// POST /attendance/manual-request
-// ======================================================
 async function submitManualRequest(req, res) {
   try {
     const { principalId } = getPrincipal(req);
@@ -4481,6 +4538,7 @@ async function submitManualRequest(req, res) {
     });
   }
 }
+
 async function listMyManualRequests(req, res) {
   try {
     const { clinicId, principalId, userId, role } = getPrincipal(req);
@@ -4523,7 +4581,7 @@ async function listMyManualRequests(req, res) {
       ? await getOrCreatePolicy(effectiveClinicId, userId || principalId)
       : null;
 
-    const normalizedItems = items.map(normalizeSessionItem);
+    const normalizedItems = await hydrateSessionDisplayFields(items);
     const normalizedFilter = normalizeApprovalFilter(approvalStatus);
 
     return res.json({
@@ -4585,7 +4643,7 @@ async function listClinicManualRequests(req, res) {
       .lean();
 
     const policy = await getOrCreatePolicy(clinicId, actorUserId);
-    const normalizedItems = items.map(normalizeSessionItem);
+    const normalizedItems = await hydrateSessionDisplayFields(items);
     const normalizedFilter = normalizeApprovalFilter(approvalStatus) || "pending";
 
     return res.json({
@@ -4904,7 +4962,7 @@ async function listMySessions(req, res) {
           )
         : null;
 
-    const normalizedItems = items.map(normalizeSessionItem);
+    const normalizedItems = await hydrateSessionDisplayFields(items);
 
     return res.json({
       ok: true,
@@ -4974,10 +5032,11 @@ async function listClinicSessions(req, res) {
       .sort({ checkInAt: -1 })
       .lean();
     const policy = await getOrCreatePolicy(clinicId, s(req.user?.userId));
+    const normalizedItems = await hydrateSessionDisplayFields(items);
 
     return res.json({
       ok: true,
-      items: items.map(normalizeSessionItem),
+      items: normalizedItems,
       filters: {
         workDate: isYmd(workDate) ? workDate : "",
         staffId: staffIdOrPrincipal || "",
@@ -5095,7 +5154,7 @@ async function myDayPreview(req, res) {
       .sort({ checkInAt: -1, createdAt: -1 })
       .lean();
 
-    const normalizedSessions = sessions.map(normalizeSessionItem);
+    const normalizedSessions = await hydrateSessionDisplayFields(sessions);
 
     const openSession =
       normalizedSessions.find((x) => s(x.status).toLowerCase() === "open") ||
