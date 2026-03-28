@@ -156,7 +156,7 @@ function normalizeWeeklySchedule(value, fallback = defaultWeeklySchedule()) {
 }
 
 // ==============================
-// NEW: location helpers
+// location helpers
 // ==============================
 
 function sanitizeLat(v, fallback = null) {
@@ -296,7 +296,6 @@ function defaultPolicy(clinicId, updatedByUserId = "") {
     requireLocation: ENFORCED_REQUIRE_LOCATION,
     geoRadiusMeters: ENFORCED_GEO_RADIUS_METERS,
 
-    // NEW: clinic reference location
     clinicLat: ref.clinicLat,
     clinicLng: ref.clinicLng,
     referenceLat: ref.referenceLat,
@@ -391,10 +390,8 @@ function normalizePolicyShape(raw, clinicId, updatedByUserId = "") {
         : !!src.requireBiometric,
 
     requireLocation: ENFORCED_REQUIRE_LOCATION,
-
     geoRadiusMeters: ENFORCED_GEO_RADIUS_METERS,
 
-    // NEW: normalized clinic reference location
     clinicLat: ref.clinicLat,
     clinicLng: ref.clinicLng,
     referenceLat: ref.referenceLat,
@@ -535,7 +532,6 @@ function applyPolicyToDoc(doc, normalized, updatedByUserId = "") {
   doc.requireLocation = ENFORCED_REQUIRE_LOCATION;
   doc.geoRadiusMeters = ENFORCED_GEO_RADIUS_METERS;
 
-  // NEW: clinic reference location
   const ref = buildReferenceLocationFields(normalized, normalized);
   doc.clinicLat = ref.clinicLat;
   doc.clinicLng = ref.clinicLng;
@@ -597,6 +593,9 @@ function applyPolicyToDoc(doc, normalized, updatedByUserId = "") {
 
   doc.features = mergeFeatures(doc.features || {}, normalized.features || {});
   doc.updatedBy = normStr(updatedByUserId || normalized.updatedBy || "");
+
+  doc.markModified("location");
+  doc.markModified("clinicLocation");
 }
 
 function validateDaySchedule(dayName, day) {
@@ -760,6 +759,10 @@ function validatePolicy(p) {
   return null;
 }
 
+function debugLocationBlock(label, value) {
+  console.log(`[CLINIC_POLICY][DEBUG] ${label}`, JSON.stringify(value, null, 2));
+}
+
 // GET /clinic-policy/me
 async function getMyClinicPolicy(req, res) {
   try {
@@ -774,6 +777,7 @@ async function getMyClinicPolicy(req, res) {
 
     if (!policyDoc) {
       policyDoc = await ClinicPolicy.create(defaultPolicy(clinicId, userId));
+      console.log("[CLINIC_POLICY][GET] created default policy for clinicId =", clinicId);
     } else {
       const normalized = normalizePolicyShape(
         policyDoc.toObject(),
@@ -793,6 +797,16 @@ async function getMyClinicPolicy(req, res) {
       clinicId,
       userId
     );
+
+    debugLocationBlock("GET normalized policy location", {
+      clinicId,
+      clinicLat: normalizedPolicy.clinicLat,
+      clinicLng: normalizedPolicy.clinicLng,
+      referenceLat: normalizedPolicy.referenceLat,
+      referenceLng: normalizedPolicy.referenceLng,
+      location: normalizedPolicy.location,
+      clinicLocation: normalizedPolicy.clinicLocation,
+    });
 
     return res.json({ ok: true, policy: normalizedPolicy });
   } catch (e) {
@@ -816,10 +830,22 @@ async function updateMyClinicPolicy(req, res) {
     let policyDoc = await ClinicPolicy.findOne({ clinicId });
     if (!policyDoc) {
       policyDoc = await ClinicPolicy.create(defaultPolicy(clinicId, userId));
+      console.log("[CLINIC_POLICY][PATCH] created default policy before update for clinicId =", clinicId);
     }
 
     const base = normalizePolicyShape(policyDoc.toObject(), clinicId, userId);
     const body = req.body || {};
+
+    debugLocationBlock("PATCH raw body", body);
+    debugLocationBlock("PATCH base before merge", {
+      clinicId,
+      clinicLat: base.clinicLat,
+      clinicLng: base.clinicLng,
+      referenceLat: base.referenceLat,
+      referenceLng: base.referenceLng,
+      location: base.location,
+      clinicLocation: base.clinicLocation,
+    });
 
     const next = normalizePolicyShape(
       {
@@ -865,24 +891,60 @@ async function updateMyClinicPolicy(req, res) {
       userId
     );
 
+    debugLocationBlock("PATCH normalized next", {
+      clinicId,
+      clinicLat: next.clinicLat,
+      clinicLng: next.clinicLng,
+      referenceLat: next.referenceLat,
+      referenceLng: next.referenceLng,
+      location: next.location,
+      clinicLocation: next.clinicLocation,
+    });
+
     const err = validatePolicy(next);
     if (err) {
+      console.log("[CLINIC_POLICY][PATCH] validate failed =", err);
       return res.status(400).json({ message: err });
     }
 
     applyPolicyToDoc(policyDoc, next, userId);
     policyDoc.version = Number(policyDoc.version || 1) + 1;
 
+    debugLocationBlock("PATCH doc before save", {
+      clinicId,
+      clinicLat: policyDoc.clinicLat,
+      clinicLng: policyDoc.clinicLng,
+      referenceLat: policyDoc.referenceLat,
+      referenceLng: policyDoc.referenceLng,
+      location: policyDoc.location,
+      clinicLocation: policyDoc.clinicLocation,
+      version: policyDoc.version,
+    });
+
     await policyDoc.save();
 
+    const saved = await ClinicPolicy.findOne({ clinicId }).lean();
+
+    debugLocationBlock("PATCH doc after save", {
+      clinicId,
+      clinicLat: saved?.clinicLat,
+      clinicLng: saved?.clinicLng,
+      referenceLat: saved?.referenceLat,
+      referenceLng: saved?.referenceLng,
+      location: saved?.location,
+      clinicLocation: saved?.clinicLocation,
+      version: saved?.version,
+    });
+
     const normalizedPolicy = normalizePolicyShape(
-      policyDoc.toObject(),
+      saved || policyDoc.toObject(),
       clinicId,
       userId
     );
 
     return res.json({ ok: true, policy: normalizedPolicy });
   } catch (e) {
+    console.log("[CLINIC_POLICY][PATCH] update failed =", e?.message || e);
     return res.status(500).json({
       message: "update policy failed",
       error: e.message,
