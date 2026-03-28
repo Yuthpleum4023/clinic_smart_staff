@@ -163,6 +163,7 @@ function sanitizeLat(v, fallback = null) {
   const n = Number(v);
   if (!Number.isFinite(n)) return fallback;
   if (n < -90 || n > 90) return fallback;
+  if (n === 0) return fallback;
   return n;
 }
 
@@ -170,6 +171,7 @@ function sanitizeLng(v, fallback = null) {
   const n = Number(v);
   if (!Number.isFinite(n)) return fallback;
   if (n < -180 || n > 180) return fallback;
+  if (n === 0) return fallback;
   return n;
 }
 
@@ -228,17 +230,11 @@ function buildReferenceLocationFields(raw = {}, fallback = {}) {
 
   const directLat = sanitizeLat(
     raw.clinicLat ?? raw.referenceLat,
-    sanitizeLat(
-      fallback.clinicLat ?? fallback.referenceLat,
-      base.lat
-    )
+    sanitizeLat(fallback.clinicLat ?? fallback.referenceLat, base.lat)
   );
   const directLng = sanitizeLng(
     raw.clinicLng ?? raw.referenceLng,
-    sanitizeLng(
-      fallback.clinicLng ?? fallback.referenceLng,
-      base.lng
-    )
+    sanitizeLng(fallback.clinicLng ?? fallback.referenceLng, base.lng)
   );
 
   const effectiveLat = Number.isFinite(directLat) ? directLat : base.lat;
@@ -261,26 +257,28 @@ function buildReferenceLocationFields(raw = {}, fallback = {}) {
 }
 
 function validateLocationFields(p) {
-  const latCandidates = [
-    p?.clinicLat,
-    p?.referenceLat,
-    p?.location?.lat,
-    p?.clinicLocation?.lat,
-  ]
-    .map((x) => sanitizeLat(x, null))
-    .filter((x) => Number.isFinite(x));
+  const clinicLat = sanitizeLat(p?.clinicLat, null);
+  const clinicLng = sanitizeLng(p?.clinicLng, null);
+  const referenceLat = sanitizeLat(p?.referenceLat, null);
+  const referenceLng = sanitizeLng(p?.referenceLng, null);
+  const locationLat = sanitizeLat(p?.location?.lat, null);
+  const locationLng = sanitizeLng(p?.location?.lng, null);
+  const clinicLocationLat = sanitizeLat(p?.clinicLocation?.lat, null);
+  const clinicLocationLng = sanitizeLng(p?.clinicLocation?.lng, null);
 
-  const lngCandidates = [
-    p?.clinicLng,
-    p?.referenceLng,
-    p?.location?.lng,
-    p?.clinicLocation?.lng,
-  ]
-    .map((x) => sanitizeLng(x, null))
-    .filter((x) => Number.isFinite(x));
+  const pairs = [
+    [clinicLat, clinicLng],
+    [referenceLat, referenceLng],
+    [locationLat, locationLng],
+    [clinicLocationLat, clinicLocationLng],
+  ];
 
-  if (latCandidates.length !== lngCandidates.length) {
-    return "clinic reference location is incomplete";
+  for (const [lat, lng] of pairs) {
+    const hasLat = Number.isFinite(lat);
+    const hasLng = Number.isFinite(lng);
+    if (hasLat !== hasLng) {
+      return "clinic reference location is incomplete";
+    }
   }
 
   return null;
@@ -568,7 +566,8 @@ function applyPolicyToDoc(doc, normalized, updatedByUserId = "") {
   doc.employeeOnlyOt = !!normalized.employeeOnlyOt;
   doc.requireOtApproval = !!normalized.requireOtApproval;
   doc.realTimeAttendanceOnly = !!normalized.realTimeAttendanceOnly;
-  doc.manualAttendanceRequireApproval = !!normalized.manualAttendanceRequireApproval;
+  doc.manualAttendanceRequireApproval =
+    !!normalized.manualAttendanceRequireApproval;
   doc.manualReasonRequired = !!normalized.manualReasonRequired;
   doc.lockAfterPayrollClose = !!normalized.lockAfterPayrollClose;
 
@@ -588,7 +587,8 @@ function applyPolicyToDoc(doc, normalized, updatedByUserId = "") {
   doc.requireReasonForEarlyCheckIn = !!normalized.requireReasonForEarlyCheckIn;
   doc.requireReasonForEarlyCheckOut = !!normalized.requireReasonForEarlyCheckOut;
   doc.forgotCheckoutManualOnly = !!normalized.forgotCheckoutManualOnly;
-  doc.blockNewCheckInIfPreviousOpen = !!normalized.blockNewCheckInIfPreviousOpen;
+  doc.blockNewCheckInIfPreviousOpen =
+    !!normalized.blockNewCheckInIfPreviousOpen;
 
   doc.weeklySchedule = normalizeWeeklySchedule(
     normalized.weeklySchedule,
@@ -742,7 +742,10 @@ function validatePolicy(p) {
     return "otApprovalRoles must contain at least 1 role";
   }
 
-  if (p.features && (typeof p.features !== "object" || Array.isArray(p.features))) {
+  if (
+    p.features &&
+    (typeof p.features !== "object" || Array.isArray(p.features))
+  ) {
     return "features must be an object";
   }
 
