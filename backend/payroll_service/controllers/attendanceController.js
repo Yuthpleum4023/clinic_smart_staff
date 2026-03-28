@@ -152,8 +152,11 @@ function getPrincipal(req) {
   const role = s(req.user?.role);
   const userId = s(req.user?.userId);
   const staffId = s(req.user?.staffId) || getBodyStaffId(req);
-  const principalId = userId || staffId;
+
+  // ✅ FIX: staff ต้องมาก่อน user เพื่อให้ principalType/principalId สอดคล้องกัน
+  const principalId = staffId || userId;
   const principalType = staffId ? "staff" : "user";
+
   return { clinicId, role, userId, staffId, principalId, principalType };
 }
 
@@ -728,8 +731,13 @@ function getEnforcedGeoRadius(policy) {
 
 function shouldRequireLocationForAttendance(policy) {
   const features = withFeatureDefaults(policy?.features || {});
+
   if (!features.fingerprintAttendance) return false;
-  return true;
+
+  // ✅ FIX: respect policy.requireLocation จริง
+  // - undefined/null = default เป็น true
+  // - false = ไม่บังคับ location
+  return policy?.requireLocation !== false;
 }
 
 function mustRespectClinicHours(role) {
@@ -764,10 +772,14 @@ function attendanceRuleDefaults(policy) {
 
 function buildHumanReadablePolicy(policy) {
   const lines = [];
+  const requireLocation = shouldRequireLocationForAttendance(policy);
+  const radius = getEnforcedGeoRadius(policy);
 
-  lines.push(
-    `การสแกนลงเวลาต้องอยู่ในรัศมี ${getEnforcedGeoRadius(policy)} เมตรจากคลินิก`
-  );
+  if (requireLocation) {
+    lines.push(`การสแกนลงเวลาต้องอยู่ในรัศมี ${radius} เมตรจากคลินิก`);
+  } else {
+    lines.push("การสแกนลงเวลาไม่บังคับการยืนยันพิกัด GPS");
+  }
 
   if (policy?.realTimeAttendanceOnly) {
     lines.push("การลงเวลางานต้องเป็นแบบเรียลไทม์");
@@ -942,12 +954,17 @@ function buildPublicPolicy(policy, workDate = "") {
     ? pickClinicCloseTime(policy, wd)
     : s(policy?.shiftEnd || policy?.closeTime || "18:00");
 
+  const requireLocation = shouldRequireLocationForAttendance(policy);
+  const enforcedRadius = getEnforcedGeoRadius(policy);
+  const timezone =
+    s(policy?.timezone || ATTENDANCE_TIMEZONE) || ATTENDANCE_TIMEZONE;
+
   return {
     otRule: s(policy?.otRule),
     otRounding: s(policy?.otRounding),
     otMultiplier: Number(policy?.otMultiplier || 1.5),
     version: Number(policy?.version || 1),
-    timezone: s(policy?.timezone || ATTENDANCE_TIMEZONE) || ATTENDANCE_TIMEZONE,
+    timezone,
 
     fullTimeOtClockTime: s(policy?.fullTimeOtClockTime),
     partTimeOtClockTime: s(policy?.partTimeOtClockTime),
@@ -960,8 +977,8 @@ function buildPublicPolicy(policy, workDate = "") {
     clinicOpenDay: wd ? isClinicOpenDay(policy, wd) : true,
 
     requireBiometric: true,
-    requireLocation: true,
-    geoRadiusMeters: getEnforcedGeoRadius(policy),
+    requireLocation,
+    geoRadiusMeters: enforcedRadius,
 
     employeeOnlyOt: !!policy?.employeeOnlyOt,
     requireOtApproval: !!policy?.requireOtApproval,
@@ -995,9 +1012,10 @@ function buildPublicPolicy(policy, workDate = "") {
 
     humanReadable: buildHumanReadablePolicy({
       ...(policy || {}),
-      requireLocation: true,
-      geoRadiusMeters: getEnforcedGeoRadius(policy),
-      timezone: s(policy?.timezone || ATTENDANCE_TIMEZONE) || ATTENDANCE_TIMEZONE,
+      requireLocation,
+      geoRadiusMeters: enforcedRadius,
+      timezone,
+      features,
     }),
   };
 }
@@ -1086,7 +1104,8 @@ async function getOrCreatePolicy(clinicId, userId) {
       changed = true;
     }
 
-    if (p.requireLocation !== true) {
+    // ✅ สำคัญ: ไม่ force requireLocation = true ทับ policy เดิมของคลินิก
+    if (typeof p.requireLocation !== "boolean") {
       p.requireLocation = true;
       changed = true;
     }
@@ -1221,13 +1240,7 @@ function normalizeEmployeeRecord(emp) {
       emp.accountUserId
   );
 
-  const staffId = s(
-    emp.staffId ||
-      emp.employeeCode ||
-      emp.code ||
-      emp._id ||
-      emp.id
-  );
+  const staffId = s(emp.staffId || emp.employeeCode || emp.code || emp._id || emp.id);
 
   const rawStatus = s(
     emp.status || emp.employeeStatus || emp.employmentStatus
@@ -1975,6 +1988,45 @@ function getShiftEndDateTime(shift) {
   return endAt;
 }
 
+function getShiftTimingState(shift, now = new Date()) {
+  const startAt = getShiftStartDateTime(shift);
+  const endAt = getShiftEndDateTime(shift);
+
+  if (!startAt || !endAt) {
+    return {
+      ok: false,
+      state: "invalid",
+      startAt,
+      endAt,
+    };
+  }
+
+  if (now.getTime() < startAt.getTime()) {
+    return {
+      ok: true,
+      state: "before_start",
+      startAt,
+      endAt,
+    };
+  }
+
+  if (now.getTime() > endAt.getTime()) {
+    return {
+      ok: true,
+      state: "ended",
+      startAt,
+      endAt,
+    };
+  }
+
+  return {
+    ok: true,
+    state: "active",
+    startAt,
+    endAt,
+  };
+}
+
 function pickBestShiftForTime(shifts, now = new Date()) {
   if (!Array.isArray(shifts) || !shifts.length) return null;
 
@@ -2329,6 +2381,389 @@ function getCutoffDateTime(workDate, cutoffTime) {
   const cutoff = isHHmm(cutoffTime) ? cutoffTime : "03:00";
   const base = makeLocalDateTime(workDate, cutoff);
   return new Date(base.getTime() + 24 * 60 * 60000);
+}
+
+function buildHelperShiftMissingTimeError(shift, workDate) {
+  return buildCodeResponse(
+    409,
+    "SHIFT_TIME_INVALID",
+    "กะงานนี้ยังตั้งเวลาเริ่มหรือเวลาสิ้นสุดไม่ครบ จึงยังไม่สามารถสแกนลงเวลาได้",
+    {
+      workDate,
+      shiftId: s(shift?._id),
+      shiftStart: s(shift?.start),
+      shiftEnd: s(shift?.end),
+    }
+  );
+}
+
+function buildHelperShiftNotStartedError(shift, workDate) {
+  return buildCodeResponse(
+    409,
+    "SHIFT_NOT_STARTED",
+    "ยังไม่ถึงเวลาเริ่มกะงานนี้ จึงยังไม่สามารถดำเนินรายการได้",
+    {
+      workDate,
+      shiftId: s(shift?._id),
+      shiftStart: s(shift?.start),
+      shiftEnd: s(shift?.end),
+      clinicId: s(shift?.clinicId),
+      clinicName: s(shift?.clinicName),
+    }
+  );
+}
+
+function buildHelperShiftEndedError(shift, workDate, now) {
+  return buildCodeResponse(
+    409,
+    "SHIFT_ALREADY_ENDED",
+    "กะงานนี้สิ้นสุดแล้ว ไม่สามารถเช็กอินได้ กรุณาส่งคำขอแก้ไขเวลาแทน",
+    {
+      workDate,
+      shiftId: s(shift?._id),
+      shiftStart: s(shift?.start),
+      shiftEnd: s(shift?.end),
+      clinicId: s(shift?.clinicId),
+      clinicName: s(shift?.clinicName),
+      currentTime: now instanceof Date ? now.toISOString() : null,
+      action: "MANUAL_REQUEST_REQUIRED",
+    }
+  );
+}
+
+function buildHelperCheckoutAfterCutoffError(workDate, cutoffTime, shift) {
+  return buildCodeResponse(
+    409,
+    "MANUAL_REQUIRED_AFTER_CUTOFF",
+    "เลยเวลาที่อนุญาตให้เช็กเอาท์ด้วยการสแกนแล้ว กรุณาส่งคำขอแก้ไขเวลาแทน",
+    {
+      workDate,
+      cutoffTime,
+      shiftId: s(shift?._id),
+      shiftStart: s(shift?.start),
+      shiftEnd: s(shift?.end),
+    }
+  );
+}
+
+function buildCheckoutTooFastError(minMinutesBeforeCheckout, workedMinutes) {
+  return buildCodeResponse(
+    409,
+    "CHECKOUT_TOO_FAST",
+    "ยังไม่สามารถเช็กเอาท์ได้ เนื่องจากระยะเวลาการทำงานยังไม่ถึงขั้นต่ำที่กำหนด",
+    {
+      minMinutesBeforeCheckout,
+      workedMinutes,
+    }
+  );
+}
+
+function validateRequestedManualTimes({
+  manualRequestType,
+  requestedCheckInAt,
+  requestedCheckOutAt,
+  existingCheckInAt = null,
+  existingCheckOutAt = null,
+  role = "",
+  shift = null,
+  workDate = "",
+}) {
+  const effectiveCheckInAt = requestedCheckInAt || existingCheckInAt || null;
+  const effectiveCheckOutAt = requestedCheckOutAt || existingCheckOutAt || null;
+
+  if (
+    effectiveCheckInAt &&
+    effectiveCheckOutAt &&
+    effectiveCheckOutAt.getTime() <= effectiveCheckInAt.getTime()
+  ) {
+    return buildCodeResponse(
+      400,
+      "INVALID_TIME_RANGE",
+      "เวลาออกงานต้องช้ากว่าเวลาเข้างาน",
+      {
+        workDate,
+        manualRequestType,
+      }
+    );
+  }
+
+  if (s(role) === "helper" && shift) {
+    const shiftStartAt = getShiftStartDateTime(shift);
+    const shiftEndAt = getShiftEndDateTime(shift);
+
+    if (!shiftStartAt || !shiftEndAt) {
+      return buildHelperShiftMissingTimeError(shift, workDate);
+    }
+
+    if (
+      requestedCheckInAt &&
+      requestedCheckInAt.getTime() > shiftEndAt.getTime()
+    ) {
+      return buildCodeResponse(
+        400,
+        "MANUAL_CHECKIN_AFTER_SHIFT_END",
+        "เวลาเข้างานที่ขอแก้ไขเกินเวลาสิ้นสุดกะงาน",
+        {
+          workDate,
+          shiftId: s(shift?._id),
+          shiftStart: s(shift?.start),
+          shiftEnd: s(shift?.end),
+        }
+      );
+    }
+
+    if (
+      requestedCheckOutAt &&
+      requestedCheckOutAt.getTime() < shiftStartAt.getTime()
+    ) {
+      return buildCodeResponse(
+        400,
+        "MANUAL_CHECKOUT_BEFORE_SHIFT_START",
+        "เวลาออกงานที่ขอแก้ไขอยู่ก่อนเวลาเริ่มกะงาน",
+        {
+          workDate,
+          shiftId: s(shift?._id),
+          shiftStart: s(shift?.start),
+          shiftEnd: s(shift?.end),
+        }
+      );
+    }
+  }
+
+  return null;
+}
+
+function getHelperPreviewStatus(shift, now = new Date()) {
+  if (!shift) {
+    return {
+      status: "no_shift",
+      message: "วันนี้ยังไม่พบกะงานที่พร้อมใช้งาน",
+    };
+  }
+
+  const timing = getShiftTimingState(shift, now);
+  if (!timing.ok) {
+    return {
+      status: "invalid",
+      message: "กะงานนี้ยังตั้งเวลาไม่ครบ จึงยังไม่พร้อมสแกน",
+    };
+  }
+
+  if (timing.state === "before_start") {
+    return {
+      status: "before_start",
+      message: `กะนี้จะเริ่มเวลา ${s(shift.start)} น. ยังไม่พร้อมสแกน`,
+    };
+  }
+
+  if (timing.state === "ended") {
+    return {
+      status: "ended",
+      message: `กะนี้สิ้นสุดเวลา ${s(shift.end)} น. แล้ว`,
+    };
+  }
+
+  return {
+    status: "active",
+    message: `พร้อมสแกนสำหรับกะ ${s(
+      shift.clinicName || shift.title || shift._id
+    )}`,
+  };
+}
+
+function validateAttendanceCheckInTime({
+  role,
+  policy,
+  shift,
+  workDate,
+  checkInAt,
+}) {
+  const normalizedRole = s(role).toLowerCase();
+  const rules = attendanceRuleDefaults(policy);
+
+  if (normalizedRole === "helper") {
+    if (!shift) {
+      return buildCodeResponse(
+        409,
+        "SHIFT_NOT_RESOLVED",
+        "ไม่สามารถระบุกะงานที่กำลังทำอยู่ได้ กรุณาเลือกกะงานก่อนสแกน",
+        { workDate }
+      );
+    }
+
+    const shiftStartAt = getShiftStartDateTime(shift);
+    const shiftEndAt = getShiftEndDateTime(shift);
+
+    if (!shiftStartAt || !shiftEndAt) {
+      return buildHelperShiftMissingTimeError(shift, workDate);
+    }
+
+    if (checkInAt.getTime() > shiftEndAt.getTime()) {
+      return buildHelperShiftEndedError(shift, workDate, checkInAt);
+    }
+
+    if (checkInAt.getTime() < shiftStartAt.getTime()) {
+      if (rules.requireReasonForEarlyCheckIn) {
+        return buildCodeResponse(
+          409,
+          "MANUAL_REQUIRED_EARLY_CHECKIN",
+          "มาก่อนเวลาเริ่มกะงาน กรุณาส่งคำขอแก้ไขเวลาแทน",
+          {
+            workDate,
+            shiftId: s(shift?._id),
+            shiftStart: s(shift?.start),
+            shiftEnd: s(shift?.end),
+            clinicId: s(shift?.clinicId),
+            clinicName: s(shift?.clinicName),
+            action: "MANUAL_REQUEST_REQUIRED",
+          }
+        );
+      }
+
+      return buildHelperShiftNotStartedError(shift, workDate);
+    }
+
+    return null;
+  }
+
+  if (mustRespectClinicHours(normalizedRole)) {
+    const clinicOpenAt = getClinicOpenDateTime(workDate, policy);
+    const clinicCloseAt = getClinicCloseDateTime(workDate, policy);
+
+    if (checkInAt.getTime() < clinicOpenAt.getTime()) {
+      return buildCodeResponse(
+        409,
+        "CLINIC_NOT_OPEN",
+        "คลินิกยังไม่เปิด",
+        {
+          workDate,
+          openTime: pickClinicOpenTime(policy, workDate),
+        }
+      );
+    }
+
+    if (checkInAt.getTime() > clinicCloseAt.getTime()) {
+      return buildCodeResponse(
+        409,
+        "CLINIC_ALREADY_CLOSED",
+        "คลินิกปิดแล้ว",
+        {
+          workDate,
+          closeTime: pickClinicCloseTime(policy, workDate),
+        }
+      );
+    }
+  }
+
+  return null;
+}
+
+function validateAttendanceCheckOutTime({
+  role,
+  policy,
+  shift,
+  session,
+  workDate,
+  checkOutAt,
+}) {
+  const normalizedRole = s(role).toLowerCase();
+  const rules = attendanceRuleDefaults(policy);
+
+  if (normalizedRole === "helper") {
+    if (!shift) {
+      return buildCodeResponse(
+        409,
+        "SHIFT_NOT_RESOLVED",
+        "ไม่สามารถระบุกะงานของ session ที่เปิดอยู่ได้ กรุณาเลือกกะใหม่แล้วลองอีกครั้ง",
+        {
+          workDate,
+          shiftId:
+            typeof session?.shiftId === "object"
+              ? s(session?.shiftId?._id || session?.shiftId?.id)
+              : s(session?.shiftId),
+        }
+      );
+    }
+
+    const shiftStartAt = getShiftStartDateTime(shift);
+    const shiftEndAt = getShiftEndDateTime(shift);
+
+    if (!shiftStartAt || !shiftEndAt) {
+      return buildHelperShiftMissingTimeError(shift, workDate);
+    }
+
+    if (checkOutAt.getTime() < shiftStartAt.getTime()) {
+      return buildCodeResponse(
+        409,
+        "SHIFT_NOT_STARTED",
+        "ยังไม่ถึงเวลาเริ่มกะงานนี้ จึงยังไม่สามารถเช็กเอาท์ได้",
+        {
+          workDate,
+          shiftId: s(shift?._id),
+          shiftStart: s(shift?.start),
+          shiftEnd: s(shift?.end),
+        }
+      );
+    }
+
+    const cutoffAt = getCutoffDateTime(workDate, rules.cutoffTime);
+    if (
+      rules.forgotCheckoutManualOnly &&
+      checkOutAt.getTime() > cutoffAt.getTime()
+    ) {
+      return buildHelperCheckoutAfterCutoffError(
+        workDate,
+        rules.cutoffTime,
+        shift
+      );
+    }
+
+    return null;
+  }
+
+  if (mustRespectClinicHours(normalizedRole)) {
+    const clinicOpenAt = getClinicOpenDateTime(workDate, policy);
+    const clinicCloseAt = getClinicCloseDateTime(workDate, policy);
+
+    if (checkOutAt.getTime() < clinicOpenAt.getTime()) {
+      return buildCodeResponse(
+        409,
+        "CLINIC_NOT_OPEN",
+        "คลินิกยังไม่เปิด",
+        {
+          workDate,
+          openTime: pickClinicOpenTime(policy, workDate),
+        }
+      );
+    }
+
+    if (checkOutAt.getTime() > clinicCloseAt.getTime()) {
+      return buildCodeResponse(
+        409,
+        "CLINIC_ALREADY_CLOSED",
+        "คลินิกปิดแล้ว",
+        {
+          workDate,
+          closeTime: pickClinicCloseTime(policy, workDate),
+        }
+      );
+    }
+  }
+
+  if (
+    rules.forgotCheckoutManualOnly &&
+    checkOutAt.getTime() >
+      getCutoffDateTime(workDate, rules.cutoffTime).getTime()
+  ) {
+    return buildCodeResponse(
+      409,
+      "MANUAL_REQUIRED_AFTER_CUTOFF",
+      "เลยเวลาที่อนุญาตให้เช็กเอาท์ด้วยการสแกนแล้ว กรุณาส่งคำขอแก้ไขเวลาแทน",
+      { workDate, cutoffTime: rules.cutoffTime }
+    );
+  }
+
+  return null;
 }
 
 function computeLateMinutes(policy, shift, checkInAt) {
@@ -2709,6 +3144,7 @@ function buildSessionBaseForCreate({
     ...getScheduleSnapshot({ policy, shift, workDate }),
   };
 }
+
 function applyManualRequestFields(
   session,
   req,
@@ -3058,6 +3494,8 @@ async function resolveRuntimeContext(req, workDate, shiftId = null) {
   let effectiveClinicId = s(clinicId);
   let effectiveUserId = s(userId);
   let effectiveStaffId = s(staffId);
+  let effectivePrincipalId = s(principalId);
+  let effectivePrincipalType = s(principalType);
   let shift = null;
   let employee = null;
   let availableShifts = [];
@@ -3076,6 +3514,10 @@ async function resolveRuntimeContext(req, workDate, shiftId = null) {
     effectiveUserId = s(verify.userId);
     effectiveStaffId = s(verify.staffId);
 
+    // ✅ FIX สำคัญ: หลัง verify แล้ว principal ต้องอิง staffId ก่อนเสมอ
+    effectivePrincipalId = s(effectiveStaffId || effectiveUserId);
+    effectivePrincipalType = effectiveStaffId ? "staff" : "user";
+
     if (!effectiveClinicId) {
       const out = {
         ok: false,
@@ -3087,7 +3529,7 @@ async function resolveRuntimeContext(req, workDate, shiftId = null) {
     }
   } else if (role === "helper") {
     const helperShiftResult = await resolveHelperShiftForRuntime(req, {
-      principalId,
+      principalId: effectivePrincipalId,
       userId: effectiveUserId,
       staffId: effectiveStaffId,
       workDate,
@@ -3142,8 +3584,8 @@ async function resolveRuntimeContext(req, workDate, shiftId = null) {
     role,
     userId: effectiveUserId,
     staffId: effectiveStaffId,
-    principalId,
-    principalType,
+    principalId: effectivePrincipalId,
+    principalType: effectivePrincipalType,
     clinicId: effectiveClinicId,
     shift,
     employee,
@@ -3154,7 +3596,6 @@ async function resolveRuntimeContext(req, workDate, shiftId = null) {
   memo.runtimeContext.set(runtimeKey, out);
   return out;
 }
-
 async function checkIn(req, res) {
   try {
     const mockErr = rejectIfMockLocationAnywhere(req);
@@ -3260,6 +3701,20 @@ async function checkIn(req, res) {
           shiftId,
         })
       );
+    }
+
+    const checkInAt = new Date();
+    const timeValidationError = validateAttendanceCheckInTime({
+      role,
+      policy,
+      shift,
+      workDate,
+      checkInAt,
+    });
+    if (timeValidationError) {
+      return res
+        .status(timeValidationError.status)
+        .json(timeValidationError.body);
     }
 
     const lat = n(req.body?.lat, null);
@@ -3431,52 +3886,6 @@ async function checkIn(req, res) {
       });
     }
 
-    const checkInAt = new Date();
-
-    if (mustRespectClinicHours(role)) {
-      const clinicOpenAt = getClinicOpenDateTime(workDate, policy);
-      const clinicCloseAt = getClinicCloseDateTime(workDate, policy);
-
-      if (checkInAt.getTime() < clinicOpenAt.getTime()) {
-        return res.status(409).json({
-          ok: false,
-          code: "CLINIC_NOT_OPEN",
-          message: "คลินิกยังไม่เปิด",
-          workDate,
-          clinicId,
-          openTime: pickClinicOpenTime(policy, workDate),
-        });
-      }
-
-      if (checkInAt.getTime() > clinicCloseAt.getTime()) {
-        return res.status(409).json({
-          ok: false,
-          code: "CLINIC_ALREADY_CLOSED",
-          message: "คลินิกปิดแล้ว",
-          workDate,
-          clinicId,
-          closeTime: pickClinicCloseTime(policy, workDate),
-        });
-      }
-    }
-
-    if (
-      method === "biometric" &&
-      detectEarlyCheckIn({ policy, shift, checkInAt, role, workDate })
-    ) {
-      const out = buildCodeResponse(
-        409,
-        "MANUAL_REQUIRED_EARLY_CHECKIN",
-        "Early check-in requires manual request and clinic approval.",
-        {
-          workDate,
-          shiftStart: s(shift?.start),
-          clinicOpenTime: pickClinicOpenTime(policy, workDate),
-        }
-      );
-      return res.status(out.status).json(out.body);
-    }
-
     const lateMinutes =
       role === "helper" ? computeLateMinutes(policy, shift, checkInAt) : 0;
 
@@ -3561,6 +3970,7 @@ async function checkIn(req, res) {
       .json({ ok: false, message: "check-in failed", error: e.message });
   }
 }
+
 async function checkOut(req, res) {
   try {
     const mockErr = rejectIfMockLocationAnywhere(req);
@@ -3618,7 +4028,7 @@ async function checkOut(req, res) {
           code: "NO_OPEN_SESSION",
           message: requestedShiftId
             ? "ไม่พบรายการเช็คอินที่เปิดอยู่สำหรับกะนี้"
-            : "No open session to check-out",
+            : "ไม่พบรายการเช็คอินที่เปิดอยู่สำหรับเช็กเอาท์",
         });
       }
 
@@ -3781,6 +4191,21 @@ async function checkOut(req, res) {
       });
     }
 
+    const checkOutAt = new Date();
+    const timeValidationError = validateAttendanceCheckOutTime({
+      role: sessionRole,
+      policy,
+      shift,
+      session,
+      workDate: s(session.workDate),
+      checkOutAt,
+    });
+    if (timeValidationError) {
+      return res
+        .status(timeValidationError.status)
+        .json(timeValidationError.body);
+    }
+
     let outDistanceMeters = null;
     const requireLocation = shouldRequireLocationForAttendance(policy);
 
@@ -3806,60 +4231,11 @@ async function checkOut(req, res) {
       }
     }
 
-    const checkOutAt = new Date();
-
-    if (mustRespectClinicHours(sessionRole)) {
-      const clinicOpenAt = getClinicOpenDateTime(s(session.workDate), policy);
-      const clinicCloseAt = getClinicCloseDateTime(s(session.workDate), policy);
-
-      if (checkOutAt.getTime() < clinicOpenAt.getTime()) {
-        return res.status(409).json({
-          ok: false,
-          code: "CLINIC_NOT_OPEN",
-          message: "คลินิกยังไม่เปิด",
-          workDate: s(session.workDate),
-          clinicId: effectiveClinicId,
-          openTime: pickClinicOpenTime(policy, s(session.workDate)),
-        });
-      }
-
-      if (checkOutAt.getTime() > clinicCloseAt.getTime()) {
-        return res.status(409).json({
-          ok: false,
-          code: "CLINIC_ALREADY_CLOSED",
-          message: "คลินิกปิดแล้ว",
-          workDate: s(session.workDate),
-          clinicId: effectiveClinicId,
-          closeTime: pickClinicCloseTime(policy, s(session.workDate)),
-        });
-      }
-    }
-
-    if (
-      method === "biometric" &&
-      rules.forgotCheckoutManualOnly &&
-      checkOutAt.getTime() >
-        getCutoffDateTime(s(session.workDate), rules.cutoffTime).getTime()
-    ) {
-      const out = buildCodeResponse(
-        409,
-        "MANUAL_REQUIRED_AFTER_CUTOFF",
-        "Check-out after cutoff is not allowed by biometric. Please submit manual request.",
-        { workDate: s(session.workDate), cutoffTime: rules.cutoffTime }
-      );
-      return res.status(out.status).json(out.body);
-    }
-
     const workedMinutesNow = computeWorkedMinutes(session.checkInAt, checkOutAt);
     if (workedMinutesNow < rules.minMinutesBeforeCheckout) {
-      const out = buildCodeResponse(
-        409,
-        "CHECKOUT_TOO_FAST",
-        "Checkout is too fast.",
-        {
-          minMinutesBeforeCheckout: rules.minMinutesBeforeCheckout,
-          workedMinutes: workedMinutesNow,
-        }
+      const out = buildCheckoutTooFastError(
+        rules.minMinutesBeforeCheckout,
+        workedMinutesNow
       );
       return res.status(out.status).json(out.body);
     }
@@ -3876,7 +4252,7 @@ async function checkOut(req, res) {
       const out = buildCodeResponse(
         409,
         "EARLY_CHECKOUT_REASON_REQUIRED",
-        "Early check-out requires a reason before checkout is allowed.",
+        "เช็กเอาท์ก่อนเวลาที่กำหนด ต้องระบุเหตุผลก่อนดำเนินการ",
         {
           workDate: s(session.workDate),
           shiftEnd: s(shift?.end),
@@ -4123,6 +4499,20 @@ async function submitManualRequest(req, res) {
       sameDaySessions.find((x) => s(x.status) === "closed") || null;
     let targetSession = openSession || closedSession || null;
 
+    const manualTimeError = validateRequestedManualTimes({
+      manualRequestType,
+      requestedCheckInAt,
+      requestedCheckOutAt,
+      existingCheckInAt: targetSession?.checkInAt || null,
+      existingCheckOutAt: targetSession?.checkOutAt || null,
+      role,
+      shift,
+      workDate,
+    });
+    if (manualTimeError) {
+      return res.status(manualTimeError.status).json(manualTimeError.body);
+    }
+
     const previousDaySession =
       previousPendingManual &&
       s(previousPendingManual.workDate) !== workDate
@@ -4227,6 +4617,22 @@ async function submitManualRequest(req, res) {
             previousDaySession.checkInAt;
         }
         previousDaySession.requestedCheckOutAt = requestedAtFromBody;
+      }
+
+      const previousManualTimeError = validateRequestedManualTimes({
+        manualRequestType: previousDaySession.manualRequestType,
+        requestedCheckInAt: previousDaySession.requestedCheckInAt,
+        requestedCheckOutAt: previousDaySession.requestedCheckOutAt,
+        existingCheckInAt: previousDaySession.checkInAt || null,
+        existingCheckOutAt: previousDaySession.checkOutAt || null,
+        role,
+        shift,
+        workDate: s(previousDaySession.workDate),
+      });
+      if (previousManualTimeError) {
+        return res
+          .status(previousManualTimeError.status)
+          .json(previousManualTimeError.body);
       }
 
       previousDaySession.status = "pending_manual";
@@ -4512,6 +4918,22 @@ async function submitManualRequest(req, res) {
       : "approved";
 
     if (targetSession.approvalStatus === "approved") {
+      const approvedManualTimeError = validateRequestedManualTimes({
+        manualRequestType,
+        requestedCheckInAt,
+        requestedCheckOutAt,
+        existingCheckInAt: targetSession.checkInAt || null,
+        existingCheckOutAt: targetSession.checkOutAt || null,
+        role,
+        shift,
+        workDate,
+      });
+      if (approvedManualTimeError) {
+        return res
+          .status(approvedManualTimeError.status)
+          .json(approvedManualTimeError.body);
+      }
+
       if (requestedCheckInAt) targetSession.checkInAt = requestedCheckInAt;
       if (requestedCheckOutAt) targetSession.checkOutAt = requestedCheckOutAt;
       targetSession.status = targetSession.checkOutAt ? "closed" : "open";
@@ -4777,6 +5199,20 @@ async function approveManualRequest(req, res) {
       return res
         .status(400)
         .json({ ok: false, message: "Requested check-out time is missing" });
+    }
+
+    const approveTimeError = validateRequestedManualTimes({
+      manualRequestType: requestedType,
+      requestedCheckInAt: session.requestedCheckInAt || null,
+      requestedCheckOutAt: session.requestedCheckOutAt || null,
+      existingCheckInAt: session.checkInAt || null,
+      existingCheckOutAt: session.checkOutAt || null,
+      role: inferRoleFromSession(session),
+      shift,
+      workDate: s(session.workDate),
+    });
+    if (approveTimeError) {
+      return res.status(approveTimeError.status).json(approveTimeError.body);
     }
 
     ensureSecurityFields(session);
@@ -5293,6 +5729,8 @@ async function myDayPreview(req, res) {
     const checkOutAt = closedSessions[0]?.checkOutAt || null;
 
     let message = "วันนี้ยังไม่ได้เช็คอิน";
+    let helperPreview = null;
+
     if (pendingManualSession) {
       message = "วันนี้มีคำขอแก้ไขเวลา รออนุมัติ";
     } else if (checkedIn) {
@@ -5301,17 +5739,17 @@ async function myDayPreview(req, res) {
         : "วันนี้เช็คอินแล้ว (ยังไม่เช็คเอาท์)";
     }
 
-    if (role === "helper" && shift) {
+    if (role === "helper") {
+      helperPreview = getHelperPreviewStatus(shift, new Date());
+
       if (checkedIn && !checkedOut) {
         message = `เช็คอินแล้วสำหรับกะ ${s(
-          shift.clinicName || shift.title || shift._id
+          shift?.clinicName || shift?.title || shift?._id
         )}`;
       } else if (checkedIn && checkedOut) {
         message = "กะนี้เสร็จสิ้นแล้ว";
-      } else {
-        message = `พร้อมสแกนสำหรับกะ ${s(
-          shift.clinicName || shift.title || shift._id
-        )}`;
+      } else if (helperPreview?.message) {
+        message = helperPreview.message;
       }
     }
 
@@ -5355,6 +5793,7 @@ async function myDayPreview(req, res) {
         shift: shift || null,
         shiftSelectionMode: shiftSelectionMode || "",
         availableShifts: availableShifts || [],
+        helperPreview,
       },
     });
   } catch (e) {
