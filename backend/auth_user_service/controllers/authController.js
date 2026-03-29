@@ -176,6 +176,36 @@ function helperSafeStaffId(userLike) {
   return isHelperUser(userLike) ? "" : normStr(userLike?.staffId);
 }
 
+function isEmployeeUser(userLike) {
+  const fixed = ensureRolesAndActive(
+    userLike || {},
+    userLike?.activeRole || userLike?.role
+  );
+
+  return (
+    fixed.activeRole === "employee" ||
+    fixed.legacyRole === "employee" ||
+    fixed.roles.includes("employee")
+  );
+}
+
+function shouldAttemptEnsureEmployee(userLike) {
+  if (!userLike) return false;
+  if (!isEmployeeUser(userLike)) return false;
+  if (isHelperUser(userLike)) return false;
+
+  const clinicId = normStr(userLike?.clinicId);
+  if (!clinicId) return false;
+
+  const staffId = normStr(userLike?.staffId);
+  const provisionStatus = normLower(userLike?.employeeProvisionStatus);
+
+  if (staffId) return false;
+  if (provisionStatus === "ready") return false;
+
+  return true;
+}
+
 function safeUser(u) {
   if (!u) return null;
 
@@ -323,6 +353,133 @@ async function syncUserStaffIdFromEnsured(userLike, ensured) {
   }
 }
 
+async function persistEmployeeProvisionState(
+  userId,
+  {
+    staffId = "",
+    employeeProvisionStatus = "",
+  } = {}
+) {
+  const uid = normStr(userId);
+  if (!uid) return;
+
+  const setDoc = {};
+
+  if (staffId !== undefined && staffId !== null) {
+    setDoc.staffId = normStr(staffId);
+  }
+
+  if (employeeProvisionStatus) {
+    setDoc.employeeProvisionStatus = normStr(employeeProvisionStatus);
+  }
+
+  if (!Object.keys(setDoc).length) return;
+
+  await User.updateOne({ userId: uid }, { $set: setDoc });
+}
+
+async function tryEnsureEmployeeProvision(userLike, sourceLabel = "") {
+  try {
+    if (!userLike?.userId) {
+      return {
+        ok: false,
+        skipped: true,
+        reason: "missing_userId",
+        user: userLike,
+      };
+    }
+
+    if (!shouldAttemptEnsureEmployee(userLike)) {
+      return {
+        ok: true,
+        skipped: true,
+        reason: "not_needed",
+        user: userLike,
+      };
+    }
+
+    console.log(`🧩 ensureEmployeeForUser(${sourceLabel}) start`, {
+      userId: userLike.userId,
+      clinicId: normStr(userLike.clinicId),
+      staffId: normStr(userLike.staffId),
+      employeeProvisionStatus: normStr(userLike.employeeProvisionStatus),
+      role: normStr(userLike.activeRole || userLike.role),
+    });
+
+    const ensured = await ensureEmployeeForUser(userLike, "");
+
+    console.log(`🧩 ensureEmployeeForUser(${sourceLabel}) result`, {
+      userId: userLike.userId,
+      ok: !!ensured?.ok,
+      created: !!ensured?.created,
+      skipped: !!ensured?.skipped,
+      reason: ensured?.reason || "",
+      employeeStaffId: ensured?.employee?.staffId || "",
+    });
+
+    if (ensured?.ok && ensured?.employee?.staffId) {
+      let nextUser = await syncUserStaffIdFromEnsured(userLike, ensured);
+
+      await persistEmployeeProvisionState(nextUser.userId, {
+        staffId: normStr(ensured.employee.staffId),
+        employeeProvisionStatus: "ready",
+      });
+
+      nextUser = {
+        ...nextUser,
+        staffId: normStr(ensured.employee.staffId),
+        employeeProvisionStatus: "ready",
+      };
+
+      return {
+        ok: true,
+        created: !!ensured?.created,
+        skipped: false,
+        reason: "",
+        ensured,
+        user: nextUser,
+      };
+    }
+
+    await persistEmployeeProvisionState(userLike.userId, {
+      employeeProvisionStatus: "pending",
+    });
+
+    return {
+      ok: !!ensured?.ok,
+      created: !!ensured?.created,
+      skipped: !!ensured?.skipped,
+      reason: ensured?.reason || "not_ready",
+      ensured,
+      user: {
+        ...userLike,
+        employeeProvisionStatus: "pending",
+      },
+    };
+  } catch (e) {
+    console.log(`⚠️ ensureEmployeeForUser(${sourceLabel}) failed`, {
+      userId: normStr(userLike?.userId),
+      status: e?.status || 0,
+      message: e?.message || "",
+    });
+
+    await persistEmployeeProvisionState(userLike?.userId, {
+      employeeProvisionStatus: "pending",
+    });
+
+    return {
+      ok: false,
+      skipped: true,
+      reason: "ensure_exception",
+      errorStatus: e?.status || 0,
+      errorMessage: e?.message || "",
+      user: userLike
+        ? { ...userLike, employeeProvisionStatus: "pending" }
+        : userLike,
+    };
+  }
+}
+
 /* ======================================================
    LOGIN
 ====================================================== */
@@ -415,19 +572,19 @@ async function login(req, res) {
       roles: fixed.roles,
     };
 
-    const loginRole = normalizeRole(user?.activeRole || user?.role);
-
-    if (loginRole === "employee") {
-      console.log("✅ skip ensureEmployeeForUser(login) - production safe", {
-        userId: user.userId,
-        role: loginRole,
-        reason: "avoid_rate_limit",
-      });
+    if (shouldAttemptEnsureEmployee(user)) {
+      const ensuredOnLogin = await tryEnsureEmployeeProvision(user, "login");
+      if (ensuredOnLogin?.user) {
+        user = ensuredOnLogin.user;
+      }
     } else {
       console.log("✅ skip ensureEmployeeForUser(login)", {
         userId: user.userId,
-        role: loginRole,
-        reason: "not_employee",
+        role: normStr(user?.activeRole || user?.role),
+        reason: isEmployeeUser(user) ? "already_ready_or_missing_context" : "not_employee",
+        staffId: normStr(user?.staffId),
+        clinicId: normStr(user?.clinicId),
+        employeeProvisionStatus: normStr(user?.employeeProvisionStatus),
       });
     }
 
@@ -477,6 +634,13 @@ async function me(req, res) {
 
     user = await ensureStaffIdIfEmployee(user);
 
+    if (shouldAttemptEnsureEmployee(user)) {
+      const ensuredOnMe = await tryEnsureEmployeeProvision(user, "me");
+      if (ensuredOnMe?.user) {
+        user = ensuredOnMe.user;
+      }
+    }
+
     const payload = { user: safeUser(user) };
 
     console.log(
@@ -489,6 +653,7 @@ async function me(req, res) {
           clinicId: payload.user?.clinicId || "",
           staffId: payload.user?.staffId || "",
           roles: Array.isArray(payload.user?.roles) ? payload.user.roles : [],
+          employeeProvisionStatus: payload.user?.employeeProvisionStatus || "",
         },
         null,
         2
@@ -569,7 +734,6 @@ async function updateMyLocation(req, res) {
     });
   }
 }
-
 /* ======================================================
    SWITCH ROLE
 ====================================================== */
@@ -624,6 +788,16 @@ async function switchRole(req, res) {
       role: fixed.legacyRole,
       roles: fixed.roles,
     };
+
+    if (shouldAttemptEnsureEmployee(user)) {
+      const ensuredOnSwitch = await tryEnsureEmployeeProvision(
+        user,
+        "switchRole"
+      );
+      if (ensuredOnSwitch?.user) {
+        user = ensuredOnSwitch.user;
+      }
+    }
 
     const token = signToken(makeJwtPayload(user));
     return res.json({ user: safeUser(user), token });
@@ -699,6 +873,7 @@ async function registerClinicAdmin(req, res) {
     });
   }
 }
+
 /* ======================================================
    REGISTER WITH INVITE
    - employee: ผูก clinicId ถาวร + ensure employee (non-blocking)
@@ -786,77 +961,24 @@ async function registerWithInvite(req, res) {
     let userPlain = createdUser.toObject ? createdUser.toObject() : createdUser;
 
     if (isEmployeeInvite) {
-      try {
-        const ensured = await ensureEmployeeForUser(userPlain, "");
+      const ensuredOnRegister = await tryEnsureEmployeeProvision(
+        userPlain,
+        "registerWithInvite"
+      );
 
-        console.log("🧩 ensureEmployeeForUser(registerWithInvite):", {
+      if (ensuredOnRegister?.user) {
+        userPlain = ensuredOnRegister.user;
+      }
+
+      if (
+        !normStr(userPlain?.staffId) &&
+        normLower(userPlain?.employeeProvisionStatus) !== "ready"
+      ) {
+        console.log("⚠️ employee not ready yet, allow register", {
           userId: userPlain.userId,
-          ok: !!ensured?.ok,
-          created: !!ensured?.created,
-          skipped: !!ensured?.skipped,
-          reason: ensured?.reason || "",
-          employeeStaffId: ensured?.employee?.staffId || "",
+          reason: ensuredOnRegister?.reason || "",
+          skipped: !!ensuredOnRegister?.skipped,
         });
-
-        if (ensured?.ok && ensured?.employee) {
-          userPlain = await syncUserStaffIdFromEnsured(userPlain, ensured);
-
-          await User.updateOne(
-            { userId: userPlain.userId },
-            {
-              $set: {
-                employeeProvisionStatus: "ready",
-                staffId: normStr(ensured.employee.staffId),
-              },
-            }
-          );
-
-          userPlain = {
-            ...userPlain,
-            employeeProvisionStatus: "ready",
-            staffId: normStr(ensured.employee.staffId),
-          };
-        } else {
-          await User.updateOne(
-            { userId: userPlain.userId },
-            {
-              $set: {
-                employeeProvisionStatus: "pending",
-              },
-            }
-          );
-
-          userPlain = {
-            ...userPlain,
-            employeeProvisionStatus: "pending",
-          };
-
-          console.log("⚠️ employee not ready yet, allow register", {
-            userId: userPlain.userId,
-            reason: ensured?.reason || "",
-            skipped: !!ensured?.skipped,
-          });
-        }
-      } catch (e) {
-        console.log("⚠️ ensureEmployee error (non-blocking):", {
-          userId: userPlain.userId,
-          status: e?.status || 0,
-          message: e?.message || "",
-        });
-
-        await User.updateOne(
-          { userId: userPlain.userId },
-          {
-            $set: {
-              employeeProvisionStatus: "pending",
-            },
-          }
-        );
-
-        userPlain = {
-          ...userPlain,
-          employeeProvisionStatus: "pending",
-        };
       }
     } else {
       console.log("✅ skip ensureEmployeeForUser(registerWithInvite)", {
@@ -905,12 +1027,12 @@ async function reconcileEmployeeSelf(req, res) {
     const legacyRole = normalizeRole(user?.role);
     const activeRole = normalizeRole(user?.activeRole);
 
-    const isEmployeeUser =
+    const isEmployeeRole =
       roles.includes("employee") ||
       legacyRole === "employee" ||
       activeRole === "employee";
 
-    if (!isEmployeeUser) {
+    if (!isEmployeeRole) {
       return res.json({
         ok: true,
         skipped: true,
@@ -932,68 +1054,31 @@ async function reconcileEmployeeSelf(req, res) {
       clinicId,
     });
 
-    let ensured = null;
+    const ensured = await tryEnsureEmployeeProvision(user, "reconcileEmployeeSelf");
 
-    try {
-      ensured = await ensureEmployeeForUser(user, "");
-
-      console.log("🧩 reconcileEmployeeSelf result:", {
-        userId,
-        ok: !!ensured?.ok,
-        created: !!ensured?.created,
-        skipped: !!ensured?.skipped,
-        reason: ensured?.reason || "",
-        employeeStaffId: ensured?.employee?.staffId || "",
-      });
-    } catch (e) {
-      console.log("⚠️ reconcileEmployeeSelf ensure failed:", {
-        userId,
-        status: e?.status || 0,
-        message: e?.message || "",
-      });
-
-      return res.status(503).json({
-        ok: false,
-        reason: "employee_service_exception",
-      });
+    if (ensured?.user) {
+      user = ensured.user;
     }
 
-    if (!ensured?.ok) {
-      return res.status(503).json({
-        ok: false,
-        reason: ensured?.reason || "ensure_failed",
-      });
-    }
+    console.log("🧩 reconcileEmployeeSelf result:", {
+      userId,
+      ok: !!ensured?.ok,
+      created: !!ensured?.created,
+      skipped: !!ensured?.skipped,
+      reason: ensured?.reason || "",
+      employeeStaffId: ensured?.user?.staffId || "",
+    });
 
-    if (ensured?.employee?.staffId) {
-      await User.updateOne(
-        { userId },
-        {
-          $set: {
-            staffId: ensured.employee.staffId,
-            employeeProvisionStatus: "ready",
-          },
-        }
-      );
-
+    if (normStr(user?.staffId)) {
       return res.json({
         ok: true,
         created: true,
-        staffId: ensured.employee.staffId,
+        staffId: user.staffId,
       });
     }
 
-    await User.updateOne(
-      { userId },
-      {
-        $set: {
-          employeeProvisionStatus: "pending",
-        },
-      }
-    );
-
     return res.json({
-      ok: true,
+      ok: !!ensured?.ok,
       created: false,
       skipped: true,
       reason: ensured?.reason || "not_ready",

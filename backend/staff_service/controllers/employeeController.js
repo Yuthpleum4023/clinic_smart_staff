@@ -7,6 +7,7 @@
 // + FIX: allow non-admin to read own record by staffId
 // + NEW: internal ensure route for service-to-service flow
 // + NEW: duplicate-safe / idempotent employee creation
+// + DEBUG LOGS: employee provisioning / internal lookup tracing
 // ==================================================
 
 const mongoose = require("mongoose");
@@ -22,6 +23,47 @@ function isObjectId(v) {
 
 function isAdmin(req) {
   return s(req.user?.role) === "admin";
+}
+
+function pickReqId(req) {
+  return s(
+    req.headers["x-request-id"] ||
+      req.headers["x-correlation-id"] ||
+      req.headers["x-trace-id"] ||
+      ""
+  );
+}
+
+function safeReqMeta(req) {
+  return {
+    method: s(req.method),
+    path: s(req.originalUrl || req.url),
+    ip: s(req.headers["x-forwarded-for"] || req.ip),
+    reqId: pickReqId(req),
+    userId: s(req.user?.userId),
+    role: s(req.user?.role),
+    clinicId: s(req.user?.clinicId),
+    hasInternalKey: !!s(req.headers["x-internal-key"]),
+  };
+}
+
+function logEmployeeDebug(label, data = {}) {
+  try {
+    console.log(`[EMPLOYEE][DEBUG] ${label}`, data);
+  } catch (_) {}
+}
+
+function errorShape(err) {
+  return {
+    name: s(err?.name),
+    message: s(err?.message),
+    code: err?.code ?? null,
+    status: err?.status ?? null,
+    errors:
+      err?.errors && typeof err.errors === "object"
+        ? Object.keys(err.errors)
+        : [],
+  };
 }
 
 /**
@@ -126,17 +168,48 @@ async function findEmployeeByUserIdScoped(userId, clinicId = "") {
   const q = { userId: uid };
   if (hasClinicIdField() && clinicId) q.clinicId = s(clinicId);
 
-  return Employee.findOne(q).lean();
+  logEmployeeDebug("findEmployeeByUserIdScoped.query", q);
+
+  const emp = await Employee.findOne(q).lean();
+
+  logEmployeeDebug("findEmployeeByUserIdScoped.result", {
+    userId: uid,
+    clinicId: s(clinicId),
+    found: !!emp,
+    employeeId: s(emp?._id),
+    staffId: s(emp?._id || emp?.staffId),
+  });
+
+  return emp;
 }
 
 async function findEmployeeByStaffIdScoped(staffId, clinicId = "") {
   const sid = s(staffId);
-  if (!isObjectId(sid)) return null;
+  if (!isObjectId(sid)) {
+    logEmployeeDebug("findEmployeeByStaffIdScoped.invalid", {
+      staffId: sid,
+      clinicId: s(clinicId),
+    });
+    return null;
+  }
 
   const emp = await Employee.findById(sid).lean();
+
+  logEmployeeDebug("findEmployeeByStaffIdScoped.byId", {
+    staffId: sid,
+    clinicId: s(clinicId),
+    found: !!emp,
+    employeeClinicId: s(emp?.clinicId),
+  });
+
   if (!emp) return null;
 
   if (hasClinicIdField() && clinicId && s(emp.clinicId) !== s(clinicId)) {
+    logEmployeeDebug("findEmployeeByStaffIdScoped.clinic_mismatch", {
+      staffId: sid,
+      wantedClinicId: s(clinicId),
+      employeeClinicId: s(emp.clinicId),
+    });
     return null;
   }
 
@@ -153,12 +226,28 @@ function getInternalClinicId(req) {
 }
 
 async function createOrGetExistingEmployee(payload) {
+  logEmployeeDebug("createOrGetExistingEmployee.start", {
+    userId: s(payload.userId),
+    clinicId: s(payload.clinicId),
+    fullName: s(payload.fullName),
+    employmentType: s(payload.employmentType),
+    active: !!payload.active,
+    provisionedFrom: s(payload.provisionedFrom),
+  });
+
   const existing = await findEmployeeByUserIdScoped(
     payload.userId,
     payload.clinicId
   );
 
   if (existing) {
+    logEmployeeDebug("createOrGetExistingEmployee.existing", {
+      userId: s(payload.userId),
+      clinicId: s(payload.clinicId),
+      employeeId: s(existing?._id),
+      staffId: s(existing?._id || existing?.staffId),
+    });
+
     return {
       created: false,
       employee: existing,
@@ -167,11 +256,29 @@ async function createOrGetExistingEmployee(payload) {
 
   try {
     const emp = await Employee.create(payload);
+
+    logEmployeeDebug("createOrGetExistingEmployee.created", {
+      userId: s(payload.userId),
+      clinicId: s(payload.clinicId),
+      employeeId: s(emp?._id),
+      staffId: s(emp?._id),
+    });
+
     return {
       created: true,
       employee: emp,
     };
   } catch (err) {
+    logEmployeeDebug("createOrGetExistingEmployee.create_error", {
+      payload: {
+        userId: s(payload.userId),
+        clinicId: s(payload.clinicId),
+        fullName: s(payload.fullName),
+        employmentType: s(payload.employmentType),
+      },
+      error: errorShape(err),
+    });
+
     if (isDuplicateKeyError(err)) {
       const existingAfterConflict = await findEmployeeByUserIdScoped(
         payload.userId,
@@ -179,6 +286,12 @@ async function createOrGetExistingEmployee(payload) {
       );
 
       if (existingAfterConflict) {
+        logEmployeeDebug("createOrGetExistingEmployee.duplicate_existing", {
+          userId: s(payload.userId),
+          clinicId: s(payload.clinicId),
+          employeeId: s(existingAfterConflict?._id),
+        });
+
         return {
           created: false,
           employee: existingAfterConflict,
@@ -194,17 +307,45 @@ exports.createEmployee = async (req, res) => {
   try {
     const payload = buildEmployeeCreatePayload(req.body || {});
 
+    logEmployeeDebug("createEmployee.hit", {
+      ...safeReqMeta(req),
+      rawBody: {
+        userId: s(req.body?.userId),
+        clinicId: s(req.body?.clinicId),
+        fullName: s(req.body?.fullName || req.body?.name),
+        employmentType: s(req.body?.employmentType),
+        monthlySalary: req.body?.monthlySalary ?? null,
+      },
+      normalizedPayload: payload,
+      hasClinicIdField: hasClinicIdField(),
+    });
+
     if (!payload.userId) {
+      logEmployeeDebug("createEmployee.reject_missing_userId", {
+        ...safeReqMeta(req),
+        payload,
+      });
+
       return res.status(400).json({ ok: false, error: "userId is required" });
     }
 
     if (!payload.fullName) {
+      logEmployeeDebug("createEmployee.reject_missing_fullName", {
+        ...safeReqMeta(req),
+        payload,
+      });
+
       return res.status(400).json({ ok: false, error: "fullName is required" });
     }
 
     if (hasClinicIdField()) {
       const clinicId = s(req.user?.clinicId);
       if (!clinicId) {
+        logEmployeeDebug("createEmployee.reject_missing_token_clinicId", {
+          ...safeReqMeta(req),
+          payload,
+        });
+
         return res
           .status(401)
           .json({ ok: false, message: "Missing clinicId in token" });
@@ -218,6 +359,15 @@ exports.createEmployee = async (req, res) => {
 
     const result = await createOrGetExistingEmployee(payload);
 
+    logEmployeeDebug("createEmployee.success", {
+      ...safeReqMeta(req),
+      created: !!result.created,
+      employeeId: s(result?.employee?._id),
+      staffId: s(result?.employee?._id || result?.employee?.staffId),
+      userId: s(result?.employee?.userId),
+      clinicId: s(result?.employee?.clinicId),
+    });
+
     return res.status(result.created ? 201 : 200).json({
       ok: true,
       existed: !result.created,
@@ -225,27 +375,40 @@ exports.createEmployee = async (req, res) => {
       employee: withStaffId(result.employee),
     });
   } catch (err) {
+    logEmployeeDebug("createEmployee.failed", {
+      ...safeReqMeta(req),
+      error: errorShape(err),
+      rawBody: req.body || {},
+    });
+
     return res.status(400).json({ ok: false, error: err.message });
   }
 };
 
 // -------------------- INTERNAL ENSURE FROM USER --------------------
 // POST /api/employees/internal/ensure
-// NOTE:
-// - idempotent
-// - if exists -> return existing
-// - if duplicate race -> fallback find existing
 async function ensureEmployeeInternalHandler(req, res) {
   try {
     const payload = buildEmployeeCreatePayload(req.body || {});
 
-    console.log("🔥 INTERNAL ensure HIT", {
-      userId: payload.userId,
-      clinicId: payload.clinicId,
+    logEmployeeDebug("internal.ensure.hit", {
+      ...safeReqMeta(req),
+      rawBody: {
+        userId: s(req.body?.userId),
+        clinicId: s(req.body?.clinicId),
+        fullName: s(req.body?.fullName || req.body?.name),
+        employmentType: s(req.body?.employmentType),
+      },
+      normalizedPayload: payload,
       hasClinicIdField: hasClinicIdField(),
     });
 
     if (!payload.userId) {
+      logEmployeeDebug("internal.ensure.reject_missing_userId", {
+        ...safeReqMeta(req),
+        payload,
+      });
+
       return res.status(400).json({
         ok: false,
         message: "userId is required",
@@ -253,6 +416,11 @@ async function ensureEmployeeInternalHandler(req, res) {
     }
 
     if (!payload.fullName) {
+      logEmployeeDebug("internal.ensure.reject_missing_fullName", {
+        ...safeReqMeta(req),
+        payload,
+      });
+
       return res.status(400).json({
         ok: false,
         message: "fullName is required",
@@ -260,6 +428,11 @@ async function ensureEmployeeInternalHandler(req, res) {
     }
 
     if (hasClinicIdField() && !payload.clinicId) {
+      logEmployeeDebug("internal.ensure.reject_missing_clinicId", {
+        ...safeReqMeta(req),
+        payload,
+      });
+
       return res.status(400).json({
         ok: false,
         message: "clinicId is required",
@@ -272,13 +445,29 @@ async function ensureEmployeeInternalHandler(req, res) {
 
     const result = await createOrGetExistingEmployee(payload);
 
+    logEmployeeDebug("internal.ensure.success", {
+      ...safeReqMeta(req),
+      created: !!result.created,
+      employeeId: s(result?.employee?._id),
+      staffId: s(result?.employee?._id || result?.employee?.staffId),
+      userId: s(result?.employee?.userId),
+      clinicId: s(result?.employee?.clinicId),
+    });
+
     return res.status(result.created ? 201 : 200).json({
       ok: true,
       created: result.created,
       employee: withStaffId(result.employee),
     });
   } catch (err) {
+    logEmployeeDebug("internal.ensure.failed", {
+      ...safeReqMeta(req),
+      error: errorShape(err),
+      rawBody: req.body || {},
+    });
+
     console.error("❌ ensureEmployeeInternal failed:", err);
+
     return res.status(500).json({
       ok: false,
       message: err.message || "ensureEmployeeInternal failed",
@@ -300,11 +489,11 @@ exports.getEmployeeByUserIdInternal = async (req, res) => {
     const userId = s(req.params.userId);
     const clinicId = getInternalClinicId(req);
 
-    console.log("🔥 INTERNAL by-user HIT", {
-      userId,
-      clinicId,
+    logEmployeeDebug("internal.by-user.hit", {
+      ...safeReqMeta(req),
+      paramUserId: userId,
+      clinicIdFromResolver: clinicId,
       hasClinicIdField: hasClinicIdField(),
-      hasInternalKey: !!s(req.headers["x-internal-key"]),
     });
 
     if (!userId) {
@@ -315,6 +504,11 @@ exports.getEmployeeByUserIdInternal = async (req, res) => {
     }
 
     if (hasClinicIdField() && !clinicId) {
+      logEmployeeDebug("internal.by-user.reject_missing_clinicId", {
+        ...safeReqMeta(req),
+        paramUserId: userId,
+      });
+
       return res.status(400).json({
         ok: false,
         message: "clinicId required",
@@ -322,18 +516,40 @@ exports.getEmployeeByUserIdInternal = async (req, res) => {
     }
 
     const emp = await findEmployeeByUserIdScoped(userId, clinicId);
+
     if (!emp) {
+      logEmployeeDebug("internal.by-user.not_found", {
+        ...safeReqMeta(req),
+        userId,
+        clinicId,
+      });
+
       return res.status(404).json({
         ok: false,
         message: "Employee not found",
       });
     }
 
+    logEmployeeDebug("internal.by-user.success", {
+      ...safeReqMeta(req),
+      userId,
+      clinicId,
+      employeeId: s(emp?._id),
+      staffId: s(emp?._id || emp?.staffId),
+    });
+
     return res.json({
       ok: true,
       employee: withStaffId(emp),
     });
   } catch (err) {
+    logEmployeeDebug("internal.by-user.failed", {
+      ...safeReqMeta(req),
+      paramUserId: s(req.params?.userId),
+      clinicId: getInternalClinicId(req),
+      error: errorShape(err),
+    });
+
     return res.status(500).json({
       ok: false,
       error: err.message,
@@ -348,14 +564,19 @@ exports.getEmployeeByStaffIdInternal = async (req, res) => {
     const staffId = s(req.params.staffId);
     const clinicId = getInternalClinicId(req);
 
-    console.log("🔥 INTERNAL by-staff HIT", {
-      staffId,
-      clinicId,
+    logEmployeeDebug("internal.by-staff.hit", {
+      ...safeReqMeta(req),
+      paramStaffId: staffId,
+      clinicIdFromResolver: clinicId,
       hasClinicIdField: hasClinicIdField(),
-      hasInternalKey: !!s(req.headers["x-internal-key"]),
     });
 
     if (!isObjectId(staffId)) {
+      logEmployeeDebug("internal.by-staff.reject_invalid_staffId", {
+        ...safeReqMeta(req),
+        paramStaffId: staffId,
+      });
+
       return res.status(400).json({
         ok: false,
         message: "Invalid staffId",
@@ -363,6 +584,11 @@ exports.getEmployeeByStaffIdInternal = async (req, res) => {
     }
 
     if (hasClinicIdField() && !clinicId) {
+      logEmployeeDebug("internal.by-staff.reject_missing_clinicId", {
+        ...safeReqMeta(req),
+        paramStaffId: staffId,
+      });
+
       return res.status(400).json({
         ok: false,
         message: "clinicId required",
@@ -370,18 +596,39 @@ exports.getEmployeeByStaffIdInternal = async (req, res) => {
     }
 
     const emp = await findEmployeeByStaffIdScoped(staffId, clinicId);
+
     if (!emp) {
+      logEmployeeDebug("internal.by-staff.not_found", {
+        ...safeReqMeta(req),
+        staffId,
+        clinicId,
+      });
+
       return res.status(404).json({
         ok: false,
         message: "Employee not found",
       });
     }
 
+    logEmployeeDebug("internal.by-staff.success", {
+      ...safeReqMeta(req),
+      staffId,
+      clinicId,
+      employeeId: s(emp?._id),
+    });
+
     return res.json({
       ok: true,
       employee: withStaffId(emp),
     });
   } catch (err) {
+    logEmployeeDebug("internal.by-staff.failed", {
+      ...safeReqMeta(req),
+      paramStaffId: s(req.params?.staffId),
+      clinicId: getInternalClinicId(req),
+      error: errorShape(err),
+    });
+
     return res.status(500).json({
       ok: false,
       error: err.message,
@@ -395,6 +642,12 @@ exports.getEmployeeByStaffIdInternal = async (req, res) => {
 exports.getEmployeeById = async (req, res) => {
   try {
     const id = s(req.params.id);
+
+    logEmployeeDebug("getById.hit", {
+      ...safeReqMeta(req),
+      employeeId: id,
+    });
+
     if (!isObjectId(id)) {
       return res.status(400).json({ ok: false, error: "Invalid employee id" });
     }
@@ -425,8 +678,21 @@ exports.getEmployeeById = async (req, res) => {
       }
     }
 
+    logEmployeeDebug("getById.success", {
+      ...safeReqMeta(req),
+      employeeId: id,
+      userId: s(emp?.userId),
+      clinicId: s(emp?.clinicId),
+    });
+
     return res.json({ ok: true, employee: withStaffId(emp) });
   } catch (err) {
+    logEmployeeDebug("getById.failed", {
+      ...safeReqMeta(req),
+      employeeId: s(req.params?.id),
+      error: errorShape(err),
+    });
+
     return res.status(500).json({ ok: false, error: err.message });
   }
 };
@@ -436,6 +702,12 @@ exports.getEmployeeById = async (req, res) => {
 exports.listEmployees = async (req, res) => {
   try {
     const q = { active: true, ...clinicScopeQuery(req) };
+
+    logEmployeeDebug("listEmployees.hit", {
+      ...safeReqMeta(req),
+      query: q,
+      hasClinicIdField: hasClinicIdField(),
+    });
 
     if (!hasClinicIdField()) {
       console.log(
@@ -448,8 +720,19 @@ exports.listEmployees = async (req, res) => {
     }
 
     const list = await Employee.find(q).sort({ createdAt: -1 }).lean();
+
+    logEmployeeDebug("listEmployees.success", {
+      ...safeReqMeta(req),
+      count: Array.isArray(list) ? list.length : 0,
+    });
+
     return res.json({ ok: true, items: list.map(withStaffId) });
   } catch (err) {
+    logEmployeeDebug("listEmployees.failed", {
+      ...safeReqMeta(req),
+      error: errorShape(err),
+    });
+
     return res.status(500).json({ ok: false, error: err.message });
   }
 };
@@ -459,6 +742,13 @@ exports.listEmployees = async (req, res) => {
 exports.listForDropdown = async (req, res) => {
   try {
     const role = s(req.user?.role);
+
+    logEmployeeDebug("listForDropdown.hit", {
+      ...safeReqMeta(req),
+      role,
+      hasClinicIdField: hasClinicIdField(),
+    });
+
     if (role !== "admin") {
       return res
         .status(403)
@@ -484,6 +774,11 @@ exports.listForDropdown = async (req, res) => {
       .sort({ fullName: 1 })
       .lean();
 
+    logEmployeeDebug("listForDropdown.success", {
+      ...safeReqMeta(req),
+      count: Array.isArray(list) ? list.length : 0,
+    });
+
     return res.json({
       ok: true,
       items: list
@@ -496,6 +791,11 @@ exports.listForDropdown = async (req, res) => {
         .filter((x) => x.staffId),
     });
   } catch (err) {
+    logEmployeeDebug("listForDropdown.failed", {
+      ...safeReqMeta(req),
+      error: errorShape(err),
+    });
+
     return res.status(500).json({ ok: false, error: err.message });
   }
 };
@@ -507,13 +807,20 @@ exports.listForDropdown = async (req, res) => {
 exports.getEmployeeByUserId = async (req, res) => {
   try {
     const paramUserId = s(req.params.userId);
+    const tokenUserId = s(req.user?.userId);
+
+    logEmployeeDebug("getByUserId.hit", {
+      ...safeReqMeta(req),
+      paramUserId,
+      tokenUserId,
+      hasClinicIdField: hasClinicIdField(),
+    });
+
     if (!paramUserId) {
       return res
         .status(400)
         .json({ ok: false, message: "userId required" });
     }
-
-    const tokenUserId = s(req.user?.userId);
 
     if (!isAdmin(req)) {
       if (!tokenUserId || tokenUserId !== paramUserId) {
@@ -529,15 +836,36 @@ exports.getEmployeeByUserId = async (req, res) => {
 
     const q = { userId: paramUserId, active: true, ...clinicScopeQuery(req) };
 
+    logEmployeeDebug("getByUserId.query", q);
+
     const emp = await Employee.findOne(q).lean();
+
     if (!emp) {
+      logEmployeeDebug("getByUserId.not_found", {
+        ...safeReqMeta(req),
+        paramUserId,
+      });
+
       return res
         .status(404)
         .json({ ok: false, message: "Employee not found" });
     }
 
+    logEmployeeDebug("getByUserId.success", {
+      ...safeReqMeta(req),
+      paramUserId,
+      employeeId: s(emp?._id),
+      staffId: s(emp?._id || emp?.staffId),
+    });
+
     return res.json({ ok: true, employee: withStaffId(emp) });
   } catch (err) {
+    logEmployeeDebug("getByUserId.failed", {
+      ...safeReqMeta(req),
+      paramUserId: s(req.params?.userId),
+      error: errorShape(err),
+    });
+
     return res.status(500).json({ ok: false, error: err.message });
   }
 };
@@ -549,6 +877,13 @@ exports.getEmployeeByUserId = async (req, res) => {
 exports.getEmployeeByStaffId = async (req, res) => {
   try {
     const staffId = s(req.params.staffId);
+
+    logEmployeeDebug("getByStaffId.hit", {
+      ...safeReqMeta(req),
+      paramStaffId: staffId,
+      hasClinicIdField: hasClinicIdField(),
+    });
+
     if (!isObjectId(staffId)) {
       return res.status(400).json({ ok: false, message: "Invalid staffId" });
     }
@@ -560,7 +895,13 @@ exports.getEmployeeByStaffId = async (req, res) => {
     }
 
     const emp = await Employee.findById(staffId).lean();
+
     if (!emp) {
+      logEmployeeDebug("getByStaffId.not_found", {
+        ...safeReqMeta(req),
+        paramStaffId: staffId,
+      });
+
       return res
         .status(404)
         .json({ ok: false, message: "Employee not found" });
@@ -587,8 +928,21 @@ exports.getEmployeeByStaffId = async (req, res) => {
       }
     }
 
+    logEmployeeDebug("getByStaffId.success", {
+      ...safeReqMeta(req),
+      paramStaffId: staffId,
+      employeeId: s(emp?._id),
+      userId: s(emp?.userId),
+    });
+
     return res.json({ ok: true, employee: withStaffId(emp) });
   } catch (err) {
+    logEmployeeDebug("getByStaffId.failed", {
+      ...safeReqMeta(req),
+      paramStaffId: s(req.params?.staffId),
+      error: errorShape(err),
+    });
+
     return res.status(500).json({ ok: false, error: err.message });
   }
 };
@@ -597,6 +951,14 @@ exports.getEmployeeByStaffId = async (req, res) => {
 exports.updateEmployee = async (req, res) => {
   try {
     const id = s(req.params.id);
+
+    logEmployeeDebug("updateEmployee.hit", {
+      ...safeReqMeta(req),
+      employeeId: id,
+      body: req.body || {},
+      hasClinicIdField: hasClinicIdField(),
+    });
+
     if (!isObjectId(id)) {
       return res.status(400).json({ ok: false, error: "Invalid employee id" });
     }
@@ -628,8 +990,22 @@ exports.updateEmployee = async (req, res) => {
       }
     }
 
+    logEmployeeDebug("updateEmployee.success", {
+      ...safeReqMeta(req),
+      employeeId: id,
+      userId: s(emp?.userId),
+      clinicId: s(emp?.clinicId),
+    });
+
     return res.json({ ok: true, employee: withStaffId(emp) });
   } catch (err) {
+    logEmployeeDebug("updateEmployee.failed", {
+      ...safeReqMeta(req),
+      employeeId: s(req.params?.id),
+      error: errorShape(err),
+      body: req.body || {},
+    });
+
     return res.status(400).json({ ok: false, error: err.message });
   }
 };
@@ -638,6 +1014,13 @@ exports.updateEmployee = async (req, res) => {
 exports.deactivateEmployee = async (req, res) => {
   try {
     const id = s(req.params.id);
+
+    logEmployeeDebug("deactivateEmployee.hit", {
+      ...safeReqMeta(req),
+      employeeId: id,
+      hasClinicIdField: hasClinicIdField(),
+    });
+
     if (!isObjectId(id)) {
       return res.status(400).json({ ok: false, error: "Invalid employee id" });
     }
@@ -667,8 +1050,21 @@ exports.deactivateEmployee = async (req, res) => {
       }
     }
 
+    logEmployeeDebug("deactivateEmployee.success", {
+      ...safeReqMeta(req),
+      employeeId: id,
+      userId: s(emp?.userId),
+      clinicId: s(emp?.clinicId),
+    });
+
     return res.json({ ok: true, employee: withStaffId(emp) });
   } catch (err) {
+    logEmployeeDebug("deactivateEmployee.failed", {
+      ...safeReqMeta(req),
+      employeeId: s(req.params?.id),
+      error: errorShape(err),
+    });
+
     return res.status(500).json({ ok: false, error: err.message });
   }
 };
