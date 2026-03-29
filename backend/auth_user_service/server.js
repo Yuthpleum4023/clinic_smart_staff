@@ -1,4 +1,6 @@
-// server.js (CommonJS) - FINAL / DEBUG+SAFE (AUTH + INVITES + TAX PROFILES + INTERNAL TAX + STAFF SEARCH + GLOBAL HELPER SEARCH)
+// server.js (CommonJS) - FINAL / DEBUG+SAFE
+// AUTH + INVITES + TAX PROFILES + INTERNAL TAX + STAFF SEARCH
+// + GLOBAL HELPER SEARCH + USER LINK SEARCH
 
 const express = require("express");
 const mongoose = require("mongoose");
@@ -90,8 +92,11 @@ const payrollTaxRoutes = require("./routes/payrollTaxRoutes");
 // STAFF SEARCH (internal clinic staff)
 const staffRoutes = require("./routes/staffRoutes");
 
-// ⭐ NEW: GLOBAL HELPER MARKETPLACE
+// GLOBAL HELPER MARKETPLACE
 const helperRoutes = require("./routes/helperRoutes");
+
+// NEW: USER LINK SEARCH FOR EMPLOYEE LINKING
+const userLinkSearchRoutes = require("./routes/userLinkSearchRoutes");
 
 // AUTH
 app.use("/", authRoutes);
@@ -108,8 +113,11 @@ app.use("/", payrollTaxRoutes);
 // STAFF SEARCH
 app.use("/staff", staffRoutes);
 
-// ⭐ GLOBAL HELPER SEARCH
+// GLOBAL HELPER SEARCH
 app.use("/", helperRoutes);
+
+// USER LINK SEARCH
+app.use("/api/users", userLinkSearchRoutes);
 
 // ===================================================
 // Global Error Handler
