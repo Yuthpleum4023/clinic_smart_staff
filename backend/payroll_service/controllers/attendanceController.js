@@ -560,6 +560,31 @@ function normalizeShiftLite(shift) {
   };
 }
 
+async function lookupClinicNamesByClinicIds(clinicIds = []) {
+  const ids = Array.from(new Set((clinicIds || []).map((x) => s(x)).filter(Boolean)));
+  if (!ids.length) return new Map();
+
+  const rows = await AttendanceSession.find({
+    clinicId: { $in: ids },
+    clinicName: { $exists: true, $nin: ["", null] },
+  })
+    .select({ clinicId: 1, clinicName: 1, updatedAt: 1, createdAt: 1 })
+    .sort({ updatedAt: -1, createdAt: -1 })
+    .lean();
+
+  const clinicNameMap = new Map();
+  for (const row of rows) {
+    const clinicId = s(row?.clinicId);
+    const clinicName = s(row?.clinicName);
+    if (!clinicId || !clinicName) continue;
+    if (!clinicNameMap.has(clinicId)) {
+      clinicNameMap.set(clinicId, clinicName);
+    }
+  }
+
+  return clinicNameMap;
+}
+
 async function hydrateSessionDisplayFields(items = []) {
   const out = Array.isArray(items) ? items.map((x) => ({ ...x })) : [];
   if (!out.length) return out;
@@ -593,6 +618,31 @@ async function hydrateSessionDisplayFields(items = []) {
     }
   }
 
+  const clinicIdsNeedingFallback = Array.from(
+    new Set(
+      out
+        .map((item) => {
+          const shiftId =
+            typeof item.shiftId === "object"
+              ? s(item.shiftId?._id || item.shiftId?.id)
+              : s(item.shiftId);
+
+          const shift = shiftMap.get(shiftId);
+          const hasClinicName =
+            !!s(item.clinicName) ||
+            !!extractClinicDisplayName(item) ||
+            !!s(shift?.clinicName);
+
+          return hasClinicName ? "" : s(item.clinicId);
+        })
+        .filter(Boolean)
+    )
+  );
+
+  const clinicNameMap = await lookupClinicNamesByClinicIds(
+    clinicIdsNeedingFallback
+  );
+
   return out.map((item) => {
     const shiftId =
       typeof item.shiftId === "object"
@@ -600,10 +650,14 @@ async function hydrateSessionDisplayFields(items = []) {
         : s(item.shiftId);
 
     const shift = shiftMap.get(shiftId);
+    const clinicId = s(item.clinicId);
 
     if (!s(item.clinicName)) {
       item.clinicName = s(
-        shift?.clinicName || item.clinicName || extractClinicDisplayName(item)
+        shift?.clinicName ||
+          clinicNameMap.get(clinicId) ||
+          item.clinicName ||
+          extractClinicDisplayName(item)
       );
     }
 
@@ -1085,6 +1139,7 @@ function buildPublicPolicy(policy, workDate = "") {
     }),
   };
 }
+
 async function getOrCreatePolicy(clinicId, userId) {
   let p = await ClinicPolicy.findOne({ clinicId });
 
@@ -1382,7 +1437,6 @@ function buildFallbackEmployeeFromToken(req, fallbackClinicId = "") {
     status: "active",
   });
 }
-
 function isEmployeeAttendanceAllowed(employee) {
   if (!employee) {
     return {
@@ -3690,6 +3744,7 @@ async function ensureCanViewSession(req, session) {
 
   return { ok: true };
 }
+
 async function checkIn(req, res) {
   try {
     const mockErr = rejectIfMockLocationAnywhere(req);
@@ -3918,6 +3973,8 @@ async function checkIn(req, res) {
     }).lean();
 
     if (existingClosed) {
+      const hydratedClosed = await hydrateOneSessionDisplayField(existingClosed);
+
       return res.status(409).json({
         ok: false,
         code: "ATTENDANCE_ALREADY_COMPLETED",
@@ -3926,14 +3983,27 @@ async function checkIn(req, res) {
             ? "Attendance already completed for this shift/date"
             : "Attendance already completed for today",
         sessionId: String(existingClosed._id || ""),
-        clinicId: s(existingClosed.clinicId),
-        clinicName: s(existingClosed.clinicName || extractClinicDisplayName(existingClosed)),
-        workDate: s(existingClosed.workDate),
+        clinicId: s(hydratedClosed?.clinicId || existingClosed.clinicId),
+        clinicName: s(
+          hydratedClosed?.clinicName ||
+            existingClosed.clinicName ||
+            extractClinicDisplayName(existingClosed)
+        ),
+        workDate: s(hydratedClosed?.workDate || existingClosed.workDate),
         shiftId:
-          typeof existingClosed.shiftId === "object"
-            ? s(existingClosed.shiftId?._id || existingClosed.shiftId?.id)
-            : s(existingClosed.shiftId),
-        shiftName: s(existingClosed.shiftName || extractShiftDisplayName(existingClosed)),
+          typeof (hydratedClosed?.shiftId || existingClosed.shiftId) === "object"
+            ? s(
+                hydratedClosed?.shiftId?._id ||
+                  hydratedClosed?.shiftId?.id ||
+                  existingClosed.shiftId?._id ||
+                  existingClosed.shiftId?.id
+              )
+            : s(hydratedClosed?.shiftId || existingClosed.shiftId),
+        shiftName: s(
+          hydratedClosed?.shiftName ||
+            existingClosed.shiftName ||
+            extractShiftDisplayName(existingClosed)
+        ),
         routeHint: buildResolveAttendanceRouteHint(existingClosed),
       });
     }
@@ -3944,6 +4014,10 @@ async function checkIn(req, res) {
     }).lean();
 
     if (existingPendingManual) {
+      const hydratedPending = await hydrateOneSessionDisplayField(
+        existingPendingManual
+      );
+
       return res.status(409).json({
         ok: false,
         code: "MANUAL_REQUEST_PENDING",
@@ -3952,18 +4026,26 @@ async function checkIn(req, res) {
             ? "Manual attendance request is pending for this shift/date"
             : "Manual attendance request is pending for this date",
         sessionId: String(existingPendingManual._id || ""),
-        clinicId: s(existingPendingManual.clinicId),
+        clinicId: s(hydratedPending?.clinicId || existingPendingManual.clinicId),
         clinicName: s(
-          existingPendingManual.clinicName ||
+          hydratedPending?.clinicName ||
+            existingPendingManual.clinicName ||
             extractClinicDisplayName(existingPendingManual)
         ),
-        workDate: s(existingPendingManual.workDate),
+        workDate: s(hydratedPending?.workDate || existingPendingManual.workDate),
         shiftId:
-          typeof existingPendingManual.shiftId === "object"
-            ? s(existingPendingManual.shiftId?._id || existingPendingManual.shiftId?.id)
-            : s(existingPendingManual.shiftId),
+          typeof (hydratedPending?.shiftId || existingPendingManual.shiftId) ===
+          "object"
+            ? s(
+                hydratedPending?.shiftId?._id ||
+                  hydratedPending?.shiftId?.id ||
+                  existingPendingManual.shiftId?._id ||
+                  existingPendingManual.shiftId?.id
+              )
+            : s(hydratedPending?.shiftId || existingPendingManual.shiftId),
         shiftName: s(
-          existingPendingManual.shiftName ||
+          hydratedPending?.shiftName ||
+            existingPendingManual.shiftName ||
             extractShiftDisplayName(existingPendingManual)
         ),
         routeHint: buildManualRequestRouteHint(existingPendingManual),
@@ -4115,12 +4197,16 @@ async function checkOut(req, res) {
       }
 
       if (openSessions.length > 1) {
+        const hydratedSessions = await hydrateSessionDisplayFields(
+          openSessions.map((x) => x.toObject?.() || x)
+        );
+
         return res.status(409).json({
           ok: false,
           code: "MULTIPLE_OPEN_SESSIONS",
           message:
             "พบ open session มากกว่าหนึ่งรายการ กรุณาระบุ session ที่ต้องการปิด",
-          sessions: openSessions.map((x) => ({
+          sessions: hydratedSessions.map((x) => ({
             _id: String(x._id || ""),
             clinicId: s(x.clinicId),
             clinicName: s(x.clinicName || extractClinicDisplayName(x)),
@@ -4287,8 +4373,7 @@ async function checkOut(req, res) {
         .status(timeValidationError.status)
         .json(timeValidationError.body);
     }
-
-    let outDistanceMeters = null;
+        let outDistanceMeters = null;
     const requireLocation = shouldRequireLocationForAttendance(policy);
 
     if (requireLocation) {
@@ -4550,6 +4635,8 @@ async function submitManualRequest(req, res) {
     const pendingExisting =
       sameDaySessions.find((x) => isStatusPendingManual(x)) || null;
     if (pendingExisting) {
+      const hydratedPending = await hydrateOneSessionDisplayField(pendingExisting);
+
       return res.status(409).json({
         ok: false,
         code: "MANUAL_REQUEST_PENDING",
@@ -4558,17 +4645,27 @@ async function submitManualRequest(req, res) {
             ? "Manual attendance request is already pending for this shift/date"
             : "Manual attendance request is already pending for this date",
         sessionId: String(pendingExisting._id || ""),
-        clinicId: s(pendingExisting.clinicId),
+        clinicId: s(hydratedPending?.clinicId || pendingExisting.clinicId),
         clinicName: s(
-          pendingExisting.clinicName || extractClinicDisplayName(pendingExisting)
+          hydratedPending?.clinicName ||
+            pendingExisting.clinicName ||
+            extractClinicDisplayName(pendingExisting)
         ),
-        workDate: s(pendingExisting.workDate),
+        workDate: s(hydratedPending?.workDate || pendingExisting.workDate),
         shiftId:
-          typeof pendingExisting.shiftId === "object"
-            ? s(pendingExisting.shiftId?._id || pendingExisting.shiftId?.id)
-            : s(pendingExisting.shiftId),
+          typeof (hydratedPending?.shiftId || pendingExisting.shiftId) ===
+          "object"
+            ? s(
+                hydratedPending?.shiftId?._id ||
+                  hydratedPending?.shiftId?.id ||
+                  pendingExisting.shiftId?._id ||
+                  pendingExisting.shiftId?.id
+              )
+            : s(hydratedPending?.shiftId || pendingExisting.shiftId),
         shiftName: s(
-          pendingExisting.shiftName || extractShiftDisplayName(pendingExisting)
+          hydratedPending?.shiftName ||
+            pendingExisting.shiftName ||
+            extractShiftDisplayName(pendingExisting)
         ),
         routeHint: buildManualRequestRouteHint(pendingExisting),
         pendingContext: await toBlockedPreviousSessionPayload(pendingExisting),
@@ -4618,23 +4715,39 @@ async function submitManualRequest(req, res) {
       );
 
       if (!requestedAtFromBody) {
+        const hydratedPrevious = await hydrateOneSessionDisplayField(
+          previousDaySession
+        );
+
         return res.status(400).json({
           ok: false,
           code: "PREVIOUS_REQUEST_TIME_REQUIRED",
           message: "กรุณาระบุเวลาที่ต้องการแก้ไขสำหรับรายการค้างของวันก่อน",
           previousSessionId: String(previousDaySession._id || ""),
-          previousWorkDate: s(previousDaySession.workDate),
-          previousClinicId: s(previousDaySession.clinicId),
+          previousWorkDate: s(
+            hydratedPrevious?.workDate || previousDaySession.workDate
+          ),
+          previousClinicId: s(
+            hydratedPrevious?.clinicId || previousDaySession.clinicId
+          ),
           previousClinicName: s(
-            previousDaySession.clinicName ||
+            hydratedPrevious?.clinicName ||
+              previousDaySession.clinicName ||
               extractClinicDisplayName(previousDaySession)
           ),
           previousShiftId:
-            typeof previousDaySession.shiftId === "object"
-              ? s(previousDaySession.shiftId?._id || previousDaySession.shiftId?.id)
-              : s(previousDaySession.shiftId),
+            typeof (hydratedPrevious?.shiftId || previousDaySession.shiftId) ===
+            "object"
+              ? s(
+                  hydratedPrevious?.shiftId?._id ||
+                    hydratedPrevious?.shiftId?.id ||
+                    previousDaySession.shiftId?._id ||
+                    previousDaySession.shiftId?.id
+                )
+              : s(hydratedPrevious?.shiftId || previousDaySession.shiftId),
           previousShiftName: s(
-            previousDaySession.shiftName ||
+            hydratedPrevious?.shiftName ||
+              previousDaySession.shiftName ||
               extractShiftDisplayName(previousDaySession)
           ),
           routeHint: buildManualRequestRouteHint(previousDaySession),
@@ -4650,23 +4763,39 @@ async function submitManualRequest(req, res) {
           "",
         ].includes(previousType)
       ) {
+        const hydratedPrevious = await hydrateOneSessionDisplayField(
+          previousDaySession
+        );
+
         return res.status(409).json({
           ok: false,
           code: "PREVIOUS_REQUEST_NOT_EDITABLE",
           message: "รายการค้างของวันก่อนอยู่ในสถานะที่ไม่สามารถแก้ไขต่อได้",
           previousSessionId: String(previousDaySession._id || ""),
-          previousWorkDate: s(previousDaySession.workDate),
-          previousClinicId: s(previousDaySession.clinicId),
+          previousWorkDate: s(
+            hydratedPrevious?.workDate || previousDaySession.workDate
+          ),
+          previousClinicId: s(
+            hydratedPrevious?.clinicId || previousDaySession.clinicId
+          ),
           previousClinicName: s(
-            previousDaySession.clinicName ||
+            hydratedPrevious?.clinicName ||
+              previousDaySession.clinicName ||
               extractClinicDisplayName(previousDaySession)
           ),
           previousShiftId:
-            typeof previousDaySession.shiftId === "object"
-              ? s(previousDaySession.shiftId?._id || previousDaySession.shiftId?.id)
-              : s(previousDaySession.shiftId),
+            typeof (hydratedPrevious?.shiftId || previousDaySession.shiftId) ===
+            "object"
+              ? s(
+                  hydratedPrevious?.shiftId?._id ||
+                    hydratedPrevious?.shiftId?.id ||
+                    previousDaySession.shiftId?._id ||
+                    previousDaySession.shiftId?.id
+                )
+              : s(hydratedPrevious?.shiftId || previousDaySession.shiftId),
           previousShiftName: s(
-            previousDaySession.shiftName ||
+            hydratedPrevious?.shiftName ||
+              previousDaySession.shiftName ||
               extractShiftDisplayName(previousDaySession)
           ),
           routeHint: buildManualRequestRouteHint(previousDaySession),
@@ -4757,28 +4886,43 @@ async function submitManualRequest(req, res) {
       }
 
       await previousDaySession.save();
+      const hydratedPrevious = await hydrateOneSessionDisplayField(
+        previousDaySession.toObject?.() || previousDaySession
+      );
 
       return res.status(200).json({
         ok: true,
         updatedPreviousPendingRequest: true,
         requiresApproval: true,
-        session: previousDaySession,
+        session: hydratedPrevious || previousDaySession,
         message:
           "อัปเดตรายการค้างของวันก่อนเรียบร้อยแล้ว กรุณารอการอนุมัติก่อนจึงจะเริ่มรายการใหม่ได้",
         blockNewAttendanceUntilApproved: true,
         previousSessionId: String(previousDaySession._id || ""),
-        previousWorkDate: s(previousDaySession.workDate),
-        previousClinicId: s(previousDaySession.clinicId),
+        previousWorkDate: s(
+          hydratedPrevious?.workDate || previousDaySession.workDate
+        ),
+        previousClinicId: s(
+          hydratedPrevious?.clinicId || previousDaySession.clinicId
+        ),
         previousClinicName: s(
-          previousDaySession.clinicName ||
+          hydratedPrevious?.clinicName ||
+            previousDaySession.clinicName ||
             extractClinicDisplayName(previousDaySession)
         ),
         previousShiftId:
-          typeof previousDaySession.shiftId === "object"
-            ? s(previousDaySession.shiftId?._id || previousDaySession.shiftId?.id)
-            : s(previousDaySession.shiftId),
+          typeof (hydratedPrevious?.shiftId || previousDaySession.shiftId) ===
+          "object"
+            ? s(
+                hydratedPrevious?.shiftId?._id ||
+                  hydratedPrevious?.shiftId?.id ||
+                  previousDaySession.shiftId?._id ||
+                  previousDaySession.shiftId?.id
+              )
+            : s(hydratedPrevious?.shiftId || previousDaySession.shiftId),
         previousShiftName: s(
-          previousDaySession.shiftName ||
+          hydratedPrevious?.shiftName ||
+            previousDaySession.shiftName ||
             extractShiftDisplayName(previousDaySession)
         ),
         routeHint: buildManualRequestRouteHint(previousDaySession),
@@ -4789,6 +4933,8 @@ async function submitManualRequest(req, res) {
 
     if (manualRequestType === "check_in") {
       if (targetSession) {
+        const hydratedTarget = await hydrateOneSessionDisplayField(targetSession);
+
         return res.status(409).json({
           ok: false,
           code: "SESSION_ALREADY_EXISTS",
@@ -4797,17 +4943,26 @@ async function submitManualRequest(req, res) {
               ? "A session already exists for this shift/date. Use edit_both instead."
               : "A session already exists for this date. Use edit_both instead.",
           sessionId: String(targetSession._id || ""),
-          clinicId: s(targetSession.clinicId),
+          clinicId: s(hydratedTarget?.clinicId || targetSession.clinicId),
           clinicName: s(
-            targetSession.clinicName || extractClinicDisplayName(targetSession)
+            hydratedTarget?.clinicName ||
+              targetSession.clinicName ||
+              extractClinicDisplayName(targetSession)
           ),
-          workDate: s(targetSession.workDate),
+          workDate: s(hydratedTarget?.workDate || targetSession.workDate),
           shiftId:
-            typeof targetSession.shiftId === "object"
-              ? s(targetSession.shiftId?._id || targetSession.shiftId?.id)
-              : s(targetSession.shiftId),
+            typeof (hydratedTarget?.shiftId || targetSession.shiftId) === "object"
+              ? s(
+                  hydratedTarget?.shiftId?._id ||
+                    hydratedTarget?.shiftId?.id ||
+                    targetSession.shiftId?._id ||
+                    targetSession.shiftId?.id
+                )
+              : s(hydratedTarget?.shiftId || targetSession.shiftId),
           shiftName: s(
-            targetSession.shiftName || extractShiftDisplayName(targetSession)
+            hydratedTarget?.shiftName ||
+              targetSession.shiftName ||
+              extractShiftDisplayName(targetSession)
           ),
           routeHint: buildResolveAttendanceRouteHint(targetSession),
         });
@@ -4867,9 +5022,13 @@ async function submitManualRequest(req, res) {
         await created.save();
       }
 
+      const hydratedCreated = await hydrateOneSessionDisplayField(
+        created.toObject?.() || created
+      );
+
       return res.status(201).json({
         ok: true,
-        session: created,
+        session: hydratedCreated || created,
         requiresApproval: created.approvalStatus === "pending",
         otMeta,
         policy: buildPublicPolicy(policy, workDate),
@@ -4914,6 +5073,8 @@ async function submitManualRequest(req, res) {
       if (openSession) {
         targetSession = openSession;
       } else if (closedSession) {
+        const hydratedClosed = await hydrateOneSessionDisplayField(closedSession);
+
         return res.status(409).json({
           ok: false,
           code: "ATTENDANCE_ALREADY_COMPLETED",
@@ -4922,17 +5083,27 @@ async function submitManualRequest(req, res) {
               ? "Attendance already completed for this shift/date. Use edit_both instead if correction is needed."
               : "Attendance already completed for this date. Use edit_both instead if correction is needed.",
           sessionId: String(closedSession._id || ""),
-          clinicId: s(closedSession.clinicId),
+          clinicId: s(hydratedClosed?.clinicId || closedSession.clinicId),
           clinicName: s(
-            closedSession.clinicName || extractClinicDisplayName(closedSession)
+            hydratedClosed?.clinicName ||
+              closedSession.clinicName ||
+              extractClinicDisplayName(closedSession)
           ),
-          workDate: s(closedSession.workDate),
+          workDate: s(hydratedClosed?.workDate || closedSession.workDate),
           shiftId:
-            typeof closedSession.shiftId === "object"
-              ? s(closedSession.shiftId?._id || closedSession.shiftId?.id)
-              : s(closedSession.shiftId),
+            typeof (hydratedClosed?.shiftId || closedSession.shiftId) ===
+            "object"
+              ? s(
+                  hydratedClosed?.shiftId?._id ||
+                    hydratedClosed?.shiftId?.id ||
+                    closedSession.shiftId?._id ||
+                    closedSession.shiftId?.id
+                )
+              : s(hydratedClosed?.shiftId || closedSession.shiftId),
           shiftName: s(
-            closedSession.shiftName || extractShiftDisplayName(closedSession)
+            hydratedClosed?.shiftName ||
+              closedSession.shiftName ||
+              extractShiftDisplayName(closedSession)
           ),
           routeHint: buildResolveAttendanceRouteHint(closedSession),
         });
@@ -5042,9 +5213,13 @@ async function submitManualRequest(req, res) {
       await targetSession.save();
     }
 
+    const hydratedTarget = await hydrateOneSessionDisplayField(
+      targetSession.toObject?.() || targetSession
+    );
+
     return res.status(201).json({
       ok: true,
-      session: targetSession,
+      session: hydratedTarget || targetSession,
       requiresApproval: targetSession.approvalStatus === "pending",
       otMeta,
       policy: buildPublicPolicy(policy, workDate),
@@ -5260,10 +5435,13 @@ async function approveManualRequest(req, res) {
       session.rejectReason = note;
 
       await session.save();
+      const hydratedRejected = await hydrateOneSessionDisplayField(
+        session.toObject?.() || session
+      );
 
       return res.json({
         ok: true,
-        session,
+        session: hydratedRejected || session,
         message: "Manual request rejected",
       });
     }
@@ -5344,9 +5522,13 @@ async function approveManualRequest(req, res) {
 
     await maybePostTrustScoreFromSession(session);
 
+    const hydratedApproved = await hydrateOneSessionDisplayField(
+      session.toObject?.() || session
+    );
+
     return res.json({
       ok: true,
-      session,
+      session: hydratedApproved || session,
       otMeta,
       policy: buildPublicPolicy(policy, s(session.workDate)),
       runtime: {
@@ -5638,7 +5820,9 @@ async function myDayPreview(req, res) {
       role,
       clinicId,
       clinicName: s(
-        hydratedSession?.clinicName || shift?.clinicName || extractClinicDisplayName(hydratedSession || {})
+        hydratedSession?.clinicName ||
+          shift?.clinicName ||
+          extractClinicDisplayName(hydratedSession || {})
       ),
       shift: shift || null,
       shiftSelectionMode: shiftSelectionMode || "",
