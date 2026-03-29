@@ -7,8 +7,6 @@ const {
 } = require("../middleware/auth");
 
 const ctrl = require("../controllers/attendanceController");
-
-// ✅ NEW: analytics controller
 const analytics = require("../controllers/attendanceAnalyticsController");
 
 // ======================================
@@ -18,30 +16,75 @@ const analytics = require("../controllers/attendanceAnalyticsController");
 const SELF_ROLES = ["employee", "helper"];
 const ADMIN_ROLES = ["admin", "clinic_admin"];
 
+// ======================================
+// Safe handler helpers
+// ======================================
+
+function notImplemented(name) {
+  return (req, res) => {
+    return res.status(501).json({
+      ok: false,
+      code: "NOT_IMPLEMENTED",
+      message: `${name} is not implemented in attendanceController`,
+    });
+  };
+}
+
+function useHandler(handler, name) {
+  return typeof handler === "function" ? handler : notImplemented(name);
+}
+
+// backward-compatible aliases
+const listMySessions =
+  typeof ctrl.listMySessions === "function"
+    ? ctrl.listMySessions
+    : typeof ctrl.listAttendance === "function"
+    ? ctrl.listAttendance
+    : notImplemented("listMySessions/listAttendance");
+
+const myDayPreview =
+  typeof ctrl.myDayPreview === "function"
+    ? ctrl.myDayPreview
+    : notImplemented("myDayPreview");
+
+const listClinicSessions =
+  typeof ctrl.listClinicSessions === "function"
+    ? ctrl.listClinicSessions
+    : notImplemented("listClinicSessions");
+
+const rejectManualRequest =
+  typeof ctrl.rejectManualRequest === "function"
+    ? ctrl.rejectManualRequest
+    : typeof ctrl.approveManualRequest === "function"
+    ? (req, res, next) => {
+        req.body = {
+          ...(req.body || {}),
+          action: "reject",
+        };
+        return ctrl.approveManualRequest(req, res, next);
+      }
+    : notImplemented("rejectManualRequest/approveManualRequest");
+
 // =====================================================
 // SELF ATTENDANCE (employee + helper)
 // =====================================================
 
-// -------------------------------
 // CHECK-IN
-// -------------------------------
 router.post(
   "/check-in",
   auth,
   requireRole(SELF_ROLES),
   requireSelfAttendance(),
-  ctrl.checkIn
+  useHandler(ctrl.checkIn, "checkIn")
 );
 
-// -------------------------------
 // CHECK-OUT
-// -------------------------------
 router.post(
   "/check-out",
   auth,
   requireRole(SELF_ROLES),
   requireSelfAttendance(),
-  ctrl.checkOut
+  useHandler(ctrl.checkOut, "checkOut")
 );
 
 // backward compatible
@@ -50,7 +93,7 @@ router.post(
   auth,
   requireRole(SELF_ROLES),
   requireSelfAttendance(),
-  ctrl.checkOut
+  useHandler(ctrl.checkOut, "checkOut")
 );
 
 // =====================================================
@@ -63,7 +106,7 @@ router.post(
   auth,
   requireRole(SELF_ROLES),
   requireSelfAttendance(),
-  ctrl.submitManualRequest
+  useHandler(ctrl.submitManualRequest, "submitManualRequest")
 );
 
 // list my manual requests
@@ -72,7 +115,7 @@ router.get(
   auth,
   requireRole(SELF_ROLES),
   requireSelfAttendance(),
-  ctrl.listMyManualRequests
+  useHandler(ctrl.listMyManualRequests, "listMyManualRequests")
 );
 
 // =====================================================
@@ -85,7 +128,7 @@ router.get(
   auth,
   requireRole(SELF_ROLES),
   requireSelfAttendance(),
-  ctrl.listMySessions
+  listMySessions
 );
 
 // today preview
@@ -94,7 +137,7 @@ router.get(
   auth,
   requireRole(SELF_ROLES),
   requireSelfAttendance(),
-  ctrl.myDayPreview
+  myDayPreview
 );
 
 // =====================================================
@@ -106,7 +149,7 @@ router.get(
   "/clinic",
   auth,
   requireRole(ADMIN_ROLES),
-  ctrl.listClinicSessions
+  listClinicSessions
 );
 
 // clinic manual request queue
@@ -114,7 +157,7 @@ router.get(
   "/manual-request/clinic",
   auth,
   requireRole(ADMIN_ROLES),
-  ctrl.listClinicManualRequests
+  useHandler(ctrl.listClinicManualRequests, "listClinicManualRequests")
 );
 
 // approve manual request
@@ -122,7 +165,7 @@ router.post(
   "/manual-request/:id/approve",
   auth,
   requireRole(ADMIN_ROLES),
-  ctrl.approveManualRequest
+  useHandler(ctrl.approveManualRequest, "approveManualRequest")
 );
 
 // reject manual request
@@ -130,11 +173,11 @@ router.post(
   "/manual-request/:id/reject",
   auth,
   requireRole(ADMIN_ROLES),
-  ctrl.rejectManualRequest
+  rejectManualRequest
 );
 
 // =====================================================
-// 📊 ATTENDANCE ANALYTICS (ADMIN / HR DASHBOARD)
+// ATTENDANCE ANALYTICS (ADMIN / HR DASHBOARD)
 // =====================================================
 
 // clinic attendance analytics
@@ -142,7 +185,7 @@ router.get(
   "/analytics/clinic",
   auth,
   requireRole(ADMIN_ROLES),
-  analytics.clinicAnalytics
+  useHandler(analytics?.clinicAnalytics, "analytics.clinicAnalytics")
 );
 
 // staff attendance analytics
@@ -150,7 +193,7 @@ router.get(
   "/analytics/staff/:principalId",
   auth,
   requireRole(ADMIN_ROLES),
-  analytics.staffAnalytics
+  useHandler(analytics?.staffAnalytics, "analytics.staffAnalytics")
 );
 
 module.exports = router;
