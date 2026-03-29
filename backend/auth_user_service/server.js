@@ -55,9 +55,7 @@ app.use((req, res, next) => {
 app.use((req, res, next) => {
   res.setTimeout(15000, () => {
     if (!res.headersSent) {
-      console.log(
-        `⏱️ [${req._rid}] TIMEOUT ${req.method} ${req.originalUrl}`
-      );
+      console.log(`⏱️ [${req._rid}] TIMEOUT ${req.method} ${req.originalUrl}`);
       res.status(504).json({ message: "Request timeout" });
     }
   });
@@ -95,7 +93,7 @@ const staffRoutes = require("./routes/staffRoutes");
 // GLOBAL HELPER MARKETPLACE
 const helperRoutes = require("./routes/helperRoutes");
 
-// NEW: USER LINK SEARCH FOR EMPLOYEE LINKING
+// USER LINK SEARCH
 const userLinkSearchRoutes = require("./routes/userLinkSearchRoutes");
 
 // AUTH
@@ -118,6 +116,17 @@ app.use("/", helperRoutes);
 
 // USER LINK SEARCH
 app.use("/api/users", userLinkSearchRoutes);
+
+// ===================================================
+// 404 Handler
+// ===================================================
+app.use((req, res) => {
+  res.status(404).json({
+    message: "Route not found",
+    method: req.method,
+    path: req.originalUrl,
+  });
+});
 
 // ===================================================
 // Global Error Handler
