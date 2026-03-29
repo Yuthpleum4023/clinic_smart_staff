@@ -153,7 +153,6 @@ function getPrincipal(req) {
   const userId = s(req.user?.userId);
   const staffId = s(req.user?.staffId) || getBodyStaffId(req);
 
-  // ✅ FIX: staff ต้องมาก่อน user เพื่อให้ principalType/principalId สอดคล้องกัน
   const principalId = staffId || userId;
   const principalType = staffId ? "staff" : "user";
 
@@ -734,9 +733,6 @@ function shouldRequireLocationForAttendance(policy) {
 
   if (!features.fingerprintAttendance) return false;
 
-  // ✅ FIX: respect policy.requireLocation จริง
-  // - undefined/null = default เป็น true
-  // - false = ไม่บังคับ location
   return policy?.requireLocation !== false;
 }
 
@@ -1104,7 +1100,6 @@ async function getOrCreatePolicy(clinicId, userId) {
       changed = true;
     }
 
-    // ✅ สำคัญ: ไม่ force requireLocation = true ทับ policy เดิมของคลินิก
     if (typeof p.requireLocation !== "boolean") {
       p.requireLocation = true;
       changed = true;
@@ -1135,6 +1130,7 @@ async function getOrCreatePolicy(clinicId, userId) {
 
   return p;
 }
+
 function createRequestMemo(req) {
   if (!req._attendanceMemo || typeof req._attendanceMemo !== "object") {
     req._attendanceMemo = {
@@ -1240,7 +1236,9 @@ function normalizeEmployeeRecord(emp) {
       emp.accountUserId
   );
 
-  const staffId = s(emp.staffId || emp.employeeCode || emp.code || emp._id || emp.id);
+  const staffId = s(
+    emp.staffId || emp.employeeCode || emp.code || emp._id || emp.id
+  );
 
   const rawStatus = s(
     emp.status || emp.employeeStatus || emp.employmentStatus
@@ -2723,7 +2721,6 @@ function validateAttendanceCheckOutTime({
 
   if (mustRespectClinicHours(normalizedRole)) {
     const clinicOpenAt = getClinicOpenDateTime(workDate, policy);
-    const clinicCloseAt = getClinicCloseDateTime(workDate, policy);
 
     if (checkOutAt.getTime() < clinicOpenAt.getTime()) {
       return buildCodeResponse(
@@ -2733,18 +2730,6 @@ function validateAttendanceCheckOutTime({
         {
           workDate,
           openTime: pickClinicOpenTime(policy, workDate),
-        }
-      );
-    }
-
-    if (checkOutAt.getTime() > clinicCloseAt.getTime()) {
-      return buildCodeResponse(
-        409,
-        "CLINIC_ALREADY_CLOSED",
-        "คลินิกปิดแล้ว",
-        {
-          workDate,
-          closeTime: pickClinicCloseTime(policy, workDate),
         }
       );
     }
@@ -3514,7 +3499,6 @@ async function resolveRuntimeContext(req, workDate, shiftId = null) {
     effectiveUserId = s(verify.userId);
     effectiveStaffId = s(verify.staffId);
 
-    // ✅ FIX สำคัญ: หลัง verify แล้ว principal ต้องอิง staffId ก่อนเสมอ
     effectivePrincipalId = s(effectiveStaffId || effectiveUserId);
     effectivePrincipalType = effectiveStaffId ? "staff" : "user";
 
@@ -4619,14 +4603,31 @@ async function submitManualRequest(req, res) {
         previousDaySession.requestedCheckOutAt = requestedAtFromBody;
       }
 
+      const previousShiftId =
+        typeof previousDaySession.shiftId === "object"
+          ? s(previousDaySession.shiftId?._id || previousDaySession.shiftId?.id)
+          : s(previousDaySession.shiftId);
+
+      const previousShift = buildRuntimeShiftSnapshot(
+        await loadShiftForSession({
+          clinicId: s(previousDaySession.clinicId),
+          staffId: s(previousDaySession.staffId),
+          userId: s(previousDaySession.userId),
+          workDate: s(previousDaySession.workDate),
+          shiftId: previousShiftId,
+        })
+      );
+
+      const previousRole = inferRoleFromSession(previousDaySession);
+
       const previousManualTimeError = validateRequestedManualTimes({
         manualRequestType: previousDaySession.manualRequestType,
         requestedCheckInAt: previousDaySession.requestedCheckInAt,
         requestedCheckOutAt: previousDaySession.requestedCheckOutAt,
         existingCheckInAt: previousDaySession.checkInAt || null,
         existingCheckOutAt: previousDaySession.checkOutAt || null,
-        role,
-        shift,
+        role: previousRole,
+        shift: previousShift,
         workDate: s(previousDaySession.workDate),
       });
       if (previousManualTimeError) {
@@ -4655,12 +4656,12 @@ async function submitManualRequest(req, res) {
 
       if (!s(previousDaySession.clinicName)) {
         previousDaySession.clinicName = s(
-          extractClinicDisplayName(previousDaySession)
+          previousShift?.clinicName || extractClinicDisplayName(previousDaySession)
         );
       }
       if (!s(previousDaySession.shiftName)) {
         previousDaySession.shiftName = s(
-          extractShiftDisplayName(previousDaySession)
+          previousShift?.title || extractShiftDisplayName(previousDaySession)
         );
       }
 
@@ -5106,13 +5107,11 @@ async function listClinicManualRequests(req, res) {
     });
   }
 }
-
 async function approveManualRequest(req, res) {
   try {
     const clinicId = s(req.user?.clinicId);
-    const role = s(req.user?.role);
     const actorUserId = s(req.user?.userId);
-    const id = s(req.params?.id);
+    const role = s(req.user?.role);
 
     if (!clinicId) {
       return res
@@ -5126,149 +5125,150 @@ async function approveManualRequest(req, res) {
         .json({ ok: false, message: "Forbidden (admin only)" });
     }
 
+    const id = s(req.params?.id);
+    const action = s(req.body?.action); // approve | reject
+    const note = s(req.body?.note);
+
     if (!id) {
       return res
         .status(400)
-        .json({ ok: false, message: "Request id is required" });
+        .json({ ok: false, message: "id is required" });
+    }
+
+    if (!["approve", "reject"].includes(action)) {
+      return res.status(400).json({
+        ok: false,
+        message: "action must be approve or reject",
+      });
     }
 
     const session = await AttendanceSession.findById(id);
     if (!session) {
-      return res
-        .status(404)
-        .json({ ok: false, message: "Manual request not found" });
+      return res.status(404).json({ ok: false, message: "Session not found" });
     }
 
     if (s(session.clinicId) !== clinicId) {
-      return res.status(403).json({
-        ok: false,
-        message: "Forbidden (cross-clinic request)",
-      });
+      return res
+        .status(403)
+        .json({ ok: false, message: "Forbidden (clinic mismatch)" });
     }
 
-    if (!isStatusPendingManual(session)) {
+    if (s(session.status) !== "pending_manual") {
       return res.status(409).json({
         ok: false,
-        message: "Manual request is not pending approval",
+        code: "NOT_PENDING_MANUAL",
+        message: "Session is not pending manual approval",
       });
     }
 
     const policy = await getOrCreatePolicy(clinicId, actorUserId);
-    if (policy.lockAfterPayrollClose && session.lockedByPayroll) {
-      return res.status(409).json({
-        ok: false,
-        code: "PAYROLL_LOCKED",
-        message: "Attendance is locked by payroll",
+
+    if (action === "reject") {
+      session.approvalStatus = "rejected";
+      session.status = "rejected";
+      session.rejectedBy = actorUserId;
+      session.rejectedAt = new Date();
+      session.rejectedReason = note;
+
+      await session.save();
+
+      return res.json({
+        ok: true,
+        session,
+        message: "Manual request rejected",
       });
     }
 
+    // ===== APPROVE =====
+
+    const shiftId =
+      typeof session.shiftId === "object"
+        ? s(session.shiftId?._id || session.shiftId?.id)
+        : s(session.shiftId);
+
     const shift = buildRuntimeShiftSnapshot(
       await loadShiftForSession({
-        clinicId: s(session.clinicId),
+        clinicId,
         staffId: s(session.staffId),
         userId: s(session.userId),
         workDate: s(session.workDate),
-        shiftId:
-          typeof session.shiftId === "object"
-            ? s(session.shiftId?._id || session.shiftId?.id)
-            : s(session.shiftId),
+        shiftId,
       })
     );
 
-    const requestedType = s(session.manualRequestType);
-    const requestReasonCodeBeforeClear = s(session.requestReasonCode);
-    const requestReasonTextBeforeClear = s(session.requestReasonText);
+    const roleOfSession = inferRoleFromSession(session);
 
-    const finalCheckInAt = session.requestedCheckInAt || session.checkInAt || null;
-    const finalCheckOutAt =
-      session.requestedCheckOutAt || session.checkOutAt || null;
-
-    if (
-      (requestedType === "check_in" || requestedType === "edit_both") &&
-      !finalCheckInAt
-    ) {
-      return res
-        .status(400)
-        .json({ ok: false, message: "Requested check-in time is missing" });
-    }
-
-    if (
-      (requestedType === "check_out" || requestedType === "forgot_checkout") &&
-      !finalCheckOutAt
-    ) {
-      return res
-        .status(400)
-        .json({ ok: false, message: "Requested check-out time is missing" });
-    }
-
-    const approveTimeError = validateRequestedManualTimes({
-      manualRequestType: requestedType,
-      requestedCheckInAt: session.requestedCheckInAt || null,
-      requestedCheckOutAt: session.requestedCheckOutAt || null,
+    const validateErr = validateRequestedManualTimes({
+      manualRequestType: s(session.manualRequestType),
+      requestedCheckInAt: session.requestedCheckInAt,
+      requestedCheckOutAt: session.requestedCheckOutAt,
       existingCheckInAt: session.checkInAt || null,
       existingCheckOutAt: session.checkOutAt || null,
-      role: inferRoleFromSession(session),
+      role: roleOfSession,
       shift,
       workDate: s(session.workDate),
     });
-    if (approveTimeError) {
-      return res.status(approveTimeError.status).json(approveTimeError.body);
+
+    if (validateErr) {
+      return res.status(validateErr.status).json(validateErr.body);
     }
 
-    ensureSecurityFields(session);
-
-    if (finalCheckInAt) {
-      session.checkInAt = finalCheckInAt;
-      session.checkInMethod = "manual";
-      session.biometricVerifiedIn = false;
+    if (session.requestedCheckInAt) {
+      session.checkInAt = session.requestedCheckInAt;
     }
 
-    if (finalCheckOutAt) {
-      session.checkOutAt = finalCheckOutAt;
-      session.checkOutMethod = "manual";
-      session.biometricVerifiedOut = false;
-    }
-
-    if (!s(session.clinicName)) {
-      session.clinicName = s(
-        shift?.clinicName || extractClinicDisplayName(session)
-      );
-    }
-    if (!s(session.shiftName)) {
-      session.shiftName = s(shift?.title || extractShiftDisplayName(session));
+    if (session.requestedCheckOutAt) {
+      session.checkOutAt = session.requestedCheckOutAt;
     }
 
     session.status = session.checkOutAt ? "closed" : "open";
     session.approvalStatus = "approved";
     session.approvedBy = actorUserId;
     session.approvedAt = new Date();
-    session.approvalNote = s(req.body?.approvalNote);
-    session.manualLocked = false;
+
+    if (!s(session.clinicName)) {
+      session.clinicName = s(
+        shift?.clinicName || extractClinicDisplayName(session)
+      );
+    }
+
+    if (!s(session.shiftName)) {
+      session.shiftName = s(
+        shift?.title || extractShiftDisplayName(session)
+      );
+    }
 
     clearManualRequestFields(session);
+
     await recalcSessionByTimes({ session, policy, shift });
 
-    if (!s(session.reasonCode) && requestReasonCodeBeforeClear) {
-      session.reasonCode = requestReasonCodeBeforeClear;
-    }
-    if (!s(session.reasonText) && requestReasonTextBeforeClear) {
-      session.reasonText = requestReasonTextBeforeClear;
-    }
+    session.riskScore = clampRisk(session.riskScore);
 
     await session.save();
 
-    const otMeta = await syncOvertimeForSession({ session, policy, shift });
-    await session.save();
-
+    let otMeta = null;
     if (s(session.status) === "closed") {
-      await maybePostTrustScoreFromSession(session);
+      otMeta = await syncOvertimeForSession({
+        session,
+        policy,
+        shift,
+      });
+      await session.save();
     }
+
+    await maybePostTrustScoreFromSession(session);
 
     return res.json({
       ok: true,
       session,
       otMeta,
       policy: buildPublicPolicy(policy, s(session.workDate)),
+      runtime: {
+        role: roleOfSession,
+        clinicId,
+        shift: shift || null,
+      },
+      message: "Manual request approved",
     });
   } catch (e) {
     return res.status(500).json({
@@ -5279,108 +5279,40 @@ async function approveManualRequest(req, res) {
   }
 }
 
-async function rejectManualRequest(req, res) {
+async function getAttendanceById(req, res) {
   try {
-    const clinicId = s(req.user?.clinicId);
-    const role = s(req.user?.role);
-    const actorUserId = s(req.user?.userId);
     const id = s(req.params?.id);
-
-    if (!clinicId) {
-      return res
-        .status(401)
-        .json({ ok: false, message: "Missing clinicId in token" });
-    }
-
-    if (role !== "admin" && role !== "clinic_admin") {
-      return res
-        .status(403)
-        .json({ ok: false, message: "Forbidden (admin only)" });
-    }
-
     if (!id) {
       return res
         .status(400)
-        .json({ ok: false, message: "Request id is required" });
+        .json({ ok: false, message: "id is required" });
     }
 
-    if (!s(req.body?.rejectReason)) {
-      return res
-        .status(400)
-        .json({ ok: false, message: "rejectReason is required" });
-    }
-
-    const session = await AttendanceSession.findById(id);
+    const session = await AttendanceSession.findById(id).lean();
     if (!session) {
-      return res
-        .status(404)
-        .json({ ok: false, message: "Manual request not found" });
+      return res.status(404).json({ ok: false, message: "Session not found" });
     }
 
-    if (s(session.clinicId) !== clinicId) {
-      return res.status(403).json({
-        ok: false,
-        message: "Forbidden (cross-clinic request)",
-      });
-    }
+    const hydrated = await hydrateOneSessionDisplayField(session);
 
-    if (!isStatusPendingManual(session)) {
-      return res.status(409).json({
-        ok: false,
-        message: "Manual request is not pending rejection",
-      });
-    }
-
-    if (!s(session.clinicName)) {
-      session.clinicName = s(extractClinicDisplayName(session));
-    }
-    if (!s(session.shiftName)) {
-      session.shiftName = s(extractShiftDisplayName(session));
-    }
-
-    session.approvalStatus = "rejected";
-    session.rejectedBy = actorUserId;
-    session.rejectedAt = new Date();
-    session.rejectReason = s(req.body?.rejectReason);
-    session.manualLocked = false;
-    session.status = determineRejectedStatus(session);
-
-    if (s(session.status) === "cancelled") {
-      session.checkOutAt = null;
-      session.workedMinutes = 0;
-      session.lateMinutes = 0;
-      session.otMinutes = 0;
-      session.leftEarly = false;
-      session.leftEarlyMinutes = 0;
-      session.abnormal = false;
-      session.abnormalReasonCode = "";
-      session.abnormalReasonText = "";
-      session.suspiciousFlags = [];
-      session.riskScore = 0;
-
-      if (session.securityMeta) {
-        session.securityMeta.outDistanceMeters = null;
-        session.securityMeta.outLocationSource = "";
-        session.securityMeta.outMocked = false;
-      }
-    }
-
-    await session.save();
-    return res.json({ ok: true, session });
+    return res.json({
+      ok: true,
+      session: hydrated,
+    });
   } catch (e) {
     return res.status(500).json({
       ok: false,
-      message: "reject manual request failed",
+      message: "get attendance by id failed",
       error: e.message,
     });
   }
 }
 
-async function listMySessions(req, res) {
+async function listAttendance(req, res) {
   try {
-    const { clinicId, principalId, userId, staffId, role } = getPrincipal(req);
+    const { principalId, userId, staffId } = getPrincipal(req);
 
-    if (!principalId && !userId && !staffId) {
+    if (!principalId) {
       return res
         .status(401)
         .json({ ok: false, message: "Missing userId/staffId in token" });
@@ -5388,418 +5320,44 @@ async function listMySessions(req, res) {
 
     const dateFrom = s(req.query?.dateFrom);
     const dateTo = s(req.query?.dateTo);
-    const requestedShiftId = normalizeObjectIdString(getRequestedShiftId(req));
+    const clinicId = s(req.query?.clinicId);
+    const shiftId = normalizeObjectIdString(getRequestedShiftId(req));
 
-    const clinicScope = await resolveSelfClinicFilter(req, clinicId);
-    if (!clinicScope.ok) {
-      return res.status(clinicScope.status).json(clinicScope.body);
+    const q = {
+      $or: buildAttendanceActorOr({ principalId, userId, staffId }),
+    };
+
+    if (isYmd(dateFrom) || isYmd(dateTo)) {
+      q.workDate = {};
+      if (isYmd(dateFrom)) q.workDate.$gte = dateFrom;
+      if (isYmd(dateTo)) q.workDate.$lte = dateTo;
     }
 
-    const requestedClinicId = s(clinicScope.clinicId);
+    if (clinicId) {
+      q.clinicId = clinicId;
+    }
 
-    const q = buildMyAttendanceQuery({
-      clinicId: requestedClinicId,
-      principalId,
-      userId,
-      staffId,
-      dateFrom,
-      dateTo,
-      shiftId: role === "helper" ? requestedShiftId : "",
-    });
+    if (shiftId) {
+      q.$and = [
+        ...(Array.isArray(q.$and) ? q.$and : []),
+        buildShiftMatchClause(shiftId),
+      ];
+    }
 
     const items = await AttendanceSession.find(q)
       .sort({ workDate: -1, checkInAt: -1, createdAt: -1 })
       .lean();
 
-    const policy =
-      requestedClinicId && role !== "helper"
-        ? await getOrCreatePolicy(
-            requestedClinicId,
-            userId || principalId || staffId
-          )
-        : null;
-
-    const normalizedItems = await hydrateSessionDisplayFields(items);
+    const hydrated = await hydrateSessionDisplayFields(items);
 
     return res.json({
       ok: true,
-      items: normalizedItems,
-      clinicScope: {
-        clinicId: requestedClinicId || "",
-        scope:
-          role === "helper" && !requestedClinicId
-            ? "all_clinics"
-            : clinicScope.scope,
-      },
-      filters: {
-        dateFrom: isYmd(dateFrom) ? dateFrom : "",
-        dateTo: isYmd(dateTo) ? dateTo : "",
-        shiftId: role === "helper" ? requestedShiftId || "" : "",
-      },
-      policy: policy ? buildPublicPolicy(policy) : null,
+      items: hydrated,
     });
   } catch (e) {
     return res.status(500).json({
       ok: false,
-      message: "list failed",
-      error: e.message,
-    });
-  }
-}
-
-async function listClinicSessions(req, res) {
-  try {
-    const clinicId = s(req.user?.clinicId);
-    const role = s(req.user?.role);
-
-    if (!clinicId) {
-      return res
-        .status(401)
-        .json({ ok: false, message: "Missing clinicId in token" });
-    }
-
-    if (role !== "admin" && role !== "clinic_admin") {
-      return res
-        .status(403)
-        .json({ ok: false, message: "Forbidden (admin only)" });
-    }
-
-    const workDate = s(req.query?.workDate);
-    const staffIdOrPrincipal = s(req.query?.staffId);
-    const requestedShiftId = normalizeObjectIdString(getRequestedShiftId(req));
-
-    const q = { clinicId };
-    if (isYmd(workDate)) q.workDate = workDate;
-
-    if (staffIdOrPrincipal) {
-      q.$or = [
-        { staffId: staffIdOrPrincipal },
-        { principalId: staffIdOrPrincipal },
-        { userId: staffIdOrPrincipal },
-        { helperUserId: staffIdOrPrincipal },
-        { assignedUserId: staffIdOrPrincipal },
-      ];
-    }
-
-    if (requestedShiftId) {
-      q.$and = [buildShiftMatchClause(requestedShiftId)];
-    }
-
-    const items = await AttendanceSession.find(q)
-      .sort({ checkInAt: -1 })
-      .lean();
-    const policy = await getOrCreatePolicy(clinicId, s(req.user?.userId));
-    const normalizedItems = await hydrateSessionDisplayFields(items);
-
-    return res.json({
-      ok: true,
-      items: normalizedItems,
-      filters: {
-        workDate: isYmd(workDate) ? workDate : "",
-        staffId: staffIdOrPrincipal || "",
-        shiftId: requestedShiftId || "",
-      },
-      policy: buildPublicPolicy(policy, workDate),
-    });
-  } catch (e) {
-    return res.status(500).json({
-      ok: false,
-      message: "list clinic failed",
-      error: e.message,
-    });
-  }
-}
-
-async function myDayPreview(req, res) {
-  try {
-    const workDate = s(req.query?.workDate);
-    const shiftId = getRequestedShiftId(req);
-
-    if (!isYmd(workDate)) {
-      return res
-        .status(400)
-        .json({ ok: false, message: "workDate required (yyyy-MM-dd)" });
-    }
-
-    const ctx = await resolveRuntimeContext(req, workDate, shiftId);
-    if (!ctx.ok) return res.status(ctx.status).json(ctx.body);
-
-    const {
-      role,
-      userId,
-      principalId,
-      clinicId,
-      staffId,
-      employee: ctxEmployee,
-      availableShifts,
-      shiftSelectionMode,
-    } = ctx;
-
-    let shift = buildRuntimeShiftSnapshot(ctx.shift) || null;
-    const policy = await getOrCreatePolicy(clinicId, userId || principalId);
-
-    const previousOpen = await findPreviousOpenSession({ principalId, workDate });
-    if (previousOpen) {
-      const out = await buildPreviousAttendancePendingResponse(previousOpen);
-      return res.status(out.status).json({
-        ...out.body,
-        workDate,
-        attendance: {
-          checkedIn: false,
-          checkedOut: false,
-          openSession: null,
-          pendingManualSession: null,
-          currentSessionId: "",
-        },
-        sessions: [],
-        runtime: {
-          role,
-          clinicId,
-          clinicOpenDay: isClinicOpenDay(policy, workDate),
-          clinicOpenTime: pickClinicOpenTime(policy, workDate),
-          clinicCloseTime: pickClinicCloseTime(policy, workDate),
-          shift: shift || null,
-          shiftSelectionMode: shiftSelectionMode || "",
-          availableShifts: availableShifts || [],
-        },
-        policy: buildPublicPolicy(policy, workDate),
-      });
-    }
-
-    const previousPendingManual = await findPreviousPendingManualSession({
-      principalId,
-      workDate,
-    });
-
-    if (previousPendingManual) {
-      const out = await buildPreviousAttendancePendingResponse(
-        previousPendingManual
-      );
-      return res.status(out.status).json({
-        ...out.body,
-        workDate,
-        attendance: {
-          checkedIn: false,
-          checkedOut: false,
-          openSession: null,
-          pendingManualSession: previousPendingManual,
-          currentSessionId: "",
-        },
-        sessions: [],
-        runtime: {
-          role,
-          clinicId,
-          clinicOpenDay: isClinicOpenDay(policy, workDate),
-          clinicOpenTime: pickClinicOpenTime(policy, workDate),
-          clinicCloseTime: pickClinicCloseTime(policy, workDate),
-          shift: shift || null,
-          shiftSelectionMode: shiftSelectionMode || "",
-          availableShifts: availableShifts || [],
-        },
-        policy: buildPublicPolicy(policy, workDate),
-      });
-    }
-
-    const sessionsQuery = buildRuntimeSessionQuery({
-      clinicId,
-      principalId,
-      userId,
-      staffId,
-      workDate,
-      shiftId: role === "helper" ? s(shift?._id) : "",
-    });
-
-    const sessions = await AttendanceSession.find(sessionsQuery)
-      .sort({ checkInAt: -1, createdAt: -1 })
-      .lean();
-
-    const normalizedSessions = await hydrateSessionDisplayFields(sessions);
-
-    const openSession =
-      normalizedSessions.find((x) => s(x.status).toLowerCase() === "open") ||
-      null;
-
-    const pendingManualSession =
-      normalizedSessions.find(
-        (x) => s(x.status).toLowerCase() === "pending_manual"
-      ) || null;
-
-    const closedSessions = normalizedSessions.filter(
-      (x) => s(x.status).toLowerCase() === "closed"
-    );
-
-    const checkedIn =
-      !!openSession || closedSessions.length > 0 || !!pendingManualSession;
-    const checkedOut = !openSession && closedSessions.length > 0;
-
-    const workedMinutes = closedSessions.reduce(
-      (sum, x) => sum + clampMinutes(x.workedMinutes),
-      0
-    );
-    const otMinutesRawFromSessions = closedSessions.reduce(
-      (sum, x) => sum + clampMinutes(x.otMinutes),
-      0
-    );
-
-    const approvedOtQuery = {
-      clinicId,
-      principalId,
-      workDate,
-      status: "approved",
-    };
-
-    const normalizedShiftId = normalizeObjectIdString(s(shift?._id));
-    if (role === "helper" && normalizedShiftId) {
-      approvedOtQuery.attendanceSessionId = {
-        $in: closedSessions
-          .map((x) => normalizeObjectIdString(x._id))
-          .filter(Boolean)
-          .map((oneId) => new mongoose.Types.ObjectId(oneId)),
-      };
-    }
-
-    const approvedOt = await Overtime.find(approvedOtQuery).lean();
-
-    const otMinutesApproved = approvedOt.reduce(
-      (sum, x) => sum + clampMinutes(x.minutes),
-      0
-    );
-
-    const suspiciousCount = normalizedSessions.reduce(
-      (sum, x) =>
-        sum +
-        (Array.isArray(x.suspiciousFlags) && x.suspiciousFlags.length > 0
-          ? 1
-          : 0),
-      0
-    );
-
-    const totalRiskScore = normalizedSessions.reduce(
-      (sum, x) => sum + clampRisk(x.riskScore || 0),
-      0
-    );
-
-    let emp = ctxEmployee?.raw || null;
-    if (!emp && userId) {
-      try {
-        emp = await memoizedGetEmployeeByUserId(req, userId, getBearerToken(req));
-      } catch (_) {
-        emp = null;
-      }
-    }
-
-    if (!shift && role === "helper") {
-      const helperShiftResult = await resolveHelperShiftForRuntime(req, {
-        principalId,
-        userId,
-        staffId,
-        workDate,
-        explicitShiftId: shiftId,
-        fallbackClinicId: clinicId,
-      });
-
-      if (helperShiftResult.ok) {
-        shift = buildRuntimeShiftSnapshot(helperShiftResult.shift);
-      }
-    }
-
-    const type = normalizeEmploymentType(emp?.employmentType);
-    const hoursPerDay = Number(emp?.hoursPerDay || 8);
-    const daysPerMonth = Number(emp?.workingDaysPerMonth || 26);
-
-    let baseHourly = Number(emp?.hourlyRate || 0);
-    if (type === "fullTime") {
-      const monthly = Number(emp?.monthlySalary || 0);
-      const denom = Math.max(1, daysPerMonth * hoursPerDay);
-      baseHourly = monthly > 0 ? monthly / denom : 0;
-    }
-
-    const normalMinutes = Math.max(0, workedMinutes - otMinutesApproved);
-    const normalPay = (normalMinutes / 60) * baseHourly;
-
-    const otMul = Number(emp?.otMultiplierNormal || policy.otMultiplier || 1.5);
-    const otPay = (otMinutesApproved / 60) * baseHourly * otMul;
-
-    const checkInAt =
-      openSession?.checkInAt ||
-      pendingManualSession?.checkInAt ||
-      closedSessions[0]?.checkInAt ||
-      null;
-
-    const checkOutAt = closedSessions[0]?.checkOutAt || null;
-
-    let message = "วันนี้ยังไม่ได้เช็คอิน";
-    let helperPreview = null;
-
-    if (pendingManualSession) {
-      message = "วันนี้มีคำขอแก้ไขเวลา รออนุมัติ";
-    } else if (checkedIn) {
-      message = checkedOut
-        ? "วันนี้เช็คอินและเช็คเอาท์แล้ว"
-        : "วันนี้เช็คอินแล้ว (ยังไม่เช็คเอาท์)";
-    }
-
-    if (role === "helper") {
-      helperPreview = getHelperPreviewStatus(shift, new Date());
-
-      if (checkedIn && !checkedOut) {
-        message = `เช็คอินแล้วสำหรับกะ ${s(
-          shift?.clinicName || shift?.title || shift?._id
-        )}`;
-      } else if (checkedIn && checkedOut) {
-        message = "กะนี้เสร็จสิ้นแล้ว";
-      } else if (helperPreview?.message) {
-        message = helperPreview.message;
-      }
-    }
-
-    return res.json({
-      ok: true,
-      workDate,
-      checkedIn,
-      checkedOut,
-      checkInAt,
-      checkOutAt,
-      message,
-      attendance: {
-        checkedIn,
-        checkedOut,
-        openSession,
-        pendingManualSession,
-        currentSessionId: openSession ? String(openSession._id || "") : "",
-      },
-      employee: emp || null,
-      principal: { principalId, staffId, userId },
-      policy: buildPublicPolicy(policy, workDate),
-      summary: {
-        workedMinutes,
-        otMinutesApproved,
-        otMinutesRawFromSessions,
-        baseHourly,
-        normalPay,
-        otPay,
-        totalPay: normalPay + otPay,
-        suspiciousCount,
-        totalRiskScore,
-      },
-      sessions: normalizedSessions,
-      approvedOtRecords: approvedOt,
-      runtime: {
-        role,
-        clinicId,
-        clinicOpenDay: isClinicOpenDay(policy, workDate),
-        clinicOpenTime: pickClinicOpenTime(policy, workDate),
-        clinicCloseTime: pickClinicCloseTime(policy, workDate),
-        shift: shift || null,
-        shiftSelectionMode: shiftSelectionMode || "",
-        availableShifts: availableShifts || [],
-        helperPreview,
-      },
-    });
-  } catch (e) {
-    return res.status(500).json({
-      ok: false,
-      message: "preview failed",
+      message: "list attendance failed",
       error: e.message,
     });
   }
@@ -5812,8 +5370,6 @@ module.exports = {
   listMyManualRequests,
   listClinicManualRequests,
   approveManualRequest,
-  rejectManualRequest,
-  listMySessions,
-  listClinicSessions,
-  myDayPreview,
+  getAttendanceById,
+  listAttendance,
 };
