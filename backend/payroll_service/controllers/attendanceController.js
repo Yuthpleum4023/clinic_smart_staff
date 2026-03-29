@@ -561,7 +561,9 @@ function normalizeShiftLite(shift) {
 }
 
 async function lookupClinicNamesByClinicIds(clinicIds = []) {
-  const ids = Array.from(new Set((clinicIds || []).map((x) => s(x)).filter(Boolean)));
+  const ids = Array.from(
+    new Set((clinicIds || []).map((x) => s(x)).filter(Boolean))
+  );
   if (!ids.length) return new Map();
 
   const rows = await AttendanceSession.find({
@@ -691,9 +693,7 @@ async function toBlockedPreviousSessionPayload(session) {
   const clinicName = s(
     hydrated.clinicName || extractClinicDisplayName(hydrated)
   );
-  const shiftName = s(
-    hydrated.shiftName || extractShiftDisplayName(hydrated)
-  );
+  const shiftName = s(hydrated.shiftName || extractShiftDisplayName(hydrated));
   const routeHint =
     s(hydrated.status) === "pending_manual"
       ? buildManualRequestRouteHint(hydrated)
@@ -740,6 +740,24 @@ async function buildPreviousAttendancePendingResponse(previousSession) {
       previousShiftName: previous?.shiftName || "",
     }
   );
+}
+
+function logAttendanceDebug(label, payload) {
+  try {
+    console.log(
+      label,
+      JSON.stringify(
+        payload,
+        (key, value) => {
+          if (value instanceof Date) return value.toISOString();
+          return value;
+        },
+        2
+      )
+    );
+  } catch (err) {
+    console.log(label, payload);
+  }
 }
 
 const ATTENDANCE_TIMEZONE = "Asia/Bangkok";
@@ -1437,6 +1455,7 @@ function buildFallbackEmployeeFromToken(req, fallbackClinicId = "") {
     status: "active",
   });
 }
+
 function isEmployeeAttendanceAllowed(employee) {
   if (!employee) {
     return {
@@ -3744,7 +3763,6 @@ async function ensureCanViewSession(req, session) {
 
   return { ok: true };
 }
-
 async function checkIn(req, res) {
   try {
     const mockErr = rejectIfMockLocationAnywhere(req);
@@ -3779,13 +3797,15 @@ async function checkIn(req, res) {
     const rules = attendanceRuleDefaults(policy);
 
     if (mustRespectClinicHours(role) && !isClinicOpenDay(policy, workDate)) {
-      return res.status(409).json({
+      const payload = {
         ok: false,
         code: "CLINIC_CLOSED_DAY",
         message: "วันนี้คลินิกปิดทำการ",
         workDate,
         clinicId,
-      });
+      };
+      logAttendanceDebug("[ATTENDANCE][CHECKIN][409][CLINIC_CLOSED_DAY]", payload);
+      return res.status(409).json(payload);
     }
 
     const previousOpen = rules.blockNewCheckInIfPreviousOpen
@@ -3794,6 +3814,10 @@ async function checkIn(req, res) {
 
     if (previousOpen) {
       const out = await buildPreviousAttendancePendingResponse(previousOpen);
+      logAttendanceDebug(
+        "[ATTENDANCE][CHECKIN][409][PREVIOUS_OPEN_SESSION]",
+        out.body
+      );
       return res.status(out.status).json(out.body);
     }
 
@@ -3805,6 +3829,10 @@ async function checkIn(req, res) {
     if (previousPendingManual) {
       const out = await buildPreviousAttendancePendingResponse(
         previousPendingManual
+      );
+      logAttendanceDebug(
+        "[ATTENDANCE][CHECKIN][409][PREVIOUS_PENDING_MANUAL]",
+        out.body
       );
       return res.status(out.status).json(out.body);
     }
@@ -3831,13 +3859,15 @@ async function checkIn(req, res) {
     }
 
     if (!shift && role === "helper") {
-      return res.status(409).json({
+      const payload = {
         ok: false,
         code: "SHIFT_NOT_RESOLVED",
         message: "ไม่สามารถระบุกะงานที่กำลังทำอยู่ได้ กรุณาเลือกกะงานก่อนสแกน",
         workDate,
         availableShifts,
-      });
+      };
+      logAttendanceDebug("[ATTENDANCE][CHECKIN][409][SHIFT_NOT_RESOLVED]", payload);
+      return res.status(409).json(payload);
     }
 
     if (!shift) {
@@ -3861,6 +3891,14 @@ async function checkIn(req, res) {
       checkInAt,
     });
     if (timeValidationError) {
+      if (Number(timeValidationError.status) === 409) {
+        logAttendanceDebug(
+          `[ATTENDANCE][CHECKIN][409][${s(
+            timeValidationError.body?.code || "TIME_VALIDATION"
+          )}]`,
+          timeValidationError.body
+        );
+      }
       return res
         .status(timeValidationError.status)
         .json(timeValidationError.body);
@@ -3908,13 +3946,18 @@ async function checkIn(req, res) {
         existingOpenAnywhere.map((x) => toBlockedPreviousSessionPayload(x))
       );
 
-      return res.status(409).json({
+      const payload = {
         ok: false,
         code: "MULTIPLE_OPEN_SESSIONS",
         message:
           "พบ open session มากกว่าหนึ่งรายการ กรุณาให้ผู้ดูแลตรวจสอบข้อมูลก่อน",
         sessions,
-      });
+      };
+      logAttendanceDebug(
+        "[ATTENDANCE][CHECKIN][409][MULTIPLE_OPEN_SESSIONS]",
+        payload
+      );
+      return res.status(409).json(payload);
     }
 
     if (existingOpenAnywhere.length === 1) {
@@ -3933,7 +3976,7 @@ async function checkIn(req, res) {
           : true;
 
       if (sameClinic && sameWorkDate && sameShift) {
-        return res.status(409).json({
+        const payload = {
           ok: false,
           code: "ALREADY_CHECKED_IN",
           message:
@@ -3951,10 +3994,16 @@ async function checkIn(req, res) {
             open.shiftName || extractShiftDisplayName(open)
           ),
           routeHint: buildResolveAttendanceRouteHint(open),
-        });
+        };
+        logAttendanceDebug("[ATTENDANCE][CHECKIN][409][ALREADY_CHECKED_IN]", payload);
+        return res.status(409).json(payload);
       }
 
       const out = await buildPreviousAttendancePendingResponse(open);
+      logAttendanceDebug(
+        "[ATTENDANCE][CHECKIN][409][OPEN_SESSION_CONFLICT]",
+        out.body
+      );
       return res.status(out.status).json(out.body);
     }
 
@@ -3975,7 +4024,7 @@ async function checkIn(req, res) {
     if (existingClosed) {
       const hydratedClosed = await hydrateOneSessionDisplayField(existingClosed);
 
-      return res.status(409).json({
+      const payload = {
         ok: false,
         code: "ATTENDANCE_ALREADY_COMPLETED",
         message:
@@ -4005,7 +4054,12 @@ async function checkIn(req, res) {
             extractShiftDisplayName(existingClosed)
         ),
         routeHint: buildResolveAttendanceRouteHint(existingClosed),
-      });
+      };
+      logAttendanceDebug(
+        "[ATTENDANCE][CHECKIN][409][ATTENDANCE_ALREADY_COMPLETED]",
+        payload
+      );
+      return res.status(409).json(payload);
     }
 
     const existingPendingManual = await AttendanceSession.findOne({
@@ -4018,7 +4072,7 @@ async function checkIn(req, res) {
         existingPendingManual
       );
 
-      return res.status(409).json({
+      const payload = {
         ok: false,
         code: "MANUAL_REQUEST_PENDING",
         message:
@@ -4050,7 +4104,12 @@ async function checkIn(req, res) {
         ),
         routeHint: buildManualRequestRouteHint(existingPendingManual),
         pendingContext: await toBlockedPreviousSessionPayload(existingPendingManual),
-      });
+      };
+      logAttendanceDebug(
+        "[ATTENDANCE][CHECKIN][409][MANUAL_REQUEST_PENDING]",
+        payload
+      );
+      return res.status(409).json(payload);
     }
 
     const lateMinutes =
@@ -4373,7 +4432,8 @@ async function checkOut(req, res) {
         .status(timeValidationError.status)
         .json(timeValidationError.body);
     }
-        let outDistanceMeters = null;
+
+    let outDistanceMeters = null;
     const requireLocation = shouldRequireLocationForAttendance(policy);
 
     if (requireLocation) {
@@ -4930,8 +4990,7 @@ async function submitManualRequest(req, res) {
         policy: buildPublicPolicy(policy, s(previousDaySession.workDate)),
       });
     }
-
-    if (manualRequestType === "check_in") {
+        if (manualRequestType === "check_in") {
       if (targetSession) {
         const hydratedTarget = await hydrateOneSessionDisplayField(targetSession);
 
