@@ -12,6 +12,11 @@
 // ✅ FIX (สำคัญ): ส่ง needStatus ไปหน้า applicants (OPTION #2)
 // - ClinicShiftNeedApplicantsScreen ต้องการ required needStatus
 //
+// ✅ NEW UX
+// - ซ่อนประกาศที่ผ่านมาได้
+// - filter: ทั้งหมด / ซ่อนที่ผ่านมา / เฉพาะเปิดรับ
+// - ไม่ลบจริงจาก backend เพื่อความปลอดภัย
+//
 import 'package:flutter/material.dart';
 
 import 'package:clinic_smart_staff/models/clinic_shift_need_model.dart';
@@ -32,6 +37,8 @@ class ClinicShiftNeedListScreen extends StatefulWidget {
 class _ClinicShiftNeedListScreenState extends State<ClinicShiftNeedListScreen> {
   bool _loading = true;
   List<ClinicShiftNeed> _items = [];
+
+  _NeedListViewMode _viewMode = _NeedListViewMode.hidePast;
 
   @override
   void initState() {
@@ -65,6 +72,17 @@ class _ClinicShiftNeedListScreenState extends State<ClinicShiftNeedListScreen> {
     return s;
   }
 
+  String _viewModeLabel(_NeedListViewMode mode) {
+    switch (mode) {
+      case _NeedListViewMode.all:
+        return 'ทั้งหมด';
+      case _NeedListViewMode.hidePast:
+        return 'ซ่อนประกาศที่ผ่านมา';
+      case _NeedListViewMode.openOnly:
+        return 'เฉพาะที่ยังเปิดรับ';
+    }
+  }
+
   Future<void> _goCreate() async {
     final ok = await Navigator.push<bool>(
       context,
@@ -78,9 +96,71 @@ class _ClinicShiftNeedListScreenState extends State<ClinicShiftNeedListScreen> {
     }
   }
 
-  // ------------------------------------------------------------
-  // Applicants
-  // ------------------------------------------------------------
+  DateTime? _parseNeedEndDateTime(ClinicShiftNeed need) {
+    try {
+      final date = need.date.trim(); // yyyy-MM-dd
+      final end = need.end.trim(); // HH:mm
+      if (date.isEmpty || end.isEmpty) return null;
+
+      final parts = end.split(':');
+      if (parts.length < 2) return null;
+
+      final hour = int.tryParse(parts[0]) ?? 0;
+      final minute = int.tryParse(parts[1]) ?? 0;
+
+      final d = DateTime.parse(date);
+      return DateTime(d.year, d.month, d.day, hour, minute);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  bool _isPastNeed(ClinicShiftNeed need) {
+    final endAt = _parseNeedEndDateTime(need);
+    if (endAt == null) return false;
+    return endAt.isBefore(DateTime.now());
+  }
+
+  bool _isOpenNeed(ClinicShiftNeed need) {
+    return need.status.trim().toLowerCase() == 'open';
+  }
+
+  List<ClinicShiftNeed> _sortedItems(List<ClinicShiftNeed> source) {
+    final list = List<ClinicShiftNeed>.from(source);
+    list.sort((a, b) {
+      final aPast = _isPastNeed(a);
+      final bPast = _isPastNeed(b);
+
+      if (aPast != bPast) {
+        return aPast ? 1 : -1;
+      }
+
+      final aKey = '${a.date} ${a.start}';
+      final bKey = '${b.date} ${b.start}';
+      return aKey.compareTo(bKey);
+    });
+    return list;
+  }
+
+  List<ClinicShiftNeed> _visibleItems() {
+    final base = _sortedItems(_items);
+
+    switch (_viewMode) {
+      case _NeedListViewMode.all:
+        return base;
+      case _NeedListViewMode.hidePast:
+        return base.where((e) => !_isPastNeed(e)).toList();
+      case _NeedListViewMode.openOnly:
+        return base
+            .where((e) => !_isPastNeed(e) && _isOpenNeed(e))
+            .toList();
+    }
+  }
+
+  int _pastCount() {
+    return _items.where(_isPastNeed).length;
+  }
+
   Future<void> _openApplicants(ClinicShiftNeed need) async {
     if (need.id.trim().isEmpty) {
       _snack('needId ว่าง (เปิดรายชื่อผู้สมัครไม่ได้)');
@@ -93,20 +173,19 @@ class _ClinicShiftNeedListScreenState extends State<ClinicShiftNeedListScreen> {
         builder: (_) => ClinicShiftNeedApplicantsScreen(
           needId: need.id,
           title: '${need.date} ${need.start}-${need.end} • ${need.role}',
-          needStatus: need.status, // ✅ FIX: ส่งสถานะไปด้วย (OPTION #2)
+          needStatus: need.status,
         ),
       ),
     );
   }
 
-  // ------------------------------------------------------------
-  // Detail / Actions
-  // ------------------------------------------------------------
   Future<void> _openDetail(ClinicShiftNeed need) async {
     await showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       builder: (ctx) {
+        final isPast = _isPastNeed(need);
+
         return SafeArea(
           child: Padding(
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
@@ -130,7 +209,6 @@ class _ClinicShiftNeedListScreenState extends State<ClinicShiftNeedListScreen> {
                     ),
                   ],
                 ),
-
                 _kv(
                   'คลินิก',
                   need.clinicName.isEmpty ? need.clinicId : need.clinicName,
@@ -143,11 +221,9 @@ class _ClinicShiftNeedListScreenState extends State<ClinicShiftNeedListScreen> {
                 ),
                 _kv('จำนวนที่ต้องการ', '${need.requiredCount} คน'),
                 _kv('สถานะ', _statusLabel(need.status)),
+                _kv('ช่วงเวลา', isPast ? 'ผ่านไปแล้ว' : 'ยังไม่ผ่านเวลา'),
                 if (need.note.trim().isNotEmpty) _kv('หมายเหตุ', need.note),
-
                 const SizedBox(height: 8),
-
-                // ---------------- Applicants ----------------
                 SizedBox(
                   width: double.infinity,
                   child: OutlinedButton.icon(
@@ -159,10 +235,7 @@ class _ClinicShiftNeedListScreenState extends State<ClinicShiftNeedListScreen> {
                     label: const Text('ดูผู้สมัคร'),
                   ),
                 ),
-
                 const SizedBox(height: 6),
-
-                // ---------------- Cancel (NOT delete) ----------------
                 if (need.status.toLowerCase() == 'open')
                   SizedBox(
                     width: double.infinity,
@@ -225,7 +298,7 @@ class _ClinicShiftNeedListScreenState extends State<ClinicShiftNeedListScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('ยกเลิก'),
+            child: const Text('ปิด'),
           ),
           ElevatedButton(
             onPressed: () => Navigator.pop(ctx, true),
@@ -236,17 +309,180 @@ class _ClinicShiftNeedListScreenState extends State<ClinicShiftNeedListScreen> {
     );
   }
 
-  // ------------------------------------------------------------
-  // UI
-  // ------------------------------------------------------------
+  Future<void> _chooseViewMode() async {
+    final picked = await showModalBottomSheet<_NeedListViewMode>(
+      context: context,
+      builder: (ctx) {
+        return SafeArea(
+          child: Wrap(
+            children: [
+              ListTile(
+                title: const Text(
+                  'ตัวกรองรายการประกาศงาน',
+                  style: TextStyle(fontWeight: FontWeight.w900),
+                ),
+                trailing: IconButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  icon: const Icon(Icons.close),
+                ),
+              ),
+              RadioListTile<_NeedListViewMode>(
+                value: _NeedListViewMode.all,
+                groupValue: _viewMode,
+                title: const Text('แสดงทั้งหมด'),
+                onChanged: (v) => Navigator.pop(ctx, v),
+              ),
+              RadioListTile<_NeedListViewMode>(
+                value: _NeedListViewMode.hidePast,
+                groupValue: _viewMode,
+                title: const Text('ซ่อนประกาศที่ผ่านมา'),
+                subtitle: const Text('เหมาะกับการดูงานที่ยังเกี่ยวข้องตอนนี้'),
+                onChanged: (v) => Navigator.pop(ctx, v),
+              ),
+              RadioListTile<_NeedListViewMode>(
+                value: _NeedListViewMode.openOnly,
+                groupValue: _viewMode,
+                title: const Text('เฉพาะที่ยังเปิดรับ'),
+                subtitle: const Text('ซ่อนทั้งงานที่ผ่านมาและงานที่เต็ม/ยกเลิกแล้ว'),
+                onChanged: (v) => Navigator.pop(ctx, v),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+
+    if (picked != null && mounted) {
+      setState(() => _viewMode = picked);
+    }
+  }
+
+  Widget _buildModeBanner() {
+    final hiddenPast = _pastCount();
+
+    if (_viewMode != _NeedListViewMode.hidePast || hiddenPast <= 0) {
+      return const SizedBox.shrink();
+    }
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+      child: Card(
+        color: Colors.amber.shade50,
+        child: ListTile(
+          leading: const Icon(Icons.visibility_off_outlined),
+          title: Text('ซ่อนประกาศที่ผ่านมาอยู่ $hiddenPast รายการ'),
+          subtitle: const Text('กดเพื่อแสดงทั้งหมดหรือเปลี่ยนตัวกรอง'),
+          trailing: TextButton(
+            onPressed: () {
+              setState(() => _viewMode = _NeedListViewMode.all);
+            },
+            child: const Text('ดูทั้งหมด'),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCountHeader(List<ClinicShiftNeed> visible) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              'โหมด: ${_viewModeLabel(_viewMode)}',
+              style: TextStyle(
+                color: Colors.grey.shade700,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          Text(
+            '${visible.length} รายการ',
+            style: TextStyle(
+              color: Colors.grey.shade700,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEmptyState() {
+    final isFiltered = _items.isNotEmpty;
+
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            isFiltered ? 'ไม่พบรายการตามตัวกรองที่เลือก' : 'ยังไม่มีประกาศงาน',
+          ),
+          const SizedBox(height: 12),
+          if (isFiltered)
+            OutlinedButton.icon(
+              onPressed: () {
+                setState(() => _viewMode = _NeedListViewMode.all);
+              },
+              icon: const Icon(Icons.filter_alt_off_outlined),
+              label: const Text('แสดงทั้งหมด'),
+            ),
+          if (!isFiltered)
+            ElevatedButton.icon(
+              onPressed: _goCreate,
+              icon: const Icon(Icons.add),
+              label: const Text('สร้างประกาศงานแรก'),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildListTile(ClinicShiftNeed n) {
+    final isPast = _isPastNeed(n);
+    final status = _statusLabel(n.status);
+
+    return Card(
+      child: ListTile(
+        leading: Icon(
+          isPast ? Icons.history_toggle_off : Icons.campaign_outlined,
+          color: isPast ? Colors.grey : null,
+        ),
+        title: Text('${n.date} • ${n.start}-${n.end}'),
+        subtitle: Text(
+          '${n.role} • ${n.requiredCount} คน • $status${isPast ? ' • ผ่านเวลาแล้ว' : ''}',
+        ),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: () => _openDetail(n),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final visibleItems = _visibleItems();
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text('รายการประกาศงาน (ShiftNeed)'),
+        title: const Text('รายการประกาศงาน'),
         actions: [
-          IconButton(onPressed: _load, icon: const Icon(Icons.refresh)),
-          IconButton(onPressed: _goCreate, icon: const Icon(Icons.add)),
+          IconButton(
+            tooltip: 'รีเฟรช',
+            onPressed: _load,
+            icon: const Icon(Icons.refresh),
+          ),
+          IconButton(
+            tooltip: 'ตัวกรอง',
+            onPressed: _chooseViewMode,
+            icon: const Icon(Icons.filter_list),
+          ),
+          IconButton(
+            tooltip: 'เพิ่มประกาศงาน',
+            onPressed: _goCreate,
+            icon: const Icon(Icons.add),
+          ),
         ],
       ),
       floatingActionButton: FloatingActionButton(
@@ -255,43 +491,35 @@ class _ClinicShiftNeedListScreenState extends State<ClinicShiftNeedListScreen> {
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
-          : _items.isEmpty
-              ? Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Text('ยังไม่มีประกาศงาน'),
-                      const SizedBox(height: 12),
-                      ElevatedButton.icon(
-                        onPressed: _goCreate,
-                        icon: const Icon(Icons.add),
-                        label: const Text('สร้างประกาศงานแรก'),
-                      ),
-                    ],
-                  ),
-                )
-              : RefreshIndicator(
-                  onRefresh: _load,
-                  child: ListView.separated(
-                    padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
-                    itemBuilder: (_, i) {
-                      final n = _items[i];
-                      return Card(
-                        child: ListTile(
-                          leading: const Icon(Icons.campaign_outlined),
-                          title: Text('${n.date} • ${n.start}-${n.end}'),
-                          subtitle: Text(
-                            '${n.role} • ${n.requiredCount} คน • ${_statusLabel(n.status)}',
+          : Column(
+              children: [
+                _buildModeBanner(),
+                _buildCountHeader(visibleItems),
+                Expanded(
+                  child: visibleItems.isEmpty
+                      ? _buildEmptyState()
+                      : RefreshIndicator(
+                          onRefresh: _load,
+                          child: ListView.separated(
+                            padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
+                            itemBuilder: (_, i) {
+                              final n = visibleItems[i];
+                              return _buildListTile(n);
+                            },
+                            separatorBuilder: (_, __) =>
+                                const SizedBox(height: 8),
+                            itemCount: visibleItems.length,
                           ),
-                          trailing: const Icon(Icons.chevron_right),
-                          onTap: () => _openDetail(n),
                         ),
-                      );
-                    },
-                    separatorBuilder: (_, __) => const SizedBox(height: 8),
-                    itemCount: _items.length,
-                  ),
                 ),
+              ],
+            ),
     );
   }
+}
+
+enum _NeedListViewMode {
+  all,
+  hidePast,
+  openOnly,
 }

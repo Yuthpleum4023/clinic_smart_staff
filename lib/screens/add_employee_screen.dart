@@ -7,6 +7,7 @@ import 'package:clinic_smart_staff/api/api_config.dart';
 import 'package:clinic_smart_staff/api/auth_user_lookup_api.dart';
 import 'package:clinic_smart_staff/models/employee_model.dart';
 import 'package:clinic_smart_staff/services/storage_service.dart';
+import 'package:clinic_smart_staff/screens/employee_user_link_search_screen.dart';
 
 class AddEmployeeScreen extends StatefulWidget {
   const AddEmployeeScreen({super.key});
@@ -45,7 +46,7 @@ class _AddEmployeeScreenState extends State<AddEmployeeScreen> {
   bool _saving = false;
   bool _loadingLinkedUser = false;
 
-  AuthLookupUser? _selectedAuthUser;
+  Map<String, dynamic>? _selectedAuthUser;
 
   ApiClient get _staffClient => ApiClient(baseUrl: ApiConfig.staffBaseUrl);
 
@@ -55,6 +56,28 @@ class _AddEmployeeScreenState extends State<AddEmployeeScreen> {
   int _toInt(String s) => int.tryParse(s.trim().replaceAll(',', '')) ?? 0;
 
   String _cleanLinkedUserId(String s) => s.trim();
+
+  String _s(dynamic v) => (v ?? '').toString().trim();
+
+  String _selectedUserFullName() => _s(_selectedAuthUser?['fullName']);
+
+  String _selectedUserFirstName() => _s(_selectedAuthUser?['firstName']);
+
+  String _selectedUserLastName() => _s(_selectedAuthUser?['lastName']);
+
+  String _selectedUserPhone() => _s(_selectedAuthUser?['phone']);
+
+  String _selectedUserRole() => _s(_selectedAuthUser?['role']);
+
+  String _selectedUserId() {
+    final m = _selectedAuthUser;
+    if (m == null) return '';
+    final userId = _s(m['userId']);
+    if (userId.isNotEmpty) return userId;
+    final id = _s(m['_id']);
+    if (id.isNotEmpty) return id;
+    return _s(m['id']);
+  }
 
   String _fullName() {
     final parts = [
@@ -69,11 +92,27 @@ class _AddEmployeeScreenState extends State<AddEmployeeScreen> {
     return _employmentType == 'parttime' ? 'partTime' : 'fullTime';
   }
 
+  bool _isAdminLikeRole(String role) {
+    final r = role.trim().toLowerCase();
+    return r == 'admin' || r == 'clinic_admin' || r == 'clinic';
+  }
+
+  bool _selectedUserLooksUnsafeForEmployeeLink() {
+    final u = _selectedAuthUser;
+    if (u == null) return false;
+
+    final linkedUserId = _cleanLinkedUserId(_linkedUserIdCtrl.text);
+    if (linkedUserId.isEmpty) return false;
+
+    return _isAdminLikeRole(_selectedUserRole());
+  }
+
+  bool _hasLinkedUser() => _cleanLinkedUserId(_linkedUserIdCtrl.text).isNotEmpty;
+
   @override
   void initState() {
     super.initState();
     _loadSsoPercentAndPreview();
-    _tryAutoFillLinkedUserId();
   }
 
   Future<void> _loadSsoPercentAndPreview() async {
@@ -113,22 +152,38 @@ class _AddEmployeeScreenState extends State<AddEmployeeScreen> {
 
       if (!mounted) return;
 
-      if (me != null && me.userId.trim().isNotEmpty) {
-        setState(() {
-          _selectedAuthUser = me;
-          _linkedUserIdCtrl.text = me.userId.trim();
+      if (me != null && _s(me.userId).isNotEmpty) {
+        final isAdminLike = _isAdminLikeRole(_s(me.role));
 
-          if (_firstNameCtrl.text.trim().isEmpty && me.firstName.trim().isNotEmpty) {
-            _firstNameCtrl.text = me.firstName.trim();
+        setState(() {
+          _selectedAuthUser = <String, dynamic>{
+            'userId': _s(me.userId),
+            'fullName': _s(me.fullName),
+            'firstName': _s(me.firstName),
+            'lastName': _s(me.lastName),
+            'phone': _s(me.phone),
+            'role': _s(me.role),
+          };
+
+          if (!isAdminLike) {
+            _linkedUserIdCtrl.text = _s(me.userId);
+          } else {
+            _linkedUserIdCtrl.clear();
           }
-          if (_lastNameCtrl.text.trim().isEmpty && me.lastName.trim().isNotEmpty) {
-            _lastNameCtrl.text = me.lastName.trim();
+
+          if (_firstNameCtrl.text.trim().isEmpty &&
+              _s(me.firstName).isNotEmpty) {
+            _firstNameCtrl.text = _s(me.firstName);
+          }
+          if (_lastNameCtrl.text.trim().isEmpty &&
+              _s(me.lastName).isNotEmpty) {
+            _lastNameCtrl.text = _s(me.lastName);
           }
 
           if (_firstNameCtrl.text.trim().isEmpty &&
               _lastNameCtrl.text.trim().isEmpty &&
-              me.fullName.trim().isNotEmpty) {
-            final parts = me.fullName.trim().split(RegExp(r'\s+'));
+              _s(me.fullName).isNotEmpty) {
+            final parts = _s(me.fullName).split(RegExp(r'\s+'));
             if (parts.isNotEmpty) {
               _firstNameCtrl.text = parts.first;
               if (parts.length > 1) {
@@ -141,7 +196,13 @@ class _AddEmployeeScreenState extends State<AddEmployeeScreen> {
         _calcPreview();
 
         if (showSnack) {
-          _toast('ดึงบัญชีผู้ใช้สำเร็จ');
+          if (isAdminLike) {
+            _toast(
+              'บัญชีที่ล็อกอินอยู่เป็นผู้ดูแล จึงยังไม่ผูก User ID ให้อัตโนมัติ',
+            );
+          } else {
+            _toast('ดึงบัญชีผู้ใช้สำเร็จ');
+          }
         }
       } else {
         if (showSnack) {
@@ -157,6 +218,83 @@ class _AddEmployeeScreenState extends State<AddEmployeeScreen> {
       if (mounted) {
         setState(() => _loadingLinkedUser = false);
       }
+    }
+  }
+
+  Future<void> _openUserLinkSearch() async {
+    if (_saving || _loadingLinkedUser) return;
+
+    final result = await Navigator.push<Map<String, dynamic>?>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => EmployeeUserLinkSearchScreen(
+          initialQuery: _fullName(),
+        ),
+      ),
+    );
+
+    if (!mounted || result == null) return;
+
+    final pickedUserId = _s(
+      _s(result['userId']).isNotEmpty ? result['userId'] : result['_id'],
+    );
+
+    if (pickedUserId.isEmpty) {
+      _toast('ไม่พบ User ID ของรายการที่เลือก');
+      return;
+    }
+
+    final pickedRole = _s(result['role']);
+    final pickedFullName = _s(result['fullName']);
+    final pickedFirstName = _s(result['firstName']);
+    final pickedLastName = _s(result['lastName']);
+    final pickedPhone = _s(result['phone']);
+
+    final isAdminLike = _isAdminLikeRole(pickedRole);
+
+    setState(() {
+      _selectedAuthUser = <String, dynamic>{
+        'userId': pickedUserId,
+        'fullName': pickedFullName,
+        'firstName': pickedFirstName,
+        'lastName': pickedLastName,
+        'phone': pickedPhone,
+        'role': pickedRole,
+      };
+
+      if (!isAdminLike) {
+        _linkedUserIdCtrl.text = pickedUserId;
+      } else {
+        _linkedUserIdCtrl.clear();
+      }
+
+      if (_firstNameCtrl.text.trim().isEmpty && pickedFirstName.isNotEmpty) {
+        _firstNameCtrl.text = pickedFirstName;
+      }
+
+      if (_lastNameCtrl.text.trim().isEmpty && pickedLastName.isNotEmpty) {
+        _lastNameCtrl.text = pickedLastName;
+      }
+
+      if (_firstNameCtrl.text.trim().isEmpty &&
+          _lastNameCtrl.text.trim().isEmpty &&
+          pickedFullName.isNotEmpty) {
+        final parts = pickedFullName.split(RegExp(r'\s+'));
+        if (parts.isNotEmpty) {
+          _firstNameCtrl.text = parts.first;
+          if (parts.length > 1) {
+            _lastNameCtrl.text = parts.sublist(1).join(' ');
+          }
+        }
+      }
+    });
+
+    _calcPreview();
+
+    if (isAdminLike) {
+      _toast('บัญชีที่เลือกเป็นผู้ดูแล จึงยังไม่ผูก User ID ให้');
+    } else {
+      _toast('เลือกบัญชีผู้ใช้เรียบร้อย');
     }
   }
 
@@ -225,27 +363,12 @@ class _AddEmployeeScreenState extends State<AddEmployeeScreen> {
   Future<Map<String, dynamic>> _createEmployeeOnBackend(
     Map<String, dynamic> body,
   ) async {
-    Object? lastError;
-
-    final candidates = <String>[
+    final res = await _staffClient.post(
       '/api/employees',
-      '/employees',
-    ];
-
-    for (final path in candidates) {
-      try {
-        final res = await _staffClient.post(
-          path,
-          auth: true,
-          body: body,
-        );
-        return res;
-      } catch (e) {
-        lastError = e;
-      }
-    }
-
-    throw Exception(lastError?.toString() ?? 'CREATE_EMPLOYEE_FAILED');
+      auth: true,
+      body: body,
+    );
+    return res;
   }
 
   EmployeeModel _buildLocalEmployeeFromBackend(Map<String, dynamic> raw) {
@@ -309,17 +432,24 @@ class _AddEmployeeScreenState extends State<AddEmployeeScreen> {
       return;
     }
 
+    if (_selectedUserLooksUnsafeForEmployeeLink()) {
+      _toast('ไม่สามารถใช้บัญชีผู้ดูแลมาผูกเป็นพนักงานได้');
+      return;
+    }
+
+    if (userId.isEmpty) {
+      _toast('กรุณาค้นหาและเลือกบัญชีผู้ใช้ก่อนบันทึกพนักงาน');
+      return;
+    }
+
     setState(() => _saving = true);
 
     try {
       final body = <String, dynamic>{
         'fullName': fullName,
         'employmentType': _backendEmploymentType(),
+        'userId': userId,
       };
-
-      if (userId.isNotEmpty) {
-        body['userId'] = userId;
-      }
 
       if (_employmentType == 'fulltime') {
         final salary = _toDouble(_salaryCtrl.text);
@@ -376,6 +506,15 @@ class _AddEmployeeScreenState extends State<AddEmployeeScreen> {
     }
   }
 
+  void _clearLinkedUser() {
+    _linkedUserIdCtrl.clear();
+    _selectedAuthUser = null;
+    _calcPreview();
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
   void _toast(String msg) {
     if (!mounted) return;
 
@@ -396,17 +535,21 @@ class _AddEmployeeScreenState extends State<AddEmployeeScreen> {
     List<TextInputFormatter>? fmts,
     VoidCallback? onChanged,
     String? hint,
+    bool readOnly = false,
+    Widget? suffixIcon,
   }) {
     final isNumeric = _isNumericType(type);
-    final effectiveKeyboardType = isNumeric ? type : TextInputType.multiline;
+    final effectiveKeyboardType =
+        readOnly ? TextInputType.none : (isNumeric ? type : TextInputType.multiline);
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
       child: TextField(
         controller: c,
+        readOnly: readOnly,
         keyboardType: effectiveKeyboardType,
-        inputFormatters: fmts,
-        onChanged: (_) => onChanged?.call(),
+        inputFormatters: readOnly ? null : fmts,
+        onChanged: readOnly ? null : (_) => onChanged?.call(),
         minLines: 1,
         maxLines: isNumeric ? 1 : null,
         textInputAction:
@@ -418,6 +561,7 @@ class _AddEmployeeScreenState extends State<AddEmployeeScreen> {
           border: const OutlineInputBorder(),
           contentPadding:
               const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+          suffixIcon: suffixIcon,
         ),
       ),
     );
@@ -441,7 +585,11 @@ class _AddEmployeeScreenState extends State<AddEmployeeScreen> {
 
   Widget _linkedUserCard() {
     final linked = _cleanLinkedUserId(_linkedUserIdCtrl.text);
-    final u = _selectedAuthUser;
+    final isUnsafe = _selectedUserLooksUnsafeForEmployeeLink();
+
+    final fullName = _selectedUserFullName();
+    final phone = _selectedUserPhone();
+    final role = _selectedUserRole();
 
     return Card(
       child: Padding(
@@ -459,14 +607,21 @@ class _AddEmployeeScreenState extends State<AddEmployeeScreen> {
                   ? 'ตอนนี้ยังไม่ได้ผูกบัญชีผู้ใช้'
                   : 'User ID ปัจจุบัน: $linked',
             ),
-            if (u != null &&
-                (u.fullName.trim().isNotEmpty ||
-                    u.phone.trim().isNotEmpty ||
-                    u.role.trim().isNotEmpty)) ...[
+            if (fullName.isNotEmpty || phone.isNotEmpty || role.isNotEmpty) ...[
               const SizedBox(height: 8),
-              if (u.fullName.trim().isNotEmpty) Text('ชื่อบัญชี: ${u.fullName}'),
-              if (u.phone.trim().isNotEmpty) Text('โทรศัพท์: ${u.phone}'),
-              if (u.role.trim().isNotEmpty) Text('บทบาท: ${u.role}'),
+              if (fullName.isNotEmpty) Text('ชื่อบัญชี: $fullName'),
+              if (phone.isNotEmpty) Text('โทรศัพท์: $phone'),
+              if (role.isNotEmpty) Text('บทบาท: $role'),
+            ],
+            if (isUnsafe) ...[
+              const SizedBox(height: 10),
+              const Text(
+                'บัญชีที่เลือกเป็นผู้ดูแล จึงไม่สามารถผูกเป็นพนักงานได้',
+                style: TextStyle(
+                  color: Colors.redAccent,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
             ],
             const SizedBox(height: 10),
             Row(
@@ -489,16 +644,19 @@ class _AddEmployeeScreenState extends State<AddEmployeeScreen> {
                   ),
                 ),
                 const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: (_saving || _loadingLinkedUser)
+                        ? null
+                        : _openUserLinkSearch,
+                    icon: const Icon(Icons.manage_search),
+                    label: const Text('ค้นหาผู้ใช้'),
+                  ),
+                ),
+                const SizedBox(width: 8),
                 IconButton(
                   tooltip: 'ล้างค่า',
-                  onPressed: _loadingLinkedUser
-                      ? null
-                      : () {
-                          _linkedUserIdCtrl.clear();
-                          _selectedAuthUser = null;
-                          _calcPreview();
-                          setState(() {});
-                        },
+                  onPressed: _loadingLinkedUser ? null : _clearLinkedUser,
                   icon: const Icon(Icons.clear),
                 ),
               ],
@@ -535,19 +693,27 @@ class _AddEmployeeScreenState extends State<AddEmployeeScreen> {
               children: [
                 _field('ชื่อ', _firstNameCtrl, onChanged: _calcPreview),
                 _field('นามสกุล', _lastNameCtrl, onChanged: _calcPreview),
-                _field('ตำแหน่ง (แสดงในแอป)', _positionCtrl, onChanged: _calcPreview),
-
                 _field(
-                  'User ID (ถ้ามี)',
+                  'ตำแหน่ง (แสดงในแอป)',
+                  _positionCtrl,
+                  onChanged: _calcPreview,
+                ),
+                _field(
+                  'User ID',
                   _linkedUserIdCtrl,
                   onChanged: _calcPreview,
-                  hint: 'เช่น usr_xxxxx',
+                  hint: 'เลือกจากปุ่มค้นหาผู้ใช้',
+                  readOnly: true,
+                  suffixIcon: _hasLinkedUser()
+                      ? IconButton(
+                          tooltip: 'ล้างค่า',
+                          onPressed: _clearLinkedUser,
+                          icon: const Icon(Icons.clear),
+                        )
+                      : null,
                 ),
-
                 _linkedUserCard(),
-
                 const SizedBox(height: 12),
-
                 ToggleButtons(
                   isSelected: [isFulltime, isParttime],
                   onPressed: (i) {
@@ -564,9 +730,7 @@ class _AddEmployeeScreenState extends State<AddEmployeeScreen> {
                     ),
                   ],
                 ),
-
                 const SizedBox(height: 16),
-
                 if (isFulltime) ...[
                   _field(
                     'เงินเดือนพื้นฐาน',
@@ -609,7 +773,6 @@ class _AddEmployeeScreenState extends State<AddEmployeeScreen> {
                     ),
                   ),
                 ],
-
                 if (isParttime) ...[
                   _field(
                     'ค่าจ้าง (บาท/ชั่วโมง)',
@@ -640,9 +803,7 @@ class _AddEmployeeScreenState extends State<AddEmployeeScreen> {
                     ),
                   ),
                 ],
-
                 const SizedBox(height: 20),
-
                 SizedBox(
                   height: 48,
                   child: ElevatedButton.icon(
