@@ -1,14 +1,29 @@
 // payroll_service/controllers/clinicController.js
 //
-// ✅ FULL FILE (ADD: patchMyClinicProfile)
-// - ✅ PATCH /clinics/:clinicId/location (admin) : เดิมของท่าน (รองรับอัปเดตชื่อ/โทร/ที่อยู่ โดยไม่บังคับ lat/lng)
-// - ✅ PATCH /clinics/me/location        (admin) : เดิมของท่าน
-// - ✅ NEW: PATCH /clinics/me/profile    (admin) : เปลี่ยนชื่อ/โทร/ที่อยู่ แบบไม่ยุ่ง location
+// ✅ FULL FILE (ADD: patchMyClinicProfile + socialSecurity config)
+// - ✅ PATCH /clinics/:clinicId/location (admin)
+// - ✅ PATCH /clinics/me/location        (admin)
+// - ✅ PATCH /clinics/me/profile         (admin)
 // - ✅ GET /clinics/:clinicId            (auth)
 //
-// Notes:
-// - profile route ใช้ clinicId จาก token เท่านั้น (กันแก้ข้ามคลินิก)
-// - อัปเดตเฉพาะ field ที่ส่งมา และไม่รับ lat/lng ใน endpoint นี้
+// ✅ NEW:
+// - รองรับอัปเดต socialSecurity config ของคลินิกผ่าน:
+//   - PATCH /clinics/me/profile
+//   - PATCH /clinics/:clinicId/location
+//
+// Supported fields:
+// - socialSecurityEnabled
+// - socialSecurityEmployeeRate
+// - socialSecurityMaxWageBase
+//
+// หรือส่ง nested ได้:
+// {
+//   socialSecurity: {
+//     enabled: true,
+//     employeeRate: 0.05,
+//     maxWageBase: 17500
+//   }
+// }
 //
 
 const Clinic = require("../models/Clinic");
@@ -21,7 +36,7 @@ function s(v) {
 }
 
 function numOrNull(v) {
-  if (v === null || v === undefined) return null;
+  if (v === null || v === undefined || v === "") return null;
   const n = Number(v);
   if (Number.isNaN(n) || !Number.isFinite(n)) return null;
   return n;
@@ -66,15 +81,83 @@ function previewToken(authHeader) {
 }
 
 function isValidThaiPhoneDigits(phone) {
-  // ของท่านใช้ 9-10 digits เป็นมาตรฐาน
   if (!phone) return false;
   return /^\d{9,10}$/.test(phone);
+}
+
+function hasOwn(obj, key) {
+  return Object.prototype.hasOwnProperty.call(obj || {}, key);
+}
+
+function resolveSocialSecurityPatch(body = {}) {
+  const out = {};
+  let touched = false;
+
+  const nested = body.socialSecurity && typeof body.socialSecurity === "object"
+    ? body.socialSecurity
+    : {};
+
+  const hasEnabled =
+    hasOwn(body, "socialSecurityEnabled") || hasOwn(nested, "enabled");
+  const hasEmployeeRate =
+    hasOwn(body, "socialSecurityEmployeeRate") || hasOwn(nested, "employeeRate");
+  const hasMaxWageBase =
+    hasOwn(body, "socialSecurityMaxWageBase") || hasOwn(nested, "maxWageBase");
+
+  if (hasEnabled) {
+    const enabled = hasOwn(body, "socialSecurityEnabled")
+      ? parseBool(body.socialSecurityEnabled, true)
+      : parseBool(nested.enabled, true);
+    out["socialSecurity.enabled"] = enabled;
+    touched = true;
+  }
+
+  if (hasEmployeeRate) {
+    const raw = hasOwn(body, "socialSecurityEmployeeRate")
+      ? body.socialSecurityEmployeeRate
+      : nested.employeeRate;
+    const v = numOrNull(raw);
+    if (v === null || v < 0 || v > 1) {
+      return {
+        ok: false,
+        message: "Invalid socialSecurityEmployeeRate",
+        hint: "Use decimal เช่น 0.05 for 5%",
+        got: raw,
+      };
+    }
+    out["socialSecurity.employeeRate"] = v;
+    touched = true;
+  }
+
+  if (hasMaxWageBase) {
+    const raw = hasOwn(body, "socialSecurityMaxWageBase")
+      ? body.socialSecurityMaxWageBase
+      : nested.maxWageBase;
+    const v = numOrNull(raw);
+    if (v === null || v < 0 || v > 1000000) {
+      return {
+        ok: false,
+        message: "Invalid socialSecurityMaxWageBase",
+        hint: "Use a positive number เช่น 17500",
+        got: raw,
+      };
+    }
+    out["socialSecurity.maxWageBase"] = v;
+    touched = true;
+  }
+
+  return { ok: true, touched, $set: out };
 }
 
 // ---------------- controllers ----------------
 
 // PATCH /clinics/:clinicId/location (admin)
-// body: { clinicLat?, clinicLng?, clinicName?, clinicPhone?, clinicAddress?, backfill? }
+// body:
+// {
+//   clinicLat?, clinicLng?, clinicName?, clinicPhone?, clinicAddress?, backfill?,
+//   socialSecurityEnabled?, socialSecurityEmployeeRate?, socialSecurityMaxWageBase?,
+//   socialSecurity?: { enabled?, employeeRate?, maxWageBase? }
+// }
 async function patchClinicLocation(req, res) {
   const _rid = rid();
   const t0 = Date.now();
@@ -104,8 +187,6 @@ async function patchClinicLocation(req, res) {
 
     const lat = numOrNull(req.body?.clinicLat ?? req.body?.lat);
     const lng = numOrNull(req.body?.clinicLng ?? req.body?.lng);
-
-    // ✅ NEW LOGIC
     const hasLatLngInput = lat !== null || lng !== null;
 
     if (hasLatLngInput) {
@@ -123,7 +204,6 @@ async function patchClinicLocation(req, res) {
     const phone = s(req.body?.clinicPhone ?? req.body?.phone);
     const address = s(req.body?.clinicAddress ?? req.body?.address);
 
-    // (optional) phone validate: ถ้าส่งมาและไม่ว่าง ค่อย validate
     if (phone && !isValidThaiPhoneDigits(phone)) {
       return res.status(400).json({
         message: "Invalid clinicPhone",
@@ -141,17 +221,27 @@ async function patchClinicLocation(req, res) {
       });
     }
 
+    const ssoPatch = resolveSocialSecurityPatch(req.body || {});
+    if (!ssoPatch.ok) {
+      return res.status(400).json({
+        message: ssoPatch.message,
+        hint: ssoPatch.hint,
+        got: ssoPatch.got,
+      });
+    }
+
+    const $set = {
+      clinicId,
+      ...(hasLatLngInput ? { lat, lng } : {}),
+      ...(name ? { name } : {}),
+      ...(phone ? { phone } : {}),
+      ...(address ? { address } : {}),
+      ...ssoPatch.$set,
+    };
+
     const updated = await Clinic.findOneAndUpdate(
       { clinicId },
-      {
-        $set: {
-          clinicId,
-          ...(hasLatLngInput ? { lat, lng } : {}),
-          ...(name ? { name } : {}),
-          ...(phone ? { phone } : {}),
-          ...(address ? { address } : {}),
-        },
-      },
+      { $set },
       { new: true, upsert: true }
     ).lean();
 
@@ -220,8 +310,13 @@ async function patchMyClinicLocation(req, res) {
   return patchClinicLocation(req, res);
 }
 
-// ✅ NEW: PATCH /clinics/me/profile (admin)
-// body: { clinicName?, clinicPhone?, clinicAddress? }
+// PATCH /clinics/me/profile (admin)
+// body:
+// {
+//   clinicName?, clinicPhone?, clinicAddress?,
+//   socialSecurityEnabled?, socialSecurityEmployeeRate?, socialSecurityMaxWageBase?,
+//   socialSecurity?: { enabled?, employeeRate?, maxWageBase? }
+// }
 async function patchMyClinicProfile(req, res) {
   const _rid = rid();
   const t0 = Date.now();
@@ -252,14 +347,6 @@ async function patchMyClinicProfile(req, res) {
     const phone = s(req.body?.clinicPhone ?? req.body?.phone);
     const address = s(req.body?.clinicAddress ?? req.body?.address);
 
-    // ถ้าไม่ส่งอะไรมาเลย
-    if (!name && !phone && !address) {
-      return res.status(400).json({
-        message: "No fields to update",
-        hint: "Send at least one of clinicName / clinicPhone / clinicAddress",
-      });
-    }
-
     if (phone && !isValidThaiPhoneDigits(phone)) {
       return res.status(400).json({
         message: "Invalid clinicPhone",
@@ -268,10 +355,28 @@ async function patchMyClinicProfile(req, res) {
       });
     }
 
+    const ssoPatch = resolveSocialSecurityPatch(req.body || {});
+    if (!ssoPatch.ok) {
+      return res.status(400).json({
+        message: ssoPatch.message,
+        hint: ssoPatch.hint,
+        got: ssoPatch.got,
+      });
+    }
+
+    if (!name && !phone && !address && !ssoPatch.touched) {
+      return res.status(400).json({
+        message: "No fields to update",
+        hint:
+          "Send at least one of clinicName / clinicPhone / clinicAddress / socialSecurity*",
+      });
+    }
+
     const $set = {
       ...(name ? { name } : {}),
       ...(phone ? { phone } : {}),
       ...(address ? { address } : {}),
+      ...ssoPatch.$set,
     };
 
     const updated = await Clinic.findOneAndUpdate(
@@ -284,6 +389,7 @@ async function patchMyClinicProfile(req, res) {
       clinicId,
       name: updated?.name,
       phone: updated?.phone,
+      socialSecurity: updated?.socialSecurity,
     });
 
     console.log(`⏱️ [${_rid}] done in ${Date.now() - t0}ms`);
@@ -320,6 +426,6 @@ async function getClinic(req, res) {
 module.exports = {
   patchClinicLocation,
   patchMyClinicLocation,
-  patchMyClinicProfile, // ✅ NEW
+  patchMyClinicProfile,
   getClinic,
 };

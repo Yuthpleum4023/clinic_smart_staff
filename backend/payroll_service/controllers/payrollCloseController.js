@@ -1,3 +1,4 @@
+//
 // payroll_service/controllers/payrollCloseController.js
 //
 // ✅ FULL FILE — Payroll Close Controller
@@ -27,16 +28,20 @@
 // - SECURITY: ทุก query ผูก clinicId จาก token กันข้อมูลข้ามคลินิก
 // - ROBUST: รองรับทั้ง req.user และ req.userCtx
 //
-// ✅ SSO FIX:
-// - เพดาน 17,500
-// - employee contribution 5%
-// - monthly cap = 875
+// ✅ SSO POLICY:
+// - อ่านจาก Clinic.socialSecurity เป็นหลัก
+// - fallback default:
+//   - employeeRate = 0.05
+//   - maxWageBase = 17500
+// - backend คำนวณ SSO เองจาก grossMonthly
+// - ไม่เชื่อ ssoEmployeeMonthly ที่ client ส่งมาเป็น source of truth
 //
 
 const axios = require("axios");
 const PayrollClose = require("../models/PayrollClose");
 const TaxYTD = require("../models/TaxYTD");
 const Overtime = require("../models/Overtime");
+const Clinic = require("../models/Clinic");
 
 const { getEmployeeByStaffId } = require("../utils/staffClient");
 
@@ -217,12 +222,9 @@ function resolveGrossComputation({
   };
 }
 
-// ================= SSO CONFIG =================
-const SSO_EMPLOYEE_RATE = 0.05;
-const SSO_MAX_WAGE_BASE = 17500;
-const SSO_MAX_EMPLOYEE_MONTHLY = round2(
-  SSO_MAX_WAGE_BASE * SSO_EMPLOYEE_RATE
-);
+// ================= SSO DEFAULTS =================
+const DEFAULT_SSO_EMPLOYEE_RATE = 0.05;
+const DEFAULT_SSO_MAX_WAGE_BASE = 17500;
 
 // ================= TAX MODE =================
 function normalizeTaxMode(v) {
@@ -231,8 +233,43 @@ function normalizeTaxMode(v) {
   return "WITHHOLDING";
 }
 
-function normalizeSsoEmployeeMonthly(v) {
-  return round2(clamp(clampMin0(v), 0, SSO_MAX_EMPLOYEE_MONTHLY));
+// เก็บไว้เผื่อ compatibility / support อื่น ๆ
+function normalizeSsoEmployeeMonthly(v, maxEmployeeMonthly) {
+  return round2(clamp(clampMin0(v), 0, clampMin0(maxEmployeeMonthly)));
+}
+
+// ✅ อ่าน config SSO จาก clinic
+function resolveClinicSsoConfig(clinicRow) {
+  const enabled = clinicRow?.socialSecurity?.enabled !== false;
+
+  const employeeRateRaw = toNumber(clinicRow?.socialSecurity?.employeeRate);
+  const maxWageBaseRaw = toNumber(clinicRow?.socialSecurity?.maxWageBase);
+
+  const employeeRate =
+    employeeRateRaw > 0 ? employeeRateRaw : DEFAULT_SSO_EMPLOYEE_RATE;
+
+  const maxWageBase =
+    maxWageBaseRaw > 0 ? maxWageBaseRaw : DEFAULT_SSO_MAX_WAGE_BASE;
+
+  const maxEmployeeMonthly = round2(maxWageBase * employeeRate);
+
+  return {
+    enabled,
+    employeeRate,
+    maxWageBase,
+    maxEmployeeMonthly,
+  };
+}
+
+function computeSsoEmployeeMonthlyFromClinicConfig(grossMonthly, ssoConfig) {
+  if (!ssoConfig?.enabled) return 0;
+
+  const contributableBase = Math.min(
+    clampMin0(grossMonthly),
+    clampMin0(ssoConfig.maxWageBase)
+  );
+
+  return round2(contributableBase * clampMin0(ssoConfig.employeeRate));
 }
 
 // ================= AUTH PICKER (ROBUST) =================
@@ -421,10 +458,6 @@ async function calcWithheldByYTDFromAuth({
 }
 
 // ================= DISPLAY SNAPSHOT =================
-// หมายเหตุ:
-// - displayNetBeforeOt: เก็บ "grossBase ที่ client ส่งมา" เพื่อคงการ render แบบเดิม
-// - displayLeaveDeduction: เก็บยอดหักลา/ขาดไว้แสดง
-// - displayGrossBeforeTax: ใช้ค่าที่ backend เลือกคำนวณแล้วจริง
 function buildDisplaySnapshot({
   displayNetBeforeOtBase,
   otherDeduction,
@@ -471,7 +504,7 @@ async function closeMonth(req, res) {
       bonus = 0,
       otherAllowance = 0,
       otherDeduction = 0,
-      ssoEmployeeMonthly = 0,
+      ssoEmployeeMonthly = 0, // รับไว้เพื่อ compatibility / debug
       pvdEmployeeMonthly = 0,
       baseHourly = null,
       employeeUserId: employeeUserIdFromBody,
@@ -522,6 +555,12 @@ async function closeMonth(req, res) {
       return res.status(409).json({ message: "Month already closed" });
     }
 
+    const clinicRow = await Clinic.findOne({
+      clinicId: clinicIdFromToken,
+    }).lean();
+
+    const ssoConfig = resolveClinicSsoConfig(clinicRow);
+
     const otSummary = await getApprovedOtSummaryForMonth({
       clinicId: clinicIdFromToken,
       monthKey: safeStr(month),
@@ -554,7 +593,12 @@ async function closeMonth(req, res) {
 
     const grossMonthly = round2(grossResolved.grossMonthly);
 
-    const ssoM = normalizeSsoEmployeeMonthly(ssoEmployeeMonthly);
+    // ✅ backend คำนวณเองจาก clinic config
+    const ssoM = computeSsoEmployeeMonthlyFromClinicConfig(
+      grossMonthly,
+      ssoConfig
+    );
+
     const pvdM = round2(clampMin0(pvdEmployeeMonthly));
 
     let ytd = await TaxYTD.findOne({
@@ -693,6 +737,17 @@ async function closeMonth(req, res) {
         expectedGrossBeforeTax: grossResolved.expectedGrossBeforeTax,
         preDeductionGross: grossResolved.preDeductionGross,
         postDeductionGross: grossResolved.postDeductionGross,
+
+        // ✅ SSO snapshot
+        ssoEnabled: ssoConfig.enabled,
+        ssoRate: ssoConfig.employeeRate,
+        ssoMaxWageBase: ssoConfig.maxWageBase,
+        ssoMaxEmployeeMonthly: ssoConfig.maxEmployeeMonthly,
+        ssoEmployeeMonthlyInput: normalizeSsoEmployeeMonthly(
+          ssoEmployeeMonthly,
+          ssoConfig.maxEmployeeMonthly
+        ),
+        ssoEmployeeMonthlyApplied: ssoM,
       },
     };
 
@@ -720,9 +775,10 @@ async function closeMonth(req, res) {
       taxUserIdSource: resolved?.source || "skipped",
       warning,
       ssoPolicy: {
-        employeeRate: SSO_EMPLOYEE_RATE,
-        maxWageBase: SSO_MAX_WAGE_BASE,
-        maxEmployeeMonthly: SSO_MAX_EMPLOYEE_MONTHLY,
+        enabled: ssoConfig.enabled,
+        employeeRate: ssoConfig.employeeRate,
+        maxWageBase: ssoConfig.maxWageBase,
+        maxEmployeeMonthly: ssoConfig.maxEmployeeMonthly,
       },
       otSummary: {
         monthKey: otSummary.monthKey,

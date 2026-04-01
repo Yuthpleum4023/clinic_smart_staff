@@ -1,4 +1,3 @@
-// payroll_service/models/Clinic.js
 const mongoose = require("mongoose");
 
 const ClinicSchema = new mongoose.Schema(
@@ -30,6 +29,20 @@ const ClinicSchema = new mongoose.Schema(
     // -----------------------------
     brandAbbr: { type: String, default: "" },   // เช่น MC
     brandColor: { type: String, default: "" },  // เช่น #6D28D9
+
+    // -----------------------------
+    // ✅ Payroll / Social Security
+    // -----------------------------
+    socialSecurity: {
+      enabled: { type: Boolean, default: true },
+
+      // เช่น 0.05 = 5%
+      employeeRate: { type: Number, default: 0.05 },
+
+      // เพดานฐานค่าจ้างที่ใช้คิด SSO
+      // เช่น 17500
+      maxWageBase: { type: Number, default: 17500 },
+    },
   },
   { timestamps: true }
 );
