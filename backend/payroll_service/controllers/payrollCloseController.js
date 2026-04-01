@@ -516,32 +516,19 @@ function buildDisplaySnapshot({
 }
 
 // ================= PAYSLIP SUMMARY (NEW SINGLE CONTRACT) =================
+// ✅ IMPORTANT:
+// summary ตัวนี้ใช้ "แสดงผล" อย่างเดียว
+// ดังนั้นต้อง map จากค่าที่ lock ลง PayrollClose ตรง ๆ
+// ไม่ต้อง derive salary จาก snapshot หลังหักอะไรแล้ว
 function buildPayslipSummary(row) {
-  const salaryFromSnapshot =
-    row?.snapshot?.ssoBaseUsed > 0
-      ? row.snapshot.ssoBaseUsed
-      : row?.snapshot?.salaryBaseAfterLeave > 0 ||
-        row?.snapshot?.leaveDeduction > 0
-      ? toNumber(row.snapshot.salaryBaseAfterLeave) +
-        toNumber(row.snapshot.leaveDeduction)
-      : 0;
-
-  const salary = round2(
-    salaryFromSnapshot ||
-      row?.grossBase ||
-      row?.displaySalaryBaseForSso ||
-      0
-  );
-
-  const socialSecurity = round2(row?.ssoEmployeeMonthly || 0);
-  const ot = round2(row?.otPay || 0);
-  const commission = round2(row?.otherAllowance || 0);
-  const bonus = round2(row?.bonus || 0);
-  const leaveDeduction = round2(
-    row?.snapshot?.leaveDeduction || row?.otherDeduction || 0
-  );
-  const tax = round2(row?.withheldTaxMonthly || 0);
-  const netPay = round2(row?.netPay || 0);
+  const salary = round2(clampMin0(row?.grossBase));
+  const socialSecurity = round2(clampMin0(row?.ssoEmployeeMonthly));
+  const ot = round2(clampMin0(row?.otPay));
+  const commission = round2(clampMin0(row?.otherAllowance));
+  const bonus = round2(clampMin0(row?.bonus));
+  const leaveDeduction = round2(clampMin0(row?.otherDeduction));
+  const tax = round2(clampMin0(row?.withheldTaxMonthly));
+  const netPay = round2(clampMin0(row?.netPay));
 
   return {
     employeeId: safeStr(row?.employeeId),
@@ -571,15 +558,15 @@ async function closeMonth(req, res) {
     const body = req.body || {};
 
     const clinicId = safeStr(body.clinicId);
-    const employeeId = safeStr(body.employeeId || req.params.employeeId); // ✅ รองรับ req.params
-    const month = safeStr(body.month || req.params.month); // ✅ รองรับ req.params
+    const employeeId = safeStr(body.employeeId || req.params.employeeId);
+    const month = safeStr(body.month || req.params.month);
 
     const grossBase = toNumber(body.grossBase);
     const otPay = toNumber(body.otPay);
     const bonus = toNumber(body.bonus);
     const otherAllowance = toNumber(body.otherAllowance);
     const otherDeduction = toNumber(body.otherDeduction);
-    const ssoEmployeeMonthly = toNumber(body.ssoEmployeeMonthly); // compatibility/debug
+    const ssoEmployeeMonthly = toNumber(body.ssoEmployeeMonthly);
     const pvdEmployeeMonthly = toNumber(body.pvdEmployeeMonthly);
     const baseHourly = body.baseHourly;
     const employeeUserIdFromBody = safeStr(body.employeeUserId);
@@ -668,7 +655,6 @@ async function closeMonth(req, res) {
     const salaryBaseAfterLeave = round2(payrollResolved.salaryBaseAfterLeave);
     const leaveDeduction = round2(payrollResolved.leaveDeduction);
 
-    // ✅ SSO คิดจาก "ฐานเงินเดือนล้วน" เท่านั้น
     const ssoM = computeSsoEmployeeMonthlyFromClinicConfig(
       salaryBaseForSso,
       ssoConfig
@@ -676,7 +662,6 @@ async function closeMonth(req, res) {
 
     const pvdM = round2(clampMin0(pvdEmployeeMonthly));
 
-    // Net ก่อนภาษี/PVD ตามสูตรธุรกิจ
     const netBeforeTaxAndPvd = round2(
       Math.max(
         0,
@@ -754,7 +739,6 @@ async function closeMonth(req, res) {
       Math.max(0, netBeforeTaxAndPvd - withheldTaxMonthly - pvdM)
     );
 
-    // เก็บผลรวมก่อนภาษี/PVD เป็น grossMonthly เพื่อคง contract เดิม
     const grossMonthly = netBeforeTaxAndPvd;
 
     const display = buildDisplaySnapshot({
@@ -798,7 +782,6 @@ async function closeMonth(req, res) {
       ),
       otApprovedCount: Math.max(0, Math.floor(Number(otSummary.count || 0))),
 
-      // ✅ display snapshot fields
       displayNetBeforeOt: display.displayNetBeforeOt,
       displayLeaveDeduction: display.displayLeaveDeduction,
       displayOtHours: display.displayOtHours,
@@ -826,14 +809,12 @@ async function closeMonth(req, res) {
             ? round2(clampMin0(ytd.taxPaidYTD) + withheldTaxMonthly)
             : round2(clampMin0(ytd.taxPaidYTD)),
 
-        // ✅ debug-safe trace for future support
         grossBaseModeRequested: normalizeGrossBaseMode(grossBaseModeRaw),
         grossBaseModeApplied: payrollResolved.appliedMode,
         expectedGrossBeforeTax: payrollResolved.expectedGrossBeforeTax,
         preDeductionNetBeforeTax: payrollResolved.preDeductionNetBeforeTax,
         postDeductionNetBeforeTax: payrollResolved.postDeductionNetBeforeTax,
 
-        // ✅ formula snapshot
         ssoBaseUsed: salaryBaseForSso,
         salaryBaseAfterLeave,
         leaveDeduction,
@@ -842,7 +823,6 @@ async function closeMonth(req, res) {
         otherAllowanceUsed: otherAllowanceFinal,
         netBeforeTaxAndPvd,
 
-        // ✅ SSO snapshot
         ssoEnabled: ssoConfig.enabled,
         ssoRate: ssoConfig.employeeRate,
         ssoMaxWageBase: ssoConfig.maxWageBase,
