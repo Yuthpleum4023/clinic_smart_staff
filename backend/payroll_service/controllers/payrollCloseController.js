@@ -1,21 +1,22 @@
 // payroll_service/controllers/payrollCloseController.js
 //
 // ✅ FULL FILE — Payroll Close Controller
-// ✅ PATCH NEW:
-// - รองรับ 2 เส้นทางภาษี:
-//   1) WITHHOLDING   = หักภาษี ณ ที่จ่าย
-//   2) NO_WITHHOLDING = ไม่หักภาษี
-// - รับ taxMode จาก client
-// - default taxMode = WITHHOLDING (กัน flow เดิมพัง)
-// - ถ้า NO_WITHHOLDING:
-//   - ไม่เรียก AUTH tax service
-//   - withheldTaxMonthly = 0
-//   - ไม่เพิ่ม taxPaidYTD
+// ✅ PATCH SAFE AGAINST DOUBLE-DEDUCTION:
+// - คง route / function names / response structure เดิม
+// - กันความเสี่ยง "หักวันลา/ขาดซ้ำ" ด้วย grossBaseMode
+// - รองรับ 3 โหมดของ grossBase:
+//   1) PRE_DEDUCTION   = grossBase คือฐานก่อนหักลา/ขาด
+//   2) POST_DEDUCTION  = grossBase คือฐานหลังหักลา/ขาดแล้ว
+//   3) AUTO            = ถ้ามี expected gross จาก client จะเลือกสูตรที่ใกล้ที่สุด
+// - default ยังคง backward-compatible = PRE_DEDUCTION
+//
+// ✅ TAX MODE:
+// - WITHHOLDING
+// - NO_WITHHOLDING
 //
 // ✅ NEW DISPLAY SNAPSHOT:
 // - บันทึก display* fields ลง PayrollClose
 // - เพื่อให้หน้า detail / preview / PDF ใช้เลขชุดเดียวกัน
-// - frontend ไม่ต้องคำนวณซ้ำ
 //
 // ✅ EXISTING FEATURES:
 // - employeeId in this system = staffId
@@ -27,7 +28,7 @@
 // - ROBUST: รองรับทั้ง req.user และ req.userCtx
 //
 // ✅ SSO FIX:
-// - เปลี่ยนเพดานใหม่เป็น 17,500
+// - เพดาน 17,500
 // - employee contribution 5%
 // - monthly cap = 875
 //
@@ -66,7 +67,26 @@ function monthToTaxYear(monthStr) {
 function round2(v) {
   return Number(toNumber(v).toFixed(2));
 }
-function computeGrossMonthly({
+function postJson(url, body, headers) {
+  return axios.post(url, body, {
+    headers,
+    timeout: 15000,
+    validateStatus: () => true,
+  });
+}
+function absDiff(a, b) {
+  return Math.abs(toNumber(a) - toNumber(b));
+}
+
+// ================= GROSS BASE MODE =================
+function normalizeGrossBaseMode(v) {
+  const s = safeStr(v).toUpperCase();
+  if (s === "POST_DEDUCTION") return "POST_DEDUCTION";
+  if (s === "AUTO") return "AUTO";
+  return "PRE_DEDUCTION";
+}
+
+function computeGrossMonthlyPreDeduction({
   grossBase,
   otPay,
   bonus,
@@ -82,12 +102,119 @@ function computeGrossMonthly({
       clampMin0(otherDeduction)
   );
 }
-async function postJson(url, body, headers) {
-  return axios.post(url, body, {
-    headers,
-    timeout: 15000,
-    validateStatus: () => true,
-  });
+
+function computeGrossMonthlyPostDeduction({
+  grossBase,
+  otPay,
+  bonus,
+  otherAllowance,
+}) {
+  return Math.max(
+    0,
+    clampMin0(grossBase) +
+      clampMin0(otPay) +
+      clampMin0(bonus) +
+      clampMin0(otherAllowance)
+  );
+}
+
+function pickExpectedGrossBeforeTax(body) {
+  const candidates = [
+    body.expectedGrossBeforeTax,
+    body.previewGrossBeforeTax,
+    body.grossMonthlyExpected,
+    body.displayGrossBeforeTax,
+    body.detailGrossBeforeTax,
+  ];
+
+  for (const v of candidates) {
+    const n = toNumber(v);
+    if (n > 0) return round2(n);
+  }
+  return 0;
+}
+
+function resolveGrossComputation({
+  body,
+  grossBase,
+  otPay,
+  bonus,
+  otherAllowance,
+  otherDeduction,
+}) {
+  const requestedMode = normalizeGrossBaseMode(body.grossBaseMode);
+  const expectedGrossBeforeTax = pickExpectedGrossBeforeTax(body);
+
+  const preDeductionGross = round2(
+    computeGrossMonthlyPreDeduction({
+      grossBase,
+      otPay,
+      bonus,
+      otherAllowance,
+      otherDeduction,
+    })
+  );
+
+  const postDeductionGross = round2(
+    computeGrossMonthlyPostDeduction({
+      grossBase,
+      otPay,
+      bonus,
+      otherAllowance,
+    })
+  );
+
+  if (requestedMode === "PRE_DEDUCTION") {
+    return {
+      effectiveGrossBase: round2(clampMin0(grossBase)),
+      grossMonthly: preDeductionGross,
+      appliedMode: "PRE_DEDUCTION",
+      expectedGrossBeforeTax,
+      preDeductionGross,
+      postDeductionGross,
+    };
+  }
+
+  if (requestedMode === "POST_DEDUCTION") {
+    return {
+      effectiveGrossBase: round2(clampMin0(grossBase)),
+      grossMonthly: postDeductionGross,
+      appliedMode: "POST_DEDUCTION",
+      expectedGrossBeforeTax,
+      preDeductionGross,
+      postDeductionGross,
+    };
+  }
+
+  if (expectedGrossBeforeTax > 0) {
+    const preDiff = absDiff(preDeductionGross, expectedGrossBeforeTax);
+    const postDiff = absDiff(postDeductionGross, expectedGrossBeforeTax);
+
+    const appliedMode =
+      postDiff < preDiff ? "POST_DEDUCTION" : "PRE_DEDUCTION";
+
+    return {
+      effectiveGrossBase: round2(clampMin0(grossBase)),
+      grossMonthly:
+        appliedMode === "POST_DEDUCTION"
+          ? postDeductionGross
+          : preDeductionGross,
+      appliedMode,
+      expectedGrossBeforeTax,
+      preDeductionGross,
+      postDeductionGross,
+    };
+  }
+
+  // backward-compatible default
+  return {
+    effectiveGrossBase: round2(clampMin0(grossBase)),
+    grossMonthly: preDeductionGross,
+    appliedMode: "PRE_DEDUCTION",
+    expectedGrossBeforeTax,
+    preDeductionGross,
+    postDeductionGross,
+  };
 }
 
 // ================= SSO CONFIG =================
@@ -97,7 +224,7 @@ const SSO_MAX_EMPLOYEE_MONTHLY = round2(
   SSO_MAX_WAGE_BASE * SSO_EMPLOYEE_RATE
 );
 
-// ✅ NEW
+// ================= TAX MODE =================
 function normalizeTaxMode(v) {
   const s = safeStr(v).toUpperCase();
   if (s === "NO_WITHHOLDING") return "NO_WITHHOLDING";
@@ -295,12 +422,11 @@ async function calcWithheldByYTDFromAuth({
 
 // ================= DISPLAY SNAPSHOT =================
 // หมายเหตุ:
-// - แนวนี้ยึดตามสิ่งที่ท่านต้องการให้ preview / PDF ตรงกับหน้า detail
-// - grossBase ถูกมองเป็น "สุทธิเดิม (ไม่รวม OT)" หรือยอดพร้อมแสดงก่อนบวก OT
-// - otherDeduction ใช้เป็น "ยอดลา/ขาด" สำหรับแสดงประกอบ
-// - display* มีไว้ render ตรง ๆ ไม่ใช่ให้คำนวณซ้ำ
+// - displayNetBeforeOt: เก็บ "grossBase ที่ client ส่งมา" เพื่อคงการ render แบบเดิม
+// - displayLeaveDeduction: เก็บยอดหักลา/ขาดไว้แสดง
+// - displayGrossBeforeTax: ใช้ค่าที่ backend เลือกคำนวณแล้วจริง
 function buildDisplaySnapshot({
-  grossBase,
+  displayNetBeforeOtBase,
   otherDeduction,
   otSummary,
   otPayFinal,
@@ -310,7 +436,7 @@ function buildDisplaySnapshot({
   pvdM,
   netPay,
 }) {
-  const displayNetBeforeOt = round2(clampMin0(grossBase));
+  const displayNetBeforeOt = round2(clampMin0(displayNetBeforeOtBase));
   const displayLeaveDeduction = round2(clampMin0(otherDeduction));
   const displayOtHours = round2(clampMin0(otSummary?.approvedWeightedHours));
   const displayOtAmount = round2(clampMin0(otPayFinal));
@@ -350,6 +476,7 @@ async function closeMonth(req, res) {
       baseHourly = null,
       employeeUserId: employeeUserIdFromBody,
       taxMode: taxModeRaw,
+      grossBaseMode: grossBaseModeRaw,
     } = body;
 
     if (!clinicId || !employeeId || !month) {
@@ -410,20 +537,22 @@ async function closeMonth(req, res) {
 
     const taxYear = monthToTaxYear(month);
 
-    const grossBaseFinal = clampMin0(grossBase);
-    const bonusFinal = clampMin0(bonus);
-    const otherAllowanceFinal = clampMin0(otherAllowance);
-    const otherDeductionFinal = clampMin0(otherDeduction);
+    const grossBaseFinal = round2(clampMin0(grossBase));
+    const bonusFinal = round2(clampMin0(bonus));
+    const otherAllowanceFinal = round2(clampMin0(otherAllowance));
+    const otherDeductionFinal = round2(clampMin0(otherDeduction));
 
-    const grossMonthly = round2(
-      computeGrossMonthly({
-        grossBase: grossBaseFinal,
-        otPay: otPayFinal,
-        bonus: bonusFinal,
-        otherAllowance: otherAllowanceFinal,
-        otherDeduction: otherDeductionFinal,
-      })
-    );
+    const grossResolved = resolveGrossComputation({
+      body,
+      grossBase: grossBaseFinal,
+      otPay: otPayFinal,
+      bonus: bonusFinal,
+      otherAllowance: otherAllowanceFinal,
+      otherDeduction: otherDeductionFinal,
+      grossBaseMode: grossBaseModeRaw,
+    });
+
+    const grossMonthly = round2(grossResolved.grossMonthly);
 
     const ssoM = normalizeSsoEmployeeMonthly(ssoEmployeeMonthly);
     const pvdM = round2(clampMin0(pvdEmployeeMonthly));
@@ -492,7 +621,7 @@ async function closeMonth(req, res) {
     );
 
     const display = buildDisplaySnapshot({
-      grossBase: grossBaseFinal,
+      displayNetBeforeOtBase: grossBaseFinal,
       otherDeduction: otherDeductionFinal,
       otSummary,
       otPayFinal,
@@ -557,6 +686,13 @@ async function closeMonth(req, res) {
           taxMode === "WITHHOLDING"
             ? round2(clampMin0(ytd.taxPaidYTD) + withheldTaxMonthly)
             : round2(clampMin0(ytd.taxPaidYTD)),
+
+        // ✅ debug-safe trace for future support
+        grossBaseModeRequested: normalizeGrossBaseMode(grossBaseModeRaw),
+        grossBaseModeApplied: grossResolved.appliedMode,
+        expectedGrossBeforeTax: grossResolved.expectedGrossBeforeTax,
+        preDeductionGross: grossResolved.preDeductionGross,
+        postDeductionGross: grossResolved.postDeductionGross,
       },
     };
 
@@ -604,6 +740,13 @@ async function closeMonth(req, res) {
         taxAmount: display.displayTaxAmount,
         ssoAmount: display.displaySsoAmount,
         netPay: display.displayNetPay,
+      },
+      grossBaseMode: {
+        requested: normalizeGrossBaseMode(grossBaseModeRaw),
+        applied: grossResolved.appliedMode,
+        expectedGrossBeforeTax: grossResolved.expectedGrossBeforeTax,
+        preDeductionGross: grossResolved.preDeductionGross,
+        postDeductionGross: grossResolved.postDeductionGross,
       },
     });
   } catch (err) {
