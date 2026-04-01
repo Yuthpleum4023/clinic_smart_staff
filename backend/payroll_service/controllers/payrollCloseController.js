@@ -40,6 +40,12 @@
 // - บันทึก display* fields ลง PayrollClose
 // - บันทึก ssoBaseUsed และ policy ที่ใช้จริงลง snapshot
 //
+// ✅ NEW:
+// - เพิ่ม payslipSummary เป็น contract กลางสำหรับ frontend/PDF
+// - frontend สามารถใช้ payslipSummary.amounts ทางเดียวได้
+// - ✅ รองรับ route ใหม่:
+//   POST /payroll-close/close-month/:employeeId/:month
+//
 
 const axios = require("axios");
 const PayrollClose = require("../models/PayrollClose");
@@ -509,26 +515,76 @@ function buildDisplaySnapshot({
   };
 }
 
+// ================= PAYSLIP SUMMARY (NEW SINGLE CONTRACT) =================
+function buildPayslipSummary(row) {
+  const salaryFromSnapshot =
+    row?.snapshot?.ssoBaseUsed > 0
+      ? row.snapshot.ssoBaseUsed
+      : row?.snapshot?.salaryBaseAfterLeave > 0 ||
+        row?.snapshot?.leaveDeduction > 0
+      ? toNumber(row.snapshot.salaryBaseAfterLeave) +
+        toNumber(row.snapshot.leaveDeduction)
+      : 0;
+
+  const salary = round2(
+    salaryFromSnapshot ||
+      row?.grossBase ||
+      row?.displaySalaryBaseForSso ||
+      0
+  );
+
+  const socialSecurity = round2(row?.ssoEmployeeMonthly || 0);
+  const ot = round2(row?.otPay || 0);
+  const commission = round2(row?.otherAllowance || 0);
+  const bonus = round2(row?.bonus || 0);
+  const leaveDeduction = round2(
+    row?.snapshot?.leaveDeduction || row?.otherDeduction || 0
+  );
+  const tax = round2(row?.withheldTaxMonthly || 0);
+  const netPay = round2(row?.netPay || 0);
+
+  return {
+    employeeId: safeStr(row?.employeeId),
+    clinicId: safeStr(row?.clinicId),
+    month: safeStr(row?.month),
+    amounts: {
+      salary,
+      socialSecurity,
+      ot,
+      commission,
+      bonus,
+      leaveDeduction,
+      tax,
+      netPay,
+    },
+    meta: {
+      source: "backend_final",
+      isClosedPayroll: true,
+      grossBaseModeApplied: safeStr(row?.snapshot?.grossBaseModeApplied),
+    },
+  };
+}
+
 // ================= CLOSE MONTH =================
 async function closeMonth(req, res) {
   try {
     const body = req.body || {};
-    const {
-      clinicId,
-      employeeId, // employeeId = staffId
-      month, // yyyy-MM
-      grossBase = 0, // เงินเดือนฐาน
-      otPay = 0,
-      bonus = 0,
-      otherAllowance = 0, // commission/allowance bucket
-      otherDeduction = 0, // หักลา/ขาดหลัก
-      ssoEmployeeMonthly = 0, // รับไว้เพื่อ compatibility / debug
-      pvdEmployeeMonthly = 0,
-      baseHourly = null,
-      employeeUserId: employeeUserIdFromBody,
-      taxMode: taxModeRaw,
-      grossBaseMode: grossBaseModeRaw,
-    } = body;
+
+    const clinicId = safeStr(body.clinicId);
+    const employeeId = safeStr(body.employeeId || req.params.employeeId); // ✅ รองรับ req.params
+    const month = safeStr(body.month || req.params.month); // ✅ รองรับ req.params
+
+    const grossBase = toNumber(body.grossBase);
+    const otPay = toNumber(body.otPay);
+    const bonus = toNumber(body.bonus);
+    const otherAllowance = toNumber(body.otherAllowance);
+    const otherDeduction = toNumber(body.otherDeduction);
+    const ssoEmployeeMonthly = toNumber(body.ssoEmployeeMonthly); // compatibility/debug
+    const pvdEmployeeMonthly = toNumber(body.pvdEmployeeMonthly);
+    const baseHourly = body.baseHourly;
+    const employeeUserIdFromBody = safeStr(body.employeeUserId);
+    const taxModeRaw = body.taxMode;
+    const grossBaseModeRaw = body.grossBaseMode;
 
     if (!clinicId || !employeeId || !month) {
       return res
@@ -649,7 +705,9 @@ async function closeMonth(req, res) {
       });
     }
 
-    const incomeYTD_after = round2(clampMin0(ytd.incomeYTD) + netBeforeTaxAndPvd);
+    const incomeYTD_after = round2(
+      clampMin0(ytd.incomeYTD) + netBeforeTaxAndPvd
+    );
     const ssoYTD_after = round2(clampMin0(ytd.ssoYTD) + ssoM);
     const pvdYTD_after = round2(clampMin0(ytd.pvdYTD) + pvdM);
 
@@ -798,6 +856,7 @@ async function closeMonth(req, res) {
     };
 
     const payrollClose = await PayrollClose.create(payrollClosePayload);
+    const payslipSummary = buildPayslipSummary(payrollClose);
 
     ytd.incomeYTD = incomeYTD_after;
     ytd.ssoYTD = ssoYTD_after;
@@ -813,6 +872,7 @@ async function closeMonth(req, res) {
 
     return res.json({
       ok: true,
+      payslipSummary,
       payrollClose,
       ytd,
       taxCalc,
@@ -877,7 +937,12 @@ async function getClosedMonthsByEmployee(req, res) {
       .sort({ month: -1 })
       .lean();
 
-    return res.json({ ok: true, rows });
+    const items = rows.map((row) => ({
+      ...row,
+      payslipSummary: buildPayslipSummary(row),
+    }));
+
+    return res.json({ ok: true, rows: items });
   } catch (err) {
     return res.status(500).json({
       message: "getClosedMonthsByEmployee failed",
@@ -914,7 +979,13 @@ async function getClosedMonthByEmployeeAndMonth(req, res) {
       return res.status(404).json({ message: "Not found" });
     }
 
-    return res.json({ ok: true, row });
+    const payslipSummary = buildPayslipSummary(row);
+
+    return res.json({
+      ok: true,
+      payslipSummary,
+      row,
+    });
   } catch (err) {
     return res.status(500).json({
       message: "getClosedMonthByEmployeeAndMonth failed",
