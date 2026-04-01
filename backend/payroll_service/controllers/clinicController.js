@@ -93,21 +93,25 @@ function resolveSocialSecurityPatch(body = {}) {
   const out = {};
   let touched = false;
 
-  const nested = body.socialSecurity && typeof body.socialSecurity === "object"
-    ? body.socialSecurity
-    : {};
+  const nested =
+    body.socialSecurity && typeof body.socialSecurity === "object"
+      ? body.socialSecurity
+      : {};
 
   const hasEnabled =
     hasOwn(body, "socialSecurityEnabled") || hasOwn(nested, "enabled");
   const hasEmployeeRate =
-    hasOwn(body, "socialSecurityEmployeeRate") || hasOwn(nested, "employeeRate");
+    hasOwn(body, "socialSecurityEmployeeRate") ||
+    hasOwn(nested, "employeeRate");
   const hasMaxWageBase =
-    hasOwn(body, "socialSecurityMaxWageBase") || hasOwn(nested, "maxWageBase");
+    hasOwn(body, "socialSecurityMaxWageBase") ||
+    hasOwn(nested, "maxWageBase");
 
   if (hasEnabled) {
     const enabled = hasOwn(body, "socialSecurityEnabled")
       ? parseBool(body.socialSecurityEnabled, true)
       : parseBool(nested.enabled, true);
+
     out["socialSecurity.enabled"] = enabled;
     touched = true;
   }
@@ -116,6 +120,7 @@ function resolveSocialSecurityPatch(body = {}) {
     const raw = hasOwn(body, "socialSecurityEmployeeRate")
       ? body.socialSecurityEmployeeRate
       : nested.employeeRate;
+
     const v = numOrNull(raw);
     if (v === null || v < 0 || v > 1) {
       return {
@@ -125,6 +130,7 @@ function resolveSocialSecurityPatch(body = {}) {
         got: raw,
       };
     }
+
     out["socialSecurity.employeeRate"] = v;
     touched = true;
   }
@@ -133,6 +139,7 @@ function resolveSocialSecurityPatch(body = {}) {
     const raw = hasOwn(body, "socialSecurityMaxWageBase")
       ? body.socialSecurityMaxWageBase
       : nested.maxWageBase;
+
     const v = numOrNull(raw);
     if (v === null || v < 0 || v > 1000000) {
       return {
@@ -142,6 +149,7 @@ function resolveSocialSecurityPatch(body = {}) {
         got: raw,
       };
     }
+
     out["socialSecurity.maxWageBase"] = v;
     touched = true;
   }
@@ -409,10 +417,14 @@ async function patchMyClinicProfile(req, res) {
 async function getClinic(req, res) {
   try {
     const clinicId = s(req.params.clinicId || "");
-    if (!clinicId) return res.status(400).json({ message: "clinicId required" });
+    if (!clinicId) {
+      return res.status(400).json({ message: "clinicId required" });
+    }
 
     const row = await Clinic.findOne({ clinicId }).lean();
-    if (!row) return res.status(404).json({ message: "clinic not found" });
+    if (!row) {
+      return res.status(404).json({ message: "clinic not found" });
+    }
 
     return res.json({ ok: true, clinic: row });
   } catch (e) {

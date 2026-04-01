@@ -27,8 +27,8 @@ const ClinicSchema = new mongoose.Schema(
     // -----------------------------
     // 🎨 SaaS Branding
     // -----------------------------
-    brandAbbr: { type: String, default: "" },   // เช่น MC
-    brandColor: { type: String, default: "" },  // เช่น #6D28D9
+    brandAbbr: { type: String, default: "" }, // เช่น MC
+    brandColor: { type: String, default: "" }, // เช่น #6D28D9
 
     // -----------------------------
     // ✅ Payroll / Social Security

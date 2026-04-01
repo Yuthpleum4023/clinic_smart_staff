@@ -2,39 +2,43 @@
 // payroll_service/controllers/payrollCloseController.js
 //
 // ✅ FULL FILE — Payroll Close Controller
-// ✅ PATCH SAFE AGAINST DOUBLE-DEDUCTION:
-// - คง route / function names / response structure เดิม
-// - กันความเสี่ยง "หักวันลา/ขาดซ้ำ" ด้วย grossBaseMode
-// - รองรับ 3 โหมดของ grossBase:
-//   1) PRE_DEDUCTION   = grossBase คือฐานก่อนหักลา/ขาด
-//   2) POST_DEDUCTION  = grossBase คือฐานหลังหักลา/ขาดแล้ว
-//   3) AUTO            = ถ้ามี expected gross จาก client จะเลือกสูตรที่ใกล้ที่สุด
-// - default ยังคง backward-compatible = PRE_DEDUCTION
+// ✅ UPDATED TO MATCH BUSINESS FORMULA:
+//
+//   SSO = min(ฐานเงินเดือนที่ใช้คิด SSO, maxWageBase) * employeeRate
+//
+//   Net ก่อนภาษี/PVD = เงินเดือนฐาน
+//                     - SSO
+//                     - หักลา/ขาด
+//                     + OT
+//                     + bonus
+//                     + otherAllowance (ใช้เป็น commission/allowance bucket ได้)
+//
+//   Net สุดท้าย = Net ก่อนภาษี/PVD - ภาษี - PVD
+//
+// ✅ IMPORTANT:
+// - SSO คิดจาก "ฐานเงินเดือน" เท่านั้น
+// - SSO ไม่เอา OT / bonus / otherAllowance ไปคิด
+// - otherDeduction ใน flow นี้ใช้เป็น "หักลา/ขาด" หลัก
+// - otherAllowance ใช้เป็น commission/allowance bucket ได้
+//
+// ✅ SAFE AGAINST DOUBLE-DEDUCTION:
+// - PRE_DEDUCTION  = grossBase คือเงินเดือนฐานก่อนหักลา/ขาด
+// - POST_DEDUCTION = grossBase คือเงินเดือนฐานหลังหักลา/ขาดแล้ว
+// - AUTO           = ถ้ามี expected gross จาก client จะเลือกสูตรที่ใกล้ที่สุด
 //
 // ✅ TAX MODE:
 // - WITHHOLDING
 // - NO_WITHHOLDING
-//
-// ✅ NEW DISPLAY SNAPSHOT:
-// - บันทึก display* fields ลง PayrollClose
-// - เพื่อให้หน้า detail / preview / PDF ใช้เลขชุดเดียวกัน
-//
-// ✅ EXISTING FEATURES:
-// - employeeId in this system = staffId
-// - Pull approved OT summary by (clinicId + monthKey + staffId)
-// - If client sends baseHourly and otPay=0 => compute otPay from approvedWeightedHours
-// - TAX userId fix: use EMPLOYEE userId instead of admin userId
-// - SECURITY: staff/employee ดูได้เฉพาะของตัวเอง, admin ดูได้ทั้งคลินิก
-// - SECURITY: ทุก query ผูก clinicId จาก token กันข้อมูลข้ามคลินิก
-// - ROBUST: รองรับทั้ง req.user และ req.userCtx
 //
 // ✅ SSO POLICY:
 // - อ่านจาก Clinic.socialSecurity เป็นหลัก
 // - fallback default:
 //   - employeeRate = 0.05
 //   - maxWageBase = 17500
-// - backend คำนวณ SSO เองจาก grossMonthly
-// - ไม่เชื่อ ssoEmployeeMonthly ที่ client ส่งมาเป็น source of truth
+//
+// ✅ SNAPSHOT:
+// - บันทึก display* fields ลง PayrollClose
+// - บันทึก ssoBaseUsed และ policy ที่ใช้จริงลง snapshot
 //
 
 const axios = require("axios");
@@ -91,38 +95,6 @@ function normalizeGrossBaseMode(v) {
   return "PRE_DEDUCTION";
 }
 
-function computeGrossMonthlyPreDeduction({
-  grossBase,
-  otPay,
-  bonus,
-  otherAllowance,
-  otherDeduction,
-}) {
-  return Math.max(
-    0,
-    clampMin0(grossBase) +
-      clampMin0(otPay) +
-      clampMin0(bonus) +
-      clampMin0(otherAllowance) -
-      clampMin0(otherDeduction)
-  );
-}
-
-function computeGrossMonthlyPostDeduction({
-  grossBase,
-  otPay,
-  bonus,
-  otherAllowance,
-}) {
-  return Math.max(
-    0,
-    clampMin0(grossBase) +
-      clampMin0(otPay) +
-      clampMin0(bonus) +
-      clampMin0(otherAllowance)
-  );
-}
-
 function pickExpectedGrossBeforeTax(body) {
   const candidates = [
     body.expectedGrossBeforeTax,
@@ -139,7 +111,23 @@ function pickExpectedGrossBeforeTax(body) {
   return 0;
 }
 
-function resolveGrossComputation({
+/**
+ * BUSINESS FORMULA
+ *
+ * PRE_DEDUCTION:
+ *   grossBase = เงินเดือนฐานก่อนหักลา/ขาด
+ *   ssoBase   = grossBase
+ *   netBeforeTaxAndPvd = grossBase - sso - otherDeduction + otPay + bonus + otherAllowance
+ *
+ * POST_DEDUCTION:
+ *   grossBase = เงินเดือนฐานหลังหักลา/ขาดแล้ว
+ *   ssoBase   = grossBase + otherDeduction   (reconstruct salary base for SSO)
+ *   netBeforeTaxAndPvd = grossBase - sso + otPay + bonus + otherAllowance
+ *
+ * AUTO:
+ *   เลือกสูตรที่ใกล้ expectedGrossBeforeTax มากกว่า
+ */
+function resolvePayrollComputation({
   body,
   grossBase,
   otPay,
@@ -150,76 +138,94 @@ function resolveGrossComputation({
   const requestedMode = normalizeGrossBaseMode(body.grossBaseMode);
   const expectedGrossBeforeTax = pickExpectedGrossBeforeTax(body);
 
-  const preDeductionGross = round2(
-    computeGrossMonthlyPreDeduction({
-      grossBase,
-      otPay,
-      bonus,
-      otherAllowance,
-      otherDeduction,
-    })
+  const salaryBasePreDeduction = round2(clampMin0(grossBase));
+  const leaveDeduction = round2(clampMin0(otherDeduction));
+  const otPayFinal = round2(clampMin0(otPay));
+  const bonusFinal = round2(clampMin0(bonus));
+  const allowanceFinal = round2(clampMin0(otherAllowance));
+
+  const preDeductionSalaryBaseForSso = salaryBasePreDeduction;
+  const preDeductionNetBeforeTax = round2(
+    Math.max(
+      0,
+      salaryBasePreDeduction -
+        leaveDeduction +
+        otPayFinal +
+        bonusFinal +
+        allowanceFinal
+    )
   );
 
-  const postDeductionGross = round2(
-    computeGrossMonthlyPostDeduction({
-      grossBase,
-      otPay,
-      bonus,
-      otherAllowance,
-    })
+  const postDeductionSalaryBaseAfterLeave = salaryBasePreDeduction;
+  const postDeductionSalaryBaseForSso = round2(
+    salaryBasePreDeduction + leaveDeduction
+  );
+  const postDeductionNetBeforeTax = round2(
+    Math.max(
+      0,
+      postDeductionSalaryBaseAfterLeave +
+        otPayFinal +
+        bonusFinal +
+        allowanceFinal
+    )
   );
 
-  if (requestedMode === "PRE_DEDUCTION") {
+  const buildResult = (mode) => {
+    if (mode === "POST_DEDUCTION") {
+      return {
+        appliedMode: "POST_DEDUCTION",
+        expectedGrossBeforeTax,
+
+        salaryBaseForSso: postDeductionSalaryBaseForSso,
+        salaryBaseAfterLeave: postDeductionSalaryBaseAfterLeave,
+        leaveDeduction,
+        otPay: otPayFinal,
+        bonus: bonusFinal,
+        otherAllowance: allowanceFinal,
+
+        netBeforeTaxAndPvd: postDeductionNetBeforeTax,
+
+        preDeductionNetBeforeTax,
+        postDeductionNetBeforeTax,
+      };
+    }
+
     return {
-      effectiveGrossBase: round2(clampMin0(grossBase)),
-      grossMonthly: preDeductionGross,
       appliedMode: "PRE_DEDUCTION",
       expectedGrossBeforeTax,
-      preDeductionGross,
-      postDeductionGross,
+
+      salaryBaseForSso: preDeductionSalaryBaseForSso,
+      salaryBaseAfterLeave: round2(
+        Math.max(0, salaryBasePreDeduction - leaveDeduction)
+      ),
+      leaveDeduction,
+      otPay: otPayFinal,
+      bonus: bonusFinal,
+      otherAllowance: allowanceFinal,
+
+      netBeforeTaxAndPvd: preDeductionNetBeforeTax,
+
+      preDeductionNetBeforeTax,
+      postDeductionNetBeforeTax,
     };
+  };
+
+  if (requestedMode === "PRE_DEDUCTION") {
+    return buildResult("PRE_DEDUCTION");
   }
 
   if (requestedMode === "POST_DEDUCTION") {
-    return {
-      effectiveGrossBase: round2(clampMin0(grossBase)),
-      grossMonthly: postDeductionGross,
-      appliedMode: "POST_DEDUCTION",
-      expectedGrossBeforeTax,
-      preDeductionGross,
-      postDeductionGross,
-    };
+    return buildResult("POST_DEDUCTION");
   }
 
   if (expectedGrossBeforeTax > 0) {
-    const preDiff = absDiff(preDeductionGross, expectedGrossBeforeTax);
-    const postDiff = absDiff(postDeductionGross, expectedGrossBeforeTax);
+    const preDiff = absDiff(preDeductionNetBeforeTax, expectedGrossBeforeTax);
+    const postDiff = absDiff(postDeductionNetBeforeTax, expectedGrossBeforeTax);
 
-    const appliedMode =
-      postDiff < preDiff ? "POST_DEDUCTION" : "PRE_DEDUCTION";
-
-    return {
-      effectiveGrossBase: round2(clampMin0(grossBase)),
-      grossMonthly:
-        appliedMode === "POST_DEDUCTION"
-          ? postDeductionGross
-          : preDeductionGross,
-      appliedMode,
-      expectedGrossBeforeTax,
-      preDeductionGross,
-      postDeductionGross,
-    };
+    return buildResult(postDiff < preDiff ? "POST_DEDUCTION" : "PRE_DEDUCTION");
   }
 
-  // backward-compatible default
-  return {
-    effectiveGrossBase: round2(clampMin0(grossBase)),
-    grossMonthly: preDeductionGross,
-    appliedMode: "PRE_DEDUCTION",
-    expectedGrossBeforeTax,
-    preDeductionGross,
-    postDeductionGross,
-  };
+  return buildResult("PRE_DEDUCTION");
 }
 
 // ================= SSO DEFAULTS =================
@@ -233,7 +239,7 @@ function normalizeTaxMode(v) {
   return "WITHHOLDING";
 }
 
-// เก็บไว้เผื่อ compatibility / support อื่น ๆ
+// เก็บไว้เผื่อ compatibility / debug
 function normalizeSsoEmployeeMonthly(v, maxEmployeeMonthly) {
   return round2(clamp(clampMin0(v), 0, clampMin0(maxEmployeeMonthly)));
 }
@@ -261,11 +267,12 @@ function resolveClinicSsoConfig(clinicRow) {
   };
 }
 
-function computeSsoEmployeeMonthlyFromClinicConfig(grossMonthly, ssoConfig) {
+// ✅ SSO คิดจาก "ฐานเงินเดือนที่ใช้คิด SSO" เท่านั้น
+function computeSsoEmployeeMonthlyFromClinicConfig(salaryBaseForSso, ssoConfig) {
   if (!ssoConfig?.enabled) return 0;
 
   const contributableBase = Math.min(
-    clampMin0(grossMonthly),
+    clampMin0(salaryBaseForSso),
     clampMin0(ssoConfig.maxWageBase)
   );
 
@@ -459,21 +466,31 @@ async function calcWithheldByYTDFromAuth({
 
 // ================= DISPLAY SNAPSHOT =================
 function buildDisplaySnapshot({
-  displayNetBeforeOtBase,
-  otherDeduction,
+  salaryBaseForSso,
+  salaryBaseAfterLeave,
+  leaveDeduction,
   otSummary,
   otPayFinal,
-  grossMonthly,
+  bonusFinal,
+  otherAllowanceFinal,
   withheldTaxMonthly,
   ssoM,
   pvdM,
   netPay,
 }) {
-  const displayNetBeforeOt = round2(clampMin0(displayNetBeforeOtBase));
-  const displayLeaveDeduction = round2(clampMin0(otherDeduction));
+  const displayNetBeforeOt = round2(clampMin0(salaryBaseAfterLeave));
+  const displayLeaveDeduction = round2(clampMin0(leaveDeduction));
   const displayOtHours = round2(clampMin0(otSummary?.approvedWeightedHours));
   const displayOtAmount = round2(clampMin0(otPayFinal));
-  const displayGrossBeforeTax = round2(clampMin0(grossMonthly));
+  const displayGrossBeforeTax = round2(
+    Math.max(
+      0,
+      clampMin0(salaryBaseAfterLeave) +
+        clampMin0(otPayFinal) +
+        clampMin0(bonusFinal) +
+        clampMin0(otherAllowanceFinal)
+    )
+  );
   const displayTaxAmount = round2(clampMin0(withheldTaxMonthly));
   const displaySsoAmount = round2(clampMin0(ssoM));
   const displayNetPay = round2(clampMin0(netPay));
@@ -488,6 +505,7 @@ function buildDisplaySnapshot({
     displaySsoAmount,
     displayNetPay,
     displayPvdAmount: round2(clampMin0(pvdM)),
+    displaySalaryBaseForSso: round2(clampMin0(salaryBaseForSso)),
   };
 }
 
@@ -499,11 +517,11 @@ async function closeMonth(req, res) {
       clinicId,
       employeeId, // employeeId = staffId
       month, // yyyy-MM
-      grossBase = 0,
+      grossBase = 0, // เงินเดือนฐาน
       otPay = 0,
       bonus = 0,
-      otherAllowance = 0,
-      otherDeduction = 0,
+      otherAllowance = 0, // commission/allowance bucket
+      otherDeduction = 0, // หักลา/ขาดหลัก
       ssoEmployeeMonthly = 0, // รับไว้เพื่อ compatibility / debug
       pvdEmployeeMonthly = 0,
       baseHourly = null,
@@ -581,25 +599,39 @@ async function closeMonth(req, res) {
     const otherAllowanceFinal = round2(clampMin0(otherAllowance));
     const otherDeductionFinal = round2(clampMin0(otherDeduction));
 
-    const grossResolved = resolveGrossComputation({
+    const payrollResolved = resolvePayrollComputation({
       body,
       grossBase: grossBaseFinal,
       otPay: otPayFinal,
       bonus: bonusFinal,
       otherAllowance: otherAllowanceFinal,
       otherDeduction: otherDeductionFinal,
-      grossBaseMode: grossBaseModeRaw,
     });
 
-    const grossMonthly = round2(grossResolved.grossMonthly);
+    const salaryBaseForSso = round2(payrollResolved.salaryBaseForSso);
+    const salaryBaseAfterLeave = round2(payrollResolved.salaryBaseAfterLeave);
+    const leaveDeduction = round2(payrollResolved.leaveDeduction);
 
-    // ✅ backend คำนวณเองจาก clinic config
+    // ✅ SSO คิดจาก "ฐานเงินเดือนล้วน" เท่านั้น
     const ssoM = computeSsoEmployeeMonthlyFromClinicConfig(
-      grossMonthly,
+      salaryBaseForSso,
       ssoConfig
     );
 
     const pvdM = round2(clampMin0(pvdEmployeeMonthly));
+
+    // Net ก่อนภาษี/PVD ตามสูตรธุรกิจ
+    const netBeforeTaxAndPvd = round2(
+      Math.max(
+        0,
+        salaryBaseForSso -
+          ssoM -
+          leaveDeduction +
+          otPayFinal +
+          bonusFinal +
+          otherAllowanceFinal
+      )
+    );
 
     let ytd = await TaxYTD.findOne({
       employeeId: safeStr(employeeId),
@@ -617,7 +649,7 @@ async function closeMonth(req, res) {
       });
     }
 
-    const incomeYTD_after = round2(clampMin0(ytd.incomeYTD) + grossMonthly);
+    const incomeYTD_after = round2(clampMin0(ytd.incomeYTD) + netBeforeTaxAndPvd);
     const ssoYTD_after = round2(clampMin0(ytd.ssoYTD) + ssoM);
     const pvdYTD_after = round2(clampMin0(ytd.pvdYTD) + pvdM);
 
@@ -661,15 +693,20 @@ async function closeMonth(req, res) {
     }
 
     const netPay = round2(
-      Math.max(0, grossMonthly - withheldTaxMonthly - ssoM - pvdM)
+      Math.max(0, netBeforeTaxAndPvd - withheldTaxMonthly - pvdM)
     );
 
+    // เก็บผลรวมก่อนภาษี/PVD เป็น grossMonthly เพื่อคง contract เดิม
+    const grossMonthly = netBeforeTaxAndPvd;
+
     const display = buildDisplaySnapshot({
-      displayNetBeforeOtBase: grossBaseFinal,
-      otherDeduction: otherDeductionFinal,
+      salaryBaseForSso,
+      salaryBaseAfterLeave,
+      leaveDeduction,
       otSummary,
       otPayFinal,
-      grossMonthly,
+      bonusFinal,
+      otherAllowanceFinal,
       withheldTaxMonthly,
       ssoM,
       pvdM,
@@ -733,10 +770,19 @@ async function closeMonth(req, res) {
 
         // ✅ debug-safe trace for future support
         grossBaseModeRequested: normalizeGrossBaseMode(grossBaseModeRaw),
-        grossBaseModeApplied: grossResolved.appliedMode,
-        expectedGrossBeforeTax: grossResolved.expectedGrossBeforeTax,
-        preDeductionGross: grossResolved.preDeductionGross,
-        postDeductionGross: grossResolved.postDeductionGross,
+        grossBaseModeApplied: payrollResolved.appliedMode,
+        expectedGrossBeforeTax: payrollResolved.expectedGrossBeforeTax,
+        preDeductionNetBeforeTax: payrollResolved.preDeductionNetBeforeTax,
+        postDeductionNetBeforeTax: payrollResolved.postDeductionNetBeforeTax,
+
+        // ✅ formula snapshot
+        ssoBaseUsed: salaryBaseForSso,
+        salaryBaseAfterLeave,
+        leaveDeduction,
+        otPayUsed: otPayFinal,
+        bonusUsed: bonusFinal,
+        otherAllowanceUsed: otherAllowanceFinal,
+        netBeforeTaxAndPvd,
 
         // ✅ SSO snapshot
         ssoEnabled: ssoConfig.enabled,
@@ -796,13 +842,14 @@ async function closeMonth(req, res) {
         taxAmount: display.displayTaxAmount,
         ssoAmount: display.displaySsoAmount,
         netPay: display.displayNetPay,
+        salaryBaseForSso: display.displaySalaryBaseForSso,
       },
       grossBaseMode: {
         requested: normalizeGrossBaseMode(grossBaseModeRaw),
-        applied: grossResolved.appliedMode,
-        expectedGrossBeforeTax: grossResolved.expectedGrossBeforeTax,
-        preDeductionGross: grossResolved.preDeductionGross,
-        postDeductionGross: grossResolved.postDeductionGross,
+        applied: payrollResolved.appliedMode,
+        expectedGrossBeforeTax: payrollResolved.expectedGrossBeforeTax,
+        preDeductionNetBeforeTax: payrollResolved.preDeductionNetBeforeTax,
+        postDeductionNetBeforeTax: payrollResolved.postDeductionNetBeforeTax,
       },
     });
   } catch (err) {
