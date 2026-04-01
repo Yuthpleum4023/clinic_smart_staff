@@ -12,6 +12,11 @@
 //   - withheldTaxMonthly = 0
 //   - ไม่เพิ่ม taxPaidYTD
 //
+// ✅ NEW DISPLAY SNAPSHOT:
+// - บันทึก display* fields ลง PayrollClose
+// - เพื่อให้หน้า detail / preview / PDF ใช้เลขชุดเดียวกัน
+// - frontend ไม่ต้องคำนวณซ้ำ
+//
 // ✅ EXISTING FEATURES:
 // - employeeId in this system = staffId
 // - Pull approved OT summary by (clinicId + monthKey + staffId)
@@ -100,9 +105,7 @@ function normalizeTaxMode(v) {
 }
 
 function normalizeSsoEmployeeMonthly(v) {
-  return round2(
-    clamp(clampMin0(v), 0, SSO_MAX_EMPLOYEE_MONTHLY)
-  );
+  return round2(clamp(clampMin0(v), 0, SSO_MAX_EMPLOYEE_MONTHLY));
 }
 
 // ================= AUTH PICKER (ROBUST) =================
@@ -290,6 +293,45 @@ async function calcWithheldByYTDFromAuth({
   throw lastErr || new Error("AUTH_INTERNAL call failed");
 }
 
+// ================= DISPLAY SNAPSHOT =================
+// หมายเหตุ:
+// - แนวนี้ยึดตามสิ่งที่ท่านต้องการให้ preview / PDF ตรงกับหน้า detail
+// - grossBase ถูกมองเป็น "สุทธิเดิม (ไม่รวม OT)" หรือยอดพร้อมแสดงก่อนบวก OT
+// - otherDeduction ใช้เป็น "ยอดลา/ขาด" สำหรับแสดงประกอบ
+// - display* มีไว้ render ตรง ๆ ไม่ใช่ให้คำนวณซ้ำ
+function buildDisplaySnapshot({
+  grossBase,
+  otherDeduction,
+  otSummary,
+  otPayFinal,
+  grossMonthly,
+  withheldTaxMonthly,
+  ssoM,
+  pvdM,
+  netPay,
+}) {
+  const displayNetBeforeOt = round2(clampMin0(grossBase));
+  const displayLeaveDeduction = round2(clampMin0(otherDeduction));
+  const displayOtHours = round2(clampMin0(otSummary?.approvedWeightedHours));
+  const displayOtAmount = round2(clampMin0(otPayFinal));
+  const displayGrossBeforeTax = round2(clampMin0(grossMonthly));
+  const displayTaxAmount = round2(clampMin0(withheldTaxMonthly));
+  const displaySsoAmount = round2(clampMin0(ssoM));
+  const displayNetPay = round2(clampMin0(netPay));
+
+  return {
+    displayNetBeforeOt,
+    displayLeaveDeduction,
+    displayOtHours,
+    displayOtAmount,
+    displayGrossBeforeTax,
+    displayTaxAmount,
+    displaySsoAmount,
+    displayNetPay,
+    displayPvdAmount: round2(clampMin0(pvdM)),
+  };
+}
+
 // ================= CLOSE MONTH =================
 async function closeMonth(req, res) {
   try {
@@ -364,6 +406,7 @@ async function closeMonth(req, res) {
     if (otPayFinal <= 0 && Number.isFinite(bh) && bh > 0) {
       otPayFinal = Math.max(0, otSummary.approvedWeightedHours * bh);
     }
+    otPayFinal = round2(otPayFinal);
 
     const taxYear = monthToTaxYear(month);
 
@@ -448,6 +491,18 @@ async function closeMonth(req, res) {
       Math.max(0, grossMonthly - withheldTaxMonthly - ssoM - pvdM)
     );
 
+    const display = buildDisplaySnapshot({
+      grossBase: grossBaseFinal,
+      otherDeduction: otherDeductionFinal,
+      otSummary,
+      otPayFinal,
+      grossMonthly,
+      withheldTaxMonthly,
+      ssoM,
+      pvdM,
+      netPay,
+    });
+
     const payrollClosePayload = {
       clinicId: clinicIdFromToken,
       employeeId: safeStr(employeeId),
@@ -458,7 +513,7 @@ async function closeMonth(req, res) {
       netPay,
 
       grossBase: grossBaseFinal,
-      otPay: round2(otPayFinal),
+      otPay: otPayFinal,
       bonus: bonusFinal,
       otherAllowance: otherAllowanceFinal,
       otherDeduction: otherDeductionFinal,
@@ -475,9 +530,34 @@ async function closeMonth(req, res) {
       ),
       otApprovedCount: Math.max(0, Math.floor(Number(otSummary.count || 0))),
 
+      // ✅ display snapshot fields
+      displayNetBeforeOt: display.displayNetBeforeOt,
+      displayLeaveDeduction: display.displayLeaveDeduction,
+      displayOtHours: display.displayOtHours,
+      displayOtAmount: display.displayOtAmount,
+      displayGrossBeforeTax: display.displayGrossBeforeTax,
+      displayTaxAmount: display.displayTaxAmount,
+      displaySsoAmount: display.displaySsoAmount,
+      displayNetPay: display.displayNetPay,
+
       locked: true,
       closedBy: adminUserId,
       taxMode,
+
+      snapshot: {
+        taxYear,
+        allowanceTotalAnnual: 0,
+        incomeYTD_after,
+        ssoYTD_after,
+        pvdYTD_after,
+        taxableYTD: round2(clampMin0(taxCalc?.taxableYTD)),
+        taxDueYTD: round2(clampMin0(taxCalc?.taxDueYTD)),
+        taxPaidYTD_before: round2(clampMin0(ytd.taxPaidYTD)),
+        taxPaidYTD_after:
+          taxMode === "WITHHOLDING"
+            ? round2(clampMin0(ytd.taxPaidYTD) + withheldTaxMonthly)
+            : round2(clampMin0(ytd.taxPaidYTD)),
+      },
     };
 
     const payrollClose = await PayrollClose.create(payrollClosePayload);
@@ -514,6 +594,16 @@ async function closeMonth(req, res) {
         approvedWeightedHours: otSummary.approvedWeightedHours,
         count: otSummary.count,
         records: otSummary.records,
+      },
+      displaySnapshot: {
+        netBeforeOt: display.displayNetBeforeOt,
+        leaveDeduction: display.displayLeaveDeduction,
+        otHours: display.displayOtHours,
+        otAmount: display.displayOtAmount,
+        grossBeforeTax: display.displayGrossBeforeTax,
+        taxAmount: display.displayTaxAmount,
+        ssoAmount: display.displaySsoAmount,
+        netPay: display.displayNetPay,
       },
     });
   } catch (err) {

@@ -6,6 +6,9 @@
 //   1) WITHHOLDING
 //   2) NO_WITHHOLDING
 // - แก้ unique index ให้ผูก clinicId + employeeId + month
+// - ✅ NEW: เพิ่ม display snapshot fields
+//   เพื่อให้หน้า detail / preview / PDF ใช้เลขชุดเดียวกัน
+//   และไม่ต้องคำนวณซ้ำ
 //
 // ✅ KEEP:
 // - employeeId = staffId
@@ -31,7 +34,9 @@ const PayrollCloseSchema = new mongoose.Schema(
       index: true,
     },
 
-    // components
+    // =============================
+    // Raw / accounting components
+    // =============================
     grossBase: { type: Number, default: 0 },
     otPay: { type: Number, default: 0 },
     bonus: { type: Number, default: 0 },
@@ -51,6 +56,20 @@ const PayrollCloseSchema = new mongoose.Schema(
     otApprovedMinutes: { type: Number, default: 0 },
     otApprovedWeightedHours: { type: Number, default: 0 },
     otApprovedCount: { type: Number, default: 0 },
+
+    // =============================
+    // ✅ Display snapshot fields
+    // ใช้ render ตรง ๆ ใน detail / preview / PDF
+    // ห้ามเอาไปคำนวณซ้ำ
+    // =============================
+    displayNetBeforeOt: { type: Number, default: 0 },
+    displayLeaveDeduction: { type: Number, default: 0 },
+    displayOtHours: { type: Number, default: 0 },
+    displayOtAmount: { type: Number, default: 0 },
+    displayGrossBeforeTax: { type: Number, default: 0 },
+    displayTaxAmount: { type: Number, default: 0 },
+    displaySsoAmount: { type: Number, default: 0 },
+    displayNetPay: { type: Number, default: 0 },
 
     // lock & audit
     locked: { type: Boolean, default: true },
