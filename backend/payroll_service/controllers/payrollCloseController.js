@@ -21,6 +21,11 @@
 // - SECURITY: ทุก query ผูก clinicId จาก token กันข้อมูลข้ามคลินิก
 // - ROBUST: รองรับทั้ง req.user และ req.userCtx
 //
+// ✅ SSO FIX:
+// - เปลี่ยนเพดานใหม่เป็น 17,500
+// - employee contribution 5%
+// - monthly cap = 875
+//
 
 const axios = require("axios");
 const PayrollClose = require("../models/PayrollClose");
@@ -53,6 +58,9 @@ function monthToTaxYear(monthStr) {
   const y = Number(String(monthStr || "").slice(0, 4));
   return Number.isFinite(y) ? y : new Date().getFullYear();
 }
+function round2(v) {
+  return Number(toNumber(v).toFixed(2));
+}
 function computeGrossMonthly({
   grossBase,
   otPay,
@@ -77,11 +85,24 @@ async function postJson(url, body, headers) {
   });
 }
 
+// ================= SSO CONFIG =================
+const SSO_EMPLOYEE_RATE = 0.05;
+const SSO_MAX_WAGE_BASE = 17500;
+const SSO_MAX_EMPLOYEE_MONTHLY = round2(
+  SSO_MAX_WAGE_BASE * SSO_EMPLOYEE_RATE
+);
+
 // ✅ NEW
 function normalizeTaxMode(v) {
   const s = safeStr(v).toUpperCase();
   if (s === "NO_WITHHOLDING") return "NO_WITHHOLDING";
   return "WITHHOLDING";
+}
+
+function normalizeSsoEmployeeMonthly(v) {
+  return round2(
+    clamp(clampMin0(v), 0, SSO_MAX_EMPLOYEE_MONTHLY)
+  );
 }
 
 // ================= AUTH PICKER (ROBUST) =================
@@ -286,8 +307,6 @@ async function closeMonth(req, res) {
       pvdEmployeeMonthly = 0,
       baseHourly = null,
       employeeUserId: employeeUserIdFromBody,
-
-      // ✅ NEW
       taxMode: taxModeRaw,
     } = body;
 
@@ -348,18 +367,24 @@ async function closeMonth(req, res) {
 
     const taxYear = monthToTaxYear(month);
 
-    const grossMonthly = computeGrossMonthly({
-      grossBase,
-      otPay: otPayFinal,
-      bonus,
-      otherAllowance,
-      otherDeduction,
-    });
+    const grossBaseFinal = clampMin0(grossBase);
+    const bonusFinal = clampMin0(bonus);
+    const otherAllowanceFinal = clampMin0(otherAllowance);
+    const otherDeductionFinal = clampMin0(otherDeduction);
 
-    const ssoM = clamp(clampMin0(ssoEmployeeMonthly), 0, 750);
-    const pvdM = clampMin0(pvdEmployeeMonthly);
+    const grossMonthly = round2(
+      computeGrossMonthly({
+        grossBase: grossBaseFinal,
+        otPay: otPayFinal,
+        bonus: bonusFinal,
+        otherAllowance: otherAllowanceFinal,
+        otherDeduction: otherDeductionFinal,
+      })
+    );
 
-    // NOTE: TaxYTD ผูกด้วย employeeId (staffId)
+    const ssoM = normalizeSsoEmployeeMonthly(ssoEmployeeMonthly);
+    const pvdM = round2(clampMin0(pvdEmployeeMonthly));
+
     let ytd = await TaxYTD.findOne({
       employeeId: safeStr(employeeId),
       taxYear,
@@ -376,9 +401,9 @@ async function closeMonth(req, res) {
       });
     }
 
-    const incomeYTD_after = clampMin0(ytd.incomeYTD) + grossMonthly;
-    const ssoYTD_after = clampMin0(ytd.ssoYTD) + ssoM;
-    const pvdYTD_after = clampMin0(ytd.pvdYTD) + pvdM;
+    const incomeYTD_after = round2(clampMin0(ytd.incomeYTD) + grossMonthly);
+    const ssoYTD_after = round2(clampMin0(ytd.ssoYTD) + ssoM);
+    const pvdYTD_after = round2(clampMin0(ytd.pvdYTD) + pvdM);
 
     let resolved = null;
     let taxCalc = null;
@@ -404,7 +429,7 @@ async function closeMonth(req, res) {
         taxPaidYTD: clampMin0(ytd.taxPaidYTD),
       });
 
-      withheldTaxMonthly = clampMin0(taxCalc?.withheldThisMonth);
+      withheldTaxMonthly = round2(clampMin0(taxCalc?.withheldThisMonth));
 
       warning =
         resolved.source === "admin_fallback"
@@ -419,9 +444,8 @@ async function closeMonth(req, res) {
       };
     }
 
-    const netPay = Math.max(
-      0,
-      grossMonthly - withheldTaxMonthly - ssoM - pvdM
+    const netPay = round2(
+      Math.max(0, grossMonthly - withheldTaxMonthly - ssoM - pvdM)
     );
 
     const payrollClosePayload = {
@@ -433,11 +457,11 @@ async function closeMonth(req, res) {
       withheldTaxMonthly,
       netPay,
 
-      grossBase: clampMin0(grossBase),
-      otPay: otPayFinal,
-      bonus: clampMin0(bonus),
-      otherAllowance: clampMin0(otherAllowance),
-      otherDeduction: clampMin0(otherDeduction),
+      grossBase: grossBaseFinal,
+      otPay: round2(otPayFinal),
+      bonus: bonusFinal,
+      otherAllowance: otherAllowanceFinal,
+      otherDeduction: otherDeductionFinal,
 
       ssoEmployeeMonthly: ssoM,
       pvdEmployeeMonthly: pvdM,
@@ -446,13 +470,13 @@ async function closeMonth(req, res) {
         0,
         Math.floor(Number(otSummary.approvedMinutes || 0))
       ),
-      otApprovedWeightedHours: clampMin0(otSummary.approvedWeightedHours),
+      otApprovedWeightedHours: round2(
+        clampMin0(otSummary.approvedWeightedHours)
+      ),
       otApprovedCount: Math.max(0, Math.floor(Number(otSummary.count || 0))),
 
       locked: true,
       closedBy: adminUserId,
-
-      // ✅ NEW
       taxMode,
     };
 
@@ -463,9 +487,9 @@ async function closeMonth(req, res) {
     ytd.pvdYTD = pvdYTD_after;
 
     if (taxMode === "WITHHOLDING") {
-      ytd.taxPaidYTD = clampMin0(ytd.taxPaidYTD) + withheldTaxMonthly;
+      ytd.taxPaidYTD = round2(clampMin0(ytd.taxPaidYTD) + withheldTaxMonthly);
     } else {
-      ytd.taxPaidYTD = clampMin0(ytd.taxPaidYTD);
+      ytd.taxPaidYTD = round2(clampMin0(ytd.taxPaidYTD));
     }
 
     await ytd.save();
@@ -479,6 +503,11 @@ async function closeMonth(req, res) {
       taxUserId: resolved?.employeeUserId || "",
       taxUserIdSource: resolved?.source || "skipped",
       warning,
+      ssoPolicy: {
+        employeeRate: SSO_EMPLOYEE_RATE,
+        maxWageBase: SSO_MAX_WAGE_BASE,
+        maxEmployeeMonthly: SSO_MAX_EMPLOYEE_MONTHLY,
+      },
       otSummary: {
         monthKey: otSummary.monthKey,
         approvedMinutes: otSummary.approvedMinutes,
