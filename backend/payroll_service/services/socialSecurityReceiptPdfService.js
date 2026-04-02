@@ -103,14 +103,20 @@ function getFontPaths() {
 
   const regular = resolveFontPath("PDF_FONT_REGULAR_PATH", [
     path.join(base, "assets", "fonts", "NotoSansThai-Regular.ttf"),
+    path.join(base, "assets", "fonts", "NotoSansThai_Condensed-Regular.ttf"),
     path.join(base, "fonts", "NotoSansThai-Regular.ttf"),
+    path.join(base, "fonts", "NotoSansThai_Condensed-Regular.ttf"),
     path.join(base, "public", "fonts", "NotoSansThai-Regular.ttf"),
+    path.join(base, "public", "fonts", "NotoSansThai_Condensed-Regular.ttf"),
   ]);
 
   const bold = resolveFontPath("PDF_FONT_BOLD_PATH", [
     path.join(base, "assets", "fonts", "NotoSansThai-Bold.ttf"),
+    path.join(base, "assets", "fonts", "NotoSansThai_Condensed-Bold.ttf"),
     path.join(base, "fonts", "NotoSansThai-Bold.ttf"),
+    path.join(base, "fonts", "NotoSansThai_Condensed-Bold.ttf"),
     path.join(base, "public", "fonts", "NotoSansThai-Bold.ttf"),
+    path.join(base, "public", "fonts", "NotoSansThai_Condensed-Bold.ttf"),
   ]);
 
   return { regular, bold };
@@ -128,6 +134,11 @@ function canRegisterFont(fontPath) {
 
 function applyFonts(doc) {
   const fonts = getFontPaths();
+
+  console.log("[SSR_PDF] regular font path =", fonts.regular || "(not found)");
+  console.log("[SSR_PDF] bold font path =", fonts.bold || "(not found)");
+  console.log("[SSR_PDF] regular exists =", canRegisterFont(fonts.regular));
+  console.log("[SSR_PDF] bold exists =", canRegisterFont(fonts.bold));
 
   let regularName = "Helvetica";
   let boldName = "Helvetica-Bold";
@@ -156,6 +167,12 @@ function applyFonts(doc) {
     if (regularName === "TH") {
       boldName = "TH";
     }
+  }
+
+  if (!hasThaiFont) {
+    console.warn(
+      "[SSR_PDF] Thai font not found. PDF may render Thai text incorrectly."
+    );
   }
 
   return {
@@ -312,7 +329,10 @@ function drawItemsTable(doc, items, options = {}) {
   ];
 
   for (let i = 1; i < xs.length - 1; i += 1) {
-    doc.moveTo(xs[i], y).lineTo(xs[i], y + headerHeight + totalRows * rowHeight).stroke();
+    doc
+      .moveTo(xs[i], y)
+      .lineTo(xs[i], y + headerHeight + totalRows * rowHeight)
+      .stroke();
   }
 
   setFont(doc, fontBold, 10);
@@ -395,8 +415,15 @@ function drawSummaryBox(doc, summary, options = {}) {
 
   const rows = [
     { label: "รวมเป็นเงิน", value: formatAmount(summary.subtotal) },
-    { label: "ภาษีหัก ณ ที่จ่าย", value: formatAmount(summary.withholdingTax) },
-    { label: "จำนวนเงินสุทธิ", value: formatAmount(summary.netAmount), bold: true },
+    {
+      label: "ภาษีหัก ณ ที่จ่าย",
+      value: formatAmount(summary.withholdingTax),
+    },
+    {
+      label: "จำนวนเงินสุทธิ",
+      value: formatAmount(summary.netAmount),
+      bold: true,
+    },
   ];
 
   let cursorY = y;
@@ -455,7 +482,9 @@ function drawSignatureArea(doc, data, options = {}) {
   doc.text(`วิธีชำระ: ${methodText}`, x + 8, y + 28);
   doc.text(`ธนาคาร: ${s(data.paymentInfo?.bankName) || "-"}`, x + 8, y + 44);
   doc.text(
-    `อ้างอิง: ${s(data.paymentInfo?.transferRef || data.paymentInfo?.chequeNo) || "-"}`,
+    `อ้างอิง: ${s(
+      data.paymentInfo?.transferRef || data.paymentInfo?.chequeNo
+    ) || "-"}`,
     x + 8,
     y + 60
   );
@@ -464,10 +493,15 @@ function drawSignatureArea(doc, data, options = {}) {
   const sigW = width - leftW - 32;
 
   setFont(doc, fontRegular, 10);
-  doc.text("ลงชื่อ ................................................................. ผู้รับเงิน", sigX, y + 20, {
-    width: sigW,
-    align: "left",
-  });
+  doc.text(
+    "ลงชื่อ ................................................................. ผู้รับเงิน",
+    sigX,
+    y + 20,
+    {
+      width: sigW,
+      align: "left",
+    }
+  );
   doc.text(
     `( ${s(data.clinicSnapshot?.clinicName) || "........................................"} )`,
     sigX + 40,
@@ -481,7 +515,8 @@ function drawSignatureArea(doc, data, options = {}) {
 }
 
 async function createPdfFileFromReceipt(receipt, opts = {}) {
-  const data = typeof receipt?.toObject === "function" ? receipt.toObject() : receipt;
+  const data =
+    typeof receipt?.toObject === "function" ? receipt.toObject() : receipt;
   if (!data) {
     throw new Error("receipt data is required");
   }
@@ -602,10 +637,7 @@ async function createPdfFileFromReceipt(receipt, opts = {}) {
 
   const customerTop = 183;
 
-  const servicePeriodValue =
-    s(data.servicePeriodText) ||
-    s(data.serviceMonth) ||
-    "-";
+  const servicePeriodValue = s(data.servicePeriodText) || s(data.serviceMonth) || "-";
 
   drawKeyValueRows(
     doc,
