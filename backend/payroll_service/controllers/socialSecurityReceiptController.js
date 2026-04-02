@@ -37,6 +37,10 @@ function parseBoolean(v, fallback = false) {
   return fallback;
 }
 
+function escapeRegex(v) {
+  return s(v).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function getPrincipal(req) {
   const userId = s(req.user?.userId || req.user?._id || req.userCtx?.userId);
   const staffId = s(req.user?.staffId);
@@ -219,6 +223,39 @@ async function findReceiptForRequest(req, receiptId, clinicId) {
   return SocialSecurityReceipt.findOne(query);
 }
 
+async function findDuplicateReceipt({
+  clinicId,
+  serviceMonth,
+  customerName,
+  excludeId = "",
+}) {
+  const normalizedClinicId = s(clinicId);
+  const normalizedServiceMonth = s(serviceMonth);
+  const normalizedCustomerName = s(customerName);
+
+  if (!normalizedClinicId || !normalizedServiceMonth || !normalizedCustomerName) {
+    return null;
+  }
+
+  const query = {
+    clinicId: normalizedClinicId,
+    serviceMonth: normalizedServiceMonth,
+    status: { $ne: "void" },
+    "customerSnapshot.customerName": {
+      $regex: `^${escapeRegex(normalizedCustomerName)}$`,
+      $options: "i",
+    },
+  };
+
+  if (s(excludeId)) {
+    query._id = { $ne: excludeId };
+  }
+
+  return SocialSecurityReceipt.findOne(query)
+    .select("_id receiptNo serviceMonth customerSnapshot status")
+    .lean();
+}
+
 async function createReceipt(req, res) {
   try {
     const principal = getPrincipal(req);
@@ -265,6 +302,30 @@ async function createReceipt(req, res) {
     }
 
     const issueDate = toDateOrNow(req.body?.issueDate);
+    const serviceMonth = s(req.body?.serviceMonth);
+
+    const duplicate = await findDuplicateReceipt({
+      clinicId,
+      serviceMonth,
+      customerName: customerSnapshot.customerName,
+    });
+
+    if (duplicate) {
+      return res.status(409).json({
+        ok: false,
+        code: "DUPLICATE_SERVICE_MONTH_RECEIPT",
+        message:
+          "A social security receipt for this customer and service month already exists",
+        existingReceipt: {
+          id: String(duplicate._id || ""),
+          receiptNo: s(duplicate.receiptNo),
+          serviceMonth: s(duplicate.serviceMonth),
+          status: s(duplicate.status),
+          customerName: s(duplicate.customerSnapshot?.customerName),
+        },
+      });
+    }
+
     const receiptNo =
       s(req.body?.receiptNo) ||
       (await nextSocialSecurityReceiptNo({ clinicId, issueDate }));
@@ -275,7 +336,7 @@ async function createReceipt(req, res) {
       clinicId,
       receiptNo,
       issueDate,
-      serviceMonth: s(req.body?.serviceMonth),
+      serviceMonth,
       servicePeriodText: s(req.body?.servicePeriodText),
       status: ["draft", "issued"].includes(s(req.body?.status))
         ? s(req.body?.status)
@@ -442,6 +503,14 @@ async function updateReceipt(req, res) {
       });
     }
 
+    if (doc.status === "issued") {
+      return res.status(409).json({
+        ok: false,
+        code: "RECEIPT_ALREADY_ISSUED",
+        message: "Issued receipt cannot be updated. Please void and recreate.",
+      });
+    }
+
     if (req.body?.issueDate && isValidDateInput(req.body.issueDate)) {
       doc.issueDate = new Date(req.body.issueDate);
     }
@@ -537,6 +606,29 @@ async function updateReceipt(req, res) {
       doc.amountInThaiText = numberToThaiText(amountResult.netAmount);
     }
 
+    const duplicate = await findDuplicateReceipt({
+      clinicId: doc.clinicId,
+      serviceMonth: doc.serviceMonth,
+      customerName: doc.customerSnapshot?.customerName,
+      excludeId: String(doc._id || ""),
+    });
+
+    if (duplicate) {
+      return res.status(409).json({
+        ok: false,
+        code: "DUPLICATE_SERVICE_MONTH_RECEIPT",
+        message:
+          "A social security receipt for this customer and service month already exists",
+        existingReceipt: {
+          id: String(duplicate._id || ""),
+          receiptNo: s(duplicate.receiptNo),
+          serviceMonth: s(duplicate.serviceMonth),
+          status: s(duplicate.status),
+          customerName: s(duplicate.customerSnapshot?.customerName),
+        },
+      });
+    }
+
     if ("note" in (req.body || {})) {
       doc.note = s(req.body.note);
     }
@@ -564,10 +656,20 @@ async function updateReceipt(req, res) {
       receipt: formatReceiptResponse(doc),
     });
   } catch (err) {
+    const msg = s(err?.message);
+
+    if (err?.code === 11000 && msg.includes("receiptNo")) {
+      return res.status(409).json({
+        ok: false,
+        code: "RECEIPT_NO_ALREADY_EXISTS",
+        message: "Receipt number already exists",
+      });
+    }
+
     return res.status(500).json({
       ok: false,
       code: "UPDATE_RECEIPT_FAILED",
-      message: s(err?.message) || "Failed to update social security receipt",
+      message: msg || "Failed to update social security receipt",
     });
   }
 }
