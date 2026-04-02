@@ -116,20 +116,52 @@ function getFontPaths() {
   return { regular, bold };
 }
 
+function canRegisterFont(fontPath) {
+  try {
+    if (!fontPath || !fileExists(fontPath)) return false;
+    const stat = fs.statSync(fontPath);
+    return stat.isFile() && stat.size > 0;
+  } catch (_) {
+    return false;
+  }
+}
+
 function applyFonts(doc) {
   const fonts = getFontPaths();
 
-  if (fonts.regular) {
-    doc.registerFont("TH", fonts.regular);
+  let regularName = "Helvetica";
+  let boldName = "Helvetica-Bold";
+  let hasThaiFont = false;
+
+  try {
+    if (canRegisterFont(fonts.regular)) {
+      doc.registerFont("TH", fonts.regular);
+      regularName = "TH";
+      hasThaiFont = true;
+    }
+  } catch (e) {
+    console.warn("[SSR_PDF] register regular font failed:", e?.message || e);
   }
-  if (fonts.bold) {
-    doc.registerFont("THB", fonts.bold);
+
+  try {
+    if (canRegisterFont(fonts.bold)) {
+      doc.registerFont("THB", fonts.bold);
+      boldName = "THB";
+      hasThaiFont = true;
+    } else if (regularName === "TH") {
+      boldName = "TH";
+    }
+  } catch (e) {
+    console.warn("[SSR_PDF] register bold font failed:", e?.message || e);
+    if (regularName === "TH") {
+      boldName = "TH";
+    }
   }
 
   return {
-    regular: fonts.regular ? "TH" : "Helvetica",
-    bold: fonts.bold ? "THB" : fonts.regular ? "TH" : "Helvetica-Bold",
-    hasThaiFont: !!fonts.regular,
+    regular: regularName,
+    bold: boldName,
+    hasThaiFont,
   };
 }
 
@@ -213,11 +245,7 @@ function drawTextBox(doc, { x, y, w, h, label, value, fontRegular, fontBold }) {
   doc.text(s(value), x + 6, y + 22, { width: w - 12 });
 }
 
-function drawKeyValueRows(
-  doc,
-  rows,
-  options = {}
-) {
+function drawKeyValueRows(doc, rows, options = {}) {
   const {
     x = 40,
     y = 40,
@@ -284,10 +312,7 @@ function drawItemsTable(doc, items, options = {}) {
   ];
 
   for (let i = 1; i < xs.length - 1; i += 1) {
-    doc
-      .moveTo(xs[i], y)
-      .lineTo(xs[i], y + headerHeight + totalRows * rowHeight)
-      .stroke();
+    doc.moveTo(xs[i], y).lineTo(xs[i], y + headerHeight + totalRows * rowHeight).stroke();
   }
 
   setFont(doc, fontBold, 10);
@@ -333,30 +358,21 @@ function drawItemsTable(doc, items, options = {}) {
       item ? formatAmount(n(item.quantity, 0)) : "",
       x + colNo + colDesc + 4,
       cursorY + 8,
-      {
-        width: colQty - 8,
-        align: "right",
-      }
+      { width: colQty - 8, align: "right" }
     );
 
     doc.text(
       item ? formatAmount(n(item.unitPrice, 0)) : "",
       x + colNo + colDesc + colQty + 4,
       cursorY + 8,
-      {
-        width: colUnit - 8,
-        align: "right",
-      }
+      { width: colUnit - 8, align: "right" }
     );
 
     doc.text(
       item ? formatAmount(n(item.amount, 0)) : "",
       x + colNo + colDesc + colQty + colUnit + 4,
       cursorY + 8,
-      {
-        width: colAmount - 8,
-        align: "right",
-      }
+      { width: colAmount - 8, align: "right" }
     );
 
     cursorY += rowHeight;
@@ -473,12 +489,8 @@ async function createPdfFileFromReceipt(receipt, opts = {}) {
   const receiptNo = s(data.receiptNo);
   const clinicId = s(data.clinicId);
 
-  if (!receiptNo) {
-    throw new Error("receiptNo is required");
-  }
-  if (!clinicId) {
-    throw new Error("clinicId is required");
-  }
+  if (!receiptNo) throw new Error("receiptNo is required");
+  if (!clinicId) throw new Error("clinicId is required");
 
   const storageRoot = getStorageRoot();
   ensureDirSync(storageRoot);
@@ -535,10 +547,7 @@ async function createPdfFileFromReceipt(receipt, opts = {}) {
     s(getValueDeep(data, "clinicSnapshot.clinicName")) || "ชื่อคลินิก",
     margin + 92,
     48,
-    {
-      width: 280,
-      align: "left",
-    }
+    { width: 280, align: "left" }
   );
 
   setFont(doc, fonts.regular, 10);
