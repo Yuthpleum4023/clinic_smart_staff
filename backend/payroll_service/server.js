@@ -3,6 +3,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const mongoose = require("mongoose");
+const path = require("path");
 
 // ✅ OPTIONAL: decode JWT context (ไม่บังคับ) เพื่อช่วย bootstrap/debug
 let jwt = null;
@@ -254,6 +255,21 @@ app.post("/internal/bootstrap", async (req, res) => {
   }
 });
 
+// -------------------- Static files --------------------
+// ✅ สำหรับเปิดไฟล์ PDF ของ Social Security Receipts
+const socialReceiptStorageDir =
+  (process.env.SOCIAL_SECURITY_RECEIPT_STORAGE_DIR || "").trim() ||
+  path.join(process.cwd(), "uploads", "social-security-receipts");
+
+app.use(
+  "/social-security-receipts-files",
+  express.static(socialReceiptStorageDir, {
+    fallthrough: true,
+    index: false,
+    maxAge: "1h",
+  })
+);
+
 // -------------------- Routes --------------------
 // ✅ NOTE: เพื่อให้ Flutter เรียกได้ทั้ง /xxx และ /api/xxx (compatibility)
 // เราจะ mount ทั้ง 2 prefix ให้ทุก route หลัก (NO BREAK)
@@ -268,6 +284,9 @@ const attendanceRoutes = require("./routes/attendanceRoutes");
 const availabilityRoutes = require("./routes/availabilityRoutes");
 const overtimeRoutes = require("./routes/overtimeRoutes");
 const staffRoutes = require("./routes/staffRoutes");
+
+// ✅ NEW: Social Security Receipt
+const socialSecurityReceiptRoutes = require("./routes/socialSecurityReceiptRoutes");
 
 // Shifts
 app.use("/shifts", shiftRoutes);
@@ -308,6 +327,10 @@ app.use("/api/overtime", overtimeRoutes);
 // ✅ Staff Proxy (dropdown จาก staff_service ผ่าน payroll_service)
 app.use("/staff", staffRoutes);
 app.use("/api/staff", staffRoutes);
+
+// ✅ NEW: Social Security Receipts
+app.use("/social-security-receipts", socialSecurityReceiptRoutes);
+app.use("/api/social-security-receipts", socialSecurityReceiptRoutes);
 
 // -------------------- 404 handler --------------------
 app.use((req, res) => {
