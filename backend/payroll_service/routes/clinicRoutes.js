@@ -13,11 +13,24 @@ const brand = require("../controllers/clinicBrandController");
 router.get("/:clinicId", auth, ctrl.getClinic);
 
 // =========================================================
-// ✅ เปลี่ยนชื่อ/โปรไฟล์ "คลินิกตัวเอง" (admin เท่านั้น)
+// ✅ เปลี่ยนโปรไฟล์ "คลินิกตัวเอง" (admin เท่านั้น)
 // PATCH /clinics/me/profile
-// body: { clinicName?, clinicPhone?, clinicAddress? }
+// body:
+// {
+//   clinicName?,
+//   clinicPhone?,
+//   clinicAddress?,
+//   branchName?,
+//   taxId?,
+//   logoUrl?
+// }
 // =========================================================
-router.patch("/me/profile", auth, requireRole(["admin"]), ctrl.patchMyClinicProfile);
+router.patch(
+  "/me/profile",
+  auth,
+  requireRole(["admin"]),
+  ctrl.patchMyClinicProfile
+);
 
 // =========================================================
 // ✅ อัปเดตพิกัด "คลินิกตัวเอง" (admin เท่านั้น)
@@ -49,13 +62,23 @@ router.patch(
 // ✅ อัปเดตพิกัดคลินิก (admin เท่านั้น) — ของเดิมยังอยู่
 // PATCH /clinics/:clinicId/location
 // =========================================================
-router.patch("/:clinicId/location", auth, requireRole(["admin"]), ctrl.patchClinicLocation);
+router.patch(
+  "/:clinicId/location",
+  auth,
+  requireRole(["admin"]),
+  ctrl.patchClinicLocation
+);
 
 // =========================================================
 // ✅ NEW — SaaS Branding System (Monogram Logo) (admin เท่านั้น)
 // PATCH /clinics/brand
 // body: { clinicId, brandAbbr, brandColor }
 // =========================================================
-router.patch("/brand", auth, requireRole(["admin"]), brand.updateClinicBrand);
+router.patch(
+  "/brand",
+  auth,
+  requireRole(["admin"]),
+  brand.updateClinicBrand
+);
 
 module.exports = router;

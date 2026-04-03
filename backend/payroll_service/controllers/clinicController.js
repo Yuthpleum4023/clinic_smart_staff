@@ -1,6 +1,6 @@
 // payroll_service/controllers/clinicController.js
 //
-// ✅ FULL FILE (ADD: patchMyClinicProfile + socialSecurity config)
+// ✅ FULL FILE (ADD: patchMyClinicProfile + socialSecurity config + clinic branding/profile fields)
 // - ✅ PATCH /clinics/:clinicId/location (admin)
 // - ✅ PATCH /clinics/me/location        (admin)
 // - ✅ PATCH /clinics/me/profile         (admin)
@@ -24,6 +24,11 @@
 //     maxWageBase: 17500
 //   }
 // }
+//
+// ✅ NEW PROFILE FIELDS:
+// - branchName
+// - taxId
+// - logoUrl
 //
 
 const Clinic = require("../models/Clinic");
@@ -87,6 +92,72 @@ function isValidThaiPhoneDigits(phone) {
 
 function hasOwn(obj, key) {
   return Object.prototype.hasOwnProperty.call(obj || {}, key);
+}
+
+function isLikelyHttpUrl(url) {
+  const x = s(url);
+  if (!x) return true;
+  return /^https?:\/\/\S+$/i.test(x);
+}
+
+function normalizeClinicProfileFields(body = {}) {
+  const patch = {};
+  let touched = false;
+
+  const clinicName = s(body.clinicName ?? body.name);
+  const clinicPhone = s(body.clinicPhone ?? body.phone);
+  const clinicAddress = s(body.clinicAddress ?? body.address);
+  const branchName = s(body.branchName);
+  const taxId = s(body.taxId);
+  const logoUrl = s(body.logoUrl);
+
+  if (hasOwn(body, "clinicName") || hasOwn(body, "name")) {
+    patch.name = clinicName;
+    touched = true;
+  }
+
+  if (hasOwn(body, "clinicPhone") || hasOwn(body, "phone")) {
+    if (clinicPhone && !isValidThaiPhoneDigits(clinicPhone)) {
+      return {
+        ok: false,
+        message: "Invalid clinicPhone",
+        hint: "phone must be 9-10 digits",
+        got: clinicPhone,
+      };
+    }
+    patch.phone = clinicPhone;
+    touched = true;
+  }
+
+  if (hasOwn(body, "clinicAddress") || hasOwn(body, "address")) {
+    patch.address = clinicAddress;
+    touched = true;
+  }
+
+  if (hasOwn(body, "branchName")) {
+    patch.branchName = branchName;
+    touched = true;
+  }
+
+  if (hasOwn(body, "taxId")) {
+    patch.taxId = taxId;
+    touched = true;
+  }
+
+  if (hasOwn(body, "logoUrl")) {
+    if (logoUrl && !isLikelyHttpUrl(logoUrl)) {
+      return {
+        ok: false,
+        message: "Invalid logoUrl",
+        hint: "Use a full http/https URL",
+        got: logoUrl,
+      };
+    }
+    patch.logoUrl = logoUrl;
+    touched = true;
+  }
+
+  return { ok: true, touched, $set: patch };
 }
 
 function resolveSocialSecurityPatch(body = {}) {
@@ -162,7 +233,8 @@ function resolveSocialSecurityPatch(body = {}) {
 // PATCH /clinics/:clinicId/location (admin)
 // body:
 // {
-//   clinicLat?, clinicLng?, clinicName?, clinicPhone?, clinicAddress?, backfill?,
+//   clinicLat?, clinicLng?, clinicName?, clinicPhone?, clinicAddress?,
+//   branchName?, taxId?, logoUrl?, backfill?,
 //   socialSecurityEnabled?, socialSecurityEmployeeRate?, socialSecurityMaxWageBase?,
 //   socialSecurity?: { enabled?, employeeRate?, maxWageBase? }
 // }
@@ -208,15 +280,12 @@ async function patchClinicLocation(req, res) {
       }
     }
 
-    const name = s(req.body?.clinicName ?? req.body?.name);
-    const phone = s(req.body?.clinicPhone ?? req.body?.phone);
-    const address = s(req.body?.clinicAddress ?? req.body?.address);
-
-    if (phone && !isValidThaiPhoneDigits(phone)) {
+    const profilePatch = normalizeClinicProfileFields(req.body || {});
+    if (!profilePatch.ok) {
       return res.status(400).json({
-        message: "Invalid clinicPhone",
-        hint: "phone must be 9-10 digits",
-        got: phone,
+        message: profilePatch.message,
+        hint: profilePatch.hint,
+        got: profilePatch.got,
       });
     }
 
@@ -241,9 +310,7 @@ async function patchClinicLocation(req, res) {
     const $set = {
       clinicId,
       ...(hasLatLngInput ? { lat, lng } : {}),
-      ...(name ? { name } : {}),
-      ...(phone ? { phone } : {}),
-      ...(address ? { address } : {}),
+      ...profilePatch.$set,
       ...ssoPatch.$set,
     };
 
@@ -322,6 +389,7 @@ async function patchMyClinicLocation(req, res) {
 // body:
 // {
 //   clinicName?, clinicPhone?, clinicAddress?,
+//   branchName?, taxId?, logoUrl?,
 //   socialSecurityEnabled?, socialSecurityEmployeeRate?, socialSecurityMaxWageBase?,
 //   socialSecurity?: { enabled?, employeeRate?, maxWageBase? }
 // }
@@ -351,15 +419,12 @@ async function patchMyClinicProfile(req, res) {
       return res.status(400).json({ message: "missing clinicId in token" });
     }
 
-    const name = s(req.body?.clinicName ?? req.body?.name);
-    const phone = s(req.body?.clinicPhone ?? req.body?.phone);
-    const address = s(req.body?.clinicAddress ?? req.body?.address);
-
-    if (phone && !isValidThaiPhoneDigits(phone)) {
+    const profilePatch = normalizeClinicProfileFields(req.body || {});
+    if (!profilePatch.ok) {
       return res.status(400).json({
-        message: "Invalid clinicPhone",
-        hint: "phone must be 9-10 digits",
-        got: phone,
+        message: profilePatch.message,
+        hint: profilePatch.hint,
+        got: profilePatch.got,
       });
     }
 
@@ -372,18 +437,16 @@ async function patchMyClinicProfile(req, res) {
       });
     }
 
-    if (!name && !phone && !address && !ssoPatch.touched) {
+    if (!profilePatch.touched && !ssoPatch.touched) {
       return res.status(400).json({
         message: "No fields to update",
         hint:
-          "Send at least one of clinicName / clinicPhone / clinicAddress / socialSecurity*",
+          "Send at least one of clinicName / clinicPhone / clinicAddress / branchName / taxId / logoUrl / socialSecurity*",
       });
     }
 
     const $set = {
-      ...(name ? { name } : {}),
-      ...(phone ? { phone } : {}),
-      ...(address ? { address } : {}),
+      ...profilePatch.$set,
       ...ssoPatch.$set,
     };
 
@@ -397,6 +460,9 @@ async function patchMyClinicProfile(req, res) {
       clinicId,
       name: updated?.name,
       phone: updated?.phone,
+      branchName: updated?.branchName,
+      taxId: updated?.taxId,
+      logoUrl: updated?.logoUrl,
       socialSecurity: updated?.socialSecurity,
     });
 

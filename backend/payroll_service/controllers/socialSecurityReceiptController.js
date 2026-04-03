@@ -1,5 +1,6 @@
 const fs = require("fs");
 
+const Clinic = require("../models/Clinic");
 const SocialSecurityReceipt = require("../models/SocialSecurityReceipt");
 const { nextSocialSecurityReceiptNo } = require("../services/receiptRunningService");
 const {
@@ -72,6 +73,45 @@ function sanitizeClinicSnapshot(raw = {}, clinicId = "") {
     clinicPhone: s(raw.clinicPhone),
     clinicTaxId: s(raw.clinicTaxId),
     logoUrl: s(raw.logoUrl),
+    clinicId: s(clinicId),
+  };
+}
+
+function buildClinicSnapshotFromClinic(clinic = {}, clinicId = "") {
+  return {
+    clinicName: s(clinic.name),
+    clinicBranchName: s(clinic.branchName),
+    clinicAddress: s(clinic.address),
+    clinicPhone: s(clinic.phone),
+    clinicTaxId: s(clinic.taxId),
+    logoUrl: s(clinic.logoUrl),
+    clinicId: s(clinicId || clinic.clinicId),
+  };
+}
+
+async function resolveMergedClinicSnapshot({
+  clinicId,
+  inputSnapshot,
+}) {
+  const rawInput =
+    inputSnapshot && typeof inputSnapshot === "object" ? inputSnapshot : {};
+
+  const clinic = clinicId
+    ? await Clinic.findOne({ clinicId }).lean()
+    : null;
+
+  const fromClinic = buildClinicSnapshotFromClinic(clinic || {}, clinicId);
+  const fromInput = sanitizeClinicSnapshot(rawInput, clinicId);
+
+  return {
+    clinicName: s(fromInput.clinicName || fromClinic.clinicName),
+    clinicBranchName: s(
+      fromInput.clinicBranchName || fromClinic.clinicBranchName
+    ),
+    clinicAddress: s(fromInput.clinicAddress || fromClinic.clinicAddress),
+    clinicPhone: s(fromInput.clinicPhone || fromClinic.clinicPhone),
+    clinicTaxId: s(fromInput.clinicTaxId || fromClinic.clinicTaxId),
+    logoUrl: s(fromInput.logoUrl || fromClinic.logoUrl),
     clinicId: s(clinicId),
   };
 }
@@ -269,10 +309,11 @@ async function createReceipt(req, res) {
       });
     }
 
-    const clinicSnapshot = sanitizeClinicSnapshot(
-      req.body?.clinicSnapshot,
-      clinicId
-    );
+    const clinicSnapshot = await resolveMergedClinicSnapshot({
+      clinicId,
+      inputSnapshot: req.body?.clinicSnapshot,
+    });
+
     const customerSnapshot = sanitizeCustomerSnapshot(
       req.body?.customerSnapshot
     );

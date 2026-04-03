@@ -5,9 +5,14 @@ const ClinicSchema = new mongoose.Schema(
     // ✅ ใช้ clinicId แบบ cln_xxx เป็นหลัก (อิสระจาก _id)
     clinicId: { type: String, required: true, unique: true, index: true },
 
-    name: { type: String, default: "" },
-    phone: { type: String, default: "" },
-    address: { type: String, default: "" },
+    name: { type: String, default: "", trim: true },
+    phone: { type: String, default: "", trim: true },
+    address: { type: String, default: "", trim: true },
+
+    // ✅ NEW: ใช้สำหรับเอกสาร / PDF / profile คลินิก
+    branchName: { type: String, default: "", trim: true },
+    taxId: { type: String, default: "", trim: true },
+    logoUrl: { type: String, default: "", trim: true },
 
     // -----------------------------
     // 📍 Location (ใช้คำนวณระยะ)
@@ -16,19 +21,19 @@ const ClinicSchema = new mongoose.Schema(
     lng: { type: Number, default: null },
 
     // เขต/อำเภอ
-    district: { type: String, default: "" },
+    district: { type: String, default: "", trim: true },
 
     // จังหวัด
-    province: { type: String, default: "" },
+    province: { type: String, default: "", trim: true },
 
     // label พร้อมใช้โชว์ UI เช่น "ถลาง, ภูเก็ต"
-    locationLabel: { type: String, default: "" },
+    locationLabel: { type: String, default: "", trim: true },
 
     // -----------------------------
     // 🎨 SaaS Branding
     // -----------------------------
-    brandAbbr: { type: String, default: "" }, // เช่น MC
-    brandColor: { type: String, default: "" }, // เช่น #6D28D9
+    brandAbbr: { type: String, default: "", trim: true }, // เช่น MC
+    brandColor: { type: String, default: "", trim: true }, // เช่น #6D28D9
 
     // -----------------------------
     // ✅ Payroll / Social Security
