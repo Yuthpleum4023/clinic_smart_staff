@@ -256,17 +256,21 @@ function drawTextBox(doc, { x, y, w, h, label, value, fontRegular, fontBold }) {
   drawBorder(doc, x, y, w, h);
 
   setFont(doc, fontBold, 8.5);
-  doc.text(s(label), x + 6, y + 4, {
+  doc.text(s(label), x + 6, y + 3, {
     width: w - 12,
     align: "left",
-    lineGap: 1,
+    lineGap: 0,
+    height: 10,
+    ellipsis: true,
   });
 
-  setFont(doc, fontRegular, 10);
-  doc.text(s(value), x + 6, y + 18, {
+  setFont(doc, fontRegular, 9.6);
+  doc.text(s(value), x + 6, y + 16, {
     width: w - 12,
     align: "left",
-    lineGap: 1.5,
+    lineGap: 0,
+    height: Math.max(10, h - 18),
+    ellipsis: true,
   });
 }
 
@@ -277,17 +281,20 @@ function drawCompactTextBox(
   drawBorder(doc, x, y, w, h);
 
   setFont(doc, fontBold, 8.5);
-  doc.text(s(label), x + 6, y + 5, {
+  doc.text(s(label), x + 6, y + 3, {
     width: w - 12,
     align: "left",
-    lineGap: 1,
+    lineGap: 0,
+    height: 10,
+    ellipsis: true,
   });
 
-  setFont(doc, fontRegular, 9.5);
+  setFont(doc, fontRegular, 9.6);
   doc.text(s(value), x + 6, y + 16, {
     width: w - 12,
     align: "left",
-    lineGap: 1.2,
+    lineGap: 0,
+    height: Math.max(10, h - 18),
     ellipsis: true,
   });
 }
@@ -310,18 +317,25 @@ function drawKeyValueRows(doc, rows, options = {}) {
     drawBorder(doc, x, cursorY, width, h);
     drawBorder(doc, x, cursorY, labelWidth, h);
 
-    setFont(doc, fontBold, 9.5);
-    doc.text(s(row.label), x + 6, cursorY + 7, {
+    const labelY = cursorY + 6;
+    const valueY = cursorY + 6;
+
+    setFont(doc, fontBold, 9.3);
+    doc.text(s(row.label), x + 6, labelY, {
       width: labelWidth - 12,
       align: "left",
-      lineGap: 1,
+      lineGap: 0,
+      height: h - 10,
+      ellipsis: true,
     });
 
-    setFont(doc, fontRegular, 9.5);
-    doc.text(s(row.value), x + labelWidth + 8, cursorY + 7, {
+    setFont(doc, fontRegular, 9.3);
+    doc.text(s(row.value), x + labelWidth + 8, valueY, {
       width: width - labelWidth - 16,
       align: "left",
-      lineGap: 1.5,
+      lineGap: 0,
+      height: h - 10,
+      ellipsis: true,
     });
 
     cursorY += h;
@@ -367,23 +381,47 @@ function drawItemsTable(doc, items, options = {}) {
       .stroke();
   }
 
-  setFont(doc, fontBold, 9.5);
-  doc.text("ลำดับ", x + 4, y + 8, { width: colNo - 8, align: "center" });
-  doc.text("รายการ", x + colNo + 4, y + 8, {
+  setFont(doc, fontBold, 9.3);
+  const headerY = y + 6;
+
+  doc.text("ลำดับ", x + 4, headerY, {
+    width: colNo - 8,
+    align: "center",
+    lineGap: 0,
+    height: 14,
+    ellipsis: true,
+  });
+
+  doc.text("รายการ", x + colNo + 4, headerY, {
     width: colDesc - 8,
     align: "center",
+    lineGap: 0,
+    height: 14,
+    ellipsis: true,
   });
-  doc.text("จำนวน", x + colNo + colDesc + 4, y + 8, {
+
+  doc.text("จำนวน", x + colNo + colDesc + 4, headerY, {
     width: colQty - 8,
     align: "center",
+    lineGap: 0,
+    height: 14,
+    ellipsis: true,
   });
-  doc.text("หน่วยละ", x + colNo + colDesc + colQty + 4, y + 8, {
+
+  doc.text("หน่วยละ", x + colNo + colDesc + colQty + 4, headerY, {
     width: colUnit - 8,
     align: "center",
+    lineGap: 0,
+    height: 14,
+    ellipsis: true,
   });
-  doc.text("จำนวนเงิน", x + colNo + colDesc + colQty + colUnit + 4, y + 8, {
+
+  doc.text("จำนวนเงิน", x + colNo + colDesc + colQty + colUnit + 4, headerY, {
     width: colAmount - 8,
     align: "center",
+    lineGap: 0,
+    height: 14,
+    ellipsis: true,
   });
 
   let cursorY = y + headerHeight;
@@ -394,38 +432,61 @@ function drawItemsTable(doc, items, options = {}) {
     const item = Array.isArray(items) ? items[i] : null;
 
     setFont(doc, fontRegular, 9.25);
+    const rowTextY = cursorY + 6;
 
-    doc.text(item ? String(i + 1) : "", x + 4, cursorY + 7, {
+    doc.text(item ? String(i + 1) : "", x + 4, rowTextY, {
       width: colNo - 8,
       align: "center",
+      lineGap: 0,
+      height: 14,
+      ellipsis: true,
     });
 
-    doc.text(item ? s(item.description) : "", x + colNo + 4, cursorY + 5, {
+    doc.text(item ? s(item.description) : "", x + colNo + 4, rowTextY, {
       width: colDesc - 8,
       align: "left",
+      lineGap: 0,
+      height: 14,
       ellipsis: true,
-      lineGap: 1,
     });
 
     doc.text(
       item ? formatAmount(n(item.quantity, 0)) : "",
       x + colNo + colDesc + 4,
-      cursorY + 7,
-      { width: colQty - 8, align: "right" }
+      rowTextY,
+      {
+        width: colQty - 8,
+        align: "right",
+        lineGap: 0,
+        height: 14,
+        ellipsis: true,
+      }
     );
 
     doc.text(
       item ? formatAmount(n(item.unitPrice, 0)) : "",
       x + colNo + colDesc + colQty + 4,
-      cursorY + 7,
-      { width: colUnit - 8, align: "right" }
+      rowTextY,
+      {
+        width: colUnit - 8,
+        align: "right",
+        lineGap: 0,
+        height: 14,
+        ellipsis: true,
+      }
     );
 
     doc.text(
       item ? formatAmount(n(item.amount, 0)) : "",
       x + colNo + colDesc + colQty + colUnit + 4,
-      cursorY + 7,
-      { width: colAmount - 8, align: "right" }
+      rowTextY,
+      {
+        width: colAmount - 8,
+        align: "right",
+        lineGap: 0,
+        height: 14,
+        ellipsis: true,
+      }
     );
 
     cursorY += rowHeight;
@@ -688,7 +749,7 @@ async function createPdfFileFromReceipt(receipt, opts = {}) {
     x: rightPanelX,
     y: 114,
     w: rightPanelW,
-    h: 24,
+    h: 28,
     label: "วันที่",
     value: formatThaiDate(data.issueDate),
     fontRegular: fonts.regular,
@@ -697,9 +758,9 @@ async function createPdfFileFromReceipt(receipt, opts = {}) {
 
   drawCompactTextBox(doc, {
     x: rightPanelX,
-    y: 142,
+    y: 146,
     w: rightPanelW,
-    h: 24,
+    h: 28,
     label: "เลขที่",
     value: receiptNo,
     fontRegular: fonts.regular,
@@ -803,18 +864,6 @@ async function createPdfFileFromReceipt(receipt, opts = {}) {
     fontRegular: fonts.regular,
     fontBold: fonts.bold,
   });
-
-  setFont(doc, fonts.regular, 8.25);
-  doc.text(
-    "เอกสารนี้สร้างจากระบบ payroll_service สำหรับใช้งานภายในคลินิก",
-    margin,
-    785,
-    {
-      width: contentWidth,
-      align: "center",
-      lineGap: 1,
-    }
-  );
 
   doc.end();
 
