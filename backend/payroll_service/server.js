@@ -270,6 +270,20 @@ app.use(
   })
 );
 
+// ✅ NEW: สำหรับเปิดไฟล์โลโก้คลินิก
+const clinicLogoStorageDir =
+  (process.env.CLINIC_LOGO_STORAGE_DIR || "").trim() ||
+  path.join(process.cwd(), "uploads", "clinic-logos");
+
+app.use(
+  "/clinic-logo-files",
+  express.static(clinicLogoStorageDir, {
+    fallthrough: true,
+    index: false,
+    maxAge: "1h",
+  })
+);
+
 // -------------------- Routes --------------------
 // ✅ NOTE: เพื่อให้ Flutter เรียกได้ทั้ง /xxx และ /api/xxx (compatibility)
 // เราจะ mount ทั้ง 2 prefix ให้ทุก route หลัก (NO BREAK)
@@ -287,6 +301,9 @@ const staffRoutes = require("./routes/staffRoutes");
 
 // ✅ NEW: Social Security Receipt
 const socialSecurityReceiptRoutes = require("./routes/socialSecurityReceiptRoutes");
+
+// ✅ NEW: Clinic Logo Upload
+const clinicLogoRoutes = require("./routes/clinicLogoRoutes");
 
 // Shifts
 app.use("/shifts", shiftRoutes);
@@ -331,6 +348,10 @@ app.use("/api/staff", staffRoutes);
 // ✅ NEW: Social Security Receipts
 app.use("/social-security-receipts", socialSecurityReceiptRoutes);
 app.use("/api/social-security-receipts", socialSecurityReceiptRoutes);
+
+// ✅ NEW: Clinic Logo Upload
+app.use("/upload", clinicLogoRoutes);
+app.use("/api/upload", clinicLogoRoutes);
 
 // -------------------- 404 handler --------------------
 app.use((req, res) => {

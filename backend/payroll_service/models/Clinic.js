@@ -14,6 +14,10 @@ const ClinicSchema = new mongoose.Schema(
     taxId: { type: String, default: "", trim: true },
     logoUrl: { type: String, default: "", trim: true },
 
+    // ✅ NEW: สำหรับ internal storage / cleanup / trace
+    logoPath: { type: String, default: "", trim: true },
+    logoUpdatedAt: { type: Date, default: null },
+
     // -----------------------------
     // 📍 Location (ใช้คำนวณระยะ)
     // -----------------------------
