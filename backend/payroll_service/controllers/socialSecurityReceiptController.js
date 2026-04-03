@@ -140,6 +140,32 @@ function sanitizePaymentInfo(raw = {}) {
   };
 }
 
+function resolveWithholdingInputs(body = {}) {
+  const withholdingTaxEnabled = parseBoolean(
+    body.withholdingTaxEnabled,
+    false
+  );
+
+  let withholdingTaxInput = undefined;
+
+  if ("withholdingTaxAmount" in body) {
+    withholdingTaxInput = body.withholdingTaxAmount;
+  } else if ("withholdingTax" in body) {
+    withholdingTaxInput = body.withholdingTax;
+  }
+
+  return {
+    withholdingTaxEnabled,
+    withholdingTaxInput: withholdingTaxEnabled
+      ? withholdingTaxInput
+      : 0,
+    withholdingPercent:
+      withholdingTaxEnabled && "withholdingPercent" in body
+        ? body.withholdingPercent
+        : undefined,
+  };
+}
+
 function formatReceiptResponse(doc) {
   if (!doc) return null;
   const x = typeof doc.toObject === "function" ? doc.toObject() : doc;
@@ -180,6 +206,7 @@ function formatReceiptResponse(doc) {
       : [],
 
     subtotal: round2(n(x.subtotal, 0)),
+    withholdingTaxEnabled: parseBoolean(x.withholdingTaxEnabled, false),
     withholdingTax: round2(n(x.withholdingTax, 0)),
     netAmount: round2(n(x.netAmount, 0)),
     amountInThaiText: s(x.amountInThaiText),
@@ -327,11 +354,13 @@ async function createReceipt(req, res) {
       });
     }
 
+    const withholdingMeta = resolveWithholdingInputs(req.body || {});
+
     const amountResult = calculateReceiptAmounts({
       items: normalizeItems(req.body?.items),
       subtotal: req.body?.subtotal,
-      withholdingTax: req.body?.withholdingTax,
-      withholdingPercent: req.body?.withholdingPercent,
+      withholdingTax: withholdingMeta.withholdingTaxInput,
+      withholdingPercent: withholdingMeta.withholdingPercent,
     });
 
     if (!amountResult.items.length) {
@@ -371,7 +400,15 @@ async function createReceipt(req, res) {
       s(req.body?.receiptNo) ||
       (await nextSocialSecurityReceiptNo({ clinicId, issueDate }));
 
-    const netAmountThaiText = numberToThaiText(amountResult.netAmount);
+    const normalizedWithholdingTax = withholdingMeta.withholdingTaxEnabled
+      ? amountResult.withholdingTax
+      : 0;
+
+    const normalizedNetAmount = withholdingMeta.withholdingTaxEnabled
+      ? amountResult.netAmount
+      : amountResult.subtotal;
+
+    const netAmountThaiText = numberToThaiText(normalizedNetAmount);
 
     const doc = await SocialSecurityReceipt.create({
       clinicId,
@@ -388,8 +425,9 @@ async function createReceipt(req, res) {
       items: amountResult.items,
 
       subtotal: amountResult.subtotal,
-      withholdingTax: amountResult.withholdingTax,
-      netAmount: amountResult.netAmount,
+      withholdingTaxEnabled: withholdingMeta.withholdingTaxEnabled,
+      withholdingTax: normalizedWithholdingTax,
+      netAmount: normalizedNetAmount,
       amountInThaiText: netAmountThaiText,
 
       paymentInfo,
@@ -608,13 +646,22 @@ async function updateReceipt(req, res) {
       };
     }
 
+    const hasWithholdingToggleUpdate =
+      "withholdingTaxEnabled" in (req.body || {});
+
     const hasAmountRelatedUpdate =
       "items" in (req.body || {}) ||
       "subtotal" in (req.body || {}) ||
       "withholdingTax" in (req.body || {}) ||
-      "withholdingPercent" in (req.body || {});
+      "withholdingTaxAmount" in (req.body || {}) ||
+      "withholdingPercent" in (req.body || {}) ||
+      hasWithholdingToggleUpdate;
 
     if (hasAmountRelatedUpdate) {
+      const nextWithholdingEnabled = hasWithholdingToggleUpdate
+        ? parseBoolean(req.body.withholdingTaxEnabled, false)
+        : parseBoolean(doc.withholdingTaxEnabled, false);
+
       const amountResult = calculateReceiptAmounts({
         items:
           "items" in (req.body || {})
@@ -622,11 +669,15 @@ async function updateReceipt(req, res) {
             : doc.items,
         subtotal:
           "subtotal" in (req.body || {}) ? req.body.subtotal : doc.subtotal,
-        withholdingTax:
-          "withholdingTax" in (req.body || {})
-            ? req.body.withholdingTax
-            : doc.withholdingTax,
+        withholdingTax: nextWithholdingEnabled
+          ? ("withholdingTaxAmount" in (req.body || {})
+              ? req.body.withholdingTaxAmount
+              : "withholdingTax" in (req.body || {})
+              ? req.body.withholdingTax
+              : doc.withholdingTax)
+          : 0,
         withholdingPercent:
+          nextWithholdingEnabled &&
           "withholdingPercent" in (req.body || {})
             ? req.body.withholdingPercent
             : undefined,
@@ -642,9 +693,14 @@ async function updateReceipt(req, res) {
 
       doc.items = amountResult.items;
       doc.subtotal = amountResult.subtotal;
-      doc.withholdingTax = amountResult.withholdingTax;
-      doc.netAmount = amountResult.netAmount;
-      doc.amountInThaiText = numberToThaiText(amountResult.netAmount);
+      doc.withholdingTaxEnabled = nextWithholdingEnabled;
+      doc.withholdingTax = nextWithholdingEnabled
+        ? amountResult.withholdingTax
+        : 0;
+      doc.netAmount = nextWithholdingEnabled
+        ? amountResult.netAmount
+        : amountResult.subtotal;
+      doc.amountInThaiText = numberToThaiText(doc.netAmount);
     }
 
     const duplicate = await findDuplicateReceipt({

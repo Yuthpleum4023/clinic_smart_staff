@@ -99,6 +99,10 @@ const SocialSecurityReceiptSchema = new mongoose.Schema(
     },
 
     subtotal: { type: Number, required: true, default: 0, min: 0 },
+
+    // ✅ NEW
+    withholdingTaxEnabled: { type: Boolean, default: false },
+
     withholdingTax: { type: Number, required: true, default: 0, min: 0 },
     netAmount: { type: Number, required: true, default: 0, min: 0 },
     amountInThaiText: { type: String, default: "" },
@@ -133,9 +137,24 @@ SocialSecurityReceiptSchema.index({ clinicId: 1, status: 1, issueDate: -1 });
 SocialSecurityReceiptSchema.index({ "customerSnapshot.customerName": 1 });
 
 SocialSecurityReceiptSchema.pre("validate", function (next) {
+  this.subtotal = Number.isFinite(Number(this.subtotal))
+    ? Math.max(0, Number(this.subtotal))
+    : 0;
+
+  this.withholdingTax = Number.isFinite(Number(this.withholdingTax))
+    ? Math.max(0, Number(this.withholdingTax))
+    : 0;
+
+  if (!this.withholdingTaxEnabled) {
+    this.withholdingTax = 0;
+  }
+
+  this.netAmount = Math.max(0, this.subtotal - this.withholdingTax);
+
   if (!this.amountInThaiText && Number(this.netAmount || 0) >= 0) {
     this.amountInThaiText = s(this.amountInThaiText);
   }
+
   next();
 });
 

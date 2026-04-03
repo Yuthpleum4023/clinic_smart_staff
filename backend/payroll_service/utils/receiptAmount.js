@@ -11,7 +11,12 @@ function toNonNegativeNumber(v) {
 }
 
 function normalizeReceiptItem(item = {}) {
-  const quantity = toNonNegativeNumber(item.quantity || 1);
+  const rawQuantity =
+    item.quantity === undefined || item.quantity === null || item.quantity === ""
+      ? 1
+      : item.quantity;
+
+  const quantity = toNonNegativeNumber(rawQuantity);
   const unitPrice = toNonNegativeNumber(item.unitPrice || 0);
 
   let amount = Number(item.amount);
