@@ -281,20 +281,20 @@ function drawCompactTextBox(
   drawBorder(doc, x, y, w, h);
 
   setFont(doc, fontBold, 8.5);
-  doc.text(s(label), x + 6, y + 3, {
+  doc.text(s(label), x + 6, y + 4, {
     width: w - 12,
     align: "left",
     lineGap: 0,
-    height: 10,
+    height: 9,
     ellipsis: true,
   });
 
-  setFont(doc, fontRegular, 9.6);
-  doc.text(s(value), x + 6, y + 16, {
+  setFont(doc, fontRegular, 9.4);
+  doc.text(s(value), x + 6, y + 15, {
     width: w - 12,
     align: "left",
     lineGap: 0,
-    height: Math.max(10, h - 18),
+    height: Math.max(10, h - 17),
     ellipsis: true,
   });
 }
@@ -317,24 +317,24 @@ function drawKeyValueRows(doc, rows, options = {}) {
     drawBorder(doc, x, cursorY, width, h);
     drawBorder(doc, x, cursorY, labelWidth, h);
 
-    const labelY = cursorY + 6;
-    const valueY = cursorY + 6;
+    const labelY = cursorY + 5;
+    const valueY = cursorY + 5;
 
-    setFont(doc, fontBold, 9.3);
+    setFont(doc, fontBold, 9.2);
     doc.text(s(row.label), x + 6, labelY, {
       width: labelWidth - 12,
       align: "left",
       lineGap: 0,
-      height: h - 10,
+      height: h - 8,
       ellipsis: true,
     });
 
-    setFont(doc, fontRegular, 9.3);
+    setFont(doc, fontRegular, 9.2);
     doc.text(s(row.value), x + labelWidth + 8, valueY, {
       width: width - labelWidth - 16,
       align: "left",
       lineGap: 0,
-      height: h - 10,
+      height: h - 8,
       ellipsis: true,
     });
 
@@ -749,7 +749,7 @@ async function createPdfFileFromReceipt(receipt, opts = {}) {
     x: rightPanelX,
     y: 114,
     w: rightPanelW,
-    h: 28,
+    h: 30,
     label: "วันที่",
     value: formatThaiDate(data.issueDate),
     fontRegular: fonts.regular,
@@ -758,16 +758,16 @@ async function createPdfFileFromReceipt(receipt, opts = {}) {
 
   drawCompactTextBox(doc, {
     x: rightPanelX,
-    y: 146,
+    y: 148,
     w: rightPanelW,
-    h: 28,
+    h: 30,
     label: "เลขที่",
     value: receiptNo,
     fontRegular: fonts.regular,
     fontBold: fonts.bold,
   });
 
-  const customerTop = 193;
+  const customerTop = 197;
   const servicePeriodValue =
     s(data.servicePeriodText) || s(data.serviceMonth) || "-";
 
