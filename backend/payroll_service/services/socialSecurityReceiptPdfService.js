@@ -270,6 +270,28 @@ function drawTextBox(doc, { x, y, w, h, label, value, fontRegular, fontBold }) {
   });
 }
 
+function drawCompactTextBox(
+  doc,
+  { x, y, w, h, label, value, fontRegular, fontBold }
+) {
+  drawBorder(doc, x, y, w, h);
+
+  setFont(doc, fontBold, 8.5);
+  doc.text(s(label), x + 6, y + 5, {
+    width: w - 12,
+    align: "left",
+    lineGap: 1,
+  });
+
+  setFont(doc, fontRegular, 9.5);
+  doc.text(s(value), x + 6, y + 16, {
+    width: w - 12,
+    align: "left",
+    lineGap: 1.2,
+    ellipsis: true,
+  });
+}
+
 function drawKeyValueRows(doc, rows, options = {}) {
   const {
     x = 40,
@@ -597,7 +619,9 @@ async function createPdfFileFromReceipt(receipt, opts = {}) {
 
   const logoBuffer = await resolveLogoBuffer(logoSource);
 
-  drawBorder(doc, margin, 38, contentWidth, 135);
+  const headerY = 38;
+  const headerH = 145;
+  drawBorder(doc, margin, headerY, contentWidth, headerH);
 
   if (logoBuffer) {
     try {
@@ -609,15 +633,21 @@ async function createPdfFileFromReceipt(receipt, opts = {}) {
     } catch (_) {}
   }
 
+  const leftStartX = margin + 92;
+  const rightPanelX = 360;
+  const rightPanelW = 165;
+  const clinicTextW = rightPanelX - leftStartX - 14;
+
   setFont(doc, fonts.bold, 16.5);
   doc.text(
     s(getValueDeep(data, "clinicSnapshot.clinicName")) || "ชื่อคลินิก",
-    margin + 92,
+    leftStartX,
     50,
     {
-      width: 280,
+      width: clinicTextW,
       align: "left",
       lineGap: 1.5,
+      ellipsis: true,
     }
   );
 
@@ -629,10 +659,12 @@ async function createPdfFileFromReceipt(receipt, opts = {}) {
     `เลขประจำตัวผู้เสียภาษี ${s(getValueDeep(data, "clinicSnapshot.clinicTaxId")) || "-"}`,
   ].filter(Boolean);
 
-  doc.text(clinicLines.join("\n"), margin + 92, 78, {
-    width: 270,
+  doc.text(clinicLines.join("\n"), leftStartX, 78, {
+    width: clinicTextW,
     align: "left",
     lineGap: 3,
+    height: 82,
+    ellipsis: true,
   });
 
   drawTextBox(doc, {
@@ -647,31 +679,34 @@ async function createPdfFileFromReceipt(receipt, opts = {}) {
   });
 
   setFont(doc, fonts.bold, 18.5);
-  doc.text("ใบเสร็จรับเงิน", 380, 90, { width: 145, align: "center" });
-
-  drawTextBox(doc, {
-    x: 380,
-    y: 122,
-    w: 145,
-    h: 45,
-    label: "เลขที่",
-    value: receiptNo,
-    fontRegular: fonts.regular,
-    fontBold: fonts.bold,
+  doc.text("ใบเสร็จรับเงิน", rightPanelX, 86, {
+    width: rightPanelW,
+    align: "center",
   });
 
-  drawTextBox(doc, {
-    x: 225,
-    y: 122,
-    w: 150,
-    h: 45,
+  drawCompactTextBox(doc, {
+    x: rightPanelX,
+    y: 114,
+    w: rightPanelW,
+    h: 24,
     label: "วันที่",
     value: formatThaiDate(data.issueDate),
     fontRegular: fonts.regular,
     fontBold: fonts.bold,
   });
 
-  const customerTop = 183;
+  drawCompactTextBox(doc, {
+    x: rightPanelX,
+    y: 142,
+    w: rightPanelW,
+    h: 24,
+    label: "เลขที่",
+    value: receiptNo,
+    fontRegular: fonts.regular,
+    fontBold: fonts.bold,
+  });
+
+  const customerTop = 193;
   const servicePeriodValue =
     s(data.servicePeriodText) || s(data.serviceMonth) || "-";
 
