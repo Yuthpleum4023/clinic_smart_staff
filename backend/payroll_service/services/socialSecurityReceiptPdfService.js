@@ -255,11 +255,19 @@ function drawBorder(doc, x, y, w, h) {
 function drawTextBox(doc, { x, y, w, h, label, value, fontRegular, fontBold }) {
   drawBorder(doc, x, y, w, h);
 
-  setFont(doc, fontBold, 9);
-  doc.text(s(label), x + 6, y + 5, { width: w - 12 });
+  setFont(doc, fontBold, 8.5);
+  doc.text(s(label), x + 6, y + 4, {
+    width: w - 12,
+    align: "left",
+    lineGap: 1,
+  });
 
-  setFont(doc, fontRegular, 11);
-  doc.text(s(value), x + 6, y + 22, { width: w - 12 });
+  setFont(doc, fontRegular, 10);
+  doc.text(s(value), x + 6, y + 18, {
+    width: w - 12,
+    align: "left",
+    lineGap: 1.5,
+  });
 }
 
 function drawKeyValueRows(doc, rows, options = {}) {
@@ -280,16 +288,18 @@ function drawKeyValueRows(doc, rows, options = {}) {
     drawBorder(doc, x, cursorY, width, h);
     drawBorder(doc, x, cursorY, labelWidth, h);
 
-    setFont(doc, fontBold, 10);
+    setFont(doc, fontBold, 9.5);
     doc.text(s(row.label), x + 6, cursorY + 7, {
       width: labelWidth - 12,
       align: "left",
+      lineGap: 1,
     });
 
-    setFont(doc, fontRegular, 10);
+    setFont(doc, fontRegular, 9.5);
     doc.text(s(row.value), x + labelWidth + 8, cursorY + 7, {
       width: width - labelWidth - 16,
       align: "left",
+      lineGap: 1.5,
     });
 
     cursorY += h;
@@ -335,7 +345,7 @@ function drawItemsTable(doc, items, options = {}) {
       .stroke();
   }
 
-  setFont(doc, fontBold, 10);
+  setFont(doc, fontBold, 9.5);
   doc.text("ลำดับ", x + 4, y + 8, { width: colNo - 8, align: "center" });
   doc.text("รายการ", x + colNo + 4, y + 8, {
     width: colDesc - 8,
@@ -361,37 +371,38 @@ function drawItemsTable(doc, items, options = {}) {
 
     const item = Array.isArray(items) ? items[i] : null;
 
-    setFont(doc, fontRegular, 10);
+    setFont(doc, fontRegular, 9.25);
 
-    doc.text(item ? String(i + 1) : "", x + 4, cursorY + 8, {
+    doc.text(item ? String(i + 1) : "", x + 4, cursorY + 7, {
       width: colNo - 8,
       align: "center",
     });
 
-    doc.text(item ? s(item.description) : "", x + colNo + 4, cursorY + 6, {
+    doc.text(item ? s(item.description) : "", x + colNo + 4, cursorY + 5, {
       width: colDesc - 8,
       align: "left",
       ellipsis: true,
+      lineGap: 1,
     });
 
     doc.text(
       item ? formatAmount(n(item.quantity, 0)) : "",
       x + colNo + colDesc + 4,
-      cursorY + 8,
+      cursorY + 7,
       { width: colQty - 8, align: "right" }
     );
 
     doc.text(
       item ? formatAmount(n(item.unitPrice, 0)) : "",
       x + colNo + colDesc + colQty + 4,
-      cursorY + 8,
+      cursorY + 7,
       { width: colUnit - 8, align: "right" }
     );
 
     doc.text(
       item ? formatAmount(n(item.amount, 0)) : "",
       x + colNo + colDesc + colQty + colUnit + 4,
-      cursorY + 8,
+      cursorY + 7,
       { width: colAmount - 8, align: "right" }
     );
 
@@ -432,15 +443,17 @@ function drawSummaryBox(doc, summary, options = {}) {
     drawBorder(doc, x, cursorY, width, rowH);
     drawBorder(doc, x, cursorY, labelW, rowH);
 
-    setFont(doc, row.bold ? fontBold : fontRegular, row.bold ? 10.5 : 10);
+    setFont(doc, row.bold ? fontBold : fontRegular, row.bold ? 10 : 9.5);
     doc.text(s(row.label), x + 6, cursorY + 7, {
       width: labelW - 12,
       align: "left",
+      lineGap: 1,
     });
 
     doc.text(s(row.value), x + labelW + 6, cursorY + 7, {
       width: width - labelW - 12,
       align: "right",
+      lineGap: 1,
     });
 
     cursorY += rowH;
@@ -463,10 +476,13 @@ function drawSignatureArea(doc, data, options = {}) {
   const leftW = 260;
   drawBorder(doc, x, y, leftW, 85);
 
-  setFont(doc, fontBold, 10);
-  doc.text("วิธีการชำระเงิน", x + 8, y + 8);
+  setFont(doc, fontBold, 9.5);
+  doc.text("วิธีการชำระเงิน", x + 8, y + 8, {
+    width: leftW - 16,
+    lineGap: 1,
+  });
 
-  setFont(doc, fontRegular, 10);
+  setFont(doc, fontRegular, 9.25);
   const methodTextMap = {
     cash: "เงินสด",
     transfer: "โอนเงิน",
@@ -479,20 +495,30 @@ function drawSignatureArea(doc, data, options = {}) {
     s(data.paymentInfo?.method) ||
     "-";
 
-  doc.text(`วิธีชำระ: ${methodText}`, x + 8, y + 28);
-  doc.text(`ธนาคาร: ${s(data.paymentInfo?.bankName) || "-"}`, x + 8, y + 44);
+  doc.text(`วิธีชำระ: ${methodText}`, x + 8, y + 27, {
+    width: leftW - 16,
+    lineGap: 1,
+  });
+  doc.text(`ธนาคาร: ${s(data.paymentInfo?.bankName) || "-"}`, x + 8, y + 43, {
+    width: leftW - 16,
+    lineGap: 1,
+  });
   doc.text(
     `อ้างอิง: ${s(
       data.paymentInfo?.transferRef || data.paymentInfo?.chequeNo
     ) || "-"}`,
     x + 8,
-    y + 60
+    y + 59,
+    {
+      width: leftW - 16,
+      lineGap: 1,
+    }
   );
 
   const sigX = x + leftW + 16;
   const sigW = width - leftW - 32;
 
-  setFont(doc, fontRegular, 10);
+  setFont(doc, fontRegular, 9.25);
   doc.text(
     "ลงชื่อ ................................................................. ผู้รับเงิน",
     sigX,
@@ -500,17 +526,23 @@ function drawSignatureArea(doc, data, options = {}) {
     {
       width: sigW,
       align: "left",
+      lineGap: 1,
     }
   );
   doc.text(
     `( ${s(data.clinicSnapshot?.clinicName) || "........................................"} )`,
     sigX + 40,
     y + 42,
-    { width: sigW - 40, align: "left" }
+    {
+      width: sigW - 40,
+      align: "left",
+      lineGap: 1,
+    }
   );
   doc.text(`วันที่ ${formatThaiDate(data.issueDate)}`, sigX + 70, y + 62, {
     width: sigW - 70,
     align: "left",
+    lineGap: 1,
   });
 }
 
@@ -577,15 +609,19 @@ async function createPdfFileFromReceipt(receipt, opts = {}) {
     } catch (_) {}
   }
 
-  setFont(doc, fonts.bold, 18);
+  setFont(doc, fonts.bold, 16.5);
   doc.text(
     s(getValueDeep(data, "clinicSnapshot.clinicName")) || "ชื่อคลินิก",
     margin + 92,
-    48,
-    { width: 280, align: "left" }
+    50,
+    {
+      width: 280,
+      align: "left",
+      lineGap: 1.5,
+    }
   );
 
-  setFont(doc, fonts.regular, 10);
+  setFont(doc, fonts.regular, 9.25);
   const clinicLines = [
     s(getValueDeep(data, "clinicSnapshot.clinicBranchName")),
     s(getValueDeep(data, "clinicSnapshot.clinicAddress")),
@@ -593,10 +629,10 @@ async function createPdfFileFromReceipt(receipt, opts = {}) {
     `เลขประจำตัวผู้เสียภาษี ${s(getValueDeep(data, "clinicSnapshot.clinicTaxId")) || "-"}`,
   ].filter(Boolean);
 
-  doc.text(clinicLines.join("\n"), margin + 92, 74, {
+  doc.text(clinicLines.join("\n"), margin + 92, 78, {
     width: 270,
     align: "left",
-    lineGap: 2,
+    lineGap: 3,
   });
 
   drawTextBox(doc, {
@@ -610,8 +646,8 @@ async function createPdfFileFromReceipt(receipt, opts = {}) {
     fontBold: fonts.bold,
   });
 
-  setFont(doc, fonts.bold, 20);
-  doc.text("ใบเสร็จรับเงิน", 380, 92, { width: 145, align: "center" });
+  setFont(doc, fonts.bold, 18.5);
+  doc.text("ใบเสร็จรับเงิน", 380, 90, { width: 145, align: "center" });
 
   drawTextBox(doc, {
     x: 380,
@@ -636,8 +672,8 @@ async function createPdfFileFromReceipt(receipt, opts = {}) {
   });
 
   const customerTop = 183;
-
-  const servicePeriodValue = s(data.servicePeriodText) || s(data.serviceMonth) || "-";
+  const servicePeriodValue =
+    s(data.servicePeriodText) || s(data.serviceMonth) || "-";
 
   drawKeyValueRows(
     doc,
@@ -648,7 +684,8 @@ async function createPdfFileFromReceipt(receipt, opts = {}) {
       },
       {
         label: "ที่อยู่",
-        value: s(getValueDeep(data, "customerSnapshot.customerAddress")) || "-",
+        value:
+          s(getValueDeep(data, "customerSnapshot.customerAddress")) || "-",
         height: 40,
       },
       {
@@ -681,12 +718,16 @@ async function createPdfFileFromReceipt(receipt, opts = {}) {
 
   const amountThaiBoxY = itemsBottomY + 8;
   drawBorder(doc, margin, amountThaiBoxY, 295, 42);
-  setFont(doc, fonts.bold, 10);
-  doc.text("จำนวนเงิน (ตัวอักษร)", margin + 8, amountThaiBoxY + 6);
-  setFont(doc, fonts.regular, 10.5);
+  setFont(doc, fonts.bold, 9.5);
+  doc.text("จำนวนเงิน (ตัวอักษร)", margin + 8, amountThaiBoxY + 6, {
+    width: 279,
+    lineGap: 1,
+  });
+  setFont(doc, fonts.regular, 9.5);
   doc.text(s(data.amountInThaiText) || "-", margin + 8, amountThaiBoxY + 21, {
     width: 279,
     align: "left",
+    lineGap: 1.5,
   });
 
   drawSummaryBox(
@@ -707,12 +748,16 @@ async function createPdfFileFromReceipt(receipt, opts = {}) {
 
   if (s(data.note)) {
     drawBorder(doc, margin, 612, contentWidth, 48);
-    setFont(doc, fonts.bold, 10);
-    doc.text("หมายเหตุ", margin + 8, 620);
-    setFont(doc, fonts.regular, 10);
+    setFont(doc, fonts.bold, 9.5);
+    doc.text("หมายเหตุ", margin + 8, 620, {
+      width: 56,
+      lineGap: 1,
+    });
+    setFont(doc, fonts.regular, 9.25);
     doc.text(s(data.note), margin + 68, 620, {
       width: contentWidth - 76,
       align: "left",
+      lineGap: 1.5,
     });
   }
 
@@ -724,7 +769,7 @@ async function createPdfFileFromReceipt(receipt, opts = {}) {
     fontBold: fonts.bold,
   });
 
-  setFont(doc, fonts.regular, 8.5);
+  setFont(doc, fonts.regular, 8.25);
   doc.text(
     "เอกสารนี้สร้างจากระบบ payroll_service สำหรับใช้งานภายในคลินิก",
     margin,
@@ -732,6 +777,7 @@ async function createPdfFileFromReceipt(receipt, opts = {}) {
     {
       width: contentWidth,
       align: "center",
+      lineGap: 1,
     }
   );
 
