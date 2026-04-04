@@ -344,6 +344,17 @@ function drawKeyValueRows(doc, rows, options = {}) {
   return cursorY;
 }
 
+function drawCheckBox(doc, { x, y, size = 10, checked = false }) {
+  doc.rect(x, y, size, size).stroke();
+  if (checked) {
+    doc
+      .moveTo(x + 2, y + size / 2)
+      .lineTo(x + 4, y + size - 2)
+      .lineTo(x + size - 2, y + 2)
+      .stroke();
+  }
+}
+
 function drawItemsTable(doc, items, options = {}) {
   const {
     x = 40,
@@ -352,16 +363,19 @@ function drawItemsTable(doc, items, options = {}) {
     fontBold = "Helvetica-Bold",
   } = options;
 
-  const colNo = 40;
-  const colDesc = 285;
-  const colQty = 55;
-  const colUnit = 65;
-  const colAmount = 70;
+  const colNo = 28;
+  const colDesc = 180;
+  const colQty = 40;
+  const colUnit = 55;
+  const colGross = 68;
+  const colWht = 68;
+  const colNet = 76;
 
-  const tableWidth = colNo + colDesc + colQty + colUnit + colAmount;
-  const headerHeight = 28;
+  const tableWidth =
+    colNo + colDesc + colQty + colUnit + colGross + colWht + colNet;
+  const headerHeight = 32;
   const rowHeight = 28;
-  const totalRows = Math.max(6, Array.isArray(items) ? items.length : 0);
+  const totalRows = Math.max(5, Array.isArray(items) ? items.length : 0);
 
   drawBorder(doc, x, y, tableWidth, headerHeight);
 
@@ -371,6 +385,8 @@ function drawItemsTable(doc, items, options = {}) {
     x + colNo + colDesc,
     x + colNo + colDesc + colQty,
     x + colNo + colDesc + colQty + colUnit,
+    x + colNo + colDesc + colQty + colUnit + colGross,
+    x + colNo + colDesc + colQty + colUnit + colGross + colWht,
     x + tableWidth,
   ];
 
@@ -381,14 +397,14 @@ function drawItemsTable(doc, items, options = {}) {
       .stroke();
   }
 
-  setFont(doc, fontBold, 9.3);
-  const headerY = y + 6;
+  setFont(doc, fontBold, 8.2);
+  const headerY = y + 7;
 
-  doc.text("ลำดับ", x + 4, headerY, {
-    width: colNo - 8,
+  doc.text("ลำดับ", x + 2, headerY, {
+    width: colNo - 4,
     align: "center",
     lineGap: 0,
-    height: 14,
+    height: 16,
     ellipsis: true,
   });
 
@@ -396,33 +412,59 @@ function drawItemsTable(doc, items, options = {}) {
     width: colDesc - 8,
     align: "center",
     lineGap: 0,
-    height: 14,
+    height: 16,
     ellipsis: true,
   });
 
-  doc.text("จำนวน", x + colNo + colDesc + 4, headerY, {
-    width: colQty - 8,
+  doc.text("จำนวน", x + colNo + colDesc + 3, headerY, {
+    width: colQty - 6,
     align: "center",
     lineGap: 0,
-    height: 14,
+    height: 16,
     ellipsis: true,
   });
 
-  doc.text("หน่วยละ", x + colNo + colDesc + colQty + 4, headerY, {
-    width: colUnit - 8,
+  doc.text("หน่วยละ", x + colNo + colDesc + colQty + 3, headerY, {
+    width: colUnit - 6,
     align: "center",
     lineGap: 0,
-    height: 14,
+    height: 16,
     ellipsis: true,
   });
 
-  doc.text("จำนวนเงิน", x + colNo + colDesc + colQty + colUnit + 4, headerY, {
-    width: colAmount - 8,
+  doc.text("จำนวนเงิน", x + colNo + colDesc + colQty + colUnit + 3, headerY, {
+    width: colGross - 6,
     align: "center",
     lineGap: 0,
-    height: 14,
+    height: 16,
     ellipsis: true,
   });
+
+  doc.text(
+    "ภาษีหัก\nณ ที่จ่าย",
+    x + colNo + colDesc + colQty + colUnit + colGross + 3,
+    y + 4,
+    {
+      width: colWht - 6,
+      align: "center",
+      lineGap: 1,
+      height: 22,
+      ellipsis: true,
+    }
+  );
+
+  doc.text(
+    "สุทธิ",
+    x + colNo + colDesc + colQty + colUnit + colGross + colWht + 3,
+    headerY,
+    {
+      width: colNet - 6,
+      align: "center",
+      lineGap: 0,
+      height: 16,
+      ellipsis: true,
+    }
+  );
 
   let cursorY = y + headerHeight;
 
@@ -431,11 +473,11 @@ function drawItemsTable(doc, items, options = {}) {
 
     const item = Array.isArray(items) ? items[i] : null;
 
-    setFont(doc, fontRegular, 9.25);
-    const rowTextY = cursorY + 6;
+    setFont(doc, fontRegular, 8.8);
+    const rowTextY = cursorY + 7;
 
-    doc.text(item ? String(i + 1) : "", x + 4, rowTextY, {
-      width: colNo - 8,
+    doc.text(item ? String(i + 1) : "", x + 2, rowTextY, {
+      width: colNo - 4,
       align: "center",
       lineGap: 0,
       height: 14,
@@ -452,10 +494,10 @@ function drawItemsTable(doc, items, options = {}) {
 
     doc.text(
       item ? formatAmount(n(item.quantity, 0)) : "",
-      x + colNo + colDesc + 4,
+      x + colNo + colDesc + 3,
       rowTextY,
       {
-        width: colQty - 8,
+        width: colQty - 6,
         align: "right",
         lineGap: 0,
         height: 14,
@@ -465,10 +507,10 @@ function drawItemsTable(doc, items, options = {}) {
 
     doc.text(
       item ? formatAmount(n(item.unitPrice, 0)) : "",
-      x + colNo + colDesc + colQty + 4,
+      x + colNo + colDesc + colQty + 3,
       rowTextY,
       {
-        width: colUnit - 8,
+        width: colUnit - 6,
         align: "right",
         lineGap: 0,
         height: 14,
@@ -478,10 +520,40 @@ function drawItemsTable(doc, items, options = {}) {
 
     doc.text(
       item ? formatAmount(n(item.amount, 0)) : "",
-      x + colNo + colDesc + colQty + colUnit + 4,
+      x + colNo + colDesc + colQty + colUnit + 3,
       rowTextY,
       {
-        width: colAmount - 8,
+        width: colGross - 6,
+        align: "right",
+        lineGap: 0,
+        height: 14,
+        ellipsis: true,
+      }
+    );
+
+    doc.text(
+      item ? formatAmount(n(item.withholdingTaxAmount, 0)) : "",
+      x + colNo + colDesc + colQty + colUnit + colGross + 3,
+      rowTextY,
+      {
+        width: colWht - 6,
+        align: "right",
+        lineGap: 0,
+        height: 14,
+        ellipsis: true,
+      }
+    );
+
+    doc.text(
+      item
+        ? formatAmount(
+            n(item.netAmount, Math.max(0, n(item.amount, 0) - n(item.withholdingTaxAmount, 0)))
+          )
+        : "",
+      x + colNo + colDesc + colQty + colUnit + colGross + colWht + 3,
+      rowTextY,
+      {
+        width: colNet - 6,
         align: "right",
         lineGap: 0,
         height: 14,
@@ -545,85 +617,114 @@ function drawSummaryBox(doc, summary, options = {}) {
   return cursorY;
 }
 
-function drawSignatureArea(doc, data, options = {}) {
+function drawPaymentMethodArea(doc, data, options = {}) {
   const {
     x = 40,
     y = 675,
-    width = 515,
+    width = 260,
+    height = 100,
     fontRegular = "Helvetica",
     fontBold = "Helvetica-Bold",
   } = options;
 
-  drawBorder(doc, x, y, width, 85);
+  const paymentInfo = data.paymentInfo || {};
+  const method = s(paymentInfo.method).toLowerCase();
 
-  const leftW = 260;
-  drawBorder(doc, x, y, leftW, 85);
+  drawBorder(doc, x, y, width, height);
 
   setFont(doc, fontBold, 9.5);
   doc.text("วิธีการชำระเงิน", x + 8, y + 8, {
-    width: leftW - 16,
+    width: width - 16,
     lineGap: 1,
   });
 
-  setFont(doc, fontRegular, 9.25);
-  const methodTextMap = {
-    cash: "เงินสด",
-    transfer: "โอนเงิน",
-    cheque: "เช็ค",
-    other: "อื่น ๆ",
-  };
+  const methods = [
+    { key: "cash", label: "เงินสด" },
+    { key: "transfer", label: "โอนเงิน" },
+    { key: "cheque", label: "เช็ค" },
+    { key: "other", label: "อื่น ๆ" },
+  ];
 
-  const methodText =
-    methodTextMap[s(data.paymentInfo?.method)] ||
-    s(data.paymentInfo?.method) ||
-    "-";
+  let cursorX = x + 8;
+  const rowY = y + 26;
 
-  doc.text(`วิธีชำระ: ${methodText}`, x + 8, y + 27, {
-    width: leftW - 16,
+  methods.forEach((item, index) => {
+    const blockW = index < 2 ? 62 : 55;
+    drawCheckBox(doc, {
+      x: cursorX,
+      y: rowY + 1,
+      size: 10,
+      checked: method === item.key,
+    });
+    setFont(doc, fontRegular, 8.8);
+    doc.text(item.label, cursorX + 14, rowY - 1, {
+      width: blockW,
+      lineGap: 0,
+      height: 12,
+      ellipsis: true,
+    });
+    cursorX += blockW + 10;
+  });
+
+  setFont(doc, fontRegular, 8.7);
+  doc.text(`ธนาคาร: ${s(paymentInfo.bankName) || "-"}`, x + 8, y + 45, {
+    width: width - 16,
     lineGap: 1,
   });
-  doc.text(`ธนาคาร: ${s(data.paymentInfo?.bankName) || "-"}`, x + 8, y + 43, {
-    width: leftW - 16,
+  doc.text(`ชื่อบัญชี: ${s(paymentInfo.accountName) || "-"}`, x + 8, y + 59, {
+    width: width - 16,
     lineGap: 1,
   });
-  doc.text(
-    `อ้างอิง: ${s(
-      data.paymentInfo?.transferRef || data.paymentInfo?.chequeNo
-    ) || "-"}`,
-    x + 8,
-    y + 59,
-    {
-      width: leftW - 16,
-      lineGap: 1,
-    }
-  );
+  doc.text(`เลขบัญชี: ${s(paymentInfo.accountNumber) || "-"}`, x + 8, y + 73, {
+    width: width - 16,
+    lineGap: 1,
+  });
 
-  const sigX = x + leftW + 16;
-  const sigW = width - leftW - 32;
+  const refText =
+    s(paymentInfo.transferRef) || s(paymentInfo.chequeNo) || "-";
+  doc.text(`อ้างอิง: ${refText}`, x + 8, y + 87, {
+    width: width - 16,
+    lineGap: 1,
+  });
+}
+
+function drawSignatureArea(doc, data, options = {}) {
+  const {
+    x = 315,
+    y = 675,
+    width = 240,
+    height = 100,
+    fontRegular = "Helvetica",
+    fontBold = "Helvetica-Bold",
+  } = options;
+
+  drawBorder(doc, x, y, width, height);
 
   setFont(doc, fontRegular, 9.25);
   doc.text(
     "ลงชื่อ ................................................................. ผู้รับเงิน",
-    sigX,
-    y + 20,
+    x + 12,
+    y + 24,
     {
-      width: sigW,
+      width: width - 24,
       align: "left",
       lineGap: 1,
     }
   );
+
   doc.text(
     `( ${s(data.clinicSnapshot?.clinicName) || "........................................"} )`,
-    sigX + 40,
-    y + 42,
+    x + 34,
+    y + 48,
     {
-      width: sigW - 40,
+      width: width - 46,
       align: "left",
       lineGap: 1,
     }
   );
-  doc.text(`วันที่ ${formatThaiDate(data.issueDate)}`, sigX + 70, y + 62, {
-    width: sigW - 70,
+
+  doc.text(`วันที่ ${formatThaiDate(data.issueDate)}`, x + 58, y + 72, {
+    width: width - 70,
     align: "left",
     lineGap: 1,
   });
@@ -712,7 +813,7 @@ async function createPdfFileFromReceipt(receipt, opts = {}) {
     }
   );
 
-  setFont(doc, fonts.regular, 9.25);
+  setFont(doc, fonts.regular, 8.9);
   const clinicLines = [
     s(getValueDeep(data, "clinicSnapshot.clinicBranchName")),
     s(getValueDeep(data, "clinicSnapshot.clinicAddress")),
@@ -723,7 +824,7 @@ async function createPdfFileFromReceipt(receipt, opts = {}) {
   doc.text(clinicLines.join("\n"), leftStartX, 78, {
     width: clinicTextW,
     align: "left",
-    lineGap: 3,
+    lineGap: 2.5,
     height: 82,
     ellipsis: true,
   });
@@ -767,11 +868,11 @@ async function createPdfFileFromReceipt(receipt, opts = {}) {
     fontBold: fonts.bold,
   });
 
-  const customerTop = 197;
+  const customerTop = 192;
   const servicePeriodValue =
     s(data.servicePeriodText) || s(data.serviceMonth) || "-";
 
-  drawKeyValueRows(
+  const customerBottomY = drawKeyValueRows(
     doc,
     [
       {
@@ -782,11 +883,15 @@ async function createPdfFileFromReceipt(receipt, opts = {}) {
         label: "ที่อยู่",
         value:
           s(getValueDeep(data, "customerSnapshot.customerAddress")) || "-",
-        height: 40,
+        height: 38,
       },
       {
         label: "เลขประจำตัวผู้เสียภาษี",
         value: s(getValueDeep(data, "customerSnapshot.customerTaxId")) || "-",
+      },
+      {
+        label: "เลขประจำตัวผู้เสียภาษีผู้หัก ณ ที่จ่าย",
+        value: s(getValueDeep(data, "clinicSnapshot.withholderTaxId")) || "-",
       },
       {
         label: "ประจำงวด",
@@ -797,14 +902,14 @@ async function createPdfFileFromReceipt(receipt, opts = {}) {
       x: margin,
       y: customerTop,
       width: contentWidth,
-      rowHeight: 28,
-      labelWidth: 145,
+      rowHeight: 26,
+      labelWidth: 175,
       fontRegular: fonts.regular,
       fontBold: fonts.bold,
     }
   );
 
-  const itemsTop = 300;
+  const itemsTop = customerBottomY + 10;
   const itemsBottomY = drawItemsTable(doc, data.items || [], {
     x: margin,
     y: itemsTop,
@@ -826,7 +931,7 @@ async function createPdfFileFromReceipt(receipt, opts = {}) {
     lineGap: 1.5,
   });
 
-  drawSummaryBox(
+  const summaryBottomY = drawSummaryBox(
     doc,
     {
       subtotal: n(data.subtotal, 0),
@@ -842,25 +947,40 @@ async function createPdfFileFromReceipt(receipt, opts = {}) {
     }
   );
 
+  let footerStartY = Math.max(amountThaiBoxY + 86, summaryBottomY + 8);
+
   if (s(data.note)) {
-    drawBorder(doc, margin, 612, contentWidth, 48);
-    setFont(doc, fonts.bold, 9.5);
-    doc.text("หมายเหตุ", margin + 8, 620, {
+    drawBorder(doc, margin, footerStartY, contentWidth, 38);
+    setFont(doc, fonts.bold, 9.2);
+    doc.text("หมายเหตุ", margin + 8, footerStartY + 8, {
       width: 56,
       lineGap: 1,
     });
-    setFont(doc, fonts.regular, 9.25);
-    doc.text(s(data.note), margin + 68, 620, {
+    setFont(doc, fonts.regular, 8.9);
+    doc.text(s(data.note), margin + 68, footerStartY + 8, {
       width: contentWidth - 76,
       align: "left",
-      lineGap: 1.5,
+      lineGap: 1.3,
+      height: 22,
+      ellipsis: true,
     });
+    footerStartY += 46;
   }
 
-  drawSignatureArea(doc, data, {
+  drawPaymentMethodArea(doc, data, {
     x: margin,
-    y: 675,
-    width: contentWidth,
+    y: footerStartY,
+    width: 260,
+    height: 100,
+    fontRegular: fonts.regular,
+    fontBold: fonts.bold,
+  });
+
+  drawSignatureArea(doc, data, {
+    x: 315,
+    y: footerStartY,
+    width: 240,
+    height: 100,
     fontRegular: fonts.regular,
     fontBold: fonts.bold,
   });

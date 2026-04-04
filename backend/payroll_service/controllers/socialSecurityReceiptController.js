@@ -73,6 +73,7 @@ function sanitizeClinicSnapshot(raw = {}, clinicId = "") {
     clinicPhone: s(raw.clinicPhone),
     clinicTaxId: s(raw.clinicTaxId),
     logoUrl: s(raw.logoUrl),
+    withholderTaxId: s(raw.withholderTaxId),
     clinicId: s(clinicId),
   };
 }
@@ -85,6 +86,7 @@ function buildClinicSnapshotFromClinic(clinic = {}, clinicId = "") {
     clinicPhone: s(clinic.phone),
     clinicTaxId: s(clinic.taxId),
     logoUrl: s(clinic.logoUrl),
+    withholderTaxId: s(clinic.withholderTaxId),
     clinicId: s(clinicId || clinic.clinicId),
   };
 }
@@ -112,6 +114,9 @@ async function resolveMergedClinicSnapshot({
     clinicPhone: s(fromInput.clinicPhone || fromClinic.clinicPhone),
     clinicTaxId: s(fromInput.clinicTaxId || fromClinic.clinicTaxId),
     logoUrl: s(fromInput.logoUrl || fromClinic.logoUrl),
+    withholderTaxId: s(
+      fromInput.withholderTaxId || fromClinic.withholderTaxId
+    ),
     clinicId: s(clinicId),
   };
 }
@@ -125,22 +130,61 @@ function sanitizeCustomerSnapshot(raw = {}) {
   };
 }
 
-function sanitizePaymentInfo(raw = {}) {
-  const method = s(raw.method).toLowerCase();
+function normalizePaymentMethod(method) {
+  const x = s(method).toLowerCase();
+  if (x === "check") return "cheque";
+  return ["cash", "transfer", "cheque", "other"].includes(x)
+    ? x
+    : "transfer";
+}
+
+function sanitizePaymentInfo(raw = {}, body = {}) {
+  const method =
+    raw.method != null ? raw.method : body.paymentMethod;
+
   return {
-    method: ["cash", "transfer", "cheque", "other"].includes(method)
-      ? method
-      : "transfer",
-    bankName: s(raw.bankName),
-    chequeNo: s(raw.chequeNo),
-    transferRef: s(raw.transferRef),
+    method: normalizePaymentMethod(method),
+    bankName: s(raw.bankName || body.bankName),
+    accountName: s(raw.accountName || body.accountName),
+    accountNumber: s(raw.accountNumber || body.accountNumber),
+    chequeNo: s(raw.chequeNo || body.chequeNo),
+    transferRef: s(raw.transferRef || body.paymentReference || body.transferRef),
     paidAt:
-      raw.paidAt && isValidDateInput(raw.paidAt) ? new Date(raw.paidAt) : null,
-    note: s(raw.note),
+      (raw.paidAt || body.paidAt) && isValidDateInput(raw.paidAt || body.paidAt)
+        ? new Date(raw.paidAt || body.paidAt)
+        : null,
+    note: s(raw.note || body.paymentNote),
   };
 }
 
-function resolveWithholdingInputs(body = {}) {
+function normalizeReceiptItems(items = []) {
+  return normalizeItems(items).map((item) => {
+    const quantity = Math.max(0, n(item?.quantity, 1));
+    const unitPrice = Math.max(0, n(item?.unitPrice, 0));
+    const amountInput = item?.amount;
+    const amount =
+      amountInput != null && amountInput !== ""
+        ? Math.max(0, n(amountInput, 0))
+        : Math.max(0, round2(quantity * unitPrice));
+
+    const withholdingTaxAmount = Math.max(
+      0,
+      Math.min(amount, n(item?.withholdingTaxAmount, 0))
+    );
+
+    return {
+      description: s(item?.description),
+      quantity,
+      unitPrice,
+      amount,
+      withholdingTaxAmount,
+      netAmount: Math.max(0, amount - withholdingTaxAmount),
+      note: s(item?.note),
+    };
+  });
+}
+
+function resolveWithholdingInputs(body = {}, normalizedItems = []) {
   const withholdingTaxEnabled = parseBoolean(
     body.withholdingTaxEnabled,
     false
@@ -152,13 +196,16 @@ function resolveWithholdingInputs(body = {}) {
     withholdingTaxInput = body.withholdingTaxAmount;
   } else if ("withholdingTax" in body) {
     withholdingTaxInput = body.withholdingTax;
+  } else if (normalizedItems.length) {
+    withholdingTaxInput = normalizedItems.reduce(
+      (sum, item) => sum + n(item.withholdingTaxAmount, 0),
+      0
+    );
   }
 
   return {
     withholdingTaxEnabled,
-    withholdingTaxInput: withholdingTaxEnabled
-      ? withholdingTaxInput
-      : 0,
+    withholdingTaxInput: withholdingTaxEnabled ? withholdingTaxInput : 0,
     withholdingPercent:
       withholdingTaxEnabled && "withholdingPercent" in body
         ? body.withholdingPercent
@@ -186,6 +233,7 @@ function formatReceiptResponse(doc) {
       clinicPhone: s(x.clinicSnapshot?.clinicPhone),
       clinicTaxId: s(x.clinicSnapshot?.clinicTaxId),
       logoUrl: s(x.clinicSnapshot?.logoUrl),
+      withholderTaxId: s(x.clinicSnapshot?.withholderTaxId),
     },
 
     customerSnapshot: {
@@ -201,6 +249,13 @@ function formatReceiptResponse(doc) {
           quantity: round2(n(item.quantity, 1)),
           unitPrice: round2(n(item.unitPrice, 0)),
           amount: round2(n(item.amount, 0)),
+          withholdingTaxAmount: round2(n(item.withholdingTaxAmount, 0)),
+          netAmount: round2(
+            n(
+              item.netAmount,
+              Math.max(0, n(item.amount, 0) - n(item.withholdingTaxAmount, 0))
+            )
+          ),
           note: s(item.note),
         }))
       : [],
@@ -214,6 +269,8 @@ function formatReceiptResponse(doc) {
     paymentInfo: {
       method: s(x.paymentInfo?.method),
       bankName: s(x.paymentInfo?.bankName),
+      accountName: s(x.paymentInfo?.accountName),
+      accountNumber: s(x.paymentInfo?.accountNumber),
       chequeNo: s(x.paymentInfo?.chequeNo),
       transferRef: s(x.paymentInfo?.transferRef),
       paidAt: x.paymentInfo?.paidAt || null,
@@ -338,13 +395,28 @@ async function createReceipt(req, res) {
 
     const clinicSnapshot = await resolveMergedClinicSnapshot({
       clinicId,
-      inputSnapshot: req.body?.clinicSnapshot,
+      inputSnapshot:
+        req.body?.clinicSnapshot || {
+          clinicName: req.body?.clinicName,
+          clinicBranchName: req.body?.clinicBranchName,
+          clinicAddress: req.body?.clinicAddress,
+          clinicPhone: req.body?.clinicPhone,
+          clinicTaxId: req.body?.clinicTaxId,
+          logoUrl: req.body?.logoUrl,
+          withholderTaxId: req.body?.withholderTaxId,
+        },
     });
 
     const customerSnapshot = sanitizeCustomerSnapshot(
-      req.body?.customerSnapshot
+      req.body?.customerSnapshot || {
+        customerName: req.body?.customerName,
+        customerAddress: req.body?.customerAddress,
+        customerTaxId: req.body?.customerTaxId,
+        customerBranch: req.body?.customerBranch,
+      }
     );
-    const paymentInfo = sanitizePaymentInfo(req.body?.paymentInfo);
+
+    const paymentInfo = sanitizePaymentInfo(req.body?.paymentInfo, req.body || {});
 
     if (!customerSnapshot.customerName) {
       return res.status(400).json({
@@ -354,16 +426,35 @@ async function createReceipt(req, res) {
       });
     }
 
-    const withholdingMeta = resolveWithholdingInputs(req.body || {});
+    const normalizedItems = normalizeReceiptItems(req.body?.items);
+    const withholdingMeta = resolveWithholdingInputs(req.body || {}, normalizedItems);
 
     const amountResult = calculateReceiptAmounts({
-      items: normalizeItems(req.body?.items),
+      items: normalizedItems,
       subtotal: req.body?.subtotal,
       withholdingTax: withholdingMeta.withholdingTaxInput,
       withholdingPercent: withholdingMeta.withholdingPercent,
     });
 
-    if (!amountResult.items.length) {
+    const finalItems = amountResult.items.map((item, index) => {
+      const raw = normalizedItems[index] || {};
+      const amount = round2(n(item.amount, raw.amount));
+      const withholdingTaxAmount = withholdingMeta.withholdingTaxEnabled
+        ? round2(Math.max(0, Math.min(amount, n(raw.withholdingTaxAmount, 0))))
+        : 0;
+
+      return {
+        description: s(item.description),
+        quantity: round2(n(item.quantity, raw.quantity)),
+        unitPrice: round2(n(item.unitPrice, raw.unitPrice)),
+        amount,
+        withholdingTaxAmount,
+        netAmount: round2(Math.max(0, amount - withholdingTaxAmount)),
+        note: s(item.note || raw.note),
+      };
+    });
+
+    if (!finalItems.length) {
       return res.status(400).json({
         ok: false,
         code: "RECEIPT_ITEMS_REQUIRED",
@@ -400,13 +491,23 @@ async function createReceipt(req, res) {
       s(req.body?.receiptNo) ||
       (await nextSocialSecurityReceiptNo({ clinicId, issueDate }));
 
+    const perItemWithholding = finalItems.reduce(
+      (sum, item) => sum + n(item.withholdingTaxAmount, 0),
+      0
+    );
+
     const normalizedWithholdingTax = withholdingMeta.withholdingTaxEnabled
-      ? amountResult.withholdingTax
+      ? round2(
+          "withholdingTaxAmount" in (req.body || {}) ||
+            "withholdingTax" in (req.body || {})
+            ? amountResult.withholdingTax
+            : perItemWithholding
+        )
       : 0;
 
     const normalizedNetAmount = withholdingMeta.withholdingTaxEnabled
-      ? amountResult.netAmount
-      : amountResult.subtotal;
+      ? round2(Math.max(0, amountResult.subtotal - normalizedWithholdingTax))
+      : round2(amountResult.subtotal);
 
     const netAmountThaiText = numberToThaiText(normalizedNetAmount);
 
@@ -422,7 +523,7 @@ async function createReceipt(req, res) {
 
       clinicSnapshot,
       customerSnapshot,
-      items: amountResult.items,
+      items: finalItems,
 
       subtotal: amountResult.subtotal,
       withholdingTaxEnabled: withholdingMeta.withholdingTaxEnabled,
@@ -609,18 +710,49 @@ async function updateReceipt(req, res) {
       }
     }
 
-    if (req.body?.clinicSnapshot) {
+    if (
+      req.body?.clinicSnapshot ||
+      "clinicName" in (req.body || {}) ||
+      "clinicBranchName" in (req.body || {}) ||
+      "clinicAddress" in (req.body || {}) ||
+      "clinicPhone" in (req.body || {}) ||
+      "clinicTaxId" in (req.body || {}) ||
+      "logoUrl" in (req.body || {}) ||
+      "withholderTaxId" in (req.body || {})
+    ) {
       doc.clinicSnapshot = {
         ...(typeof doc.clinicSnapshot?.toObject === "function"
           ? doc.clinicSnapshot.toObject()
           : doc.clinicSnapshot || {}),
-        ...sanitizeClinicSnapshot(req.body.clinicSnapshot, doc.clinicId),
+        ...sanitizeClinicSnapshot(
+          req.body.clinicSnapshot || {
+            clinicName: req.body?.clinicName,
+            clinicBranchName: req.body?.clinicBranchName,
+            clinicAddress: req.body?.clinicAddress,
+            clinicPhone: req.body?.clinicPhone,
+            clinicTaxId: req.body?.clinicTaxId,
+            logoUrl: req.body?.logoUrl,
+            withholderTaxId: req.body?.withholderTaxId,
+          },
+          doc.clinicId
+        ),
       };
     }
 
-    if (req.body?.customerSnapshot) {
+    if (
+      req.body?.customerSnapshot ||
+      "customerName" in (req.body || {}) ||
+      "customerAddress" in (req.body || {}) ||
+      "customerTaxId" in (req.body || {}) ||
+      "customerBranch" in (req.body || {})
+    ) {
       const customerSnapshot = sanitizeCustomerSnapshot(
-        req.body.customerSnapshot
+        req.body.customerSnapshot || {
+          customerName: req.body?.customerName,
+          customerAddress: req.body?.customerAddress,
+          customerTaxId: req.body?.customerTaxId,
+          customerBranch: req.body?.customerBranch,
+        }
       );
       if (!customerSnapshot.customerName) {
         return res.status(400).json({
@@ -637,12 +769,23 @@ async function updateReceipt(req, res) {
       };
     }
 
-    if (req.body?.paymentInfo) {
+    if (
+      req.body?.paymentInfo ||
+      "paymentMethod" in (req.body || {}) ||
+      "bankName" in (req.body || {}) ||
+      "accountName" in (req.body || {}) ||
+      "accountNumber" in (req.body || {}) ||
+      "chequeNo" in (req.body || {}) ||
+      "paymentReference" in (req.body || {}) ||
+      "transferRef" in (req.body || {}) ||
+      "paidAt" in (req.body || {}) ||
+      "paymentNote" in (req.body || {})
+    ) {
       doc.paymentInfo = {
         ...(typeof doc.paymentInfo?.toObject === "function"
           ? doc.paymentInfo.toObject()
           : doc.paymentInfo || {}),
-        ...sanitizePaymentInfo(req.body.paymentInfo),
+        ...sanitizePaymentInfo(req.body.paymentInfo, req.body || {}),
       };
     }
 
@@ -662,11 +805,13 @@ async function updateReceipt(req, res) {
         ? parseBoolean(req.body.withholdingTaxEnabled, false)
         : parseBoolean(doc.withholdingTaxEnabled, false);
 
+      const normalizedItems =
+        "items" in (req.body || {})
+          ? normalizeReceiptItems(req.body.items)
+          : normalizeReceiptItems(doc.items);
+
       const amountResult = calculateReceiptAmounts({
-        items:
-          "items" in (req.body || {})
-            ? normalizeItems(req.body.items)
-            : doc.items,
+        items: normalizedItems,
         subtotal:
           "subtotal" in (req.body || {}) ? req.body.subtotal : doc.subtotal,
         withholdingTax: nextWithholdingEnabled
@@ -674,7 +819,10 @@ async function updateReceipt(req, res) {
               ? req.body.withholdingTaxAmount
               : "withholdingTax" in (req.body || {})
               ? req.body.withholdingTax
-              : doc.withholdingTax)
+              : normalizedItems.reduce(
+                  (sum, item) => sum + n(item.withholdingTaxAmount, 0),
+                  0
+                ))
           : 0,
         withholdingPercent:
           nextWithholdingEnabled &&
@@ -691,15 +839,43 @@ async function updateReceipt(req, res) {
         });
       }
 
-      doc.items = amountResult.items;
+      const finalItems = amountResult.items.map((item, index) => {
+        const raw = normalizedItems[index] || {};
+        const amount = round2(n(item.amount, raw.amount));
+        const withholdingTaxAmount = nextWithholdingEnabled
+          ? round2(Math.max(0, Math.min(amount, n(raw.withholdingTaxAmount, 0))))
+          : 0;
+
+        return {
+          description: s(item.description),
+          quantity: round2(n(item.quantity, raw.quantity)),
+          unitPrice: round2(n(item.unitPrice, raw.unitPrice)),
+          amount,
+          withholdingTaxAmount,
+          netAmount: round2(Math.max(0, amount - withholdingTaxAmount)),
+          note: s(item.note || raw.note),
+        };
+      });
+
+      const perItemWithholding = finalItems.reduce(
+        (sum, item) => sum + n(item.withholdingTaxAmount, 0),
+        0
+      );
+
+      doc.items = finalItems;
       doc.subtotal = amountResult.subtotal;
       doc.withholdingTaxEnabled = nextWithholdingEnabled;
       doc.withholdingTax = nextWithholdingEnabled
-        ? amountResult.withholdingTax
+        ? round2(
+            "withholdingTaxAmount" in (req.body || {}) ||
+              "withholdingTax" in (req.body || {})
+              ? amountResult.withholdingTax
+              : perItemWithholding
+          )
         : 0;
       doc.netAmount = nextWithholdingEnabled
-        ? amountResult.netAmount
-        : amountResult.subtotal;
+        ? round2(Math.max(0, doc.subtotal - doc.withholdingTax))
+        : round2(doc.subtotal);
       doc.amountInThaiText = numberToThaiText(doc.netAmount);
     }
 
