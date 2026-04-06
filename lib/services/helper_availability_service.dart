@@ -7,6 +7,17 @@
 //    - listMyRemote()         -> GET    /availabilities/me
 //    - listOpenRemote(date)   -> GET    /availabilities/open?date=YYYY-MM-DD   (admin only)
 //
+// ✅ PATCH NEW
+// - ✅ addRemote() แนบ helper location ไปด้วยตอนประกาศเวลาว่าง
+//   ส่ง:
+//    - lat
+//    - lng
+//    - district
+//    - province
+//    - address
+//    - locationLabel
+//   เพื่อให้ backend snapshot ตำแหน่งผู้ช่วยได้ทันที
+//
 // NOTE:
 // - Remote จะใช้ token เป็น source of truth (staffId/fullName/phone เติมจาก backend)
 // - ตอนนี้เน้นให้ยิงจริงก่อน (ยังไม่ sync local<->remote)
@@ -20,6 +31,7 @@ import 'package:http/http.dart' as http;
 import '../models/helper_availability_model.dart';
 import '../api/api_config.dart';
 import '../services/auth_storage.dart';
+import '../services/settings_service.dart';
 
 class HelperAvailabilityService {
   // -----------------------------
@@ -126,7 +138,10 @@ class HelperAvailabilityService {
     return list;
   }
 
-  static Future<void> saveByHelper(String helperId, List<HelperAvailability> list) async {
+  static Future<void> saveByHelper(
+    String helperId,
+    List<HelperAvailability> list,
+  ) async {
     await _migrateIfNeeded();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_keyForHelper(helperId), _encodeList(list));
@@ -187,7 +202,6 @@ class HelperAvailabilityService {
   }
 
   static Future<String> _requireToken() async {
-    // ⚠️ ถ้าโปรเจกต์ท่านชื่อเมธอดต่าง (เช่น readToken()) บอกผม เดี๋ยวปรับ
     final token = (await AuthStorage.getToken())?.trim() ?? '';
     if (token.isEmpty) throw Exception('unauthorized: missing token');
     return token;
@@ -203,12 +217,14 @@ class HelperAvailabilityService {
 
   static Exception _httpError(http.Response r) {
     final body = _decodeJson(r);
-    final msg = (body['message'] ?? body['error'] ?? 'request failed').toString();
+    final msg =
+        (body['message'] ?? body['error'] ?? 'request failed').toString();
     return Exception('${r.statusCode}: $msg');
   }
 
   /// ✅ POST /availabilities
   /// backend จะเติม staffId/fullName/phone จาก token ให้เอง
+  /// ✅ PATCH: แนบ helper location ไปด้วย
   static Future<Map<String, dynamic>> addRemote({
     required String date, // YYYY-MM-DD
     required String start, // HH:mm
@@ -219,13 +235,34 @@ class HelperAvailabilityService {
     final token = await _requireToken();
     final url = Uri.parse('${_basePayroll()}/availabilities');
 
-    final payload = {
+    final helperLoc = await SettingService.loadHelperLocation();
+
+    final payload = <String, dynamic>{
       'date': date,
       'start': start,
       'end': end,
       'role': role,
       'note': note,
     };
+
+    if (helperLoc != null) {
+      payload['lat'] = helperLoc.lat;
+      payload['lng'] = helperLoc.lng;
+
+      if ((helperLoc.district).trim().isNotEmpty) {
+        payload['district'] = helperLoc.district.trim();
+      }
+      if ((helperLoc.province).trim().isNotEmpty) {
+        payload['province'] = helperLoc.province.trim();
+      }
+      if ((helperLoc.address).trim().isNotEmpty) {
+        payload['address'] = helperLoc.address.trim();
+      }
+      if ((helperLoc.label).trim().isNotEmpty) {
+        payload['locationLabel'] = helperLoc.label.trim();
+        payload['label'] = helperLoc.label.trim(); // fallback เผื่อ flow เก่า
+      }
+    }
 
     final r = await http.post(
       url,

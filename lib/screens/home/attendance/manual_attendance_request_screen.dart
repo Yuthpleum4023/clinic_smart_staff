@@ -1,27 +1,3 @@
-// lib/screens/home/attendance/manual_attendance_request_screen.dart
-//
-// ✅ NEW FILE — Manual Attendance Request Screen
-// ------------------------------------------------------------
-// รองรับ backend:
-//   POST /attendance/manual-request
-//
-// use cases:
-// - early check-in -> manualRequestType = check_in
-// - after cutoff / forgot checkout -> manualRequestType = forgot_checkout
-// - manual checkout -> manualRequestType = check_out
-// - edit both -> manualRequestType = edit_both
-//
-// ✅ PRODUCTION FRIENDLY
-// - ใช้ token เดิมจาก AuthStorage / SharedPreferences
-// - รองรับ fallback endpoint /api/attendance/manual-request
-// - validate form ก่อนยิง
-// - ใช้ข้อความไทยชัดเจน
-// - ไม่โชว์ tech detail ใน UI
-//
-// ✅ RESULT
-// - submit สำเร็จ -> pop(true)
-// - submit ไม่สำเร็จ -> แสดงข้อความ error จาก backend
-
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -37,6 +13,12 @@ class ManualAttendanceRequestScreen extends StatefulWidget {
   final String userId;
   final String staffId;
 
+  /// ชื่อคลินิกสำหรับแสดงผล
+  final String initialClinicName;
+
+  /// ✅ NEW: ชื่อคลินิกของรายการค้างวันก่อน
+  final String previousClinicName;
+
   /// yyyy-MM-dd
   final String initialWorkDate;
 
@@ -47,17 +29,33 @@ class ManualAttendanceRequestScreen extends StatefulWidget {
   final String initialReasonText;
   final String initialMessage;
 
+  /// helper shift-first flow
+  final String initialShiftId;
+
+  /// สำหรับ flow "มีรายการวันก่อนค้าง"
+  final bool isFixingPreviousPending;
+  final String previousSessionId;
+  final String previousWorkDate;
+  final String previousShiftId;
+
   const ManualAttendanceRequestScreen({
     super.key,
     required this.role,
     required this.clinicId,
     required this.userId,
     required this.staffId,
+    this.initialClinicName = '',
+    this.previousClinicName = '',
     required this.initialWorkDate,
     required this.initialManualRequestType,
     this.initialReasonCode = '',
     this.initialReasonText = '',
     this.initialMessage = '',
+    this.initialShiftId = '',
+    this.isFixingPreviousPending = false,
+    this.previousSessionId = '',
+    this.previousWorkDate = '',
+    this.previousShiftId = '',
   });
 
   @override
@@ -99,7 +97,7 @@ class _ManualAttendanceRequestScreenState
     'EARLY_CHECKIN': 'เช็คอินก่อนเวลา',
     'EARLY_CHECKOUT': 'เช็คเอาท์ก่อนเวลา',
     'FORGOT_CHECKOUT': 'ลืมเช็คเอาท์',
-    'PREVIOUS_OPEN_SESSION': 'มี session วันก่อนค้าง',
+    'PREVIOUS_OPEN_SESSION': 'มีรายการวันก่อนค้าง',
     'MISS_SCAN': 'สแกนไม่สำเร็จ',
     'DEVICE_ISSUE': 'อุปกรณ์มีปัญหา',
     'OTHER': 'อื่น ๆ',
@@ -107,23 +105,69 @@ class _ManualAttendanceRequestScreenState
 
   String _selectedReasonCode = 'OTHER';
 
+  bool get _isHelper => widget.role.trim().toLowerCase() == 'helper';
+
+  String get _effectiveShiftId {
+    if (widget.previousShiftId.trim().isNotEmpty) {
+      return widget.previousShiftId.trim();
+    }
+    return widget.initialShiftId.trim();
+  }
+
+  bool get _isFixingPreviousPending =>
+      widget.isFixingPreviousPending ||
+      widget.previousSessionId.trim().isNotEmpty ||
+      widget.previousWorkDate.trim().isNotEmpty ||
+      widget.previousShiftId.trim().isNotEmpty;
+
+  String get _effectiveClinicDisplay {
+    final previousClinicName = widget.previousClinicName.trim();
+    if (_isFixingPreviousPending && previousClinicName.isNotEmpty) {
+      return previousClinicName;
+    }
+
+    final clinicName = widget.initialClinicName.trim();
+    if (clinicName.isNotEmpty) return clinicName;
+
+    final clinicId = widget.clinicId.trim();
+    if (clinicId.isEmpty) return '-';
+
+    if (clinicId.length <= 24) return clinicId;
+    return '${clinicId.substring(0, 10)}...${clinicId.substring(clinicId.length - 8)}';
+  }
+
   @override
   void initState() {
     super.initState();
 
-    _workDate = widget.initialWorkDate.trim().isNotEmpty
-        ? widget.initialWorkDate.trim()
-        : _todayYmd();
+    _workDate = widget.previousWorkDate.trim().isNotEmpty
+        ? widget.previousWorkDate.trim()
+        : (widget.initialWorkDate.trim().isNotEmpty
+            ? widget.initialWorkDate.trim()
+            : _todayYmd());
 
     _manualRequestType = _normalizeType(widget.initialManualRequestType);
+
+    if (_isFixingPreviousPending &&
+        (widget.initialManualRequestType.trim().isEmpty ||
+            widget.initialManualRequestType.trim() == 'check_in')) {
+      _manualRequestType = 'forgot_checkout';
+    }
 
     _selectedReasonCode = widget.initialReasonCode.trim().isNotEmpty &&
             _reasonLabels.containsKey(widget.initialReasonCode.trim())
         ? widget.initialReasonCode.trim()
-        : _defaultReasonByType(_manualRequestType);
+        : (_isFixingPreviousPending
+            ? 'PREVIOUS_OPEN_SESSION'
+            : _defaultReasonByType(_manualRequestType));
 
     _reasonTextCtrl.text = widget.initialReasonText.trim();
     _noteCtrl.text = widget.initialMessage.trim();
+
+    if (_isFixingPreviousPending && _noteCtrl.text.trim().isEmpty) {
+      _noteCtrl.text =
+          'กำลังส่งคำขอแก้ไขรายการค้างของวันก่อน เพื่อรอการอนุมัติก่อนเริ่มลงเวลาวันใหม่';
+    }
 
     _prefillTimesByType();
   }
@@ -209,7 +253,9 @@ class _ManualAttendanceRequestScreenState
   Map<String, dynamic> _decodeBodyMap(String body) {
     try {
       final decoded = jsonDecode(body);
-      if (decoded is Map) return Map<String, dynamic>.from(decoded);
+      if (decoded is Map) {
+        return Map<String, dynamic>.from(decoded);
+      }
       return <String, dynamic>{};
     } catch (_) {
       return <String, dynamic>{};
@@ -348,11 +394,15 @@ class _ManualAttendanceRequestScreenState
       'note': _noteCtrl.text.trim(),
     };
 
-    if (widget.clinicId.trim().isNotEmpty) {
+    if (!_isHelper && widget.clinicId.trim().isNotEmpty) {
       body['clinicId'] = widget.clinicId.trim();
     }
     if (widget.staffId.trim().isNotEmpty) {
       body['staffId'] = widget.staffId.trim();
+    }
+
+    if (_effectiveShiftId.isNotEmpty) {
+      body['shiftId'] = _effectiveShiftId;
     }
 
     if (_needsCheckInTime() && _checkInTime != null) {
@@ -441,8 +491,17 @@ class _ManualAttendanceRequestScreenState
         lastRes = res;
 
         if (res.statusCode == 200 || res.statusCode == 201) {
+          final decoded = _decodeBodyMap(res.body);
+          final updatedPrevious =
+              decoded['updatedPreviousPendingRequest'] == true;
+
           if (!mounted) return;
-          _snack('ส่งคำขอสำเร็จ');
+
+          _snack(
+            updatedPrevious
+                ? 'อัปเดตรายการค้างของวันก่อนเรียบร้อยแล้ว กรุณารอการอนุมัติ'
+                : 'ส่งคำขอสำเร็จ',
+          );
           Navigator.pop(context, true);
           return;
         }
@@ -509,11 +568,143 @@ class _ManualAttendanceRequestScreenState
     );
   }
 
+  Widget _helperClinicCard() {
+    if (!_isHelper) return const SizedBox.shrink();
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'คลินิกที่อ้างอิง',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'คำขอนี้จะถูกส่งโดยอ้างอิงคลินิกของกะงานที่เลือกไว้ เพื่อให้อนุมัติได้ตรงรายการ',
+              style: TextStyle(color: Colors.grey.shade700),
+            ),
+            const SizedBox(height: 10),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.blue.withOpacity(0.08),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.blue.withOpacity(0.25)),
+              ),
+              child: Text(
+                _effectiveClinicDisplay,
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _shiftInfoCard() {
+    if (_effectiveShiftId.isEmpty) return const SizedBox.shrink();
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'กะงานที่อ้างอิง',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              _isFixingPreviousPending
+                  ? 'คำขอนี้จะใช้แก้รายการค้างของวันก่อน โดยอ้างอิงกะงานเดิมเพื่อให้ระบบอนุมัติได้ตรงรายการ'
+                  : 'คำขอนี้จะถูกผูกกับกะที่เลือกไว้แล้ว เพื่อให้ระบบแก้เวลาได้ตรงกะงาน',
+              style: TextStyle(color: Colors.grey.shade700),
+            ),
+            const SizedBox(height: 10),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.green.withOpacity(0.08),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.green.withOpacity(0.25)),
+              ),
+              child: Text(
+                'shiftId: $_effectiveShiftId',
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _previousPendingCard() {
+    if (!_isFixingPreviousPending) return const SizedBox.shrink();
+
+    return Card(
+      color: Colors.orange.shade50,
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'กำลังแก้ไขรายการค้างของวันก่อน',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w900,
+                color: Colors.orange.shade900,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'หลังส่งคำขอแล้ว ต้องรอให้คลินิกอนุมัติก่อน จึงจะสามารถเริ่มลงเวลาของวันใหม่ได้',
+              style: TextStyle(
+                color: Colors.orange.shade900,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 10),
+            if (widget.previousWorkDate.trim().isNotEmpty)
+              Text('วันที่ค้าง: ${widget.previousWorkDate.trim()}'),
+            if (_effectiveClinicDisplay.trim().isNotEmpty &&
+                _effectiveClinicDisplay.trim() != '-')
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text('คลินิก: $_effectiveClinicDisplay'),
+              ),
+            if (widget.previousSessionId.trim().isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text('sessionId: ${widget.previousSessionId.trim()}'),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final intro = widget.initialMessage.trim().isNotEmpty
-        ? widget.initialMessage.trim()
-        : 'กรุณาระบุรายละเอียดคำขอให้ครบถ้วน เพื่อส่งให้คลินิกพิจารณาอนุมัติ';
+    final intro = _isFixingPreviousPending
+        ? 'คุณกำลังส่งคำขอแก้ไขรายการค้างของวันก่อน หลังส่งแล้วต้องรอคลินิกอนุมัติก่อน จึงจะเริ่มลงเวลาวันใหม่ได้'
+        : (widget.initialMessage.trim().isNotEmpty
+            ? widget.initialMessage.trim()
+            : 'กรุณาระบุรายละเอียดคำขอให้ครบถ้วน เพื่อส่งให้คลินิกพิจารณาอนุมัติ');
 
     return Scaffold(
       appBar: AppBar(
@@ -525,6 +716,10 @@ class _ManualAttendanceRequestScreenState
           child: ListView(
             padding: const EdgeInsets.all(14),
             children: [
+              if (_isFixingPreviousPending) ...[
+                _previousPendingCard(),
+                const SizedBox(height: 12),
+              ],
               Card(
                 child: Padding(
                   padding: const EdgeInsets.all(14),
@@ -547,6 +742,14 @@ class _ManualAttendanceRequestScreenState
                   ),
                 ),
               ),
+              if (_isHelper) ...[
+                const SizedBox(height: 12),
+                _helperClinicCard(),
+              ],
+              if (_effectiveShiftId.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                _shiftInfoCard(),
+              ],
               const SizedBox(height: 12),
               Card(
                 child: Padding(
@@ -573,8 +776,9 @@ class _ManualAttendanceRequestScreenState
                                 if (v == null) return;
                                 setState(() {
                                   _manualRequestType = v;
-                                  _selectedReasonCode =
-                                      _defaultReasonByType(_manualRequestType);
+                                  _selectedReasonCode = _isFixingPreviousPending
+                                      ? 'PREVIOUS_OPEN_SESSION'
+                                      : _defaultReasonByType(_manualRequestType);
                                   _prefillTimesByType();
                                 });
                               },

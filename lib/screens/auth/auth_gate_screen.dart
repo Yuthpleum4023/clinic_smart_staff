@@ -1,6 +1,7 @@
 // lib/screens/auth/auth_gate_screen.dart
 //
 // ✅ FINAL / HARDENED — Multi-role READY + NO STALE PREFS
+// ✅ PATCH: helper อนุญาตให้ clinicId ว่างได้
 // - ใช้ AuthApi.me() เป็น source หลัก
 // - ไม่ fallback ไป loadFromPrefs() เมื่อ /me ไม่ครบ
 // - clear context เก่าเมื่อ session/use context ไม่สมบูรณ์
@@ -196,15 +197,24 @@ class _AuthGateScreenState extends State<AuthGateScreen> {
       final effectiveRole = _extractEffectiveRole(me);
       final rolesAll = _extractRolesAll(me);
 
-      // ✅ สำคัญ: ถ้า context สำคัญไม่ครบ ห้ามใช้ prefs เก่า
-      if (clinicId.isEmpty || userId.isEmpty) {
+      final isHelper =
+          effectiveRole == 'helper' || rolesAll.contains('helper');
+
+      // ✅ helper อนุญาตให้ clinicId ว่างได้
+      if (userId.isEmpty) {
         await _hardClearSession();
         if (!mounted) return;
         _goLogin();
         return;
       }
 
-      await AppContextResolver.save(
+      if (!isHelper && clinicId.isEmpty) {
+        await _hardClearSession();
+        if (!mounted) return;
+        _goLogin();
+        return;
+      }
+            await AppContextResolver.save(
         clinicId: clinicId,
         userId: userId,
         role: effectiveRole,

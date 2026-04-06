@@ -6,6 +6,7 @@
 // - ✅ Clinic Location (local + sync)
 // - ✅ Helper Location (local + sync)
 // - ✅ NEW: district / province / address / label
+// - ✅ NEW: clear local caches for logout / account switch
 // - PRODUCTION SAFE: timeout + error ชัด
 //
 // NOTE:
@@ -211,6 +212,23 @@ class SettingService {
     await prefs.remove(_helperProvinceKey);
     await prefs.remove(_helperAddressKey);
     await prefs.remove(_helperLabelKey);
+  }
+
+  // ============================================================
+  // ✅ Clear local caches (important for logout / switch account)
+  // ============================================================
+  static Future<void> clearAllLocations() async {
+    await clearClinicLocation();
+    await clearHelperLocation();
+  }
+
+  static Future<void> clearAllLocalProfileCaches() async {
+    await clearAllLocations();
+    await clearClinicContactPhone();
+  }
+
+  static Future<void> resetAllLocalSettingsForAccountSwitch() async {
+    await clearAllLocalProfileCaches();
   }
 
   // ============================================================

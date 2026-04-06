@@ -7,6 +7,12 @@
 // - ✅ แชร์ผ่าน share sheet (Line / Messenger / อื่น ๆ)
 // - ✅ ไม่โชว์คำเทคนิค/endpoint/field ดิบ
 //
+// ✅ FIX NEW:
+// - แก้ปุ่ม "คัดลอกโค้ด" / "คัดลอกข้อความ" ที่เหมือนค้างใน bottom sheet
+// - ใช้ root ScaffoldMessenger
+// - มี busy guard กันกดซ้ำ
+// - copy/share มี try/catch ครบ
+//
 // NOTE:
 // - ต้องเพิ่ม dependency:
 //   share_plus: ^10.0.2
@@ -46,7 +52,9 @@ class _ClinicInvitesScreenState extends State<ClinicInvitesScreen> {
 
   void _snack(String msg) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    messenger?.hideCurrentSnackBar();
+    messenger?.showSnackBar(
       SnackBar(content: Text(msg)),
     );
   }
@@ -174,13 +182,21 @@ class _ClinicInvitesScreenState extends State<ClinicInvitesScreen> {
   Future<void> _copyCode(String code) async {
     final c = code.trim().toUpperCase();
     if (c.isEmpty) return;
-    await Clipboard.setData(ClipboardData(text: c));
-    _snack('คัดลอกโค้ดแล้ว');
+    try {
+      await Clipboard.setData(ClipboardData(text: c));
+      _snack('คัดลอกโค้ดแล้ว');
+    } catch (e) {
+      _snack('คัดลอกโค้ดไม่สำเร็จ');
+    }
   }
 
   Future<void> _copyMessage(String text) async {
-    await Clipboard.setData(ClipboardData(text: text));
-    _snack('คัดลอกข้อความสำหรับส่งต่อแล้ว');
+    try {
+      await Clipboard.setData(ClipboardData(text: text));
+      _snack('คัดลอกข้อความสำหรับส่งต่อแล้ว');
+    } catch (e) {
+      _snack('คัดลอกข้อความไม่สำเร็จ');
+    }
   }
 
   Future<void> _shareInvite({
@@ -197,7 +213,11 @@ class _ClinicInvitesScreenState extends State<ClinicInvitesScreen> {
       email: email,
       phone: phone,
     );
-    await Share.share(text);
+    try {
+      await Share.share(text);
+    } catch (e) {
+      _snack('แชร์ไม่สำเร็จ');
+    }
   }
 
   Future<void> _showInviteCreatedSheet({
@@ -217,6 +237,8 @@ class _ClinicInvitesScreenState extends State<ClinicInvitesScreen> {
 
     if (!mounted) return;
 
+    final rootMessenger = ScaffoldMessenger.maybeOf(context);
+
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -225,115 +247,188 @@ class _ClinicInvitesScreenState extends State<ClinicInvitesScreen> {
         final bottomInset = MediaQuery.of(ctx).viewInsets.bottom;
         final bottomSafe = MediaQuery.of(ctx).viewPadding.bottom;
 
-        return AnimatedPadding(
-          duration: const Duration(milliseconds: 160),
-          curve: Curves.easeOut,
-          padding: EdgeInsets.only(bottom: bottomInset),
-          child: SafeArea(
-            top: false,
-            child: SingleChildScrollView(
-              padding: EdgeInsets.fromLTRB(16, 8, 16, bottomSafe + 20),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'สร้างโค้ดเชิญสำเร็จ',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
-                  ),
-                  const SizedBox(height: 12),
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(14),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(16),
-                      color: Theme.of(ctx).colorScheme.primary.withOpacity(0.08),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          'Invite Code',
-                          style: TextStyle(fontWeight: FontWeight.w700),
-                        ),
-                        const SizedBox(height: 8),
-                        SelectableText(
-                          code.toUpperCase(),
-                          style: const TextStyle(
-                            fontSize: 24,
-                            fontWeight: FontWeight.w900,
-                            letterSpacing: 1.0,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 14),
-                  const Text(
-                    'ข้อมูลผู้รับคำเชิญ',
-                    style: TextStyle(fontWeight: FontWeight.w800),
-                  ),
-                  const SizedBox(height: 8),
-                  _infoRow('ประเภท', _roleLabel(role)),
-                  if (fullName.isNotEmpty) _infoRow('ชื่อ', fullName),
-                  if (phone.isNotEmpty) _infoRow('เบอร์โทร', phone),
-                  if (email.isNotEmpty) _infoRow('อีเมล', email),
-                  const SizedBox(height: 14),
-                  const Text(
-                    'ข้อความสำหรับส่งต่อ',
-                    style: TextStyle(fontWeight: FontWeight.w800),
-                  ),
-                  const SizedBox(height: 8),
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(14),
-                      border: Border.all(color: Theme.of(ctx).dividerColor),
-                    ),
-                    child: SelectableText(text),
-                  ),
-                  const SizedBox(height: 16),
-                  Row(
+        bool busy = false;
+
+        Future<void> safeCopyCode(StateSetter setModalState) async {
+          if (busy) return;
+          setModalState(() => busy = true);
+          try {
+            final c = code.trim().toUpperCase();
+            if (c.isEmpty) return;
+            await Clipboard.setData(ClipboardData(text: c));
+            rootMessenger?.hideCurrentSnackBar();
+            rootMessenger?.showSnackBar(
+              const SnackBar(content: Text('คัดลอกโค้ดแล้ว')),
+            );
+          } catch (_) {
+            rootMessenger?.hideCurrentSnackBar();
+            rootMessenger?.showSnackBar(
+              const SnackBar(content: Text('คัดลอกโค้ดไม่สำเร็จ')),
+            );
+          } finally {
+            if ((ctx as Element).mounted) {
+              setModalState(() => busy = false);
+            }
+          }
+        }
+
+        Future<void> safeCopyMessage(StateSetter setModalState) async {
+          if (busy) return;
+          setModalState(() => busy = true);
+          try {
+            await Clipboard.setData(ClipboardData(text: text));
+            rootMessenger?.hideCurrentSnackBar();
+            rootMessenger?.showSnackBar(
+              const SnackBar(content: Text('คัดลอกข้อความสำหรับส่งต่อแล้ว')),
+            );
+          } catch (_) {
+            rootMessenger?.hideCurrentSnackBar();
+            rootMessenger?.showSnackBar(
+              const SnackBar(content: Text('คัดลอกข้อความไม่สำเร็จ')),
+            );
+          } finally {
+            if ((ctx as Element).mounted) {
+              setModalState(() => busy = false);
+            }
+          }
+        }
+
+        Future<void> safeShare(StateSetter setModalState) async {
+          if (busy) return;
+          setModalState(() => busy = true);
+          try {
+            Navigator.of(ctx).pop();
+            await Share.share(text);
+          } catch (_) {
+            rootMessenger?.hideCurrentSnackBar();
+            rootMessenger?.showSnackBar(
+              const SnackBar(content: Text('แชร์ไม่สำเร็จ')),
+            );
+          }
+        }
+
+        return StatefulBuilder(
+          builder: (ctx2, setModalState) {
+            return AnimatedPadding(
+              duration: const Duration(milliseconds: 160),
+              curve: Curves.easeOut,
+              padding: EdgeInsets.only(bottom: bottomInset),
+              child: SafeArea(
+                top: false,
+                child: SingleChildScrollView(
+                  padding: EdgeInsets.fromLTRB(16, 8, 16, bottomSafe + 20),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Expanded(
-                        child: OutlinedButton.icon(
-                          onPressed: () => _copyCode(code),
-                          icon: const Icon(Icons.copy),
-                          label: const Text('คัดลอกโค้ด'),
+                      const Text(
+                        'สร้างโค้ดเชิญสำเร็จ',
+                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
+                      ),
+                      const SizedBox(height: 12),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(16),
+                          color: Theme.of(ctx2).colorScheme.primary.withOpacity(0.08),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'Invite Code',
+                              style: TextStyle(fontWeight: FontWeight.w700),
+                            ),
+                            const SizedBox(height: 8),
+                            SelectableText(
+                              code.toUpperCase(),
+                              style: const TextStyle(
+                                fontSize: 24,
+                                fontWeight: FontWeight.w900,
+                                letterSpacing: 1.0,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: OutlinedButton.icon(
-                          onPressed: () => _copyMessage(text),
-                          icon: const Icon(Icons.content_copy),
-                          label: const Text('คัดลอกข้อความ'),
+                      const SizedBox(height: 14),
+                      const Text(
+                        'ข้อมูลผู้รับคำเชิญ',
+                        style: TextStyle(fontWeight: FontWeight.w800),
+                      ),
+                      const SizedBox(height: 8),
+                      _infoRow('ประเภท', _roleLabel(role)),
+                      if (fullName.isNotEmpty) _infoRow('ชื่อ', fullName),
+                      if (phone.isNotEmpty) _infoRow('เบอร์โทร', phone),
+                      if (email.isNotEmpty) _infoRow('อีเมล', email),
+                      const SizedBox(height: 14),
+                      const Text(
+                        'ข้อความสำหรับส่งต่อ',
+                        style: TextStyle(fontWeight: FontWeight.w800),
+                      ),
+                      const SizedBox(height: 8),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(color: Theme.of(ctx2).dividerColor),
+                        ),
+                        child: SelectableText(text),
+                      ),
+                      const SizedBox(height: 16),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              onPressed: busy ? null : () => safeCopyCode(setModalState),
+                              icon: busy
+                                  ? const SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(strokeWidth: 2),
+                                    )
+                                  : const Icon(Icons.copy),
+                              label: const Text('คัดลอกโค้ด'),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              onPressed: busy ? null : () => safeCopyMessage(setModalState),
+                              icon: busy
+                                  ? const SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(strokeWidth: 2),
+                                    )
+                                  : const Icon(Icons.content_copy),
+                              label: const Text('คัดลอกข้อความ'),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+                      SizedBox(
+                        width: double.infinity,
+                        child: FilledButton.icon(
+                          onPressed: busy ? null : () => safeShare(setModalState),
+                          icon: busy
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                )
+                              : const Icon(Icons.share),
+                          label: const Text('แชร์ผ่าน Line / Messenger / แอปอื่น'),
                         ),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 10),
-                  SizedBox(
-                    width: double.infinity,
-                    child: FilledButton.icon(
-                      onPressed: () async {
-                        Navigator.pop(ctx);
-                        await _shareInvite(
-                          code: code,
-                          role: role,
-                          fullName: fullName,
-                          email: email,
-                          phone: phone,
-                        );
-                      },
-                      icon: const Icon(Icons.share),
-                      label: const Text('แชร์ผ่าน Line / Messenger / แอปอื่น'),
-                    ),
-                  ),
-                ],
+                ),
               ),
-            ),
-          ),
+            );
+          },
         );
       },
     );
@@ -458,8 +553,12 @@ class _ClinicInvitesScreenState extends State<ClinicInvitesScreen> {
       if (code.isEmpty) {
         _snack('สร้างสำเร็จ');
       } else {
-        await Clipboard.setData(ClipboardData(text: code));
-        _snack('สร้างโค้ดสำเร็จ • คัดลอกแล้ว');
+        try {
+          await Clipboard.setData(ClipboardData(text: code));
+          _snack('สร้างโค้ดสำเร็จ • คัดลอกแล้ว');
+        } catch (_) {
+          _snack('สร้างโค้ดสำเร็จ');
+        }
       }
 
       await _load();

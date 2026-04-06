@@ -8,8 +8,22 @@
 //
 // ✅ PATCH NEW (STORE READY)
 // - ✅ แสดงตำแหน่งผู้ช่วย
-// - ✅ แสดงระยะห่างจากคลินิก (เมื่อ backend ส่งมา)
+// - ✅ แสดงระยะห่างจากคลินิก
+// - ✅ แสดง badge ใกล้คลินิก
 // - ✅ Commercial UI: ใช้ข้อมูลช่วยตัดสินใจ ไม่โชว์ข้อมูลระบบรก ๆ
+//
+// ✅ PATCH FIX
+// - ✅ แก้จอแดงตอนกด “จอง” จาก dialog + TextField lifecycle
+// - ✅ ไม่ใช้ TextEditingController ข้ามหลัง dialog ปิด
+// - ✅ unfocus ก่อน pop dialog
+// - ✅ กันกดซ้ำ
+//
+// ✅ PATCH POLISH
+// - ✅ แก้ BOTTOM OVERFLOW ตอน keyboard เปิด
+// - ✅ dialog scroll ได้บนจอเล็ก
+// - ✅ keyboard ดัน dialog ขึ้นอย่างนุ่มนวล
+// - ✅ ก่อนจอง / หลังจอง แสดง location + distance เหมือนกัน
+// - ✅ sort ระยะทางใช้ distanceKm ก่อน แล้วค่อย fallback distanceText
 //
 // REQUIRE:
 // - ApiConfig.payrollBaseUrl
@@ -23,8 +37,8 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
 import 'package:clinic_smart_staff/api/api_config.dart';
-import 'package:clinic_smart_staff/services/auth_storage.dart';
 import 'package:clinic_smart_staff/models/availability_model.dart';
+import 'package:clinic_smart_staff/services/auth_storage.dart';
 
 class ClinicAvailabilitiesScreen extends StatefulWidget {
   const ClinicAvailabilitiesScreen({super.key});
@@ -70,6 +84,36 @@ class _ClinicAvailabilitiesScreenState extends State<ClinicAvailabilitiesScreen>
 
   String _s(String v) => v.trim().isEmpty ? '-' : v.trim();
   String _raw(dynamic v) => (v ?? '').toString().trim();
+
+  double? _distanceValue(Availability a) {
+    if (a.distanceKm != null) {
+      return a.distanceKm!.toDouble();
+    }
+
+    final raw = _raw(a.distanceText)
+        .replaceAll('กม.', '')
+        .replaceAll('km', '')
+        .replaceAll('KM', '')
+        .trim();
+
+    if (raw.isEmpty) return null;
+    return double.tryParse(raw);
+  }
+
+  int _compareAvailabilityForClinic(Availability a, Availability b) {
+    final aDist = _distanceValue(a);
+    final bDist = _distanceValue(b);
+
+    if (aDist != null && bDist != null && aDist != bDist) {
+      return aDist.compareTo(bDist);
+    }
+    if (aDist != null && bDist == null) return -1;
+    if (aDist == null && bDist != null) return 1;
+
+    final d = a.date.compareTo(b.date);
+    if (d != 0) return d;
+    return a.start.compareTo(b.start);
+  }
 
   Future<String> _needToken() async {
     final token = await AuthStorage.getToken();
@@ -134,11 +178,7 @@ class _ClinicAvailabilitiesScreenState extends State<ClinicAvailabilitiesScreen>
 
     try {
       final list = await _fetchList('/availabilities/open');
-      list.sort((a, b) {
-        final d = a.date.compareTo(b.date);
-        if (d != 0) return d;
-        return a.start.compareTo(b.start);
-      });
+      list.sort(_compareAvailabilityForClinic);
 
       if (!mounted) return;
       setState(() {
@@ -165,11 +205,7 @@ class _ClinicAvailabilitiesScreenState extends State<ClinicAvailabilitiesScreen>
 
     try {
       final list = await _fetchList('/availabilities/booked');
-      list.sort((a, b) {
-        final d = a.date.compareTo(b.date);
-        if (d != 0) return d;
-        return a.start.compareTo(b.start);
-      });
+      list.sort(_compareAvailabilityForClinic);
 
       if (!mounted) return;
       setState(() {
@@ -229,15 +265,8 @@ class _ClinicAvailabilitiesScreenState extends State<ClinicAvailabilitiesScreen>
     return Colors.grey.withOpacity(0.12);
   }
 
-  String _helperLocationDistanceLine(Availability a) {
-    final loc = _raw(a.locationLabel);
-    final dist = _raw(a.distanceText);
-
-    if (loc.isNotEmpty && dist.isNotEmpty) {
-      return '$loc • $dist';
-    }
-    if (dist.isNotEmpty) return dist;
-    if (loc.isNotEmpty) return loc;
+  String _helperLocationText(Availability a) {
+    if (a.locationLabel.trim().isNotEmpty) return a.locationLabel.trim();
 
     final district = _raw(a.district);
     final province = _raw(a.province);
@@ -253,6 +282,140 @@ class _ClinicAvailabilitiesScreenState extends State<ClinicAvailabilitiesScreen>
     return '';
   }
 
+  String _helperDistanceRaw(Availability a) {
+    if (a.distanceText.trim().isNotEmpty) return a.distanceText.trim();
+
+    final d = _distanceValue(a);
+    if (d == null) return '';
+    if (d < 10) return '${d.toStringAsFixed(1)} กม.';
+    return '${d.round()} กม.';
+  }
+
+  String _helperDistanceText(Availability a) {
+    final dist = _helperDistanceRaw(a);
+    if (dist.isEmpty) return '';
+    return 'ห่างจากคลินิก $dist';
+  }
+
+  String _helperLocationDistanceLine(Availability a) {
+    final loc = _helperLocationText(a);
+    final dist = _helperDistanceRaw(a);
+
+    if (loc.isNotEmpty && dist.isNotEmpty) {
+      return '$loc • ห่างจากคลินิก $dist';
+    }
+    if (loc.isNotEmpty) return loc;
+    if (dist.isNotEmpty) return 'ห่างจากคลินิก $dist';
+    return '';
+  }
+
+  String _nearbyLabel(Availability a) {
+    if (a.nearbyLabel.trim().isNotEmpty) return a.nearbyLabel.trim();
+    return a.isNearby ? 'ใกล้คลินิก' : '';
+  }
+
+  Future<String?> _askBookingNote(Availability a) async {
+    String noteText = '';
+
+    final ok = await showDialog<bool>(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) {
+        final bottom = MediaQuery.of(ctx).viewInsets.bottom;
+
+        return AnimatedPadding(
+          duration: const Duration(milliseconds: 140),
+          curve: Curves.easeOut,
+          padding: EdgeInsets.only(
+            left: 16,
+            right: 16,
+            top: 24,
+            bottom: bottom + 24,
+          ),
+          child: Center(
+            child: Material(
+              color: Theme.of(ctx).dialogBackgroundColor,
+              borderRadius: BorderRadius.circular(18),
+              clipBehavior: Clip.antiAlias,
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 420),
+                child: SingleChildScrollView(
+                  child: StatefulBuilder(
+                    builder: (ctx, setLocal) {
+                      return Padding(
+                        padding: const EdgeInsets.fromLTRB(18, 18, 18, 16),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'ยืนยันการจองผู้ช่วย?',
+                              style: TextStyle(
+                                fontWeight: FontWeight.w900,
+                                fontSize: 18,
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            Text('วันที่ ${_s(a.date)}'),
+                            Text('เวลา ${_s(a.start)}-${_s(a.end)}'),
+                            if (_helperLocationDistanceLine(a).isNotEmpty) ...[
+                              const SizedBox(height: 6),
+                              Text(_helperLocationDistanceLine(a)),
+                            ],
+                            const SizedBox(height: 12),
+                            TextField(
+                              autofocus: false,
+                              onChanged: (v) => noteText = v,
+                              onTapOutside: (_) =>
+                                  FocusScope.of(ctx).unfocus(),
+                              decoration: const InputDecoration(
+                                labelText: 'หมายเหตุถึงผู้ช่วย (ไม่บังคับ)',
+                                border: OutlineInputBorder(),
+                              ),
+                              maxLines: 3,
+                              minLines: 2,
+                              textInputAction: TextInputAction.done,
+                              onSubmitted: (_) =>
+                                  FocusScope.of(ctx).unfocus(),
+                            ),
+                            const SizedBox(height: 16),
+                            Row(
+                              children: [
+                                TextButton(
+                                  onPressed: () {
+                                    FocusScope.of(ctx).unfocus();
+                                    Navigator.pop(ctx, false);
+                                  },
+                                  child: const Text('ยกเลิก'),
+                                ),
+                                const Spacer(),
+                                ElevatedButton.icon(
+                                  onPressed: () {
+                                    FocusScope.of(ctx).unfocus();
+                                    Navigator.pop(ctx, true);
+                                  },
+                                  icon: const Icon(Icons.check),
+                                  label: const Text('ยืนยันจอง'),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+
+    if (ok != true) return null;
+    return noteText.trim();
+  }
+
   Future<void> _bookAvailability(Availability a) async {
     final id = a.id.trim();
     if (id.isEmpty) {
@@ -266,48 +429,9 @@ class _ClinicAvailabilitiesScreenState extends State<ClinicAvailabilitiesScreen>
       return;
     }
 
-    final noteCtrl = TextEditingController();
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('ยืนยันการจองผู้ช่วย?'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('วันที่ ${_s(a.date)}'),
-            Text('เวลา ${_s(a.start)}-${_s(a.end)}'),
-            if (_helperLocationDistanceLine(a).isNotEmpty) ...[
-              const SizedBox(height: 6),
-              Text(_helperLocationDistanceLine(a)),
-            ],
-            const SizedBox(height: 10),
-            TextField(
-              controller: noteCtrl,
-              decoration: const InputDecoration(
-                labelText: 'หมายเหตุถึงผู้ช่วย (ไม่บังคับ)',
-                border: OutlineInputBorder(),
-              ),
-              maxLines: 2,
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('ยกเลิก'),
-          ),
-          ElevatedButton.icon(
-            onPressed: () => Navigator.pop(ctx, true),
-            icon: const Icon(Icons.check),
-            label: const Text('ยืนยันจอง'),
-          ),
-        ],
-      ),
-    );
-
-    noteCtrl.dispose();
-    if (ok != true) return;
+    final noteText = await _askBookingNote(a);
+    if (!mounted) return;
+    if (noteText == null) return;
 
     setState(() => _booking[id] = true);
 
@@ -323,7 +447,7 @@ class _ClinicAvailabilitiesScreenState extends State<ClinicAvailabilitiesScreen>
           'Authorization': 'Bearer $token',
         },
         body: jsonEncode({
-          'note': noteCtrl.text.trim(),
+          'note': noteText,
         }),
       );
 
@@ -470,6 +594,27 @@ class _ClinicAvailabilitiesScreenState extends State<ClinicAvailabilitiesScreen>
     );
   }
 
+  Widget _nearbyChip(String text) {
+    if (text.trim().isEmpty) return const SizedBox.shrink();
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.green.shade50,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: Colors.green.shade200),
+      ),
+      child: Text(
+        '🟢 $text',
+        style: TextStyle(
+          color: Colors.green.shade800,
+          fontWeight: FontWeight.w800,
+          fontSize: 12,
+        ),
+      ),
+    );
+  }
+
   Widget _buildCard(
     Availability a, {
     required bool showActionsOpen,
@@ -483,21 +628,32 @@ class _ClinicAvailabilitiesScreenState extends State<ClinicAvailabilitiesScreen>
 
     final title = '${_s(a.date)} • ${_s(a.start)}-${_s(a.end)}';
 
-    final helperName = _raw(a.fullName).isNotEmpty ? _raw(a.fullName) : 'ผู้ช่วย';
+    final helperName =
+        _raw(a.fullName).isNotEmpty ? _raw(a.fullName) : 'ผู้ช่วย';
     final phoneText = _raw(a.phone);
+    final locationText = _helperLocationText(a);
+    final distanceText = _helperDistanceText(a);
     final locationLine = _helperLocationDistanceLine(a);
     final roleLine = _raw(a.role);
     final noteLine = _raw(a.note);
     final bookedNote = _raw(a.bookedNote);
     final shiftId = _raw(a.shiftId);
     final rate = a.bookedHourlyRate;
+    final nearbyLabel = _nearbyLabel(a);
+    final rawDistance = _helperDistanceRaw(a);
 
     return Card(
+      elevation: 0.8,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            if (nearbyLabel.isNotEmpty) ...[
+              _nearbyChip(nearbyLabel),
+              const SizedBox(height: 10),
+            ],
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -541,7 +697,29 @@ class _ClinicAvailabilitiesScreenState extends State<ClinicAvailabilitiesScreen>
                 fontSize: 15,
               ),
             ),
-            if (locationLine.isNotEmpty) ...[
+            if (locationText.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              Text(
+                '📍 $locationText',
+                style: TextStyle(
+                  color: cs.onSurface.withOpacity(0.78),
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+            if (distanceText.isNotEmpty) ...[
+              const SizedBox(height: 4),
+              Text(
+                '🚗 $distanceText',
+                style: TextStyle(
+                  color: cs.secondary,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+            if (locationText.isEmpty &&
+                distanceText.isEmpty &&
+                locationLine.isNotEmpty) ...[
               const SizedBox(height: 4),
               Text(
                 locationLine,
@@ -565,9 +743,10 @@ class _ClinicAvailabilitiesScreenState extends State<ClinicAvailabilitiesScreen>
               spacing: 8,
               runSpacing: 8,
               children: [
-                if (roleLine.isNotEmpty) _infoChip('ตำแหน่ง: $roleLine', cs.primary),
-                if (showActionsOpen && _raw(a.distanceText).isNotEmpty)
-                  _infoChip('ระยะ: ${_raw(a.distanceText)}', cs.secondary),
+                if (roleLine.isNotEmpty)
+                  _infoChip('ตำแหน่ง: $roleLine', cs.primary),
+                if (rawDistance.isNotEmpty)
+                  _infoChip('ระยะ: $rawDistance', cs.secondary),
                 if (showActionsBooked && rate > 0)
                   _infoChip('เรท: $rate บ./ชม.', cs.secondary),
                 if (showActionsBooked && shiftId.isNotEmpty)

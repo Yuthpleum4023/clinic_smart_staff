@@ -1,19 +1,19 @@
-// lib/screens/clinic/clinic_admin_settings_service.dart
-
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:image_picker/image_picker.dart';
 
-import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 
 import 'package:clinic_smart_staff/services/settings_service.dart';
 import 'package:clinic_smart_staff/services/auth_service.dart';
-import 'package:clinic_smart_staff/screens/location_settings_screen.dart';
 import 'package:clinic_smart_staff/screens/clinic/clinic_ot_settings_screen.dart';
 import 'package:clinic_smart_staff/services/auth_storage.dart';
+import 'package:clinic_smart_staff/api/clinic_logo_api.dart';
+import 'package:clinic_smart_staff/widgets/clinic_logo_view.dart';
 
 class ClinicAdminSettingsScreen extends StatefulWidget {
   const ClinicAdminSettingsScreen({super.key});
@@ -31,10 +31,14 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
       'https://payroll-service-808t.onrender.com';
 
   final _clinicNameCtrl = TextEditingController();
+  final _clinicBranchNameCtrl = TextEditingController();
   final _clinicAddressCtrl = TextEditingController();
   final _phoneCtrl = TextEditingController();
+  final _clinicTaxIdCtrl = TextEditingController();
 
   bool _savingProfile = false;
+  bool _uploadingLogo = false;
+  bool _removingLogo = false;
 
   double _ssoPercent = 5.0;
   bool _savingSso = false;
@@ -45,11 +49,10 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
   final _newPinCtrl = TextEditingController();
   final _confirmPinCtrl = TextEditingController();
 
-  double? _lat;
-  double? _lng;
-  bool _savingLocation = false;
+  final ImagePicker _picker = ImagePicker();
 
   String _currentClinicId = '';
+  String _logoUrl = '';
 
   @override
   void initState() {
@@ -60,8 +63,10 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
   @override
   void dispose() {
     _clinicNameCtrl.dispose();
+    _clinicBranchNameCtrl.dispose();
     _clinicAddressCtrl.dispose();
     _phoneCtrl.dispose();
+    _clinicTaxIdCtrl.dispose();
     _newPinCtrl.dispose();
     _confirmPinCtrl.dispose();
     super.dispose();
@@ -96,8 +101,11 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
     if (!mounted) return;
     setState(() {
       _clinicNameCtrl.text = '';
+      _clinicBranchNameCtrl.text = '';
       _clinicAddressCtrl.text = '';
       _phoneCtrl.text = '';
+      _clinicTaxIdCtrl.text = '';
+      _logoUrl = '';
     });
   }
 
@@ -138,15 +146,21 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
     }
 
     final name = await _readClinicScoped(clinicId, 'name');
+    final branchName = await _readClinicScoped(clinicId, 'branchName');
     final addr = await _readClinicScoped(clinicId, 'address');
     final phone = await _readClinicScoped(clinicId, 'phone');
+    final taxId = await _readClinicScoped(clinicId, 'taxId');
+    final logoUrl = await _readClinicScoped(clinicId, 'logoUrl');
 
     if (!mounted) return;
 
     setState(() {
       _clinicNameCtrl.text = name;
+      _clinicBranchNameCtrl.text = branchName;
       _clinicAddressCtrl.text = addr;
       _phoneCtrl.text = phone;
+      _clinicTaxIdCtrl.text = taxId;
+      _logoUrl = logoUrl;
     });
   }
 
@@ -169,21 +183,32 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
 
       final c = (decoded['clinic'] is Map) ? decoded['clinic'] as Map : decoded;
 
-      final name = (c['name'] ?? '').toString().trim();
-      final phone = (c['phone'] ?? '').toString().trim();
-      final addr = (c['address'] ?? '').toString().trim();
+      final name = (c['name'] ?? c['clinicName'] ?? '').toString().trim();
+      final branchName =
+          (c['branchName'] ?? c['clinicBranchName'] ?? '').toString().trim();
+      final phone = (c['phone'] ?? c['clinicPhone'] ?? '').toString().trim();
+      final addr = (c['address'] ?? c['clinicAddress'] ?? '').toString().trim();
+      final taxId = (c['taxId'] ?? c['clinicTaxId'] ?? '').toString().trim();
+      final logoUrl =
+          (c['logoUrl'] ?? c['clinicLogoUrl'] ?? '').toString().trim();
 
       if (!mounted) return;
 
       setState(() {
         _clinicNameCtrl.text = name;
+        _clinicBranchNameCtrl.text = branchName;
         _clinicAddressCtrl.text = addr;
         _phoneCtrl.text = phone;
+        _clinicTaxIdCtrl.text = taxId;
+        _logoUrl = logoUrl;
       });
 
       await _writeClinicScoped(clinicId, 'name', name);
+      await _writeClinicScoped(clinicId, 'branchName', branchName);
       await _writeClinicScoped(clinicId, 'address', addr);
       await _writeClinicScoped(clinicId, 'phone', phone);
+      await _writeClinicScoped(clinicId, 'taxId', taxId);
+      await _writeClinicScoped(clinicId, 'logoUrl', logoUrl);
     } catch (_) {}
   }
 
@@ -191,6 +216,187 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
     final p = phone.trim();
     if (p.isEmpty) return true;
     return RegExp(r'^\d{9,10}$').hasMatch(p);
+  }
+
+  bool get _logoBusy => _uploadingLogo || _removingLogo;
+
+  Future<void> _pickAndUploadLogo() async {
+    if (_logoBusy) return;
+
+    final clinicId = _currentClinicId.trim();
+    if (clinicId.isEmpty) {
+      _snack('ไม่พบ clinicId ของบัญชีนี้ กรุณาออกจากระบบแล้วเข้าใหม่');
+      return;
+    }
+
+    try {
+      final picked = await _picker.pickImage(
+        source: ImageSource.gallery,
+        imageQuality: 92,
+      );
+
+      if (picked == null) return;
+
+      setState(() => _uploadingLogo = true);
+
+      final result = await ClinicLogoApi.uploadLogo(
+        clinicId: clinicId,
+        file: File(picked.path),
+      );
+
+      final clinic = (result['clinic'] is Map<String, dynamic>)
+          ? result['clinic'] as Map<String, dynamic>
+          : <String, dynamic>{};
+
+      final logoUrl = (clinic['logoUrl'] ?? '').toString().trim();
+      final clinicName = (clinic['name'] ?? '').toString().trim();
+
+      if (!mounted) return;
+      setState(() {
+        _logoUrl = logoUrl;
+        if (clinicName.isNotEmpty) {
+          _clinicNameCtrl.text = clinicName;
+        }
+      });
+
+      await _writeClinicScoped(clinicId, 'logoUrl', logoUrl);
+
+      _snack('อัปโหลดโลโก้สำเร็จ');
+    } catch (e) {
+      _snack('อัปโหลดโลโก้ไม่สำเร็จ: $e');
+    } finally {
+      if (!mounted) return;
+      setState(() => _uploadingLogo = false);
+    }
+  }
+
+  Future<void> _removeLogo() async {
+    if (_logoBusy || _logoUrl.trim().isEmpty) return;
+
+    final clinicId = _currentClinicId.trim();
+    if (clinicId.isEmpty) {
+      _snack('ไม่พบ clinicId ของบัญชีนี้ กรุณาออกจากระบบแล้วเข้าใหม่');
+      return;
+    }
+
+    final confirmed = await showDialog<bool>(
+          context: context,
+          builder: (context) {
+            return AlertDialog(
+              title: const Text('ลบโลโก้คลินิก'),
+              content: const Text('ยืนยันการลบโลโก้ใช่หรือไม่'),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(false),
+                  child: const Text('ยกเลิก'),
+                ),
+                ElevatedButton(
+                  onPressed: () => Navigator.of(context).pop(true),
+                  child: const Text('ลบโลโก้'),
+                ),
+              ],
+            );
+          },
+        ) ??
+        false;
+
+    if (!confirmed) return;
+
+    try {
+      setState(() => _removingLogo = true);
+
+      final result = await ClinicLogoApi.removeLogo(clinicId: clinicId);
+
+      final clinic = (result['clinic'] is Map<String, dynamic>)
+          ? result['clinic'] as Map<String, dynamic>
+          : <String, dynamic>{};
+
+      final clinicName = (clinic['name'] ?? '').toString().trim();
+
+      if (!mounted) return;
+      setState(() {
+        _logoUrl = '';
+        if (clinicName.isNotEmpty) {
+          _clinicNameCtrl.text = clinicName;
+        }
+      });
+
+      await _writeClinicScoped(clinicId, 'logoUrl', '');
+
+      _snack('ลบโลโก้สำเร็จ');
+    } catch (e) {
+      _snack('ลบโลโก้ไม่สำเร็จ: $e');
+    } finally {
+      if (!mounted) return;
+      setState(() => _removingLogo = false);
+    }
+  }
+
+  Widget _buildLogoSection() {
+    final clinicName = _clinicNameCtrl.text.trim();
+
+    return Container(
+      margin: const EdgeInsets.only(top: 10),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        border: Border.all(color: Colors.black12),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        children: [
+          ClinicLogoView(
+            logoUrl: _logoUrl,
+            clinicName: clinicName.isNotEmpty ? clinicName : 'คลินิก',
+            size: 92,
+          ),
+          const SizedBox(height: 12),
+          Text(
+            _logoUrl.trim().isNotEmpty
+                ? 'โลโก้นี้จะถูกใช้กับเอกสารและ PDF ที่สร้างใหม่'
+                : 'ยังไม่มีโลโก้ ระบบจะแสดง fallback อัตโนมัติ',
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 13),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: _logoBusy ? null : _pickAndUploadLogo,
+                  icon: _uploadingLogo
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.upload_outlined),
+                  label: Text(
+                    _uploadingLogo ? 'กำลังอัปโหลด...' : 'อัปโหลดโลโก้',
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed:
+                      _logoBusy || _logoUrl.trim().isEmpty ? null : _removeLogo,
+                  icon: _removingLogo
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.delete_outline),
+                  label: Text(
+                    _removingLogo ? 'กำลังลบ...' : 'ลบโลโก้',
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _saveClinicProfile() async {
@@ -203,8 +409,11 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
     }
 
     final name = _clinicNameCtrl.text.trim();
+    final branchName = _clinicBranchNameCtrl.text.trim();
     final phone = _phoneCtrl.text.trim();
     final address = _clinicAddressCtrl.text.trim();
+    final taxId = _clinicTaxIdCtrl.text.trim();
+    final logoUrl = _logoUrl.trim();
 
     if (name.isEmpty) {
       _snack('กรุณากรอกชื่อคลินิก');
@@ -219,8 +428,11 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
 
     try {
       await _writeClinicScoped(clinicId, 'name', name);
+      await _writeClinicScoped(clinicId, 'branchName', branchName);
       await _writeClinicScoped(clinicId, 'address', address);
       await _writeClinicScoped(clinicId, 'phone', phone);
+      await _writeClinicScoped(clinicId, 'taxId', taxId);
+      await _writeClinicScoped(clinicId, 'logoUrl', logoUrl);
 
       final token = await _getTokenRobust();
 
@@ -229,11 +441,14 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
         return;
       }
 
-      final uri = Uri.parse('$_payrollBaseUrl/clinics/me/location');
+      final uri = Uri.parse('$_payrollBaseUrl/clinics/me/profile');
       final body = {
         'clinicName': name,
+        'branchName': branchName,
         'clinicPhone': phone,
         'clinicAddress': address,
+        'taxId': taxId,
+        'logoUrl': logoUrl,
       };
 
       final resp = await http.patch(
@@ -246,10 +461,19 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
       );
 
       if (resp.statusCode >= 400) {
-        _snack('อัปเดตข้อมูลคลินิกไม่สำเร็จ (${resp.statusCode})');
+        String msg = 'อัปเดตข้อมูลคลินิกไม่สำเร็จ (${resp.statusCode})';
+        try {
+          final decoded = json.decode(resp.body);
+          if (decoded is Map &&
+              (decoded['message'] ?? '').toString().trim().isNotEmpty) {
+            msg = (decoded['message']).toString();
+          }
+        } catch (_) {}
+        _snack(msg);
         return;
       }
 
+      await _loadClinicProfileFromBackend(clinicId);
       _snack('อัปเดตข้อมูลคลินิกแล้ว');
     } catch (e) {
       _snack('บันทึกไม่สำเร็จ: $e');
@@ -263,15 +487,12 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
     try {
       final sso = await SettingService.loadSsoPercent();
       final hasPin = await AuthService.hasPin();
-      final loc = await SettingService.loadClinicLocation();
       final clinicId = await _getClinicId();
 
       if (!mounted) return;
       setState(() {
         _ssoPercent = sso;
         _hasPin = hasPin;
-        _lat = loc?.lat;
-        _lng = loc?.lng;
         _currentClinicId = clinicId;
       });
 
@@ -288,87 +509,6 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
       if (!mounted) return;
       setState(() => _loading = false);
       _snack('โหลดตั้งค่าไม่สำเร็จ: $e');
-    }
-  }
-
-  Future<void> _openMapPicker() async {
-    await Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => const LocationSettingsScreen()),
-    );
-
-    try {
-      final loc = await SettingService.loadClinicLocation();
-      if (!mounted) return;
-      setState(() {
-        _lat = loc?.lat;
-        _lng = loc?.lng;
-      });
-    } catch (_) {}
-  }
-
-  Future<void> _useCurrentLocation() async {
-    if (_savingLocation) return;
-
-    try {
-      setState(() => _savingLocation = true);
-
-      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
-      if (!serviceEnabled) {
-        _snack('กรุณาเปิด Location Services หรือ GPS');
-        await Geolocator.openLocationSettings();
-        return;
-      }
-
-      var permission = await Geolocator.checkPermission();
-
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-      }
-
-      if (permission == LocationPermission.denied) {
-        _snack('ยังไม่ได้รับสิทธิ์เข้าถึงตำแหน่ง');
-        return;
-      }
-
-      if (permission == LocationPermission.deniedForever) {
-        _snack('ปิดสิทธิ์ถาวร กรุณาเปิดใน Settings');
-        await Geolocator.openAppSettings();
-        return;
-      }
-
-      Position? pos;
-      try {
-        pos = await Geolocator.getCurrentPosition(
-          desiredAccuracy: LocationAccuracy.high,
-          timeLimit: const Duration(seconds: 12),
-        );
-      } catch (_) {
-        pos = await Geolocator.getLastKnownPosition();
-      }
-
-      if (pos == null) {
-        _snack('ยังไม่สามารถอ่านตำแหน่งปัจจุบันได้');
-        return;
-      }
-
-      await SettingService.saveClinicLocation(
-        lat: pos.latitude,
-        lng: pos.longitude,
-      );
-
-      if (!mounted) return;
-      setState(() {
-        _lat = pos!.latitude;
-        _lng = pos.longitude;
-      });
-
-      _snack('บันทึกตำแหน่งคลินิกแล้ว');
-    } catch (e) {
-      _snack('อ่านตำแหน่งไม่สำเร็จ: $e');
-    } finally {
-      if (!mounted) return;
-      setState(() => _savingLocation = false);
     }
   }
 
@@ -451,8 +591,6 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final hasLocation = _lat != null && _lng != null;
-
     return Scaffold(
       appBar: AppBar(
         title: const Text('ตั้งค่าผู้ดูแลคลินิก'),
@@ -478,6 +616,18 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
                           textInputAction: TextInputAction.next,
                           decoration: const InputDecoration(
                             labelText: 'ชื่อคลินิก',
+                            border: OutlineInputBorder(),
+                          ),
+                          onChanged: (_) {
+                            if (mounted) setState(() {});
+                          },
+                        ),
+                        const SizedBox(height: 10),
+                        TextField(
+                          controller: _clinicBranchNameCtrl,
+                          textInputAction: TextInputAction.next,
+                          decoration: const InputDecoration(
+                            labelText: 'สาขา',
                             border: OutlineInputBorder(),
                           ),
                         ),
@@ -506,6 +656,16 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
                             border: OutlineInputBorder(),
                           ),
                         ),
+                        const SizedBox(height: 10),
+                        TextField(
+                          controller: _clinicTaxIdCtrl,
+                          keyboardType: TextInputType.number,
+                          decoration: const InputDecoration(
+                            labelText: 'เลขผู้เสียภาษีคลินิก',
+                            border: OutlineInputBorder(),
+                          ),
+                        ),
+                        _buildLogoSection(),
                         const SizedBox(height: 10),
                         SizedBox(
                           width: double.infinity,
@@ -540,62 +700,6 @@ class _ClinicAdminSettingsScreenState extends State<ClinicAdminSettingsScreen> {
                     ),
                     trailing: const Icon(Icons.chevron_right),
                     onTap: _openOtSettings,
-                  ),
-                ),
-                const SizedBox(height: 16),
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(14),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          'ตำแหน่งคลินิก',
-                          style: TextStyle(fontWeight: FontWeight.w900),
-                        ),
-                        const SizedBox(height: 6),
-                        Text(
-                          !hasLocation
-                              ? 'ยังไม่ได้ตั้งค่า'
-                              : 'Lat: ${_lat!.toStringAsFixed(6)}\nLng: ${_lng!.toStringAsFixed(6)}',
-                        ),
-                        const SizedBox(height: 10),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: ElevatedButton.icon(
-                                onPressed: _savingLocation
-                                    ? null
-                                    : _useCurrentLocation,
-                                icon: const Icon(Icons.my_location),
-                                label: _savingLocation
-                                    ? const SizedBox(
-                                        height: 18,
-                                        width: 18,
-                                        child: CircularProgressIndicator(
-                                          strokeWidth: 2,
-                                        ),
-                                      )
-                                    : const Text('ใช้ตำแหน่งปัจจุบัน'),
-                              ),
-                            ),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: OutlinedButton.icon(
-                                onPressed:
-                                    _savingLocation ? null : _openMapPicker,
-                                icon: const Icon(Icons.map_outlined),
-                                label: Text(
-                                  hasLocation
-                                      ? 'แก้ไขบนแผนที่'
-                                      : 'ตั้งค่าบนแผนที่',
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
                   ),
                 ),
                 const SizedBox(height: 16),

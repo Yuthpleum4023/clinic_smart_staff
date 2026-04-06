@@ -6,10 +6,13 @@
 // FEATURES
 // - เลือกตำแหน่งบนแผนที่
 // - ลากหมุดปรับละเอียด
-// - โหลด "ตำแหน่งปัจจุบัน" จาก GPS ถ้ายังไม่เคยบันทึก
+// - โหลด "ตำแหน่งเดิม" จาก local ก่อน
+// - ถ้า local ไม่มี -> fallback ไป backend
+// - ถ้ายังไม่มีจริง ๆ -> fallback ไป GPS ปัจจุบัน
 // - ปุ่มไปตำแหน่งปัจจุบัน
 // - ✅ Reverse geocoding อัตโนมัติจาก lat/lng
 // - ✅ เติม district / province / address / label อัตโนมัติ
+// - ✅ กล่องข้อมูลตำแหน่งแบบพับ/ขยาย (กันข้อความบังแผนที่)
 // - บันทึกลงเครื่อง
 // - บันทึก + sync backend
 //
@@ -27,9 +30,9 @@ import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 
+import 'package:clinic_smart_staff/api/api_config.dart';
 import 'package:clinic_smart_staff/services/auth_storage.dart';
 import 'package:clinic_smart_staff/services/settings_service.dart';
-import 'package:clinic_smart_staff/api/api_config.dart';
 
 class HelperLocationSettingsScreen extends StatefulWidget {
   const HelperLocationSettingsScreen({super.key});
@@ -43,14 +46,12 @@ class _HelperLocationSettingsScreenState
     extends State<HelperLocationSettingsScreen> {
   final MapController _map = MapController();
 
-  // ✅ default ไว้เป็น fallback สุดท้ายเท่านั้น
   LatLng _center = const LatLng(13.7563, 100.5018);
   LatLng? _picked;
 
   bool _loading = true;
   bool _saving = false;
 
-  // ✅ reverse geocoding state
   bool _resolvingAddress = false;
   String _district = '';
   String _province = '';
@@ -59,11 +60,12 @@ class _HelperLocationSettingsScreenState
   String _geoError = '';
   int _resolveSeq = 0;
 
+  bool _locationInfoExpanded = false;
+  bool _bootMovedMap = false;
+
   final String _syncPath = "/users/me/location";
 
-  // ✅ เปลี่ยนจาก clinic_payroll ให้ตรงแอปใหม่
   static const String _uaPackageName = 'com.clinicsmartstaff.app';
-
   static const Duration _geoTimeout = Duration(seconds: 20);
 
   @override
@@ -72,40 +74,266 @@ class _HelperLocationSettingsScreenState
     _boot();
   }
 
-  Future<void> _boot() async {
+  bool _hasTextLocation({
+    required String district,
+    required String province,
+    required String address,
+    required String label,
+  }) {
+    return district.trim().isNotEmpty ||
+        province.trim().isNotEmpty ||
+        address.trim().isNotEmpty ||
+        label.trim().isNotEmpty;
+  }
+
+  bool _hasUsableAppLocation(AppLocation? loc) {
+    if (loc == null) return false;
+    final latOk = loc.lat.isFinite;
+    final lngOk = loc.lng.isFinite;
+    return latOk && lngOk;
+  }
+
+  String _pickFirstNonEmpty(List<dynamic> values) {
+    for (final v in values) {
+      final s = (v ?? '').toString().trim();
+      if (s.isNotEmpty) return s;
+    }
+    return '';
+  }
+
+  String _buildLabel({
+    required String district,
+    required String province,
+    required String address,
+  }) {
+    if (district.isNotEmpty && province.isNotEmpty) {
+      return '$district, $province';
+    }
+    if (province.isNotEmpty) return province;
+    if (district.isNotEmpty) return district;
+    if (address.isNotEmpty) return address;
+    return '';
+  }
+
+  AppLocation _normalizeRemoteLocation(dynamic json) {
+    final root = json is Map ? Map<String, dynamic>.from(json) : <String, dynamic>{};
+
+    final user = root['user'] is Map
+        ? Map<String, dynamic>.from(root['user'])
+        : root['data'] is Map
+            ? Map<String, dynamic>.from(root['data'])
+            : root;
+
+    final location = user['location'] is Map
+        ? Map<String, dynamic>.from(user['location'])
+        : root['location'] is Map
+            ? Map<String, dynamic>.from(root['location'])
+            : <String, dynamic>{};
+
+    double? toNum(dynamic v) {
+      if (v == null) return null;
+      final s = v.toString().trim();
+      if (s.isEmpty) return null;
+      return double.tryParse(s);
+    }
+
+    final lat = toNum(location['lat']) ??
+        toNum(location['latitude']) ??
+        toNum(user['lat']) ??
+        toNum(user['latitude']) ??
+        13.7563;
+
+    final lng = toNum(location['lng']) ??
+        toNum(location['longitude']) ??
+        toNum(user['lng']) ??
+        toNum(user['longitude']) ??
+        100.5018;
+
+    final district = _pickFirstNonEmpty([
+      location['district'],
+      location['amphoe'],
+      user['district'],
+      user['amphoe'],
+    ]);
+
+    final province = _pickFirstNonEmpty([
+      location['province'],
+      location['changwat'],
+      user['province'],
+      user['changwat'],
+    ]);
+
+    final address = _pickFirstNonEmpty([
+      location['address'],
+      location['fullAddress'],
+      user['address'],
+      user['fullAddress'],
+    ]);
+
+    final label = _pickFirstNonEmpty([
+      location['label'],
+      location['locationLabel'],
+      user['locationLabel'],
+    ]);
+
+    return AppLocation(
+      lat: lat,
+      lng: lng,
+      district: district,
+      province: province,
+      address: address,
+      label: label.isNotEmpty
+          ? label
+          : _buildLabel(
+              district: district,
+              province: province,
+              address: address,
+            ),
+    );
+  }
+
+  Future<AppLocation?> _fetchBackendLocation() async {
     try {
-      // 1) ถ้ามีพิกัดที่เคยบันทึกไว้ ใช้อันนั้นก่อน
-      final saved = await SettingService.loadHelperLocation();
+      final token = await AuthStorage.getToken();
+      if (token == null || token.trim().isEmpty) return null;
 
-      if (saved != null) {
-        final ll = LatLng(saved.lat, saved.lng);
-        _center = ll;
-        _picked = ll;
+      final headers = {
+        'Authorization': 'Bearer ${token.trim()}',
+        'Accept': 'application/json',
+      };
 
-        _district = saved.district.trim();
-        _province = saved.province.trim();
-        _address = saved.address.trim();
-        _label = saved.label.trim();
+      final candidates = <String>[
+        '${ApiConfig.authBaseUrl}/users/me',
+        '${ApiConfig.authBaseUrl}/users/me/location',
+      ];
 
-        // ถ้าข้อมูลข้อความยังว่าง ค่อย reverse ใหม่
-        if (_district.isEmpty &&
-            _province.isEmpty &&
-            _address.isEmpty &&
-            _label.isEmpty) {
-          await _resolveLocationText(ll);
-        }
-      } else {
-        // 2) ถ้ายังไม่มี -> ใช้ GPS ปัจจุบัน
-        final current = await _getCurrentLocationLatLng();
-        if (current != null) {
-          _center = current;
-          _picked = current;
-          await _resolveLocationText(current);
+      for (final rawUrl in candidates) {
+        try {
+          final uri = Uri.parse(rawUrl);
+          final res = await http.get(uri, headers: headers).timeout(
+                const Duration(seconds: 12),
+              );
+
+          if (res.statusCode < 200 || res.statusCode >= 300) {
+            continue;
+          }
+
+          final decoded = jsonDecode(res.body);
+          final loc = _normalizeRemoteLocation(decoded);
+
+          if (_hasUsableAppLocation(loc)) {
+            return loc;
+          }
+        } catch (_) {
+          // ลอง candidate ถัดไป
         }
       }
     } catch (_) {}
 
-    if (mounted) setState(() => _loading = false);
+    return null;
+  }
+
+  void _applyLocation(
+    AppLocation loc, {
+    bool moveMap = false,
+    bool keepExistingTextIfAny = false,
+  }) {
+    final ll = LatLng(loc.lat, loc.lng);
+
+    _center = ll;
+    _picked = ll;
+
+    if (!keepExistingTextIfAny || _district.trim().isEmpty) {
+      _district = loc.district.trim();
+    }
+    if (!keepExistingTextIfAny || _province.trim().isEmpty) {
+      _province = loc.province.trim();
+    }
+    if (!keepExistingTextIfAny || _address.trim().isEmpty) {
+      _address = loc.address.trim();
+    }
+    if (!keepExistingTextIfAny || _label.trim().isEmpty) {
+      _label = loc.label.trim();
+    }
+
+    if (moveMap) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        try {
+          _map.move(ll, 16);
+        } catch (_) {}
+      });
+    }
+  }
+
+  Future<void> _boot() async {
+    try {
+      AppLocation? chosen;
+
+      // 1) local มาก่อน
+      final local = await SettingService.loadHelperLocation();
+      if (_hasUsableAppLocation(local)) {
+        chosen = local;
+        _applyLocation(local!, moveMap: false);
+      }
+
+      // 2) ถ้า local ไม่มี ค่อยไป backend
+      if (chosen == null) {
+        final remote = await _fetchBackendLocation();
+        if (_hasUsableAppLocation(remote)) {
+          chosen = remote;
+          _applyLocation(remote!, moveMap: false);
+
+          // sync backend -> local
+          await SettingService.saveHelperLocation(
+            lat: remote.lat,
+            lng: remote.lng,
+            district: remote.district,
+            province: remote.province,
+            address: remote.address,
+            label: remote.label,
+          );
+        }
+      }
+
+      // 3) ถ้ายังไม่มีจริง ๆ ค่อย GPS
+      if (chosen == null) {
+        final current = await _getCurrentLocationLatLng();
+        if (current != null) {
+          _center = current;
+          _picked = current;
+        }
+      }
+
+      // 4) ถ้ามี lat/lng แต่ยังไม่มีข้อความพื้นที่ ค่อย reverse geocode
+      final effective = _picked ?? _center;
+      final hasText = _hasTextLocation(
+        district: _district,
+        province: _province,
+        address: _address,
+        label: _label,
+      );
+
+      if (!hasText) {
+        await _resolveLocationText(effective);
+      }
+    } catch (_) {
+      // กันทั้งหน้าพัง
+    }
+
+    if (mounted) {
+      setState(() => _loading = false);
+    }
+
+    if (!_bootMovedMap && mounted) {
+      _bootMovedMap = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        try {
+          _map.move(_picked ?? _center, 16);
+        } catch (_) {}
+      });
+    }
   }
 
   Future<LatLng?> _getCurrentLocationLatLng() async {
@@ -132,28 +360,6 @@ class _HelperLocationSettingsScreenState
     } catch (_) {
       return null;
     }
-  }
-
-  String _pickFirstNonEmpty(List<dynamic> values) {
-    for (final v in values) {
-      final s = (v ?? '').toString().trim();
-      if (s.isNotEmpty) return s;
-    }
-    return '';
-  }
-
-  String _buildLabel({
-    required String district,
-    required String province,
-    required String address,
-  }) {
-    if (district.isNotEmpty && province.isNotEmpty) {
-      return '$district, $province';
-    }
-    if (province.isNotEmpty) return province;
-    if (district.isNotEmpty) return district;
-    if (address.isNotEmpty) return address;
-    return '';
   }
 
   Future<void> _resolveLocationText(LatLng ll) async {
@@ -249,7 +455,13 @@ class _HelperLocationSettingsScreenState
       district: _district,
       province: _province,
       address: _address,
-      label: _label,
+      label: _label.isNotEmpty
+          ? _label
+          : _buildLabel(
+              district: _district,
+              province: _province,
+              address: _address,
+            ),
     );
   }
 
@@ -353,7 +565,6 @@ class _HelperLocationSettingsScreenState
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text("บันทึก + ส่งพิกัดขึ้นระบบแล้ว ✅")),
         );
-
         return;
       }
 
@@ -364,9 +575,7 @@ class _HelperLocationSettingsScreenState
 
         if (j is Map && j["message"] != null) {
           msg = j["message"].toString();
-        }
-
-        if (j is Map && j["error"] != null) {
+        } else if (j is Map && j["error"] != null) {
           msg = j["error"].toString();
         }
       } catch (_) {}
@@ -383,6 +592,35 @@ class _HelperLocationSettingsScreenState
     }
   }
 
+  Widget _buildCompactLine({
+    required BuildContext context,
+    required IconData icon,
+    required String text,
+    Color? color,
+    FontWeight? weight,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 16, color: color ?? Theme.of(context).hintColor),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              text,
+              style: TextStyle(
+                color: color,
+                fontWeight: weight,
+                height: 1.25,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildLocationInfo(BuildContext context, LatLng picked) {
     final theme = Theme.of(context);
 
@@ -390,6 +628,10 @@ class _HelperLocationSettingsScreenState
     final addressText = _address.trim().isNotEmpty ? _address.trim() : '-';
     final districtText = _district.trim().isNotEmpty ? _district.trim() : '-';
     final provinceText = _province.trim().isNotEmpty ? _province.trim() : '-';
+
+    final summaryText = _label.trim().isNotEmpty
+        ? _label.trim()
+        : (_province.trim().isNotEmpty ? _province.trim() : 'ยังไม่ได้อ่านชื่อพื้นที่');
 
     return Container(
       width: double.infinity,
@@ -404,22 +646,80 @@ class _HelperLocationSettingsScreenState
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text("ตำแหน่งที่ระบบอ่านได้",
-              style: theme.textTheme.titleSmall?.copyWith(
-                fontWeight: FontWeight.w800,
-              )),
-          const SizedBox(height: 8),
-          Text("label: $labelText"),
-          const SizedBox(height: 4),
-          Text("อำเภอ/เขต: $districtText"),
-          const SizedBox(height: 4),
-          Text("จังหวัด: $provinceText"),
-          const SizedBox(height: 4),
-          Text("ที่อยู่: $addressText"),
-          const SizedBox(height: 8),
-          Text(
-            "lat: ${picked.latitude.toStringAsFixed(6)}   lng: ${picked.longitude.toStringAsFixed(6)}",
+          InkWell(
+            borderRadius: BorderRadius.circular(10),
+            onTap: () {
+              setState(() {
+                _locationInfoExpanded = !_locationInfoExpanded;
+              });
+            },
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      "ตำแหน่งที่ระบบอ่านได้",
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                  Text(
+                    _locationInfoExpanded ? 'ซ่อนรายละเอียด' : 'ดูรายละเอียดเพิ่ม',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.primary,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Icon(
+                    _locationInfoExpanded
+                        ? Icons.keyboard_arrow_up
+                        : Icons.keyboard_arrow_down,
+                    color: theme.colorScheme.primary,
+                  ),
+                ],
+              ),
+            ),
           ),
+          const SizedBox(height: 6),
+          _buildCompactLine(
+            context: context,
+            icon: Icons.place,
+            text: summaryText,
+            weight: FontWeight.w700,
+          ),
+          _buildCompactLine(
+            context: context,
+            icon: Icons.location_city_outlined,
+            text: 'อำเภอ/เขต: $districtText',
+          ),
+          _buildCompactLine(
+            context: context,
+            icon: Icons.map_outlined,
+            text: 'จังหวัด: $provinceText',
+          ),
+          _buildCompactLine(
+            context: context,
+            icon: Icons.my_location_outlined,
+            text:
+                'lat: ${picked.latitude.toStringAsFixed(6)}   lng: ${picked.longitude.toStringAsFixed(6)}',
+          ),
+          if (_locationInfoExpanded) ...[
+            const SizedBox(height: 8),
+            const Divider(height: 1),
+            const SizedBox(height: 8),
+            Text(
+              "label: $labelText",
+              style: theme.textTheme.bodyMedium,
+            ),
+            const SizedBox(height: 4),
+            Text(
+              "ที่อยู่: $addressText",
+              style: theme.textTheme.bodyMedium,
+            ),
+          ],
           if (_resolvingAddress) ...[
             const SizedBox(height: 10),
             const LinearProgressIndicator(),

@@ -23,7 +23,16 @@
 //   - WITHHOLDING
 //   - NO_WITHHOLDING
 // - รองรับส่ง employeeUserId แบบ optional เพื่อช่วย backend คำนวณภาษีแม่นขึ้น
+// - ✅ NEW: รองรับส่ง grossBaseMode ไป backend
+//   - PRE_DEDUCTION  = grossBase คือฐานก่อนหัก deduction
+//   - POST_DEDUCTION = grossBase คือฐานหลังหัก deduction แล้ว
+//   - AUTO           = ให้ backend ช่วยเดา
 // - validate month format = yyyy-MM
+//
+// ✅ DEBUG LOGS:
+// - print request body ก่อนยิง
+// - print preferred / fallback route
+// - print response / error ทุกทาง
 //
 
 import 'api_client.dart';
@@ -48,6 +57,13 @@ class PayrollCloseApi {
     final x = v.trim().toUpperCase();
     if (x == 'NO_WITHHOLDING') return 'NO_WITHHOLDING';
     return 'WITHHOLDING';
+  }
+
+  static String _normalizeGrossBaseMode(String v) {
+    final x = v.trim().toUpperCase();
+    if (x == 'POST_DEDUCTION') return 'POST_DEDUCTION';
+    if (x == 'AUTO') return 'AUTO';
+    return 'PRE_DEDUCTION';
   }
 
   /// ✅ Payroll Close API (ปิดงวดเงินจริง)
@@ -92,6 +108,11 @@ class PayrollCloseApi {
     // --------------------
     String taxMode = 'WITHHOLDING',
 
+    // --------------------
+    // Gross base meaning
+    // --------------------
+    String grossBaseMode = 'PRE_DEDUCTION',
+
     /// ✅ optional: userId ของ "พนักงานจริง"
     /// backend จะใช้ตัวนี้คุย auth tax service ได้แม่นขึ้น
     String? employeeUserId,
@@ -103,6 +124,7 @@ class PayrollCloseApi {
       final eid = _s(employeeId);
       final m = _s(month);
       final normalizedTaxMode = _normalizeTaxMode(taxMode);
+      final normalizedGrossBaseMode = _normalizeGrossBaseMode(grossBaseMode);
       final empUserId = _s(employeeUserId);
 
       if (cid.isEmpty) {
@@ -126,6 +148,7 @@ class PayrollCloseApi {
         'employeeId': eid,
         'month': m,
         'grossBase': grossBase,
+        'grossBaseMode': normalizedGrossBaseMode,
         'otPay': otPay,
         'bonus': bonus,
         'otherAllowance': otherAllowance,
@@ -151,14 +174,25 @@ class PayrollCloseApi {
         body['otItems'] = otItems;
       }
 
+      final preferredPath = '/payroll-close/close-month/$eid/$m';
+      final fallbackPath = '/payroll-close/close-month';
+
+      print('[PAYROLL_CLOSE][REQUEST] route=$preferredPath');
+      print('[PAYROLL_CLOSE][REQUEST][BODY] $body');
+
       try {
-        return await _client.post(
-          '/payroll-close/close-month/$eid/$m',
+        final res = await _client.post(
+          preferredPath,
           auth: auth,
           body: body,
         );
+
+        print('[PAYROLL_CLOSE][RESPONSE][PREFERRED] $res');
+        return res;
       } catch (e1) {
         final msg1 = e1.toString();
+
+        print('[PAYROLL_CLOSE][ERROR][PREFERRED] $msg1');
 
         if (msg1.contains('API Error (409)') ||
             msg1.contains('API Error (401)') ||
@@ -166,14 +200,22 @@ class PayrollCloseApi {
           rethrow;
         }
 
-        return await _client.post(
-          '/payroll-close/close-month',
+        print('[PAYROLL_CLOSE][FALLBACK] route=$fallbackPath');
+        print('[PAYROLL_CLOSE][FALLBACK][BODY] $body');
+
+        final res = await _client.post(
+          fallbackPath,
           auth: auth,
           body: body,
         );
+
+        print('[PAYROLL_CLOSE][RESPONSE][FALLBACK] $res');
+        return res;
       }
     } catch (e) {
       final msg = e.toString();
+
+      print('[PAYROLL_CLOSE][ERROR][FINAL] $msg');
 
       if (msg.contains('API Error (409)')) {
         throw Exception('409: month already closed');

@@ -20,11 +20,21 @@
 // - submitEventScore(): POST /score/event (override path ได้)
 // - createAttendanceEvent(): POST /score/attendance-events (override path ได้)  ✅ ตรง schema AttendanceEvent
 //
+// ✅ PATCH NEW:
+// - approveApplicant() ใช้ raw http POST เพื่อ “เก็บ error body จาก backend ให้ครบ”
+// - ถ้า backend ตอบ 409 พร้อม conflictShift / conflictText / code จะ throw JSON string กลับไป
+// - ฝั่ง screen จึง parse แล้วแสดงไทยได้ชัดว่า “ชนกับกะไหน / คลินิกไหน / เวลาอะไร”
+
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 
 import 'package:clinic_smart_staff/models/clinic_shift_need_model.dart';
 import 'package:clinic_smart_staff/api/api_client.dart';
 import 'package:clinic_smart_staff/api/api_config.dart';
+import 'package:clinic_smart_staff/services/auth_storage.dart';
 
 class ClinicShiftNeedService {
   // --------------------------------------------------------------------------
@@ -38,6 +48,75 @@ class ClinicShiftNeedService {
 
   static ApiClient get _client => ApiClient(baseUrl: ApiConfig.payrollBaseUrl);
 
+  static Uri _uri(String path) {
+    final base = ApiConfig.payrollBaseUrl.replaceAll(RegExp(r'\/+$'), '');
+    final p = path.startsWith('/') ? path : '/$path';
+    return Uri.parse('$base$p');
+  }
+
+  static Future<String> _getTokenStrict() async {
+    final token = await AuthStorage.getToken();
+    final t = (token ?? '').trim();
+    if (t.isEmpty || t.toLowerCase() == 'null') {
+      throw Exception(jsonEncode({
+        'message': 'เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่',
+        'code': 'UNAUTHORIZED',
+      }));
+    }
+    return t;
+  }
+
+  static Map<String, String> _authHeaders(String token) {
+    return <String, String>{
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer $token',
+    };
+  }
+
+  static dynamic _safeDecode(String body) {
+    try {
+      return jsonDecode(body);
+    } catch (_) {
+      return body;
+    }
+  }
+
+  static Map<String, dynamic> _normalizeErrorPayload({
+    required int statusCode,
+    required dynamic decoded,
+    required String fallbackMessage,
+  }) {
+    if (decoded is Map) {
+      final out = Map<String, dynamic>.from(decoded);
+      out['_status'] = statusCode;
+
+      final hasMessage =
+          (out['message'] ?? '').toString().trim().isNotEmpty ||
+              (out['error'] ?? '').toString().trim().isNotEmpty;
+
+      if (!hasMessage) {
+        out['message'] = fallbackMessage;
+      }
+
+      return out;
+    }
+
+    if (decoded is List) {
+      return <String, dynamic>{
+        '_status': statusCode,
+        'message': fallbackMessage,
+        'error': jsonEncode(decoded),
+      };
+    }
+
+    final text = (decoded ?? '').toString().trim();
+    return <String, dynamic>{
+      '_status': statusCode,
+      'message': fallbackMessage,
+      'error': text,
+    };
+  }
+
   // --------------------------------------------------------------------------
   // ✅ Decode ShiftNeeds list (robust)
   // --------------------------------------------------------------------------
@@ -45,11 +124,17 @@ class ClinicShiftNeedService {
     dynamic listAny = decoded;
 
     if (decoded is Map) {
-      if (decoded['items'] is List) listAny = decoded['items'];
-      else if (decoded['data'] is List) listAny = decoded['data'];
-      else if (decoded['results'] is List) listAny = decoded['results'];
-      else if (decoded['need'] is List) listAny = decoded['need'];
-      else if (decoded['needs'] is List) listAny = decoded['needs'];
+      if (decoded['items'] is List) {
+        listAny = decoded['items'];
+      } else if (decoded['data'] is List) {
+        listAny = decoded['data'];
+      } else if (decoded['results'] is List) {
+        listAny = decoded['results'];
+      } else if (decoded['need'] is List) {
+        listAny = decoded['need'];
+      } else if (decoded['needs'] is List) {
+        listAny = decoded['needs'];
+      }
     }
 
     if (listAny is! List) return [];
@@ -136,7 +221,8 @@ class ClinicShiftNeedService {
 
     // normalize rate -> hourlyRate (ให้ตรง shiftNeedController.js)
     if (payload['hourlyRate'] == null ||
-        (payload['hourlyRate'] is num && (payload['hourlyRate'] as num) <= 0)) {
+        (payload['hourlyRate'] is num &&
+            (payload['hourlyRate'] as num) <= 0)) {
       if (payload['rate'] != null) {
         payload['hourlyRate'] = payload['rate'];
       }
@@ -174,15 +260,11 @@ class ClinicShiftNeedService {
 
   /// ✅ รับผู้สมัคร (approveApplicant)
   ///
-  /// ⚠️ Backend ของท่านตอนนี้ controller คือ approveApplicant(req,res)
-  /// แต่ "route" อาจจะเป็น:
-  /// - POST /shift-needs/:id/approve
-  /// - POST /shift-needs/:id/approve-applicant
-  /// - POST /shift-needs/:id/applicants/approve
-  ///
-  /// ✅ ดังนั้นให้ override pathBuilder ได้
-  ///
   /// default: POST /shift-needs/:id/approve   body: { staffId }
+  ///
+  /// ✅ จุดสำคัญ:
+  /// ใช้ raw http แทน ApiClient เฉพาะ endpoint นี้
+  /// เพื่อไม่ให้ error body จาก backend หาย
   static Future<dynamic> approveApplicant({
     required String needId,
     required String staffId,
@@ -190,20 +272,64 @@ class ClinicShiftNeedService {
   }) async {
     final sid = needId.trim();
     final st = staffId.trim();
-    if (sid.isEmpty) throw Exception('needId ว่าง');
-    if (st.isEmpty) throw Exception('staffId ว่าง');
+    if (sid.isEmpty) {
+      throw Exception(jsonEncode({
+        'message': 'needId ว่าง',
+        'code': 'INVALID_NEED_ID',
+      }));
+    }
+    if (st.isEmpty) {
+      throw Exception(jsonEncode({
+        'message': 'staffId ว่าง',
+        'code': 'INVALID_STAFF_ID',
+      }));
+    }
 
     final path = (pathBuilder ?? ((id) => '/shift-needs/$id/approve'))(sid);
+    final uri = _uri(path);
+    final token = await _getTokenStrict();
 
-    _log('POST ${ApiConfig.payrollBaseUrl}$path body={staffId:$st}');
+    final body = <String, dynamic>{'staffId': st};
 
-    final decoded = await _client.post(
-      path,
-      auth: true,
-      body: {'staffId': st},
+    _log('POST $uri body=$body');
+
+    http.Response res;
+    try {
+      res = await http
+          .post(
+            uri,
+            headers: _authHeaders(token),
+            body: jsonEncode(body),
+          )
+          .timeout(const Duration(seconds: 20));
+    } on TimeoutException {
+      throw Exception(jsonEncode({
+        'message': 'การเชื่อมต่อใช้เวลานานเกินไป กรุณาลองใหม่',
+        'code': 'TIMEOUT',
+      }));
+    } catch (e) {
+      throw Exception(jsonEncode({
+        'message': 'เชื่อมต่อไม่สำเร็จ กรุณาลองใหม่',
+        'error': e.toString(),
+        'code': 'NETWORK_ERROR',
+      }));
+    }
+
+    final decoded = _safeDecode(res.body);
+
+    _log('approve status=${res.statusCode} decoded=$decoded');
+
+    if (res.statusCode >= 200 && res.statusCode < 300) {
+      return decoded;
+    }
+
+    final normalized = _normalizeErrorPayload(
+      statusCode: res.statusCode,
+      decoded: decoded,
+      fallbackMessage: 'API ${res.statusCode}: approveApplicant failed',
     );
 
-    return decoded;
+    throw Exception(jsonEncode(normalized));
   }
 
   /// ✅ ส่งคะแนน Event (แบบ "rating 4 ช่อง") เพื่อไปคำนวณ TrustScore
@@ -293,7 +419,6 @@ class ClinicShiftNeedService {
 
     _log('PATCH ${ApiConfig.payrollBaseUrl}/shift-needs/$sid/cancel');
 
-    // backend บางตัวคืน 200/204 body ว่าง → ApiClient.patch รองรับแล้ว
     await _client.patch(
       '/shift-needs/$sid/cancel',
       auth: true,

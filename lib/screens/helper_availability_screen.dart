@@ -12,9 +12,19 @@
 // - ✅ เหลือปุ่มเดียว “ดูรายละเอียด”
 //
 // ✅ PATCH NEW (STORE READY):
-// - ✅ ตอนประกาศเวลาว่าง พยายามแนบ location snapshot ไป backend
-// - ✅ ไม่เพิ่ม package ใหม่
+// - ✅ ตอนประกาศเวลาว่าง แนบ location snapshot จาก LocationManager ไป backend แบบชัวร์
+// - ✅ แก้ป้าย/พื้นเหลืองที่บัง field ตอนพิมพ์ใน bottom sheet
 // - ✅ ถ้าไม่มี location ในเครื่อง ยังประกาศได้ตามปกติ
+//
+// ✅ PATCH FIX:
+// - ✅ แก้ bottom overflow ตอน keyboard ขึ้น
+// - ✅ แก้จอแดงจาก async/picker หลัง widget ถูก dispose
+// - ✅ unfocus ก่อนปิด bottom sheet
+//
+// ✅ PATCH NEW:
+// - ✅ โชว์พิกัดเดิมในหน้าฟอร์มเลย
+// - ✅ มีปุ่ม "ใช้พิกัดเดิม" / "อัปเดตพิกัดใหม่"
+// - ✅ ถ้ายังไม่มี location เลย จะพาไปหน้า HelperLocationSettingsScreen ก่อนประกาศ
 //
 // ✅ ไม่เพิ่ม package ใหม่
 
@@ -27,6 +37,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:clinic_smart_staff/api/api_config.dart';
 import 'package:clinic_smart_staff/models/availability_model.dart';
 import 'package:clinic_smart_staff/screens/helper/helper_availability_detail_screen.dart';
+import 'package:clinic_smart_staff/screens/helper/helper_location_settings_screen.dart';
+import 'package:clinic_smart_staff/services/location_manager.dart';
+import 'package:clinic_smart_staff/services/settings_service.dart';
 
 class HelperAvailabilityScreen extends StatefulWidget {
   const HelperAvailabilityScreen({super.key});
@@ -39,16 +52,12 @@ class HelperAvailabilityScreen extends StatefulWidget {
 class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
   bool _loading = true;
 
-  // raw list from backend -> model
   List<Availability> _items = [];
 
-  // UI filter
   int _tab = 0; // 0=all,1=open,2=booked,3=cancelled
 
-  // ✅ กัน push ซ้อน (double tap / tap รัว)
   bool _pushingDetail = false;
 
-  // ---------- helpers ----------
   Future<String?> _getToken() async {
     const keys = ['jwtToken', 'token', 'authToken', 'userToken', 'jwt_token'];
     final prefs = await SharedPreferences.getInstance();
@@ -73,14 +82,6 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
 
   String _s(dynamic v) => (v ?? '').toString().trim();
 
-  double? _toDoubleOrNull(dynamic v) {
-    if (v == null) return null;
-    if (v is num) return v.toDouble();
-    final t = '$v'.trim();
-    if (t.isEmpty) return null;
-    return double.tryParse(t);
-  }
-
   bool _isBooked(Availability a) => a.status.trim().toLowerCase() == 'booked';
   bool _isCancelled(Availability a) =>
       a.status.trim().toLowerCase() == 'cancelled';
@@ -89,169 +90,70 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
     return st.isEmpty || st == 'open';
   }
 
-  String _firstNonEmpty(List<String?> values) {
-    for (final v in values) {
-      final t = _s(v);
-      if (t.isNotEmpty && t.toLowerCase() != 'null') return t;
+  bool _hasUsableAppLocation(AppLocation? loc) {
+    if (loc == null) return false;
+    return loc.lat.isFinite &&
+        loc.lng.isFinite &&
+        !(loc.lat == 0 && loc.lng == 0);
+  }
+
+  String _locationSummary(AppLocation loc) {
+    final parts = <String>[
+      if (_s(loc.label).isNotEmpty) _s(loc.label),
+      if (_s(loc.district).isNotEmpty) _s(loc.district),
+      if (_s(loc.province).isNotEmpty) _s(loc.province),
+    ].toSet().toList();
+
+    if (parts.isNotEmpty) {
+      return parts.join(' • ');
     }
-    return '';
+
+    return 'lat: ${loc.lat.toStringAsFixed(6)}, lng: ${loc.lng.toStringAsFixed(6)}';
+  }
+
+  Future<AppLocation?> _loadHelperLocation() async {
+    return LocationManager.loadHelperLocationSmart(allowGpsFallback: false);
   }
 
   Future<Map<String, dynamic>> _readLocationSnapshot() async {
-    final prefs = await SharedPreferences.getInstance();
+    try {
+      final loc = await _loadHelperLocation();
 
-    String? readString(List<String> keys) {
-      for (final k in keys) {
-        final v = prefs.getString(k);
-        if (v != null && v.trim().isNotEmpty && v.trim() != 'null') {
-          return v.trim();
-        }
+      if (loc == null) {
+        return {
+          'lat': null,
+          'lng': null,
+          'district': '',
+          'province': '',
+          'address': '',
+          'locationLabel': '',
+        };
       }
-      return null;
+
+      return {
+        'lat': loc.lat,
+        'lng': loc.lng,
+        'district': loc.district,
+        'province': loc.province,
+        'address': loc.address,
+        'locationLabel': loc.label,
+      };
+    } catch (_) {
+      return {
+        'lat': null,
+        'lng': null,
+        'district': '',
+        'province': '',
+        'address': '',
+        'locationLabel': '',
+      };
     }
-
-    double? readDouble(List<String> keys) {
-      for (final k in keys) {
-        final dv = prefs.getDouble(k);
-        if (dv != null) return dv;
-
-        final sv = prefs.getString(k);
-        final parsed = _toDoubleOrNull(sv);
-        if (parsed != null) return parsed;
-
-        final iv = prefs.getInt(k);
-        if (iv != null) return iv.toDouble();
-      }
-      return null;
-    }
-
-    Map<String, dynamic> parseJsonString(String raw) {
-      try {
-        final decoded = jsonDecode(raw);
-        if (decoded is Map) {
-          return Map<String, dynamic>.from(decoded);
-        }
-      } catch (_) {}
-      return {};
-    }
-
-    final rawMap = <String, dynamic>{};
-
-    // พยายามอ่าน location จาก json blob ที่อาจเคยถูกเก็บไว้
-    const mapKeys = [
-      'userLocation',
-      'selectedLocation',
-      'helperLocation',
-      'currentLocation',
-      'locationSnapshot',
-      'profileLocation',
-      'sellerLocation',
-      'clinicLocation',
-    ];
-
-    for (final k in mapKeys) {
-      final raw = prefs.getString(k);
-      if (raw != null && raw.trim().isNotEmpty) {
-        rawMap.addAll(parseJsonString(raw));
-      }
-    }
-
-    final lat = readDouble([
-          'lat',
-          'latitude',
-          'userLat',
-          'currentLat',
-          'selectedLat',
-          'helperLat',
-          'profileLat',
-        ]) ??
-        _toDoubleOrNull(rawMap['lat']) ??
-        _toDoubleOrNull(rawMap['latitude']);
-
-    final lng = readDouble([
-          'lng',
-          'lon',
-          'longitude',
-          'userLng',
-          'currentLng',
-          'selectedLng',
-          'helperLng',
-          'profileLng',
-        ]) ??
-        _toDoubleOrNull(rawMap['lng']) ??
-        _toDoubleOrNull(rawMap['lon']) ??
-        _toDoubleOrNull(rawMap['longitude']);
-
-    final district = _firstNonEmpty([
-      readString([
-        'district',
-        'currentDistrict',
-        'selectedDistrict',
-        'helperDistrict',
-        'profileDistrict',
-      ]),
-      rawMap['district']?.toString(),
-      rawMap['subDistrict']?.toString(),
-      rawMap['amphoe']?.toString(),
-      rawMap['area']?.toString(),
-    ]);
-
-    final province = _firstNonEmpty([
-      readString([
-        'province',
-        'currentProvince',
-        'selectedProvince',
-        'helperProvince',
-        'profileProvince',
-      ]),
-      rawMap['province']?.toString(),
-      rawMap['changwat']?.toString(),
-      rawMap['state']?.toString(),
-    ]);
-
-    final address = _firstNonEmpty([
-      readString([
-        'address',
-        'currentAddress',
-        'selectedAddress',
-        'helperAddress',
-        'profileAddress',
-        'formattedAddress',
-      ]),
-      rawMap['address']?.toString(),
-      rawMap['formattedAddress']?.toString(),
-      rawMap['displayName']?.toString(),
-      rawMap['label']?.toString(),
-    ]);
-
-    final locationLabel = _firstNonEmpty([
-      readString([
-        'locationLabel',
-        'currentLocationLabel',
-        'selectedLocationLabel',
-        'helperLocationLabel',
-        'profileLocationLabel',
-      ]),
-      rawMap['locationLabel']?.toString(),
-      if (district.isNotEmpty && province.isNotEmpty) '$district, $province',
-      if (province.isNotEmpty) province,
-      if (district.isNotEmpty) district,
-      if (address.isNotEmpty) address,
-    ]);
-
-    return {
-      'lat': lat,
-      'lng': lng,
-      'district': district,
-      'province': province,
-      'address': address,
-      'locationLabel': locationLabel,
-    };
   }
 
-  // ---------- load ----------
   Future<void> _load() async {
+    if (!mounted) return;
     setState(() => _loading = true);
+
     try {
       final token = await _getToken();
       if (token == null) throw Exception('กรุณาเข้าสู่ระบบใหม่');
@@ -283,7 +185,6 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
         }
       }
 
-      // เรียง: ล่าสุดก่อน (date desc, start desc)
       items.sort((a, b) {
         final c = b.date.compareTo(a.date);
         if (c != 0) return c;
@@ -314,7 +215,6 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
     _load();
   }
 
-  // ---------- computed ----------
   List<Availability> get _filtered {
     if (_tab == 1) return _items.where(_isOpen).toList();
     if (_tab == 2) return _items.where(_isBooked).toList();
@@ -327,7 +227,6 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
   int get _countBooked => _items.where(_isBooked).length;
   int get _countCancelled => _items.where(_isCancelled).length;
 
-  // ---------- UI pieces ----------
   Color _statusColor(Availability a, ColorScheme cs) {
     if (_isBooked(a)) return Colors.green;
     if (_isCancelled(a)) return Colors.red;
@@ -375,9 +274,6 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
     }
   }
 
-  // ============================================================
-  // ✅ CREATE AVAILABILITY (ประกาศเวลาว่าง)
-  // ============================================================
   String _two(int n) => n.toString().padLeft(2, '0');
   String _fmtTimeOfDay(TimeOfDay t) => '${_two(t.hour)}:${_two(t.minute)}';
 
@@ -387,6 +283,141 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
     final h = int.tryParse(parts[0]) ?? 0;
     final m = int.tryParse(parts[1]) ?? 0;
     return h * 60 + m;
+  }
+
+  InputDecoration _cleanInputDecoration({
+    required String labelText,
+    String? hintText,
+  }) {
+    return InputDecoration(
+      labelText: labelText,
+      hintText: hintText,
+      filled: true,
+      fillColor: Colors.white,
+      isDense: true,
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(14),
+      ),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(14),
+        borderSide: BorderSide(color: Colors.grey.shade300),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(14),
+        borderSide: BorderSide(color: Colors.purple.shade400, width: 1.4),
+      ),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+    );
+  }
+
+  Widget _locationBanner({
+    required BuildContext context,
+    required AppLocation? location,
+    required bool useSavedLocation,
+    required VoidCallback onUseSaved,
+    required VoidCallback onUpdateLocation,
+  }) {
+    final hasLoc = _hasUsableAppLocation(location);
+
+    if (!hasLoc) {
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Colors.orange.shade50,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: Colors.orange.shade200),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'ยังไม่พบพิกัดที่บันทึกไว้',
+              style: TextStyle(
+                color: Colors.orange.shade900,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'กรุณาตั้งพิกัดก่อนประกาศเวลาว่าง เพื่อให้คลินิกเห็นระยะทางจากตำแหน่งของคุณ',
+              style: TextStyle(
+                color: Colors.orange.shade900,
+              ),
+            ),
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: onUpdateLocation,
+                icon: const Icon(Icons.place_outlined),
+                label: const Text('ตั้งพิกัดตอนนี้'),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: useSavedLocation
+            ? Colors.green.shade50
+            : Colors.grey.shade50,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: useSavedLocation
+              ? Colors.green.shade200
+              : Colors.grey.shade300,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            useSavedLocation ? 'จะใช้พิกัดนี้ในการประกาศ' : 'พบพิกัดที่บันทึกไว้',
+            style: TextStyle(
+              color: useSavedLocation
+                  ? Colors.green.shade900
+                  : Colors.grey.shade900,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            _locationSummary(location!),
+            style: TextStyle(
+              color: useSavedLocation
+                  ? Colors.green.shade900
+                  : Colors.grey.shade800,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: onUpdateLocation,
+                  icon: const Icon(Icons.edit_location_alt_outlined),
+                  label: const Text('อัปเดตพิกัดใหม่'),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: onUseSaved,
+                  icon: const Icon(Icons.check_circle_outline),
+                  label: const Text('ใช้พิกัดเดิม'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _createAvailability() async {
@@ -399,172 +430,290 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
     final roleCtrl = TextEditingController();
     final noteCtrl = TextEditingController();
 
-    Future<void> pickDate(StateSetter setD) async {
-      final now = DateTime.now();
-      final d = await showDatePicker(
-        context: context,
-        initialDate: now,
-        firstDate: DateTime(now.year - 1, 1, 1),
-        lastDate: DateTime(now.year + 3, 12, 31),
-      );
-      if (d == null) return;
-      setD(() => pickedDate = d);
-    }
-
-    Future<void> pickStart(StateSetter setD) async {
-      final t = await showTimePicker(
-        context: context,
-        initialTime: pickedStart ?? const TimeOfDay(hour: 9, minute: 0),
-      );
-      if (t == null) return;
-      setD(() => pickedStart = t);
-    }
-
-    Future<void> pickEnd(StateSetter setD) async {
-      final t = await showTimePicker(
-        context: context,
-        initialTime: pickedEnd ?? const TimeOfDay(hour: 10, minute: 0),
-      );
-      if (t == null) return;
-      setD(() => pickedEnd = t);
-    }
+    AppLocation? helperLocation = await _loadHelperLocation();
+    bool useSavedLocation = _hasUsableAppLocation(helperLocation);
 
     final ok = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
       showDragHandle: true,
+      useSafeArea: true,
+      backgroundColor: Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
       ),
       builder: (ctx) {
-        return StatefulBuilder(
-          builder: (ctx, setD) {
-            final dateText = pickedDate == null
-                ? 'เลือกวันที่'
-                : '${pickedDate!.year}-${_two(pickedDate!.month)}-${_two(pickedDate!.day)}';
+        Future<void> pickDate(StateSetter setD) async {
+          FocusScope.of(ctx).unfocus();
 
-            final startText =
-                pickedStart == null ? 'เวลาเริ่ม' : _fmtTimeOfDay(pickedStart!);
-            final endText =
-                pickedEnd == null ? 'เวลาจบ' : _fmtTimeOfDay(pickedEnd!);
+          final now = DateTime.now();
+          final d = await showDatePicker(
+            context: ctx,
+            initialDate: pickedDate ?? now,
+            firstDate: DateTime(now.year - 1, 1, 1),
+            lastDate: DateTime(now.year + 3, 12, 31),
+          );
 
-            final bottom = MediaQuery.of(ctx).viewInsets.bottom;
+          if (!ctx.mounted) return;
+          if (d == null) return;
+          setD(() => pickedDate = d);
+        }
 
-            return Padding(
-              padding: EdgeInsets.fromLTRB(16, 8, 16, 16 + bottom),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'ประกาศเวลาว่าง',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
-                  ),
-                  const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: OutlinedButton.icon(
-                          onPressed: () => pickDate(setD),
-                          icon: const Icon(Icons.calendar_month),
-                          label: Text(dateText),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 10),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: OutlinedButton.icon(
-                          onPressed: () => pickStart(setD),
-                          icon: const Icon(Icons.schedule),
-                          label: Text(startText),
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: OutlinedButton.icon(
-                          onPressed: () => pickEnd(setD),
-                          icon: const Icon(Icons.schedule),
-                          label: Text(endText),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: roleCtrl,
-                    textInputAction: TextInputAction.next,
-                    decoration: const InputDecoration(
-                      labelText: 'ตำแหน่ง (ไม่บังคับ)',
-                      hintText: 'เช่น ผู้ช่วย / Assistant',
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  TextField(
-                    controller: noteCtrl,
-                    maxLines: 3,
-                    decoration: const InputDecoration(
-                      labelText: 'หมายเหตุ (ไม่บังคับ)',
-                      hintText: 'เช่น ว่างเฉพาะงานใกล้บ้าน / ขอพักกลางวัน 1 ชม.',
-                    ),
-                  ),
-                  const SizedBox(height: 14),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: OutlinedButton(
-                          onPressed: () => Navigator.pop(ctx, false),
-                          child: const Text('ยกเลิก'),
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: ElevatedButton.icon(
-                          onPressed: () {
-                            if (pickedDate == null ||
-                                pickedStart == null ||
-                                pickedEnd == null) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text('กรุณาเลือกวันที่/เวลาให้ครบ'),
-                                ),
-                              );
-                              return;
-                            }
+        Future<void> pickStart(StateSetter setD) async {
+          FocusScope.of(ctx).unfocus();
 
-                            final start = _fmtTimeOfDay(pickedStart!);
-                            final end = _fmtTimeOfDay(pickedEnd!);
-                            if (_timeToMin(end) <= _timeToMin(start)) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text('เวลาจบต้องมากกว่าเวลาเริ่ม'),
-                                ),
-                              );
-                              return;
-                            }
+          final t = await showTimePicker(
+            context: ctx,
+            initialTime: pickedStart ?? const TimeOfDay(hour: 9, minute: 0),
+          );
 
-                            Navigator.pop(ctx, true);
-                          },
-                          icon: const Icon(Icons.check),
-                          label: const Text('ประกาศ'),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    'Tip: หลังประกาศ คลินิกสามารถเห็นและจองเวลาว่างของคุณได้',
-                    style: TextStyle(
-                      color: cs.onSurface.withOpacity(0.6),
-                      fontSize: 12,
-                    ),
-                  ),
-                ],
+          if (!ctx.mounted) return;
+          if (t == null) return;
+          setD(() => pickedStart = t);
+        }
+
+        Future<void> pickEnd(StateSetter setD) async {
+          FocusScope.of(ctx).unfocus();
+
+          final t = await showTimePicker(
+            context: ctx,
+            initialTime: pickedEnd ?? const TimeOfDay(hour: 10, minute: 0),
+          );
+
+          if (!ctx.mounted) return;
+          if (t == null) return;
+          setD(() => pickedEnd = t);
+        }
+
+        Future<void> updateLocation(StateSetter setD) async {
+          FocusScope.of(ctx).unfocus();
+
+          await Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => const HelperLocationSettingsScreen(),
+            ),
+          );
+
+          final reloaded = await _loadHelperLocation();
+          if (!ctx.mounted) return;
+
+          setD(() {
+            helperLocation = reloaded;
+            useSavedLocation = _hasUsableAppLocation(reloaded);
+          });
+        }
+
+        return Theme(
+          data: Theme.of(ctx).copyWith(
+            inputDecorationTheme: InputDecorationTheme(
+              filled: true,
+              fillColor: Colors.white,
+              isDense: true,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(14),
               ),
-            );
-          },
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(14),
+                borderSide: BorderSide(color: Colors.grey.shade300),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(14),
+                borderSide:
+                    BorderSide(color: Colors.purple.shade400, width: 1.4),
+              ),
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+            ),
+          ),
+          child: StatefulBuilder(
+            builder: (ctx, setD) {
+              final dateText = pickedDate == null
+                  ? 'เลือกวันที่'
+                  : '${pickedDate!.year}-${_two(pickedDate!.month)}-${_two(pickedDate!.day)}';
+
+              final startText = pickedStart == null
+                  ? 'เวลาเริ่ม'
+                  : _fmtTimeOfDay(pickedStart!);
+              final endText =
+                  pickedEnd == null ? 'เวลาจบ' : _fmtTimeOfDay(pickedEnd!);
+
+              final bottom = MediaQuery.of(ctx).viewInsets.bottom;
+
+              return AnimatedPadding(
+                duration: const Duration(milliseconds: 180),
+                curve: Curves.easeOut,
+                padding: EdgeInsets.only(bottom: bottom),
+                child: SafeArea(
+                  top: false,
+                  child: SingleChildScrollView(
+                    keyboardDismissBehavior:
+                        ScrollViewKeyboardDismissBehavior.onDrag,
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'ประกาศเวลาว่าง',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        _locationBanner(
+                          context: ctx,
+                          location: helperLocation,
+                          useSavedLocation: useSavedLocation,
+                          onUseSaved: () {
+                            setD(() {
+                              useSavedLocation = true;
+                            });
+                          },
+                          onUpdateLocation: () => updateLocation(setD),
+                        ),
+                        const SizedBox(height: 12),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                onPressed: () => pickDate(setD),
+                                icon: const Icon(Icons.calendar_month),
+                                label: Text(dateText),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 10),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                onPressed: () => pickStart(setD),
+                                icon: const Icon(Icons.schedule),
+                                label: Text(startText),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                onPressed: () => pickEnd(setD),
+                                icon: const Icon(Icons.schedule),
+                                label: Text(endText),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        TextField(
+                          controller: roleCtrl,
+                          textInputAction: TextInputAction.next,
+                          autofillHints: const [],
+                          decoration: _cleanInputDecoration(
+                            labelText: 'ตำแหน่ง (ไม่บังคับ)',
+                            hintText: 'เช่น ผู้ช่วย / Assistant',
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        TextField(
+                          controller: noteCtrl,
+                          maxLines: 3,
+                          textInputAction: TextInputAction.done,
+                          autofillHints: const [],
+                          decoration: _cleanInputDecoration(
+                            labelText: 'หมายเหตุ (ไม่บังคับ)',
+                            hintText:
+                                'เช่น ว่างเฉพาะงานใกล้บ้าน / ขอพักกลางวัน 1 ชม.',
+                          ),
+                        ),
+                        const SizedBox(height: 14),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: OutlinedButton(
+                                onPressed: () {
+                                  FocusScope.of(ctx).unfocus();
+                                  Navigator.pop(ctx, false);
+                                },
+                                child: const Text('ยกเลิก'),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: ElevatedButton.icon(
+                                onPressed: () {
+                                  FocusScope.of(ctx).unfocus();
+
+                                  if (!_hasUsableAppLocation(helperLocation) ||
+                                      !useSavedLocation) {
+                                    if (mounted) {
+                                      ScaffoldMessenger.of(context)
+                                          .showSnackBar(
+                                        const SnackBar(
+                                          content: Text(
+                                            'กรุณาเลือกหรือบันทึกพิกัดก่อนประกาศเวลาว่าง',
+                                          ),
+                                        ),
+                                      );
+                                    }
+                                    return;
+                                  }
+
+                                  if (pickedDate == null ||
+                                      pickedStart == null ||
+                                      pickedEnd == null) {
+                                    if (mounted) {
+                                      ScaffoldMessenger.of(context)
+                                          .showSnackBar(
+                                        const SnackBar(
+                                          content:
+                                              Text('กรุณาเลือกวันที่/เวลาให้ครบ'),
+                                        ),
+                                      );
+                                    }
+                                    return;
+                                  }
+
+                                  final start = _fmtTimeOfDay(pickedStart!);
+                                  final end = _fmtTimeOfDay(pickedEnd!);
+                                  if (_timeToMin(end) <= _timeToMin(start)) {
+                                    if (mounted) {
+                                      ScaffoldMessenger.of(context)
+                                          .showSnackBar(
+                                        const SnackBar(
+                                          content: Text(
+                                            'เวลาจบต้องมากกว่าเวลาเริ่ม',
+                                          ),
+                                        ),
+                                      );
+                                    }
+                                    return;
+                                  }
+
+                                  Navigator.pop(ctx, true);
+                                },
+                                icon: const Icon(Icons.check),
+                                label: const Text('ประกาศ'),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Tip: หลังประกาศ คลินิกสามารถเห็นและจองเวลาว่างของคุณได้',
+                          style: TextStyle(
+                            color: cs.onSurface.withOpacity(0.6),
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
         );
       },
     );
@@ -580,6 +729,10 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
       if (token == null) throw Exception('กรุณาเข้าสู่ระบบใหม่');
 
       final location = await _readLocationSnapshot();
+
+      if (location['lat'] == null || location['lng'] == null) {
+        throw Exception('กรุณาตั้งพิกัดก่อนประกาศเวลาว่าง');
+      }
 
       final date =
           '${pickedDate!.year}-${_two(pickedDate!.month)}-${_two(pickedDate!.day)}';
@@ -634,13 +787,7 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
 
       if (!mounted) return;
 
-      if (_s(location['locationLabel']).isEmpty &&
-          location['lat'] == null &&
-          location['lng'] == null) {
-        _snack('✅ ประกาศเวลาว่างแล้ว');
-      } else {
-        _snack('✅ ประกาศเวลาว่างแล้ว พร้อมตำแหน่ง');
-      }
+      _snack('✅ ประกาศเวลาว่างแล้ว พร้อมตำแหน่ง');
 
       setState(() => _tab = 0);
       await _load();
@@ -654,13 +801,13 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
     }
   }
 
-  // ---------- build ----------
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final items = _filtered;
 
     return Scaffold(
+      resizeToAvoidBottomInset: true,
       appBar: AppBar(
         title: const Text('ตารางเวลาว่างของฉัน'),
         actions: [
@@ -753,8 +900,12 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
                                 child: Card(
                                   margin: const EdgeInsets.only(bottom: 10),
                                   child: Padding(
-                                    padding:
-                                        const EdgeInsets.fromLTRB(14, 12, 14, 12),
+                                    padding: const EdgeInsets.fromLTRB(
+                                      14,
+                                      12,
+                                      14,
+                                      12,
+                                    ),
                                     child: Column(
                                       crossAxisAlignment:
                                           CrossAxisAlignment.start,
@@ -786,7 +937,10 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
                                                 cs.primary,
                                               ),
                                             if (_s(a.shiftId).isNotEmpty)
-                                              _chip('สร้างงานแล้ว', Colors.green),
+                                              _chip(
+                                                'สร้างงานแล้ว',
+                                                Colors.green,
+                                              ),
                                             if (a.bookedHourlyRate > 0)
                                               _chip(
                                                 'เรท: ${a.bookedHourlyRate} บ./ชม.',
@@ -810,8 +964,8 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
                                           Text(
                                             'หมายเหตุของฉัน: ${_s(a.note)}',
                                             style: TextStyle(
-                                              color:
-                                                  cs.onSurface.withOpacity(0.7),
+                                              color: cs.onSurface
+                                                  .withOpacity(0.7),
                                             ),
                                           ),
                                         ],
@@ -820,8 +974,8 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
                                           Text(
                                             'หมายเหตุจากคลินิก: ${_s(a.bookedNote)}',
                                             style: TextStyle(
-                                              color:
-                                                  cs.onSurface.withOpacity(0.7),
+                                              color: cs.onSurface
+                                                  .withOpacity(0.7),
                                             ),
                                           ),
                                         ],
@@ -835,7 +989,8 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
                                             icon: const Icon(
                                               Icons.chevron_right_rounded,
                                             ),
-                                            label: const Text('ดูรายละเอียด'),
+                                            label:
+                                                const Text('ดูรายละเอียด'),
                                           ),
                                         ),
                                       ],

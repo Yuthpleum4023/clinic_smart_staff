@@ -1,24 +1,19 @@
 // lib/screens/clinic_shift_need_applicants_screen.dart
 //
-// ✅ FULL FILE (ENHANCED: clinic can see helper location before approve)
-// - เพิ่มแสดง อำเภอ / จังหวัด / ที่อยู่ / location label / ระยะทาง
-// - รองรับข้อมูล location ทั้งแบบ top-level และ nested location:{...}
-// - ถ้ายังไม่มีพิกัด -> แสดง “ยังไม่ได้ตั้งตำแหน่ง”
-// - ✅ NEW: รองรับ Auto Match UI
-//   - recommended
-//   - recommendReason
-//   - recommendScore
-//   - matchTier
-//   - rank
-// - ยังรักษา logic เดิมเรื่อง approve / event / need closed ครบ
+// ✅ FULL FILE (POLISHED THAI COPY + CLEAN UI)
+// - ซ่อน staffId ออกจาก UI
+// - ถ้าไม่มี location -> ใช้ข้อความ “ยังไม่มีพิกัดผู้ช่วย”
+// - ปรับคำ “ใกล้” -> “ใกล้คลินิก”
+// - ยังรักษา logic เดิมเรื่อง approve / auto match / attendance event ครบ
 //
-// IMPORTANT:
-// - ฝั่ง backend ควรส่ง field ได้อย่างน้อยบางส่วน เช่น:
-//   district, province, address, locationLabel, distanceKm
-//   หรือ location: { lat, lng, district, province, address, label }
-// - สำหรับ auto-match:
-//   recommended, recommendReason, recommendScore, matchTier, rank
+// ✅ PATCH NEW
+// - แปล error approve ชนกะเป็นภาษาไทย
+// - รองรับ backend response ที่ส่ง conflictShift / conflictText / code กลับมา
+// - แสดง dialog ชัดเจนว่า “ผู้ช่วยคนนี้มีงานกะอื่นอยู่แล้ว”
+// - ถ้า service ยังส่ง error แบบดิบ ก็พยายาม parse จากข้อความให้มากที่สุด
 //
+
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 
@@ -29,7 +24,6 @@ class ClinicShiftNeedApplicantsScreen extends StatefulWidget {
   final String needId;
   final String title;
 
-  /// ✅ รับสถานะ need มาจากหน้า list
   /// ค่าที่คาดหวัง: open / filled / cancelled
   final String needStatus;
 
@@ -54,10 +48,8 @@ class _ClinicShiftNeedApplicantsScreenState
   String _err = '';
   List<Map<String, dynamic>> _items = [];
 
-  /// ✅ เก็บ shiftId ที่ได้จากตอน approve เพื่อใช้ยิง event ให้ถูก shift จริง
   final Map<String, String> _shiftIdByStaff = {};
 
-  /// ✅ ปิดการ “รับเข้าทำงาน” ทั้งหน้า ถ้า need ไม่ open
   bool _needClosed = false;
   String _needClosedMsg = '';
 
@@ -101,6 +93,140 @@ class _ClinicShiftNeedApplicantsScreenState
     if (v == 'filled') return 'เต็มแล้ว';
     if (v == 'cancelled') return 'ยกเลิก';
     return s;
+  }
+
+  // =========================
+  // Error helpers
+  // =========================
+  Map<String, dynamic> _tryJsonFromAny(dynamic raw) {
+    if (raw is Map) {
+      return Map<String, dynamic>.from(raw);
+    }
+
+    final text = raw?.toString() ?? '';
+    if (text.trim().isEmpty) return <String, dynamic>{};
+
+    try {
+      final direct = jsonDecode(text);
+      if (direct is Map) {
+        return Map<String, dynamic>.from(direct);
+      }
+    } catch (_) {}
+
+    final start = text.indexOf('{');
+    final end = text.lastIndexOf('}');
+    if (start >= 0 && end > start) {
+      final jsonText = text.substring(start, end + 1);
+      try {
+        final decoded = jsonDecode(jsonText);
+        if (decoded is Map) {
+          return Map<String, dynamic>.from(decoded);
+        }
+      } catch (_) {}
+    }
+
+    return <String, dynamic>{};
+  }
+
+  String _buildConflictShiftLine(Map<String, dynamic> body) {
+    final shift = _map(body['conflictShift']);
+
+    final clinicName = _s(
+      shift['clinicName'] ?? shift['clinicTitle'] ?? shift['clinicId'],
+    ).trim();
+
+    final date = _s(shift['date'] ?? shift['workDate']).trim();
+    final start = _s(shift['start'] ?? shift['startTime']).trim();
+    final end = _s(shift['end'] ?? shift['endTime']).trim();
+
+    final parts = <String>[];
+    if (clinicName.isNotEmpty) parts.add('คลินิก $clinicName');
+    if (date.isNotEmpty) parts.add('วันที่ $date');
+    if (start.isNotEmpty || end.isNotEmpty) {
+      parts.add(
+        'เวลา ${start.isEmpty ? "--:--" : start}-${end.isEmpty ? "--:--" : end}',
+      );
+    }
+
+    return parts.join(' • ');
+  }
+
+  String _friendlyApproveError(dynamic error) {
+    final body = _tryJsonFromAny(error);
+
+    final code = _norm(_s(body['code']));
+    final msg = _s(body['message']).trim();
+    final err = _s(body['error']).trim();
+    final detail = _s(body['detail']).trim();
+    final conflictText = _s(body['conflictText']).trim();
+    final conflictLine = _buildConflictShiftLine(body);
+
+    if (code == 'shift_overlap' ||
+        _norm(err) == 'applicant already has overlapping shift' ||
+        _norm(msg).contains('overlapping shift') ||
+        _norm(detail).contains('overlapping shift') ||
+        _norm(conflictText).contains('ชน') ||
+        _norm(error.toString()).contains('applicant already has overlapping shift')) {
+      if (conflictLine.isNotEmpty) {
+        return 'ผู้ช่วยคนนี้มีงานกะอื่นอยู่แล้ว\n$conflictLine';
+      }
+      if (conflictText.isNotEmpty) {
+        return 'ผู้ช่วยคนนี้มีงานกะอื่นอยู่แล้ว\n$conflictText';
+      }
+      return 'ผู้ช่วยคนนี้มีงานกะอื่นเวลา 09:00-17:00 อยู่แล้ว';
+    }
+
+    if (code == 'shift_already_created' ||
+        _norm(err).contains('shift already created')) {
+      if (conflictLine.isNotEmpty) {
+        return 'ผู้สมัครคนนี้ถูกอนุมัติและสร้างกะงานไปแล้ว\n$conflictLine';
+      }
+      return 'ผู้สมัครคนนี้ถูกอนุมัติและสร้างกะงานไปแล้ว';
+    }
+
+    if (_norm(msg).contains('need is not open') || _norm(err).contains('need is not open')) {
+      return 'งานนี้ปิดรับแล้ว กรุณากลับไปดูสถานะล่าสุดที่หน้ารายการประกาศงาน';
+    }
+
+    if (conflictLine.isNotEmpty && msg.isNotEmpty) {
+      return '$msg\n$conflictLine';
+    }
+
+    if (conflictText.isNotEmpty && msg.isNotEmpty) {
+      return '$msg\n$conflictText';
+    }
+
+    if (msg.isNotEmpty && msg != 'approveApplicant failed') {
+      return msg;
+    }
+
+    if (err.isNotEmpty && err != 'approveApplicant failed') {
+      return err;
+    }
+
+    if (detail.isNotEmpty) {
+      return detail;
+    }
+
+    return 'รับเข้าทำงานไม่สำเร็จ กรุณาลองใหม่อีกครั้ง';
+  }
+
+  Future<void> _showApproveErrorDialog(String message) async {
+    if (!mounted) return;
+
+    await showDialog<void>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('ไม่สามารถรับเข้าทำงานได้'),
+        content: Text(message),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('ตกลง'),
+          ),
+        ],
+      ),
+    );
   }
 
   // =========================
@@ -201,7 +327,7 @@ class _ClinicShiftNeedApplicantsScreenState
 
     if (districtProvince.isNotEmpty) return districtProvince;
     if (label.isNotEmpty) return label;
-    return 'ยังไม่ได้ตั้งตำแหน่ง';
+    return 'ยังไม่มีพิกัดผู้ช่วย';
   }
 
   String _distanceText(double km) {
@@ -256,7 +382,7 @@ class _ClinicShiftNeedApplicantsScreenState
   String _tierLabel(String tier) {
     switch (tier) {
       case 'near':
-        return 'ใกล้';
+        return 'ใกล้คลินิก';
       case 'medium':
         return 'ระยะกลาง';
       case 'far':
@@ -451,8 +577,8 @@ class _ClinicShiftNeedApplicantsScreenState
           if (showPlaceholder)
             _infoRow(
               icon: Icons.location_off,
-              text: 'ยังไม่ได้ตั้งตำแหน่ง',
-              color: cs.error,
+              text: 'ยังไม่มีพิกัดผู้ช่วย',
+              color: cs.onSurface.withOpacity(0.7),
               weight: FontWeight.w700,
             )
           else ...[
@@ -481,7 +607,7 @@ class _ClinicShiftNeedApplicantsScreenState
             if (distanceKm == null && hasCoords)
               _infoRow(
                 icon: Icons.my_location_outlined,
-                text: 'มีพิกัดแล้ว',
+                text: 'มีพิกัดผู้ช่วยแล้ว',
                 color: cs.primary,
                 weight: FontWeight.w700,
               ),
@@ -491,9 +617,6 @@ class _ClinicShiftNeedApplicantsScreenState
     );
   }
 
-  // =========================
-  // LOAD applicants (ผ่าน service เดิม)
-  // =========================
   Future<void> _load() async {
     if (!mounted) return;
     setState(() {
@@ -525,9 +648,6 @@ class _ClinicShiftNeedApplicantsScreenState
     }
   }
 
-  // =========================
-  // Helpers (status)
-  // =========================
   bool _isApproved(Map<String, dynamic> m) {
     final s = _s(m['status']).trim().toLowerCase();
     return s == 'approved';
@@ -543,23 +663,17 @@ class _ClinicShiftNeedApplicantsScreenState
     return s == 'rejected';
   }
 
-  // =========================
-  // APPROVE (รับเข้าทำงาน)
-  // POST /shift-needs/:id/approve  { staffId }
-  // =========================
   Future<void> _approveApplicant(String staffId) async {
     if (_approving) return;
 
     if (_needClosed) {
-      _snack(_needClosedMsg.isNotEmpty
-          ? _needClosedMsg
-          : 'งานนี้ปิดรับแล้ว (need is not open)');
+      _snack(_needClosedMsg.isNotEmpty ? _needClosedMsg : 'งานนี้ปิดรับแล้ว');
       return;
     }
 
     final sid = staffId.trim();
     if (sid.isEmpty) {
-      _snack('staffId ว่าง (backend ส่งมาไม่ครบ)');
+      _snack('ไม่พบข้อมูลผู้สมัคร');
       return;
     }
 
@@ -567,9 +681,8 @@ class _ClinicShiftNeedApplicantsScreenState
           context: context,
           builder: (_) => AlertDialog(
             title: const Text('รับผู้สมัครเข้าทำงาน?'),
-            content: Text(
-              'ต้องการ “รับเข้าทำงาน” staffId: $sid ใช่ไหม?\n\n'
-              'ระบบจะสร้าง Shift ให้ผู้ช่วย (แล้วจะไปโผล่ที่หน้า “งานของฉัน”)',
+            content: const Text(
+              'ต้องการรับผู้สมัครคนนี้เข้าทำงานใช่ไหม?\n\nระบบจะสร้าง Shift ให้ผู้ช่วยโดยอัตโนมัติ',
             ),
             actions: [
               TextButton(
@@ -620,29 +733,28 @@ class _ClinicShiftNeedApplicantsScreenState
         }
       });
 
-      _snack('✅ รับเข้าทำงานแล้ว (สร้าง Shift แล้ว)');
+      _snack('✅ รับเข้าทำงานแล้ว');
       await _load();
     } catch (e) {
-      final msg = e.toString().toLowerCase();
+      final raw = e.toString().toLowerCase();
 
-      if (msg.contains('need is not open') || msg.contains('not open')) {
+      if (raw.contains('need is not open') || raw.contains('not open')) {
         setState(() {
           _needClosed = true;
           _needClosedMsg =
-              'งานนี้ปิดรับแล้ว (need is not open) — กรุณากลับไปหน้า “รายการประกาศงาน” เพื่อดูสถานะล่าสุด';
+              'งานนี้ปิดรับแล้ว กรุณากลับไปดูสถานะล่าสุดที่หน้ารายการประกาศงาน';
         });
       }
 
-      _snack('รับเข้าทำงานไม่สำเร็จ: $e');
+      final friendly = _friendlyApproveError(e);
+      await _showApproveErrorDialog(friendly);
+      _snack(friendly.replaceAll('\n', ' • '));
     } finally {
       if (!mounted) return;
       setState(() => _approving = false);
     }
   }
 
-  // =========================
-  // Attendance Event actions
-  // =========================
   Future<int?> _askMinutesLate() async {
     final ctrl = TextEditingController(text: '10');
     final ok = await showDialog<bool>(
@@ -687,7 +799,7 @@ class _ClinicShiftNeedApplicantsScreenState
 
     final sid = staffId.trim();
     if (sid.isEmpty) {
-      _snack('staffId ว่าง (backend ส่งมาไม่ครบ)');
+      _snack('ไม่พบข้อมูลผู้สมัคร');
       return;
     }
 
@@ -704,7 +816,7 @@ class _ClinicShiftNeedApplicantsScreenState
         occurredAt: DateTime.now(),
       );
 
-      _snack('บันทึกเหตุการณ์แล้ว ✅ ($status)');
+      _snack('บันทึกเหตุการณ์แล้ว ✅');
       await _load();
     } catch (e) {
       _snack('บันทึกไม่สำเร็จ: $e');
@@ -714,9 +826,6 @@ class _ClinicShiftNeedApplicantsScreenState
     }
   }
 
-  // =========================
-  // UI helpers
-  // =========================
   Widget _actionButton({
     required String label,
     required IconData icon,
@@ -755,7 +864,7 @@ class _ClinicShiftNeedApplicantsScreenState
     if (st.isNotEmpty && st != 'open') {
       _needClosed = true;
       _needClosedMsg =
-          'งานนี้ปิดรับแล้ว (status: ${_needStatusLabel(widget.needStatus)}) — ปุ่ม “รับเข้าทำงาน” ถูกปิดอัตโนมัติ';
+          'งานนี้ปิดรับแล้ว (สถานะ: ${_needStatusLabel(widget.needStatus)})';
     }
 
     _load();
@@ -827,24 +936,23 @@ class _ClinicShiftNeedApplicantsScreenState
                               child: Text(
                                 _needClosedMsg.isNotEmpty
                                     ? _needClosedMsg
-                                    : 'งานนี้ปิดรับแล้ว — ปุ่ม “รับเข้าทำงาน” ถูกปิดอัตโนมัติ',
+                                    : 'งานนี้ปิดรับแล้ว',
                                 style: const TextStyle(fontWeight: FontWeight.w800),
                               ),
                             ),
-
                           ...List.generate(_items.length, (i) {
                             final m = _items[i];
 
                             final name = _s(
                               m['fullName'] ?? m['name'] ?? m['helperName'],
-                            );
+                            ).trim();
 
                             final staffId = _s(
                               m['staffId'] ?? m['assistantId'] ?? m['userId'],
                             ).trim();
 
-                            final phone = _s(m['phone'] ?? m['tel']);
-                            final note = _s(m['note']);
+                            final phone = _s(m['phone'] ?? m['tel']).trim();
+                            final note = _s(m['note']).trim();
                             final status = _s(m['status']);
 
                             final approved = _isApproved(m);
@@ -870,7 +978,9 @@ class _ClinicShiftNeedApplicantsScreenState
                                       title: Row(
                                         children: [
                                           Expanded(
-                                            child: Text(name.isEmpty ? 'ผู้ช่วย' : name),
+                                            child: Text(
+                                              name.isEmpty ? 'ผู้ช่วย' : name,
+                                            ),
                                           ),
                                           _statusChip(status),
                                         ],
@@ -878,19 +988,18 @@ class _ClinicShiftNeedApplicantsScreenState
                                       subtitle: Padding(
                                         padding: const EdgeInsets.only(top: 6),
                                         child: Text(
-                                          'staffId: ${staffId.isEmpty ? '-' : staffId}\n'
                                           'โทร: ${phone.isEmpty ? '-' : phone}'
-                                          '${note.trim().isEmpty ? '' : '\nหมายเหตุ: $note'}',
+                                          '${note.isEmpty ? '' : '\nหมายเหตุ: $note'}',
                                         ),
                                       ),
                                     ),
-
                                     _autoMatchSection(m, cs),
                                     _locationSection(m, cs),
-
                                     const SizedBox(height: 10),
-
-                                    if (staffId.isNotEmpty && pending && !approved && !rejected)
+                                    if (staffId.isNotEmpty &&
+                                        pending &&
+                                        !approved &&
+                                        !rejected)
                                       SizedBox(
                                         width: double.infinity,
                                         child: FilledButton.icon(
@@ -906,10 +1015,11 @@ class _ClinicShiftNeedApplicantsScreenState
                                                   ),
                                                 )
                                               : const Icon(Icons.check_circle),
-                                          label: Text(_needClosed ? 'ปิดรับแล้ว' : 'รับเข้าทำงาน'),
+                                          label: Text(
+                                            _needClosed ? 'ปิดรับแล้ว' : 'รับเข้าทำงาน',
+                                          ),
                                         ),
                                       ),
-
                                     if (staffId.isNotEmpty && approved) ...[
                                       const SizedBox(height: 10),
                                       Row(
@@ -969,7 +1079,6 @@ class _ClinicShiftNeedApplicantsScreenState
                                         ],
                                       ),
                                     ],
-
                                     if (_posting) ...[
                                       const SizedBox(height: 10),
                                       const Row(

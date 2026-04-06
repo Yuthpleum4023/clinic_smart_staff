@@ -12,9 +12,13 @@ import 'package:clinic_smart_staff/screens/trustscore_lookup_screen.dart';
 import 'package:clinic_smart_staff/screens/clinic/clinic_availabilities_screen.dart';
 import 'package:clinic_smart_staff/screens/clinic/clinic_attendance_approval_screen.dart';
 import 'package:clinic_smart_staff/screens/clinic/clinic_attendance_settings_screen.dart';
+import 'package:clinic_smart_staff/screens/clinic/clinic_location_settings_screen.dart';
 
 // ✅ Attendance dashboard
 import 'package:clinic_smart_staff/screens/admin/attendance_dashboard_screen.dart';
+
+// ✅ Social security receipts
+import 'package:clinic_smart_staff/screens/social_security_receipt_list_screen.dart';
 
 // Auth / services
 import 'package:clinic_smart_staff/services/auth_service.dart';
@@ -123,6 +127,24 @@ class _ClinicHomeScreenState extends State<ClinicHomeScreen> {
     );
   }
 
+  Future<void> _openSocialSecurityReceipts() async {
+    final cid = _clinicId.trim();
+
+    if (cid.isEmpty) {
+      _snack('ไม่พบข้อมูลคลินิก กรุณาออกจากระบบแล้วเข้าสู่ระบบใหม่');
+      return;
+    }
+
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => SocialSecurityReceiptListScreen(
+          clinicId: cid,
+        ),
+      ),
+    );
+  }
+
   Future<void> _openShiftNeed() async {
     final cid = _clinicId.trim();
 
@@ -169,6 +191,17 @@ class _ClinicHomeScreenState extends State<ClinicHomeScreen> {
       context,
       MaterialPageRoute(
         builder: (_) => const ClinicAttendanceSettingsScreen(),
+      ),
+    );
+  }
+
+  Future<void> _openClinicLocationSettings() async {
+    print('TAP -> OPEN_CLINIC_LOCATION_SETTINGS');
+
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => const ClinicLocationSettingsScreen(),
       ),
     );
   }
@@ -367,8 +400,8 @@ class _ClinicHomeScreenState extends State<ClinicHomeScreen> {
           ),
           _menuCard(
             icon: Icons.event_available,
-            title: 'ตารางเวลาว่างของผู้ช่วย',
-            subtitle: 'ดูช่วงเวลาว่างของผู้ช่วยที่พร้อมรับงาน',
+            title: 'เลือกผู้ช่วย',
+            subtitle: 'ดูผู้ช่วยที่พร้อมรับงานและเลือกผู้ช่วยที่เหมาะสม',
             onTap: _openAvailabilities,
           ),
           _menuCard(
@@ -387,7 +420,7 @@ class _ClinicHomeScreenState extends State<ClinicHomeScreen> {
             icon: Icons.schedule_outlined,
             title: 'ตั้งค่ากฎเวลาเข้า-ออกงาน',
             subtitle:
-                'กำหนดเวลาเข้า-ออกงานปกติและกติกา attendance ของแต่ละวัน',
+                'กำหนดเวลาเข้า-ออกงานปกติและกติกาการลงเวลาในแต่ละวัน',
             onTap: _openAttendanceSettings,
           ),
           _menuCard(
@@ -411,9 +444,22 @@ class _ClinicHomeScreenState extends State<ClinicHomeScreen> {
             subtitle: 'จัดการข้อมูลเงินเดือนและดูผลคำนวณเบื้องต้น',
             onTap: _openLocalPayroll,
           ),
+          _menuCard(
+            icon: Icons.receipt_long_outlined,
+            title: 'ใบเสร็จประกันสังคม',
+            subtitle: 'สร้าง ดูรายการ เปิด PDF และยกเลิกใบเสร็จ',
+            onTap: _openSocialSecurityReceipts,
+          ),
           const SizedBox(height: 20),
           _sectionTitle('การตั้งค่าคลินิก'),
           const SizedBox(height: 8),
+          _menuCard(
+            icon: Icons.location_on_outlined,
+            title: 'ตั้งพิกัดคลินิก',
+            subtitle:
+                'กำหนดพิกัดอ้างอิงของคลินิกสำหรับตรวจสอบระยะก่อนสแกนเข้างาน',
+            onTap: _openClinicLocationSettings,
+          ),
           _menuCard(
             icon: Icons.admin_panel_settings,
             title: 'ตั้งค่าผู้ดูแลคลินิก',

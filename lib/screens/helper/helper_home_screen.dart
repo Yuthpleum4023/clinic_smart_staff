@@ -1,17 +1,17 @@
 // lib/screens/helper/helper_home_screen.dart
 //
-// ✅ FULL FILE — HelperHomeScreen (clinic_smart_staff) — PRODUCTION FRIENDLY
+// ✅ FULL FILE — HelperHomeScreen (clinic_smart_staff) — CLEAN SINGLE OPEN-NEEDS FLOW
 // ----------------------------------------------------
 // ✅ GOAL: ผู้ช่วย “ประกาศเวลาว่าง” ได้ครบ flow
 // - เมนูแรก: ผู้ช่วยประกาศเวลาว่าง -> เข้า HelperAvailabilityScreen
-// - เมนูสอง: งานว่าง (ตลาดงาน)
+// - เมนูสอง: งานว่าง (ตลาดงาน) -> เข้า HelperOpenNeedsScreen เพียงหน้าเดียว
 // - เมนูสาม: งานของฉัน (Shifts + นำทาง)
 // - ✅ NEW: ตั้งพิกัดของฉัน -> เข้า HelperLocationSettingsScreen
 //
-// ✅ THIS ROUND FIX:
-// - ✅ ลบ "จุดสแกนนิ้วมือ" ออกจาก HelperHomeScreen ทั้งหมด
-// - ✅ ให้ helper ใช้จุดเช็คอิน/เช็คเอาท์จาก HomeScreen เพียงจุดเดียว
-// - ✅ ลดความซ้ำซ้อนของ flow และกันสถานะ attendance ชนกัน
+// ✅ THIS ROUND CLEANUP:
+// - ✅ ลบ OpenNeedsScreen เก่าที่ซ้ำซ้อนออกจากไฟล์นี้
+// - ✅ ลบ NeedDetailScreen เก่าที่ผูกกับ OpenNeedsScreen ออก
+// - ✅ ให้ทุกจุดที่เข้า “งานว่าง” วิ่งไปหน้า HelperOpenNeedsScreen ตัวเดียว
 //
 // ✅ PRODUCTION CLEAN:
 // - ไม่โชว์ clinicId/userId/staffId ใน UI
@@ -23,26 +23,31 @@
 //
 // ✅ STABILITY PATCH:
 // - กัน setState หลัง dispose
-// - กันกดสมัครซ้ำ / กันเปิด bottomSheet ซ้ำ
-//
-// ✅ PATCH (ตามบั๊กที่ท่านรายงาน):
-// - ✅ สมัครสำเร็จ -> เด้งกลับจากหน้ารายละเอียดอัตโนมัติ
-// - ✅ สมัครสำเร็จ -> refresh list แล้วขึ้น “สมัครแล้ว” ทันที
-// - ✅ กันจอแดงจาก async/context/mounted ให้จบในรอบเดียว
+// - กันกด nav ซ้ำซ้อน
 //
 // ✅ UX PATCH:
-// - ✅ หน้ารายละเอียดงานแสดง “เบอร์โทรคลินิก” ถ้ามี
-// - ✅ เพิ่มปุ่ม “โทรคลินิก” กดโทรออกได้ทันที
-// - ✅ ถ้าไม่มีเบอร์ จะซ่อน section โทรอัตโนมัติ
-// - ✅ หน้า list งานว่าง แสดงเบอร์โทรคลินิกแบบไม่รก UI
-// - ✅ หน้า “งานของฉัน” เพิ่มปุ่มโทรคลินิกข้างปุ่มนำทาง
+// - ✅ หน้ารายละเอียดงานว่างใช้ HelperOpenNeedsScreen ตัวเดียว
+// - ✅ หน้า “งานของฉัน” มีปุ่มโทรคลินิก + นำทาง
+// - ✅ ปรับการ์ดงานของฉันให้อ่านง่ายขึ้น:
+//      - แสดงชื่องาน + ชื่อคลินิกชัดเจน
+//      - แสดงตำแหน่ง/ที่อยู่/ระยะทาง
+//      - แสดงสถานะเป็น badge
+//      - ปุ่มโทร/นำทางมี label
+//      - ลด location/address ซ้ำ
+//      - ✅ แยกหมวด งานวันนี้ / งานที่กำลังจะมาถึง / งานย้อนหลัง
+//      - ✅ เพิ่มปุ่ม ดูรายละเอียด
 //
 // ✅ NEW UX:
 // - ✅ เพิ่มเมนู “ตั้งพิกัดของฉัน” สำหรับผู้ช่วย
-// - ✅ Nearby Job System: แสดงระยะจากคุณ + badge ใกล้คุณ
+// - ✅ ส่ง helperLat/helperLng ไป backend ตอนโหลดงานของฉัน
 //
-
-import 'dart:convert';
+// ✅ DEBUG PATCH (NEW)
+// - ✅ เพิ่ม log ตรวจ helperLat/helperLng จาก SharedPreferences
+// - ✅ เพิ่ม log path/query ที่ส่งไป backend
+// - ✅ เพิ่ม log clinicLat/clinicLng ของแต่ละ shift
+// - ✅ เพิ่ม log distanceKm/distanceText ของแต่ละ shift
+// - ✅ ช่วยไล่ bug ระยะทางเพี้ยน เช่น 0,0 / lat-lng สลับ / range ผิด
+//
 
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -52,10 +57,12 @@ import 'package:clinic_smart_staff/screens/auth/auth_gate_screen.dart';
 import 'package:clinic_smart_staff/screens/home/home_screen.dart';
 import 'package:clinic_smart_staff/screens/helper_availability_screen.dart';
 import 'package:clinic_smart_staff/screens/helper/helper_location_settings_screen.dart';
+import 'package:clinic_smart_staff/screens/helper_open_needs_screen.dart';
 
 import 'package:clinic_smart_staff/api/api_config.dart';
 import 'package:clinic_smart_staff/api/api_client.dart';
 import 'package:clinic_smart_staff/services/auth_storage.dart';
+import 'package:clinic_smart_staff/services/location_engine.dart';
 import 'package:clinic_smart_staff/services/settings_service.dart';
 
 class HelperHomeScreen extends StatefulWidget {
@@ -78,15 +85,12 @@ class HelperHomeScreen extends StatefulWidget {
 
 class _HelperHomeScreenState extends State<HelperHomeScreen> {
   bool _loading = true;
-
-  /// ✅ เก็บ error ภายใน แต่ไม่โชว์ tech ใน UI
   String _err = '';
 
   String _clinicId = '';
   String _userId = '';
   String _staffId = '';
 
-  // context keys (ตาม AuthGate ที่เราเซฟไว้)
   static const _kRole = 'app_role';
   static const _kClinicId = 'app_clinic_id';
   static const _kUserId = 'app_user_id';
@@ -94,20 +98,13 @@ class _HelperHomeScreenState extends State<HelperHomeScreen> {
 
   final _authClient = ApiClient(baseUrl: ApiConfig.authBaseUrl);
 
-  // ✅ payroll client (shifts/shift-needs)
-  final _payroll = ApiClient(baseUrl: ApiConfig.payrollBaseUrl);
-
-  // ✅ STABILITY PATCH
   bool _disposed = false;
   void _safeSetState(VoidCallback fn) {
     if (!mounted || _disposed) return;
     setState(fn);
   }
 
-  // ✅ BottomNav state (งานของฉัน / งานว่าง / ออกจากระบบ)
   int _navIndex = 0;
-
-  // ✅ กันกด nav ซ้ำซ้อน
   bool _navBusy = false;
 
   @override
@@ -125,7 +122,6 @@ class _HelperHomeScreenState extends State<HelperHomeScreen> {
     super.dispose();
   }
 
-  // -------------------- auth helpers --------------------
   Future<void> _clearAllAuth() async {
     await AuthStorage.clearToken();
 
@@ -223,7 +219,6 @@ class _HelperHomeScreenState extends State<HelperHomeScreen> {
     await prefs.setString(_kStaffId, staffId);
   }
 
-  // -------------------- Navigation --------------------
   Future<void> _logout() async {
     await _clearAllAuth();
     if (!mounted) return;
@@ -264,7 +259,9 @@ class _HelperHomeScreenState extends State<HelperHomeScreen> {
     debugPrint('[UI] tap: bottom/open needs');
     await Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => OpenNeedsScreen(staffId: _staffId)),
+      MaterialPageRoute(
+        builder: (_) => const HelperOpenNeedsScreen(),
+      ),
     );
   }
 
@@ -295,7 +292,6 @@ class _HelperHomeScreenState extends State<HelperHomeScreen> {
     }
   }
 
-  // -------------------- UI --------------------
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
@@ -442,9 +438,6 @@ class _HelperHomeScreenState extends State<HelperHomeScreen> {
   }
 }
 
-// ============================================================
-// UI components
-// ============================================================
 class _MenuCard extends StatelessWidget {
   final String title;
   final String subtitle;
@@ -551,769 +544,6 @@ class _ErrorCard extends StatelessWidget {
   }
 }
 
-// ============================================================
-// Screen 1: Open Needs (งานว่าง)
-// ============================================================
-class OpenNeedsScreen extends StatefulWidget {
-  final String staffId;
-  const OpenNeedsScreen({super.key, required this.staffId});
-
-  @override
-  State<OpenNeedsScreen> createState() => _OpenNeedsScreenState();
-}
-
-class _OpenNeedsScreenState extends State<OpenNeedsScreen> {
-  final _payroll = ApiClient(baseUrl: ApiConfig.payrollBaseUrl);
-
-  bool _loading = true;
-  String _err = '';
-  List<Map<String, dynamic>> _items = [];
-
-  static const _kApplyPhone = 'helper_apply_phone';
-
-  bool _busyApply = false;
-  String _busyNeedId = '';
-
-  bool _disposed = false;
-  void _safeSetState(VoidCallback fn) {
-    if (!mounted || _disposed) return;
-    setState(fn);
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  @override
-  void dispose() {
-    _disposed = true;
-    super.dispose();
-  }
-
-  List<Map<String, dynamic>> _extractItems(dynamic resAny) {
-    if (resAny is Map) {
-      final items1 = resAny['items'];
-      if (items1 is List) {
-        return items1
-            .whereType<Map>()
-            .map((x) => x.cast<String, dynamic>())
-            .toList();
-      }
-      final data = resAny['data'];
-      if (data is List) {
-        return data
-            .whereType<Map>()
-            .map((x) => x.cast<String, dynamic>())
-            .toList();
-      }
-      if (data is Map && data['items'] is List) {
-        final items2 = data['items'] as List;
-        return items2
-            .whereType<Map>()
-            .map((x) => x.cast<String, dynamic>())
-            .toList();
-      }
-    }
-    return [];
-  }
-
-  String _s(dynamic v) => (v ?? '').toString().trim();
-
-  String _clinicPhone(Map<String, dynamic> n) {
-    final c = n['clinic'];
-    if (c is Map) {
-      final phone = (c['phone'] ?? c['clinicPhone'] ?? '').toString().trim();
-      if (phone.isNotEmpty) return phone;
-    }
-    final phone =
-        (n['clinicPhone'] ?? n['clinic_phone'] ?? '').toString().trim();
-    if (phone.isNotEmpty) return phone;
-    return '';
-  }
-
-  String _clinicName(Map<String, dynamic> n) {
-    final c = n['clinic'];
-    if (c is Map) {
-      final name = (c['name'] ?? c['clinicName'] ?? '').toString().trim();
-      if (name.isNotEmpty) return name;
-    }
-    final name = (n['clinicName'] ?? n['clinic_name'] ?? '').toString().trim();
-    if (name.isNotEmpty) return name;
-    return 'คลินิก';
-  }
-
-  String _locationLabel(Map<String, dynamic> n) {
-    final c = n['clinic'];
-    if (c is Map) {
-      final label =
-          (c['locationLabel'] ?? c['clinicLocationLabel'] ?? '').toString().trim();
-      if (label.isNotEmpty) return label;
-    }
-
-    final direct = _s(
-      n['clinicLocationLabel'] ?? n['locationLabel'],
-    );
-    if (direct.isNotEmpty) return direct;
-
-    final district = _s(n['clinicDistrict'] ?? n['district']);
-    final province = _s(n['clinicProvince'] ?? n['province']);
-    final address = _s(n['clinicAddress'] ?? n['address']);
-
-    if (district.isNotEmpty && province.isNotEmpty) {
-      return '$district, $province';
-    }
-    if (province.isNotEmpty) return province;
-    if (district.isNotEmpty) return district;
-    if (address.isNotEmpty) return address;
-    return '';
-  }
-
-  String _distanceText(Map<String, dynamic> n) {
-    final t = _s(
-      n['distanceText'] ?? n['distance_text'],
-    );
-    if (t.isNotEmpty) return t;
-
-    final raw = n['distanceKm'] ?? n['distance_km'];
-    if (raw == null) return '';
-    final x = double.tryParse(raw.toString());
-    if (x == null || x <= 0) return '';
-    if (x < 10) return '${x.toStringAsFixed(1)} กม.';
-    return '${x.round()} กม.';
-  }
-
-  bool _isNearby(Map<String, dynamic> n) {
-    final v = n['isNearby'];
-    if (v is bool) return v;
-    return _s(v).toLowerCase() == 'true';
-  }
-
-  String _nearbyLabel(Map<String, dynamic> n) {
-    final t = _s(n['nearbyLabel']);
-    if (t.isNotEmpty) return t;
-    return _isNearby(n) ? 'ใกล้คุณ' : '';
-  }
-
-  Future<void> _load() async {
-    _safeSetState(() {
-      _loading = true;
-      _err = '';
-    });
-
-    try {
-      final helperLoc = await SettingService.loadHelperLocation();
-
-      final query = <String, String>{};
-      if (helperLoc != null) {
-        query['helperLat'] = helperLoc.lat.toString();
-        query['helperLng'] = helperLoc.lng.toString();
-      }
-
-      dynamic res;
-      try {
-        res = await _payroll.get(
-          '/shift-needs/open',
-          auth: true,
-          query: query.isEmpty ? null : query,
-        );
-      } catch (_) {
-        res = await _payroll.get(
-          '/api/shift-needs/open',
-          auth: true,
-          query: query.isEmpty ? null : query,
-        );
-      }
-
-      _safeSetState(() {
-        _items = _extractItems(res);
-        _loading = false;
-      });
-    } catch (e) {
-      _safeSetState(() {
-        _err = e.toString();
-        _loading = false;
-      });
-    }
-  }
-
-  bool _applied(Map<String, dynamic> it) {
-    final v = it['_applied'];
-    if (v is bool) return v;
-    return _s(v).toLowerCase() == 'true';
-  }
-
-  String _digitsOnly(String s) => s.replaceAll(RegExp(r'[^0-9]'), '');
-
-  bool _isValidPhone(String p) {
-    final d = _digitsOnly(p);
-    return d.length >= 9 && d.length <= 10;
-  }
-
-  Future<String?> _askPhone() async {
-    final prefs = await SharedPreferences.getInstance();
-    final saved = (prefs.getString(_kApplyPhone) ?? '').trim();
-    final ctrl = TextEditingController(text: saved);
-
-    try {
-      final result = await showModalBottomSheet<String>(
-        context: context,
-        isScrollControlled: true,
-        showDragHandle: true,
-        builder: (ctx) {
-          String err = '';
-          return StatefulBuilder(
-            builder: (ctx2, setLocal) {
-              return SafeArea(
-                child: Padding(
-                  padding: EdgeInsets.only(
-                    left: 16,
-                    right: 16,
-                    top: 12,
-                    bottom: MediaQuery.of(ctx2).viewInsets.bottom + 16,
-                  ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'กรอกเบอร์โทรเพื่อสมัครงาน',
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w900,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      const Text(
-                        'กรอกเบอร์โทร 9–10 หลัก เพื่อให้คลินิกสามารถติดต่อกลับได้',
-                      ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: ctrl,
-                        keyboardType: TextInputType.phone,
-                        decoration: InputDecoration(
-                          labelText: 'เบอร์โทร (9–10 หลัก)',
-                          border: const OutlineInputBorder(),
-                          errorText: err.isEmpty ? null : err,
-                        ),
-                        onSubmitted: (_) async {
-                          final d = _digitsOnly(ctrl.text.trim());
-                          if (!_isValidPhone(d)) {
-                            setLocal(
-                              () => err = 'เบอร์โทรต้องเป็นตัวเลข 9–10 หลัก',
-                            );
-                            return;
-                          }
-                          await prefs.setString(_kApplyPhone, d);
-                          if (!ctx2.mounted) return;
-                          Navigator.pop(ctx2, d);
-                        },
-                      ),
-                      const SizedBox(height: 12),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: OutlinedButton(
-                              onPressed: () => Navigator.pop(ctx2, null),
-                              child: const Text('ยกเลิก'),
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: ElevatedButton(
-                              onPressed: () async {
-                                final d = _digitsOnly(ctrl.text.trim());
-                                if (!_isValidPhone(d)) {
-                                  setLocal(
-                                    () => err = 'เบอร์โทรต้องเป็นตัวเลข 9–10 หลัก',
-                                  );
-                                  return;
-                                }
-                                await prefs.setString(_kApplyPhone, d);
-                                if (!ctx2.mounted) return;
-                                Navigator.pop(ctx2, d);
-                              },
-                              child: const Text('ยืนยัน'),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-              );
-            },
-          );
-        },
-      );
-
-      if (!mounted) return null;
-      return result;
-    } finally {
-      ctrl.dispose();
-    }
-  }
-
-  Future<void> _apply(String needId) async {
-    if (_busyApply) return;
-    if (needId.trim().isEmpty) return;
-
-    final phone = await _askPhone();
-    if (!mounted) return;
-
-    if (phone == null || phone.trim().isEmpty) return;
-
-    _safeSetState(() {
-      _busyApply = true;
-      _busyNeedId = needId;
-    });
-
-    try {
-      dynamic res;
-      try {
-        res = await _payroll.post(
-          '/shift-needs/$needId/apply',
-          auth: true,
-          body: {'phone': phone},
-        );
-      } catch (_) {
-        res = await _payroll.post(
-          '/api/shift-needs/$needId/apply',
-          auth: true,
-          body: {'phone': phone},
-        );
-      }
-
-      if (!mounted) return;
-
-      bool ok = true;
-      if (res is Map && res['ok'] is bool) ok = res['ok'] as bool;
-      if (!ok) {
-        throw Exception(
-          (res is Map ? (res['message'] ?? res['error']) : null) ??
-              'apply failed',
-        );
-      }
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('✅ สมัครงานสำเร็จ')),
-      );
-
-      await _load();
-    } catch (_) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('สมัครงานไม่สำเร็จ กรุณาลองใหม่')),
-      );
-      rethrow;
-    } finally {
-      if (!mounted) return;
-      _safeSetState(() {
-        _busyApply = false;
-        _busyNeedId = '';
-      });
-    }
-  }
-
-  Widget _nearbyChip(Map<String, dynamic> it) {
-    final label = _nearbyLabel(it);
-    if (label.isEmpty) return const SizedBox.shrink();
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(
-        color: Colors.green.shade50,
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: Colors.green.shade200),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(
-          color: Colors.green.shade800,
-          fontWeight: FontWeight.w800,
-          fontSize: 12,
-        ),
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('งานว่างที่เปิดรับ'),
-        actions: [
-          IconButton(onPressed: _load, icon: const Icon(Icons.refresh)),
-        ],
-      ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : RefreshIndicator(
-              onRefresh: _load,
-              child: _err.isNotEmpty
-                  ? ListView(
-                      padding: const EdgeInsets.all(16),
-                      children: [
-                        _ErrorCard(
-                          err: _err,
-                          onRetry: _load,
-                          onHome: () => Navigator.pop(context),
-                        ),
-                      ],
-                    )
-                  : _items.isEmpty
-                      ? ListView(
-                          padding: const EdgeInsets.all(16),
-                          children: const [
-                            SizedBox(height: 30),
-                            Center(child: Text('ยังไม่มีงานว่างในขณะนี้')),
-                          ],
-                        )
-                      : ListView.separated(
-                          padding: const EdgeInsets.all(16),
-                          itemCount: _items.length,
-                          separatorBuilder: (_, __) => const SizedBox(height: 10),
-                          itemBuilder: (_, i) {
-                            final it = _items[i];
-
-                            final title = _s(it['title']).isNotEmpty
-                                ? _s(it['title'])
-                                : 'ต้องการผู้ช่วย';
-                            final clinicName = _clinicName(it);
-                            final date = _s(it['date']);
-                            final start = _s(it['start']);
-                            final end = _s(it['end']);
-                            final rate = it['hourlyRate'];
-                            final clinicPhone = _clinicPhone(it);
-                            final locationLabel = _locationLabel(it);
-                            final distanceText = _distanceText(it);
-
-                            final needId = _s(it['_id']).isNotEmpty
-                                ? _s(it['_id'])
-                                : _s(it['id']);
-
-                            final already = _applied(it);
-                            final busyThis = _busyApply && _busyNeedId == needId;
-
-                            final line1 = [
-                              if (date.isNotEmpty) 'วันที่ $date',
-                              if (start.isNotEmpty || end.isNotEmpty)
-                                'เวลา $start - $end',
-                              if (rate != null) 'ค่าตอบแทน ${_s(rate)} บาท/ชม.',
-                            ].join(' • ');
-
-                            final subtitleLines = <String>[
-                              clinicName,
-                              if (locationLabel.isNotEmpty && distanceText.isNotEmpty)
-                                '📍 $locationLabel • $distanceText จากคุณ'
-                              else if (distanceText.isNotEmpty)
-                                '📍 $distanceText จากคุณ'
-                              else if (locationLabel.isNotEmpty)
-                                '📍 $locationLabel',
-                              if (line1.isNotEmpty) line1,
-                              if (clinicPhone.isNotEmpty) 'โทร $clinicPhone',
-                            ];
-
-                            return Card(
-                              child: Padding(
-                                padding: const EdgeInsets.all(8),
-                                child: ListTile(
-                                  leading: Icon(Icons.work_outline, color: cs.primary),
-                                  title: Row(
-                                    children: [
-                                      Expanded(child: Text(title)),
-                                      const SizedBox(width: 8),
-                                      _nearbyChip(it),
-                                    ],
-                                  ),
-                                  subtitle: Padding(
-                                    padding: const EdgeInsets.only(top: 6),
-                                    child: Text(
-                                      subtitleLines.join('\n'),
-                                    ),
-                                  ),
-                                  isThreeLine: true,
-                                  trailing: already
-                                      ? const Chip(
-                                          label: Text('สมัครแล้ว'),
-                                          visualDensity: VisualDensity.compact,
-                                        )
-                                      : busyThis
-                                          ? const SizedBox(
-                                              width: 18,
-                                              height: 18,
-                                              child: CircularProgressIndicator(
-                                                strokeWidth: 2,
-                                              ),
-                                            )
-                                          : const Icon(Icons.chevron_right),
-                                  onTap: () async {
-                                    if (needId.isEmpty) return;
-
-                                    final didPop = await Navigator.push<bool>(
-                                      context,
-                                      MaterialPageRoute(
-                                        builder: (_) => NeedDetailScreen(
-                                          need: it,
-                                          applying: busyThis,
-                                          onApply: (already || _busyApply)
-                                              ? null
-                                              : () => _apply(needId),
-                                        ),
-                                      ),
-                                    );
-
-                                    if (didPop == true && mounted) {
-                                      await _load();
-                                    }
-                                  },
-                                ),
-                              ),
-                            );
-                          },
-                        ),
-            ),
-    );
-  }
-}
-
-class NeedDetailScreen extends StatelessWidget {
-  final Map<String, dynamic> need;
-  final Future<void> Function()? onApply;
-  final bool applying;
-
-  const NeedDetailScreen({
-    super.key,
-    required this.need,
-    this.onApply,
-    this.applying = false,
-  });
-
-  String _s(dynamic v) => (v ?? '').toString().trim();
-
-  bool _asBool(dynamic v) {
-    if (v is bool) return v;
-    final s = (v ?? '').toString().toLowerCase().trim();
-    return s == 'true' || s == '1' || s == 'yes';
-  }
-
-  String _clinicName(Map<String, dynamic> n) {
-    final c = n['clinic'];
-    if (c is Map) {
-      final name = (c['name'] ?? c['clinicName'] ?? '').toString().trim();
-      if (name.isNotEmpty) return name;
-    }
-    final name = (n['clinicName'] ?? n['clinic_name'] ?? '').toString().trim();
-    if (name.isNotEmpty) return name;
-    return 'คลินิก';
-  }
-
-  String _clinicPhone(Map<String, dynamic> n) {
-    final c = n['clinic'];
-    if (c is Map) {
-      final phone = (c['phone'] ?? c['clinicPhone'] ?? '').toString().trim();
-      if (phone.isNotEmpty) return phone;
-    }
-    final phone =
-        (n['clinicPhone'] ?? n['clinic_phone'] ?? '').toString().trim();
-    if (phone.isNotEmpty) return phone;
-    return '';
-  }
-
-  String _clinicAddress(Map<String, dynamic> n) {
-    final c = n['clinic'];
-    if (c is Map) {
-      final address =
-          (c['address'] ?? c['clinicAddress'] ?? '').toString().trim();
-      if (address.isNotEmpty) return address;
-    }
-    final address =
-        (n['clinicAddress'] ?? n['clinic_address'] ?? '').toString().trim();
-    if (address.isNotEmpty) return address;
-    return '';
-  }
-
-  String _locationLabel(Map<String, dynamic> n) {
-    final c = n['clinic'];
-    if (c is Map) {
-      final label =
-          (c['locationLabel'] ?? c['clinicLocationLabel'] ?? '').toString().trim();
-      if (label.isNotEmpty) return label;
-    }
-
-    final direct = _s(n['clinicLocationLabel'] ?? n['locationLabel']);
-    if (direct.isNotEmpty) return direct;
-
-    final district = _s(n['clinicDistrict'] ?? n['district']);
-    final province = _s(n['clinicProvince'] ?? n['province']);
-    final address = _s(n['clinicAddress'] ?? n['address']);
-
-    if (district.isNotEmpty && province.isNotEmpty) {
-      return '$district, $province';
-    }
-    if (province.isNotEmpty) return province;
-    if (district.isNotEmpty) return district;
-    if (address.isNotEmpty) return address;
-    return '';
-  }
-
-  String _distanceText(Map<String, dynamic> n) {
-    final t = _s(n['distanceText'] ?? n['distance_text']);
-    if (t.isNotEmpty) return t;
-
-    final raw = n['distanceKm'] ?? n['distance_km'];
-    if (raw == null) return '';
-    final x = double.tryParse(raw.toString());
-    if (x == null || x <= 0) return '';
-    if (x < 10) return '${x.toStringAsFixed(1)} กม.';
-    return '${x.round()} กม.';
-  }
-
-  Future<void> _callClinic(BuildContext context, String phone) async {
-    final cleanPhone = phone.trim();
-    if (cleanPhone.isEmpty) return;
-
-    final uri = Uri.parse('tel:$cleanPhone');
-
-    try {
-      final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
-      if (!ok && context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('ไม่สามารถเปิดหน้าจอโทรออกได้')),
-        );
-      }
-    } catch (_) {
-      if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('ไม่สามารถเปิดหน้าจอโทรออกได้')),
-      );
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final title =
-        _s(need['title']).isNotEmpty ? _s(need['title']) : 'รายละเอียดงาน';
-    final applied = _asBool(need['_applied']);
-    final clinicName = _clinicName(need);
-    final clinicPhone = _clinicPhone(need);
-    final clinicAddress = _clinicAddress(need);
-    final locationLabel = _locationLabel(need);
-    final distanceText = _distanceText(need);
-    final hasClinicPhone = clinicPhone.isNotEmpty;
-
-    return Scaffold(
-      appBar: AppBar(title: Text(title)),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(14),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    style: const TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  Text('สถานที่ทำงาน: $clinicName'),
-                  if (locationLabel.isNotEmpty) ...[
-                    const SizedBox(height: 4),
-                    Text('พื้นที่: $locationLabel'),
-                  ],
-                  if (distanceText.isNotEmpty) ...[
-                    const SizedBox(height: 4),
-                    Text(
-                      'ระยะจากคุณ: $distanceText',
-                      style: const TextStyle(fontWeight: FontWeight.w700),
-                    ),
-                  ],
-                  if (clinicAddress.isNotEmpty) ...[
-                    const SizedBox(height: 4),
-                    Text('ที่อยู่: $clinicAddress'),
-                  ],
-                  if (hasClinicPhone) ...[
-                    const SizedBox(height: 4),
-                    Text(
-                      'เบอร์โทร: $clinicPhone',
-                      style: const TextStyle(fontWeight: FontWeight.w700),
-                    ),
-                  ],
-                  Text(
-                    'ตำแหน่ง: ${_s(need['role']).isEmpty ? 'ผู้ช่วย' : _s(need['role'])}',
-                  ),
-                  Text(
-                    'วันและเวลา: ${_s(need['date'])}  ${_s(need['start'])}-${_s(need['end'])}',
-                  ),
-                  Text('ค่าตอบแทน: ${_s(need['hourlyRate'])} บาท/ชม.'),
-                  if (_s(need['note']).isNotEmpty) ...[
-                    const SizedBox(height: 8),
-                    Text('หมายเหตุ: ${_s(need['note'])}'),
-                  ],
-                  if (hasClinicPhone) ...[
-                    const SizedBox(height: 14),
-                    SizedBox(
-                      width: double.infinity,
-                      child: OutlinedButton.icon(
-                        onPressed: () => _callClinic(context, clinicPhone),
-                        icon: const Icon(Icons.phone),
-                        label: const Text('โทรหาคลินิก'),
-                      ),
-                    ),
-                  ],
-                  const SizedBox(height: 14),
-                  if (applied)
-                    const Text(
-                      '✅ คุณสมัครงานนี้แล้ว',
-                      style: TextStyle(fontWeight: FontWeight.w700),
-                    )
-                  else if (onApply != null)
-                    SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton.icon(
-                        onPressed: applying
-                            ? null
-                            : () async {
-                                try {
-                                  await onApply!.call();
-                                  if (context.mounted) {
-                                    Navigator.pop(context, true);
-                                  }
-                                } catch (_) {}
-                              },
-                        icon: applying
-                            ? const SizedBox(
-                                width: 18,
-                                height: 18,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : const Icon(Icons.send),
-                        label: Text(applying ? 'กำลังสมัคร...' : 'สมัครงานนี้'),
-                      ),
-                    ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// ============================================================
-// Screen 2: My Shifts
-// ============================================================
 class MyShiftsScreen extends StatefulWidget {
   final String staffId;
   const MyShiftsScreen({super.key, required this.staffId});
@@ -1334,6 +564,22 @@ class _MyShiftsScreenState extends State<MyShiftsScreen> {
     if (!mounted || _disposed) return;
     setState(fn);
   }
+
+  static const List<String> _helperLatKeys = [
+    'helper_location_lat',
+    'helperLat',
+    'helper_lat',
+    'user_location_lat',
+  ];
+
+  static const List<String> _helperLngKeys = [
+    'helper_location_lng',
+    'helperLng',
+    'helper_lng',
+    'user_location_lng',
+  ];
+
+  AppLocation? _helperLocation;
 
   @override
   void initState() {
@@ -1374,7 +620,7 @@ class _MyShiftsScreenState extends State<MyShiftsScreen> {
     return [];
   }
 
-  String _s(dynamic v) => (v ?? '').toString();
+  String _s(dynamic v) => (v ?? '').toString().trim();
 
   double? _toD(dynamic v) {
     if (v == null) return null;
@@ -1382,6 +628,340 @@ class _MyShiftsScreenState extends State<MyShiftsScreen> {
     final s = v.toString().trim();
     if (s.isEmpty) return null;
     return double.tryParse(s);
+  }
+
+  String _fmtD(double? v, {int fixed = 6}) {
+    if (v == null) return 'null';
+    return v.toStringAsFixed(fixed);
+  }
+
+  bool _isValidLat(double? v) => v != null && v >= -90 && v <= 90;
+  bool _isValidLng(double? v) => v != null && v >= -180 && v <= 180;
+
+  void _logBlock(String title, List<String> lines) {
+    debugPrint('========== $title ==========');
+    for (final line in lines) {
+      debugPrint(line);
+    }
+    debugPrint('================================');
+  }
+
+  double? _readDoubleFromPrefs(
+    SharedPreferences prefs,
+    List<String> keys,
+  ) {
+    for (final k in keys) {
+      final obj = prefs.get(k);
+
+      if (obj is double) return obj;
+      if (obj is int) return obj.toDouble();
+      if (obj is String) {
+        final x = double.tryParse(obj.trim());
+        if (x != null) return x;
+      }
+    }
+    return null;
+  }
+
+  String _readDoubleSourceFromPrefs(
+    SharedPreferences prefs,
+    List<String> keys,
+  ) {
+    for (final k in keys) {
+      final obj = prefs.get(k);
+
+      if (obj is double || obj is int) return '$k(${obj.runtimeType})';
+      if (obj is String) {
+        final x = double.tryParse(obj.trim());
+        if (x != null) return '$k(String)';
+      }
+    }
+    return 'not_found';
+  }
+
+  Future<Map<String, double>?> _loadHelperLocationQuery() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    final lat = _readDoubleFromPrefs(prefs, _helperLatKeys);
+    final lng = _readDoubleFromPrefs(prefs, _helperLngKeys);
+
+    final latSource = _readDoubleSourceFromPrefs(prefs, _helperLatKeys);
+    final lngSource = _readDoubleSourceFromPrefs(prefs, _helperLngKeys);
+
+    _logBlock('HELPER LOCATION FROM PREFS', [
+      'staffId           : ${widget.staffId}',
+      'helperLat keys    : ${_helperLatKeys.join(", ")}',
+      'helperLng keys    : ${_helperLngKeys.join(", ")}',
+      'helperLat source  : $latSource',
+      'helperLng source  : $lngSource',
+      'helperLat value   : ${_fmtD(lat)}',
+      'helperLng value   : ${_fmtD(lng)}',
+    ]);
+
+    if (lat == null || lng == null) {
+      _logBlock('HELPER LOCATION INVALID', [
+        'reason            : helperLat/helperLng is null',
+      ]);
+      return null;
+    }
+    if (lat == 0 || lng == 0) {
+      _logBlock('HELPER LOCATION INVALID', [
+        'reason            : helperLat/helperLng is zero',
+        'helperLat         : ${_fmtD(lat)}',
+        'helperLng         : ${_fmtD(lng)}',
+      ]);
+      return null;
+    }
+    if (!_isValidLat(lat)) {
+      _logBlock('HELPER LOCATION INVALID', [
+        'reason            : helperLat out of range (-90..90)',
+        'helperLat         : ${_fmtD(lat)}',
+      ]);
+      return null;
+    }
+    if (!_isValidLng(lng)) {
+      _logBlock('HELPER LOCATION INVALID', [
+        'reason            : helperLng out of range (-180..180)',
+        'helperLng         : ${_fmtD(lng)}',
+      ]);
+      return null;
+    }
+
+    _logBlock('HELPER LOCATION READY', [
+      'helperLat         : ${_fmtD(lat)}',
+      'helperLng         : ${_fmtD(lng)}',
+    ]);
+
+    return {
+      'helperLat': lat,
+      'helperLng': lng,
+    };
+  }
+
+  Future<String> _buildShiftsPathWithHelperLocation(String basePath) async {
+    final loc = await _loadHelperLocationQuery();
+    if (loc == null) {
+      _logBlock('SHIFTS REQUEST PATH', [
+        'basePath          : $basePath',
+        'query             : (no helperLat/helperLng)',
+        'finalPath         : $basePath',
+      ]);
+      return basePath;
+    }
+
+    final uri = Uri(
+      path: basePath,
+      queryParameters: {
+        'helperLat': loc['helperLat']!.toString(),
+        'helperLng': loc['helperLng']!.toString(),
+      },
+    );
+
+    _logBlock('SHIFTS REQUEST PATH', [
+      'basePath          : $basePath',
+      'helperLat         : ${_fmtD(loc['helperLat'])}',
+      'helperLng         : ${_fmtD(loc['helperLng'])}',
+      'finalPath         : ${uri.toString()}',
+    ]);
+
+    return uri.toString();
+  }
+
+  double? _extractClinicLat(Map<String, dynamic> it) {
+    return LocationEngine.extractClinicLocation(it)?.lat;
+  }
+
+  double? _extractClinicLng(Map<String, dynamic> it) {
+    return LocationEngine.extractClinicLocation(it)?.lng;
+  }
+
+  String _locationLabelFromShift(Map<String, dynamic> it) {
+    final clinicLoc = LocationEngine.extractClinicLocation(it);
+    if (clinicLoc != null) {
+      if (_s(clinicLoc.label).isNotEmpty) return _s(clinicLoc.label);
+      if (_s(clinicLoc.district).isNotEmpty &&
+          _s(clinicLoc.province).isNotEmpty) {
+        return '${clinicLoc.district}, ${clinicLoc.province}';
+      }
+      if (_s(clinicLoc.province).isNotEmpty) return clinicLoc.province;
+      if (_s(clinicLoc.district).isNotEmpty) return clinicLoc.district;
+      if (_s(clinicLoc.address).isNotEmpty) return clinicLoc.address;
+    }
+
+    final clinic = it['clinic'];
+    if (clinic is Map) {
+      final label1 = _s(clinic['locationLabel'] ?? clinic['clinicLocationLabel']);
+      if (label1.isNotEmpty) return label1;
+    }
+
+    final direct = _s(it['clinicLocationLabel'] ?? it['locationLabel']);
+    if (direct.isNotEmpty) return direct;
+
+    final district = _s(it['clinicDistrict'] ?? it['district']);
+    final province = _s(it['clinicProvince'] ?? it['province']);
+
+    if (district.isNotEmpty && province.isNotEmpty) {
+      return '$district, $province';
+    }
+    if (province.isNotEmpty) return province;
+    if (district.isNotEmpty) return district;
+
+    return '';
+  }
+
+  String _distanceTextFromShift(Map<String, dynamic> it) {
+    final explicit = _s(it['distanceText'] ?? it['distance_text']);
+    if (explicit.isNotEmpty) return explicit;
+
+    final computed = LocationEngine.resolveDistanceTextForItem(
+      it,
+      _helperLocation,
+    );
+    if (computed.isNotEmpty) return computed;
+
+    final raw = it['distanceKm'] ?? it['distance_km'];
+    if (raw == null) return '';
+
+    final x = double.tryParse(raw.toString());
+    if (x == null || x <= 0) return '';
+    return LocationEngine.formatDistanceKm(x);
+  }
+
+  void _debugShiftDistanceItem(
+    int index,
+    Map<String, dynamic> it, {
+    Map<String, double>? helperLoc,
+  }) {
+    final jobTitle = _jobTitleFromShift(it);
+    final clinicName = _clinicNameFromShift(it);
+    final clinicLat = _extractClinicLat(it);
+    final clinicLng = _extractClinicLng(it);
+    final distanceKm = _toD(it['distanceKm'] ?? it['distance_km']);
+    final distanceText = _distanceTextFromShift(it);
+    final locationLabel = _locationLabelFromShift(it);
+    final clinicAddress = _clinicAddressFromShift(it);
+
+    final warnings = <String>[];
+    if (clinicLat == null || clinicLng == null) {
+      warnings.add('clinicLat/clinicLng is null');
+    }
+    if (clinicLat == 0 || clinicLng == 0) {
+      warnings.add('clinicLat/clinicLng is zero');
+    }
+    if (clinicLat != null && !_isValidLat(clinicLat)) {
+      warnings.add('clinicLat out of range');
+    }
+    if (clinicLng != null && !_isValidLng(clinicLng)) {
+      warnings.add('clinicLng out of range');
+    }
+    if (distanceKm != null && distanceKm > 3000) {
+      warnings.add('distanceKm looks too large for domestic trip');
+    }
+
+    _logBlock('SHIFT DISTANCE DEBUG #$index', [
+      'jobTitle           : $jobTitle',
+      'clinicName         : $clinicName',
+      'helperLat          : ${_fmtD(helperLoc?['helperLat'])}',
+      'helperLng          : ${_fmtD(helperLoc?['helperLng'])}',
+      'clinicLat          : ${_fmtD(clinicLat)}',
+      'clinicLng          : ${_fmtD(clinicLng)}',
+      'distanceKm         : ${distanceKm?.toStringAsFixed(3) ?? "null"}',
+      'distanceText       : ${distanceText.isEmpty ? "(empty)" : distanceText}',
+      'locationLabel      : ${locationLabel.isEmpty ? "(empty)" : locationLabel}',
+      'clinicAddress      : ${clinicAddress.isEmpty ? "(empty)" : clinicAddress}',
+      'status             : ${_s(it['status'])}',
+      'warnings           : ${warnings.isEmpty ? "(none)" : warnings.join(" | ")}',
+      'raw distance source: '
+          'distanceKm=${it['distanceKm']} / distance_km=${it['distance_km']} / '
+          'distanceText=${it['distanceText']} / distance_text=${it['distance_text']}',
+    ]);
+  }
+
+  DateTime? _dateOnlyFromShift(Map<String, dynamic> it) {
+    final date = _s(it['date']);
+    if (date.isEmpty) return null;
+    try {
+      final dt = DateTime.parse(date);
+      return DateTime(dt.year, dt.month, dt.day);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  int _minutesFromTime(String raw) {
+    final s = raw.trim();
+    if (s.isEmpty || !s.contains(':')) return 0;
+    final parts = s.split(':');
+    if (parts.length < 2) return 0;
+    final h = int.tryParse(parts[0]) ?? 0;
+    final m = int.tryParse(parts[1]) ?? 0;
+    return h * 60 + m;
+  }
+
+  String _sectionKey(Map<String, dynamic> it) {
+    final today = DateTime.now();
+    final nowDate = DateTime(today.year, today.month, today.day);
+    final dt = _dateOnlyFromShift(it);
+    if (dt == null) return 'upcoming';
+
+    if (dt.year == nowDate.year &&
+        dt.month == nowDate.month &&
+        dt.day == nowDate.day) {
+      return 'today';
+    }
+    if (dt.isAfter(nowDate)) return 'upcoming';
+    return 'past';
+  }
+
+  int _compareUpcoming(Map<String, dynamic> a, Map<String, dynamic> b) {
+    final da = _dateOnlyFromShift(a);
+    final db = _dateOnlyFromShift(b);
+
+    if (da != null && db != null) {
+      final c = da.compareTo(db);
+      if (c != 0) return c;
+    } else if (da != null) {
+      return -1;
+    } else if (db != null) {
+      return 1;
+    }
+
+    final ta = _minutesFromTime(_s(a['start']));
+    final tb = _minutesFromTime(_s(b['start']));
+    if (ta != tb) return ta.compareTo(tb);
+
+    final distA = _toD(a['distanceKm'] ?? a['distance_km']);
+    final distB = _toD(b['distanceKm'] ?? b['distance_km']);
+    if (distA != null && distB != null) {
+      final c = distA.compareTo(distB);
+      if (c != 0) return c;
+    } else if (distA != null) {
+      return -1;
+    } else if (distB != null) {
+      return 1;
+    }
+
+    return _s(a['createdAt']).compareTo(_s(b['createdAt']));
+  }
+
+  int _comparePast(Map<String, dynamic> a, Map<String, dynamic> b) {
+    final da = _dateOnlyFromShift(a);
+    final db = _dateOnlyFromShift(b);
+
+    if (da != null && db != null) {
+      final c = db.compareTo(da);
+      if (c != 0) return c;
+    } else if (da != null) {
+      return -1;
+    } else if (db != null) {
+      return 1;
+    }
+
+    final ta = _minutesFromTime(_s(a['start']));
+    final tb = _minutesFromTime(_s(b['start']));
+    if (ta != tb) return tb.compareTo(ta);
+
+    return _s(b['createdAt']).compareTo(_s(a['createdAt']));
   }
 
   String _statusThai(String raw) {
@@ -1398,17 +978,91 @@ class _MyShiftsScreenState extends State<MyShiftsScreen> {
     return raw;
   }
 
+  Color _statusBgColor(String raw) {
+    final s = raw.trim().toLowerCase();
+    if (s == 'completed') return Colors.green.shade50;
+    if (s == 'cancelled') return Colors.red.shade50;
+    if (s == 'pending') return Colors.orange.shade50;
+    if (s == 'approved' || s == 'scheduled') return Colors.blue.shade50;
+    return Colors.grey.shade100;
+  }
+
+  Color _statusTextColor(String raw) {
+    final s = raw.trim().toLowerCase();
+    if (s == 'completed') return Colors.green.shade800;
+    if (s == 'cancelled') return Colors.red.shade800;
+    if (s == 'pending') return Colors.orange.shade800;
+    if (s == 'approved' || s == 'scheduled') return Colors.blue.shade800;
+    return Colors.grey.shade800;
+  }
+
+  String _clinicNameFromShift(Map<String, dynamic> it) {
+    final name1 = _s(it['clinicName'] ?? it['clinic_name']);
+    if (name1.isNotEmpty) return name1;
+
+    final clinic = it['clinic'];
+    if (clinic is Map) {
+      final name2 = _s(clinic['name'] ?? clinic['clinicName']);
+      if (name2.isNotEmpty) return name2;
+    }
+
+    return 'คลินิก';
+  }
+
   String _clinicPhoneFromShift(Map<String, dynamic> it) {
-    final phone1 = _s(it['clinicPhone'] ?? it['clinic_phone']).trim();
+    final phone1 = _s(it['clinicPhone'] ?? it['clinic_phone']);
     if (phone1.isNotEmpty) return phone1;
 
     final clinic = it['clinic'];
     if (clinic is Map) {
-      final phone2 = _s(clinic['phone'] ?? clinic['clinicPhone']).trim();
+      final phone2 = _s(clinic['phone'] ?? clinic['clinicPhone']);
       if (phone2.isNotEmpty) return phone2;
     }
 
     return '';
+  }
+
+  String _clinicAddressFromShift(Map<String, dynamic> it) {
+    final address1 = _s(it['clinicAddress'] ?? it['clinic_address']);
+    if (address1.isNotEmpty) return address1;
+
+    final clinic = it['clinic'];
+    if (clinic is Map) {
+      final address2 = _s(clinic['address'] ?? clinic['clinicAddress']);
+      if (address2.isNotEmpty) return address2;
+    }
+
+    return '';
+  }
+
+  String _jobTitleFromShift(Map<String, dynamic> it) {
+    final title = _s(it['title']);
+    if (title.isNotEmpty) return title;
+
+    final role = _s(it['role']);
+    if (role.isNotEmpty) return role;
+
+    final note = _s(it['note']);
+    if (note.isNotEmpty && note.length <= 40) return note;
+
+    return 'งานที่ได้รับ';
+  }
+
+  String _notePreview(Map<String, dynamic> it) {
+    final note = _s(it['note']);
+    final title = _s(it['title']);
+    final role = _s(it['role']);
+
+    if (note.isEmpty) return '';
+    if (note == title || note == role) return '';
+    return note;
+  }
+
+  bool _looksSameLocation(String a, String b) {
+    final aa = a.replaceAll(' ', '').trim();
+    final bb = b.replaceAll(' ', '').trim();
+    if (aa.isEmpty || bb.isEmpty) return false;
+    return aa == bb || aa.contains(bb) || bb.contains(aa);
   }
 
   Future<void> _callClinicFromShift(Map<String, dynamic> it) async {
@@ -1442,7 +1096,7 @@ class _MyShiftsScreenState extends State<MyShiftsScreen> {
   String _pickTravelMode(Map<String, dynamic> it) {
     final raw = _s(
       it['travelMode'] ?? it['transportMode'] ?? it['mode'],
-    ).trim();
+    );
     final m = raw.toLowerCase();
     if (m == 'w' || m == 'walk' || m == 'walking') return 'walk';
     if (m == 'd' || m == 'drive' || m == 'driving' || m == 'car') {
@@ -1480,31 +1134,18 @@ class _MyShiftsScreenState extends State<MyShiftsScreen> {
   }
 
   Future<void> _openNavFromShift(Map<String, dynamic> it) async {
-    final lat = _toD(
-      it['clinicLat'] ??
-          it['clinic_lat'] ??
-          it['lat'] ??
-          (it['clinicLocation'] is Map
-              ? (it['clinicLocation'] as Map)['lat']
-              : null) ??
-          (it['clinic_location'] is Map
-              ? (it['clinic_location'] as Map)['lat']
-              : null),
-    );
+    final clinicLoc = LocationEngine.extractClinicLocation(it);
 
-    final lng = _toD(
-      it['clinicLng'] ??
-          it['clinic_lng'] ??
-          it['lng'] ??
-          (it['clinicLocation'] is Map
-              ? (it['clinicLocation'] as Map)['lng']
-              : null) ??
-          (it['clinic_location'] is Map
-              ? (it['clinic_location'] as Map)['lng']
-              : null),
-    );
+    _logBlock('OPEN MAP DEBUG', [
+      'jobTitle           : ${_jobTitleFromShift(it)}',
+      'clinicName         : ${_clinicNameFromShift(it)}',
+      'clinicLat          : ${_fmtD(clinicLoc?.lat)}',
+      'clinicLng          : ${_fmtD(clinicLoc?.lng)}',
+      'distanceKm         : ${_toD(it['distanceKm'] ?? it['distance_km'])?.toStringAsFixed(3) ?? "null"}',
+      'distanceText       : ${_distanceTextFromShift(it)}',
+    ]);
 
-    if (lat == null || lng == null || lat == 0 || lng == 0) {
+    if (clinicLoc == null) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('งานนี้ยังไม่มีพิกัดสำหรับนำทาง')),
@@ -1512,6 +1153,8 @@ class _MyShiftsScreenState extends State<MyShiftsScreen> {
       return;
     }
 
+    final lat = clinicLoc.lat;
+    final lng = clinicLoc.lng;
     final mode = _pickTravelMode(it);
 
     final androidNav = Uri.parse(
@@ -1549,6 +1192,19 @@ class _MyShiftsScreenState extends State<MyShiftsScreen> {
     );
   }
 
+  Future<void> _openShiftDetail(Map<String, dynamic> it) async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => MyShiftDetailScreen(
+          shift: it,
+          onCallClinic: () => _callClinicFromShift(it),
+          onOpenMap: () => _openNavFromShift(it),
+        ),
+      ),
+    );
+  }
+
   Future<void> _load() async {
     _safeSetState(() {
       _loading = true;
@@ -1556,11 +1212,24 @@ class _MyShiftsScreenState extends State<MyShiftsScreen> {
     });
 
     try {
+      final helperLocMap = await _loadHelperLocationQuery();
+      final helperLocSaved = await SettingService.loadHelperLocation();
+      _helperLocation = helperLocSaved;
+
+      final shiftsPath = await _buildShiftsPathWithHelperLocation('/shifts');
+      final apiShiftsPath =
+          await _buildShiftsPathWithHelperLocation('/api/shifts');
+
       dynamic res;
+      String usedPath = shiftsPath;
+
       try {
-        res = await _payroll.get('/shifts', auth: true);
-      } catch (_) {
-        res = await _payroll.get('/api/shifts', auth: true);
+        res = await _payroll.get(shiftsPath, auth: true);
+        usedPath = shiftsPath;
+      } catch (e) {
+        debugPrint('[SHIFTS] primary path failed => $e');
+        res = await _payroll.get(apiShiftsPath, auth: true);
+        usedPath = apiShiftsPath;
       }
 
       if (res is Map) {
@@ -1570,11 +1239,25 @@ class _MyShiftsScreenState extends State<MyShiftsScreen> {
         }
       }
 
+      final items = _extractItems(res);
+
+      _logBlock('SHIFTS LOAD RESULT', [
+        'usedPath          : $usedPath',
+        'itemsCount        : ${items.length}',
+        'helperLat         : ${_fmtD(helperLocMap?['helperLat'])}',
+        'helperLng         : ${_fmtD(helperLocMap?['helperLng'])}',
+      ]);
+
+      for (var i = 0; i < items.length; i++) {
+        _debugShiftDistanceItem(i, items[i], helperLoc: helperLocMap);
+      }
+
       _safeSetState(() {
-        _items = _extractItems(res);
+        _items = items;
         _loading = false;
       });
     } catch (e) {
+      debugPrint('[SHIFTS] load error => $e');
       _safeSetState(() {
         _err = e.toString();
         _loading = false;
@@ -1582,10 +1265,308 @@ class _MyShiftsScreenState extends State<MyShiftsScreen> {
     }
   }
 
+  Widget _statusChip(String raw) {
+    final text = _statusThai(raw);
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: _statusBgColor(raw),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: _statusBgColor(raw)),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          color: _statusTextColor(raw),
+          fontWeight: FontWeight.w800,
+          fontSize: 12,
+        ),
+      ),
+    );
+  }
+
+  Widget _metaRow(
+    IconData icon,
+    String text, {
+    Color? color,
+    FontWeight fontWeight = FontWeight.w600,
+  }) {
+    if (text.trim().isEmpty || text.trim() == '-') {
+      return const SizedBox.shrink();
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 18, color: color ?? Colors.grey.shade700),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              text,
+              style: TextStyle(
+                color: color ?? Colors.grey.shade800,
+                fontWeight: fontWeight,
+                fontSize: 14,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _actionButton({
+    required VoidCallback onPressed,
+    required IconData icon,
+    required String label,
+  }) {
+    return Expanded(
+      child: OutlinedButton.icon(
+        onPressed: onPressed,
+        icon: Icon(icon),
+        label: Text(label),
+      ),
+    );
+  }
+
+  Widget _sectionHeader(String title, int count) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10, top: 6),
+      child: Row(
+        children: [
+          Text(
+            title,
+            style: const TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: Colors.purple.shade50,
+              borderRadius: BorderRadius.circular(999),
+              border: Border.all(color: Colors.purple.shade100),
+            ),
+            child: Text(
+              '$count',
+              style: TextStyle(
+                color: Colors.purple.shade700,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildShiftCard(Map<String, dynamic> it) {
+    final jobTitle = _jobTitleFromShift(it);
+    final clinicName = _clinicNameFromShift(it);
+    final clinicPhone = _clinicPhoneFromShift(it);
+    final clinicAddress = _clinicAddressFromShift(it);
+    final locationLabel = _locationLabelFromShift(it);
+    final distanceText = _distanceTextFromShift(it);
+
+    final date = _s(it['date']);
+    final start = _s(it['start']);
+    final end = _s(it['end']);
+    final rate = _s(it['hourlyRate']);
+    final statusRaw = _s(it['status']);
+    final notePreview = _notePreview(it);
+
+    final locationLine = () {
+      if (locationLabel.isNotEmpty && distanceText.isNotEmpty) {
+        return '$locationLabel • ห่างจากคุณ $distanceText';
+      }
+      if (locationLabel.isNotEmpty) return locationLabel;
+      if (distanceText.isNotEmpty) {
+        return 'ห่างจากคุณ $distanceText';
+      }
+      return '';
+    }();
+
+    final showAddress = clinicAddress.isNotEmpty &&
+        !_looksSameLocation(locationLine, clinicAddress);
+
+    return Card(
+      elevation: 1.2,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(22),
+        side: BorderSide(color: Colors.purple.shade100),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    color: Colors.purple.shade50,
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Icon(
+                    Icons.assignment_turned_in_outlined,
+                    color: Colors.purple.shade600,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        jobTitle,
+                        style: const TextStyle(
+                          fontSize: 21,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        clinicName,
+                        style: TextStyle(
+                          color: Colors.grey.shade800,
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                _statusChip(statusRaw),
+              ],
+            ),
+            if (locationLine.isNotEmpty)
+              _metaRow(
+                Icons.location_on_outlined,
+                locationLine,
+                color: Colors.purple.shade700,
+                fontWeight: FontWeight.w800,
+              ),
+            if (showAddress)
+              _metaRow(
+                Icons.place_outlined,
+                clinicAddress,
+                color: Colors.grey.shade700,
+                fontWeight: FontWeight.w500,
+              ),
+            if (date.isNotEmpty || start.isNotEmpty || end.isNotEmpty)
+              _metaRow(
+                Icons.access_time,
+                [
+                  if (date.isNotEmpty) 'วันที่ $date',
+                  if (start.isNotEmpty || end.isNotEmpty)
+                    'เวลา $start - $end',
+                ].join(' • '),
+                color: Colors.deepPurple.shade700,
+                fontWeight: FontWeight.w700,
+              ),
+            if (rate.isNotEmpty)
+              _metaRow(
+                Icons.payments_outlined,
+                'ค่าตอบแทน $rate บาท/ชม.',
+                color: Colors.green.shade700,
+                fontWeight: FontWeight.w800,
+              ),
+            if (clinicPhone.isNotEmpty)
+              _metaRow(
+                Icons.phone_outlined,
+                'เบอร์คลินิก $clinicPhone',
+                color: Colors.blueGrey.shade700,
+              ),
+            if (notePreview.isNotEmpty)
+              _metaRow(
+                Icons.notes_outlined,
+                notePreview,
+                color: Colors.grey.shade700,
+                fontWeight: FontWeight.w500,
+              ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                _actionButton(
+                  onPressed: () => _callClinicFromShift(it),
+                  icon: Icons.phone,
+                  label: 'โทรคลินิก',
+                ),
+                const SizedBox(width: 10),
+                _actionButton(
+                  onPressed: () => _openNavFromShift(it),
+                  icon: Icons.navigation,
+                  label: 'ดูแผนที่',
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: () => _openShiftDetail(it),
+                icon: const Icon(Icons.visibility_outlined),
+                label: const Text('ดูรายละเอียด'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  List<Widget> _buildGroupedList() {
+    final todayItems = <Map<String, dynamic>>[];
+    final upcomingItems = <Map<String, dynamic>>[];
+    final pastItems = <Map<String, dynamic>>[];
+
+    for (final item in _items) {
+      final key = _sectionKey(item);
+      if (key == 'today') {
+        todayItems.add(item);
+      } else if (key == 'past') {
+        pastItems.add(item);
+      } else {
+        upcomingItems.add(item);
+      }
+    }
+
+    todayItems.sort(_compareUpcoming);
+    upcomingItems.sort(_compareUpcoming);
+    pastItems.sort(_comparePast);
+
+    final widgets = <Widget>[];
+
+    void addSection(String title, List<Map<String, dynamic>> items) {
+      if (items.isEmpty) return;
+      widgets.add(_sectionHeader(title, items.length));
+      for (var i = 0; i < items.length; i++) {
+        widgets.add(_buildShiftCard(items[i]));
+        if (i != items.length - 1) {
+          widgets.add(const SizedBox(height: 12));
+        }
+      }
+      widgets.add(const SizedBox(height: 8));
+    }
+
+    addSection('งานวันนี้', todayItems);
+    addSection('งานที่กำลังจะมาถึง', upcomingItems);
+    addSection('งานย้อนหลัง', pastItems);
+
+    return widgets;
+  }
+
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-
     return Scaffold(
       appBar: AppBar(
         title: const Text('งานที่ได้รับของฉัน'),
@@ -1620,57 +1601,313 @@ class _MyShiftsScreenState extends State<MyShiftsScreen> {
                             Center(child: Text('ยังไม่มีงานที่ได้รับ')),
                           ],
                         )
-                      : ListView.separated(
+                      : ListView(
                           padding: const EdgeInsets.all(16),
-                          itemCount: _items.length,
-                          separatorBuilder: (_, __) => const SizedBox(height: 10),
-                          itemBuilder: (_, i) {
-                            final it = _items[i];
-
-                            final date = _s(it['date']);
-                            final start = _s(it['start']);
-                            final end = _s(it['end']);
-                            final status = _statusThai(_s(it['status']));
-                            final note =
-                                _s(it['note']).isEmpty ? 'กะงาน' : _s(it['note']);
-                            final rate = _s(it['hourlyRate']);
-
-                            final sub = [
-                              if (date.isNotEmpty) 'วันที่ $date',
-                              if (start.isNotEmpty || end.isNotEmpty)
-                                'เวลา $start - $end',
-                              if (rate.isNotEmpty) 'ค่าตอบแทน $rate บาท/ชม.',
-                              'สถานะ $status',
-                            ].join(' • ');
-
-                            return Card(
-                              child: ListTile(
-                                leading: Icon(
-                                  Icons.assignment_turned_in_outlined,
-                                  color: cs.primary,
-                                ),
-                                title: Text(note),
-                                subtitle: Text(sub),
-                                trailing: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    IconButton(
-                                      tooltip: 'โทรหาคลินิก',
-                                      icon: const Icon(Icons.phone),
-                                      onPressed: () => _callClinicFromShift(it),
-                                    ),
-                                    IconButton(
-                                      tooltip: 'นำทางไปคลินิก',
-                                      icon: const Icon(Icons.navigation),
-                                      onPressed: () => _openNavFromShift(it),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            );
-                          },
+                          children: _buildGroupedList(),
                         ),
             ),
+    );
+  }
+}
+
+class MyShiftDetailScreen extends StatelessWidget {
+  final Map<String, dynamic> shift;
+  final Future<void> Function() onCallClinic;
+  final Future<void> Function() onOpenMap;
+
+  const MyShiftDetailScreen({
+    super.key,
+    required this.shift,
+    required this.onCallClinic,
+    required this.onOpenMap,
+  });
+
+  String _s(dynamic v) => (v ?? '').toString().trim();
+
+  String _statusThai(String raw) {
+    final s = raw.trim().toLowerCase();
+    if (s.isEmpty) return 'นัดหมายแล้ว';
+    if (s == 'scheduled') return 'นัดหมายแล้ว';
+    if (s == 'completed') return 'เสร็จสิ้น';
+    if (s == 'cancelled') return 'ยกเลิก';
+    if (s == 'approved') return 'อนุมัติแล้ว';
+    if (s == 'pending') return 'รอดำเนินการ';
+    if (s == 'rejected') return 'ไม่ผ่านการอนุมัติ';
+    if (s == 'open') return 'เปิดรับอยู่';
+    if (s == 'closed') return 'ปิดแล้ว';
+    return raw;
+  }
+
+  String _clinicNameFromShift(Map<String, dynamic> it) {
+    final name1 = _s(it['clinicName'] ?? it['clinic_name']);
+    if (name1.isNotEmpty) return name1;
+
+    final clinic = it['clinic'];
+    if (clinic is Map) {
+      final name2 = _s(clinic['name'] ?? clinic['clinicName']);
+      if (name2.isNotEmpty) return name2;
+    }
+
+    return 'คลินิก';
+  }
+
+  String _clinicPhoneFromShift(Map<String, dynamic> it) {
+    final phone1 = _s(it['clinicPhone'] ?? it['clinic_phone']);
+    if (phone1.isNotEmpty) return phone1;
+
+    final clinic = it['clinic'];
+    if (clinic is Map) {
+      final phone2 = _s(clinic['phone'] ?? clinic['clinicPhone']);
+      if (phone2.isNotEmpty) return phone2;
+    }
+
+    return '';
+  }
+
+  String _clinicAddressFromShift(Map<String, dynamic> it) {
+    final address1 = _s(it['clinicAddress'] ?? it['clinic_address']);
+    if (address1.isNotEmpty) return address1;
+
+    final clinic = it['clinic'];
+    if (clinic is Map) {
+      final address2 = _s(clinic['address'] ?? clinic['clinicAddress']);
+      if (address2.isNotEmpty) return address2;
+    }
+
+    return '';
+  }
+
+  String _locationLabelFromShift(Map<String, dynamic> it) {
+    final clinicLoc = LocationEngine.extractClinicLocation(it);
+    if (clinicLoc != null) {
+      if (_s(clinicLoc.label).isNotEmpty) return _s(clinicLoc.label);
+      if (_s(clinicLoc.district).isNotEmpty &&
+          _s(clinicLoc.province).isNotEmpty) {
+        return '${clinicLoc.district}, ${clinicLoc.province}';
+      }
+      if (_s(clinicLoc.province).isNotEmpty) return clinicLoc.province;
+      if (_s(clinicLoc.district).isNotEmpty) return clinicLoc.district;
+      if (_s(clinicLoc.address).isNotEmpty) return clinicLoc.address;
+    }
+
+    final clinic = it['clinic'];
+    if (clinic is Map) {
+      final label1 = _s(clinic['locationLabel'] ?? clinic['clinicLocationLabel']);
+      if (label1.isNotEmpty) return label1;
+    }
+
+    final direct = _s(it['clinicLocationLabel'] ?? it['locationLabel']);
+    if (direct.isNotEmpty) return direct;
+
+    final district = _s(it['clinicDistrict'] ?? it['district']);
+    final province = _s(it['clinicProvince'] ?? it['province']);
+
+    if (district.isNotEmpty && province.isNotEmpty) {
+      return '$district, $province';
+    }
+    if (province.isNotEmpty) return province;
+    if (district.isNotEmpty) return district;
+
+    return '';
+  }
+
+  String _distanceTextFromShift(Map<String, dynamic> it) {
+    final explicit = _s(it['distanceText'] ?? it['distance_text']);
+    if (explicit.isNotEmpty) return explicit;
+
+    final raw = it['distanceKm'] ?? it['distance_km'];
+    if (raw == null) return '';
+
+    final x = double.tryParse(raw.toString());
+    if (x == null || x <= 0) return '';
+    return LocationEngine.formatDistanceKm(x);
+  }
+
+  String _jobTitleFromShift(Map<String, dynamic> it) {
+    final title = _s(it['title']);
+    if (title.isNotEmpty) return title;
+
+    final role = _s(it['role']);
+    if (role.isNotEmpty) return role;
+
+    final note = _s(it['note']);
+    if (note.isNotEmpty && note.length <= 40) return note;
+
+    return 'งานที่ได้รับ';
+  }
+
+  Widget _infoRow(
+    IconData icon,
+    String text, {
+    Color? color,
+    FontWeight fontWeight = FontWeight.w600,
+  }) {
+    if (text.trim().isEmpty) return const SizedBox.shrink();
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 20, color: color ?? Colors.grey.shade700),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              text,
+              style: TextStyle(
+                color: color ?? Colors.grey.shade800,
+                fontWeight: fontWeight,
+                fontSize: 15,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final jobTitle = _jobTitleFromShift(shift);
+    final clinicName = _clinicNameFromShift(shift);
+    final clinicPhone = _clinicPhoneFromShift(shift);
+    final clinicAddress = _clinicAddressFromShift(shift);
+    final locationLabel = _locationLabelFromShift(shift);
+    final distanceText = _distanceTextFromShift(shift);
+
+    final date = _s(shift['date']);
+    final start = _s(shift['start']);
+    final end = _s(shift['end']);
+    final rate = _s(shift['hourlyRate']);
+    final note = _s(shift['note']);
+    final role = _s(shift['role']);
+    final statusText = _statusThai(_s(shift['status']));
+
+    final locationLine = () {
+      if (locationLabel.isNotEmpty && distanceText.isNotEmpty) {
+        return '$locationLabel • ห่างจากคุณ $distanceText';
+      }
+      if (locationLabel.isNotEmpty) return locationLabel;
+      if (distanceText.isNotEmpty) return 'ห่างจากคุณ $distanceText';
+      return '';
+    }();
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('รายละเอียดงาน'),
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          Card(
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(22),
+              side: BorderSide(color: Colors.purple.shade100),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(18),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    jobTitle,
+                    style: const TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    clinicName,
+                    style: TextStyle(
+                      color: Colors.grey.shade800,
+                      fontSize: 17,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  _infoRow(
+                    Icons.verified_outlined,
+                    'สถานะ $statusText',
+                    color: Colors.blueGrey.shade700,
+                    fontWeight: FontWeight.w800,
+                  ),
+                  if (locationLine.isNotEmpty)
+                    _infoRow(
+                      Icons.location_on_outlined,
+                      locationLine,
+                      color: Colors.purple.shade700,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  if (clinicAddress.isNotEmpty)
+                    _infoRow(
+                      Icons.place_outlined,
+                      clinicAddress,
+                      color: Colors.grey.shade700,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  if (date.isNotEmpty || start.isNotEmpty || end.isNotEmpty)
+                    _infoRow(
+                      Icons.access_time,
+                      [
+                        if (date.isNotEmpty) 'วันที่ $date',
+                        if (start.isNotEmpty || end.isNotEmpty)
+                          'เวลา $start - $end',
+                      ].join(' • '),
+                      color: Colors.deepPurple.shade700,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  if (rate.isNotEmpty)
+                    _infoRow(
+                      Icons.payments_outlined,
+                      'ค่าตอบแทน $rate บาท/ชม.',
+                      color: Colors.green.shade700,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  if (clinicPhone.isNotEmpty)
+                    _infoRow(
+                      Icons.phone_outlined,
+                      'เบอร์คลินิก $clinicPhone',
+                      color: Colors.blueGrey.shade700,
+                    ),
+                  if (role.isNotEmpty)
+                    _infoRow(
+                      Icons.badge_outlined,
+                      'ตำแหน่งงาน $role',
+                      color: Colors.grey.shade700,
+                    ),
+                  if (note.isNotEmpty)
+                    _infoRow(
+                      Icons.notes_outlined,
+                      note,
+                      color: Colors.grey.shade700,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  const SizedBox(height: 18),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: onCallClinic,
+                          icon: const Icon(Icons.phone),
+                          label: const Text('โทรคลินิก'),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: FilledButton.icon(
+                          onPressed: onOpenMap,
+                          icon: const Icon(Icons.navigation),
+                          label: const Text('ดูแผนที่'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

@@ -1,72 +1,17 @@
-// lib/screens/home/home_screen.dart
-//
-// ✅ CLEAN HOME (REFACTORED)
-// - แยก UI ออกไป tabs / widgets / attendance
-// - HomeScreen เหลือเป็น controller/state หลัก
-// - รักษา flow เดิมไว้
-// - รวม fix attendance check-out state แล้ว
-//
-// ✅ PATCH (PRODUCTION HARDENED)
-// - กันกด check-in / check-out ซ้ำตั้งแต่ต้นฟังก์ชัน
-// - ลดโอกาสปุ่มนิ่งจาก loading state
-// - ยังคง immediate UI update + refresh backend ตามเดิม
-//
-// ✅ PATCH (NEW)
-// - ไม่ส่ง clinicId / staffId / deviceId แบบค่าว่างไป backend
-// - แยก state ระหว่าง "กำลังสแกน" กับ "กำลังส่งข้อมูล"
-// - เพิ่ม print สำหรับ attendance ทุกจุดสำคัญ
-// - ดึงข้อความ error จาก API มาแสดงให้ผู้ใช้ได้ชัดขึ้น
-// - กัน refresh attendance ซ้อนกันด้วย sequence guard
-// - checkout fallback ใช้เฉพาะ session เปิดของ "วันนี้" เท่านั้น
-//
-// ✅ PATCH (SMOOTH UX)
-// - เพิ่ม phase ของ attendance เพื่อให้ UI รู้ว่า "กำลังสแกน" หรือ "กำลังส่ง"
-// - เพิ่ม slow network hint ถ้าเน็ตช้า
-// - กันกดซ้ำแล้วเตือนผู้ใช้ชัดเจน
-// - refresh attendance จะไม่มาทับตอนกำลัง submit
-//
-// ✅ PATCH (BACKEND RULE CODES)
-// - รองรับ code ใหม่จาก backend เช่น:
-//   - MANUAL_REQUIRED_PREVIOUS_OPEN_SESSION
-//   - MANUAL_REQUIRED_EARLY_CHECKIN
-//   - MANUAL_REQUIRED_AFTER_CUTOFF
-//   - EARLY_CHECKOUT_REASON_REQUIRED
-//   - CHECKOUT_TOO_FAST
-//   - ATTENDANCE_ALREADY_COMPLETED
-//   - ALREADY_CHECKED_IN
-//   - NO_OPEN_SESSION
-// - รองรับ pendingManualSession จาก me-preview
-//
-// ✅ PATCH (HOME REFRESH UX)
-// - ปุ่มสายฟ้า AppBar มี loading state จริง
-// - ปุ่มอัปเดตในการ์ดประกาศงานไม่ดูนิ่งเวลาเน็ตช้า
-// - กันกดซ้ำทั้ง AppBar refresh และ urgent refresh
-// - แสดง snackbar ระหว่างกำลังอัปเดต
-//
-// ✅ PATCH (DIALOG STABILITY)
-// - แก้จอแดง _dependents.isEmpty ตอนเช็คเอาท์ก่อนเวลา + กรอกเหตุผล
-// - ใช้ rootNavigator ตอนปิด dialog
-// - unfocus ก่อนปิด dialog
-// - ไม่ dispose TextEditingController ทันทีขณะ overlay กำลังปิด
-// - กันกดยืนยันซ้ำใน dialog
-//
-// ✅ PATCH (CLINIC -> HELPER MARKETPLACE -> TRUST SCORE)
-// - เพิ่ม import HelperMarketplaceScreen
-// - คลินิกสามารถเปิด marketplace เพื่อเลือก helper
-// - หลังเลือก helper แล้วเปิด TrustScoreLookupScreen พร้อม initialHelper ได้ทันที
-
 import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
+import 'package:geolocator/geolocator.dart';
 
 // ✅ Biometric
 import 'package:flutter/services.dart';
 import 'package:local_auth/local_auth.dart';
 
 import 'package:clinic_smart_staff/api/api_config.dart';
+import 'package:clinic_smart_staff/api/attendance_api.dart';
 import 'package:clinic_smart_staff/services/auth_storage.dart';
 import 'package:clinic_smart_staff/services/auth_service.dart';
 
@@ -95,7 +40,6 @@ import 'package:clinic_smart_staff/screens/home/widgets/attendance_card.dart';
 import 'package:clinic_smart_staff/screens/home/widgets/premium_gate_card.dart';
 import 'package:clinic_smart_staff/screens/home/widgets/policy_card.dart';
 import 'package:clinic_smart_staff/screens/home/widgets/urgent_jobs_card.dart';
-import 'package:clinic_smart_staff/screens/home/widgets/payslip_card.dart';
 import 'package:clinic_smart_staff/screens/home/attendance/attendance_history_screen.dart';
 import 'package:clinic_smart_staff/screens/home/attendance/manual_attendance_request_screen.dart';
 
@@ -107,6 +51,13 @@ enum _AttendanceSubmitResult {
   failed,
   manualRequired,
   earlyCheckoutReasonRequired,
+  shiftSelectionRequired,
+  checkedInOtherClinic,
+  multipleOpenSessions,
+  locationPermissionDenied,
+  locationServiceDisabled,
+  locationUnavailable,
+  previousAttendancePending,
 }
 
 enum _AttendanceUiPhase {
@@ -128,7 +79,6 @@ class _HomeScreenState extends State<HomeScreen> {
   int _tab = 0;
   bool _didSetInitialTab = false;
 
-  // context
   bool _ctxLoading = true;
   String _ctxErr = '';
   String _role = '';
@@ -136,31 +86,26 @@ class _HomeScreenState extends State<HomeScreen> {
   String _userId = '';
   String _staffId = '';
 
-  // premium
   static const String _kPremiumAttendanceKey = 'premium_attendance_enabled';
   bool _premiumLoading = true;
   bool _premiumAttendanceEnabled = false;
 
-  // policy
   bool _policyLoading = false;
   String _policyErr = '';
   Map<String, dynamic> _policy = <String, dynamic>{};
   Map<String, dynamic> _features = <String, dynamic>{};
   List<String> _policyLines = [];
 
-  // urgent
   bool _urgentLoading = false;
   bool _activeRefreshing = false;
   String _urgentErr = '';
   int _urgentCount = 0;
   Map<String, dynamic>? _urgentFirst;
 
-  // payslip
   bool _payslipLoading = false;
   String _payslipErr = '';
   List<Map<String, dynamic>> _closedMonths = [];
 
-  // attendance
   bool _attLoading = false;
   String _attErr = '';
   String _attStatusLine = '';
@@ -168,15 +113,15 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _attCheckedOut = false;
   bool _attPosting = false;
 
-  // attendance guards
   int _attRefreshSeq = 0;
   bool _attActionLock = false;
+  bool _openingPayslipPicker = false;
+  bool _checkingAttendanceLocation = false;
+  bool _openingManualRequestFlow = false;
 
-  // biometric
   final LocalAuthentication _localAuth = LocalAuthentication();
   bool _bioLoading = false;
 
-  // smoother attendance UX
   _AttendanceUiPhase _attUiPhase = _AttendanceUiPhase.idle;
   String _attProgressText = '';
   bool _showSlowNetworkHint = false;
@@ -184,10 +129,36 @@ class _HomeScreenState extends State<HomeScreen> {
 
   bool get _attBusy => _attUiPhase != _AttendanceUiPhase.idle;
 
+  bool _attLocationLoading = false;
+  String _attLocationError = '';
+  double? _attLat;
+  double? _attLng;
+  double? _attAccuracyMeters;
+
+  bool _attBlockedByPreviousPending = false;
+  String _attPreviousPendingMessage = '';
+  String _attPreviousSessionId = '';
+  String _attPreviousWorkDate = '';
+  String _attPreviousShiftId = '';
+  String _attPreviousClinicId = '';
+  String _attPreviousClinicName = '';
+  String _attPreviousAction = '';
+  Map<String, dynamic> _attPreviousSession = <String, dynamic>{};
+
+  bool get _hasPreviousPendingBlock => _attBlockedByPreviousPending;
+
   String get _displayAttendanceStatusLine {
-    final base = _attProgressText.trim().isNotEmpty
-        ? _attProgressText.trim()
-        : _attStatusLine.trim();
+    final previousPendingLine = _hasPreviousPendingBlock
+        ? (_attPreviousPendingMessage.trim().isNotEmpty
+            ? _attPreviousPendingMessage.trim()
+            : 'ยังมีรายการลงเวลาจากวันก่อนค้างอยู่ กรุณาแก้ไขและรออนุมัติก่อน')
+        : '';
+
+    final base = previousPendingLine.isNotEmpty
+        ? previousPendingLine
+        : (_attProgressText.trim().isNotEmpty
+            ? _attProgressText.trim()
+            : _attStatusLine.trim());
 
     if (_showSlowNetworkHint) {
       if (base.isEmpty) {
@@ -197,6 +168,62 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     return base;
+  }
+
+  bool _helperShiftLoading = false;
+  String _helperShiftErr = '';
+  List<Map<String, dynamic>> _helperTodayShifts = <Map<String, dynamic>>[];
+  Map<String, dynamic>? _selectedHelperShift;
+  bool _helperShiftTouchedByUser = false;
+  String _helperRuntimeShiftSelectionMode = '';
+
+  bool get _helperHasMultipleShifts => _helperTodayShifts.length > 1;
+
+  bool get _helperNeedsShiftSelection =>
+      _isHelper && _attendancePremiumEnabled && _helperTodayShifts.isNotEmpty;
+
+  String get _selectedHelperShiftId {
+    final raw = (_selectedHelperShift?['_id'] ??
+            _selectedHelperShift?['id'] ??
+            _selectedHelperShift?['shiftId'] ??
+            '')
+        .toString()
+        .trim();
+    return raw;
+  }
+
+  String get _selectedHelperShiftClinicId {
+    final raw = (_selectedHelperShift?['clinicId'] ??
+            _selectedHelperShift?['clinic']?['_id'] ??
+            _selectedHelperShift?['clinic']?['id'] ??
+            '')
+        .toString()
+        .trim();
+    return raw;
+  }
+
+  String get _selectedHelperShiftLabel {
+    final sh = _selectedHelperShift;
+    if (sh == null) return 'ยังไม่ได้เลือกกะ';
+
+    final clinicName = _helperShiftClinicName(sh);
+    final date = _helperShiftDate(sh);
+    final start = _helperShiftStart(sh);
+    final end = _helperShiftEnd(sh);
+    final title = _helperShiftTitle(sh);
+
+    final parts = <String>[];
+    if (clinicName.isNotEmpty) parts.add(clinicName);
+    if (title.isNotEmpty && title != clinicName) parts.add(title);
+    if (date.isNotEmpty) parts.add(date);
+    if (start.isNotEmpty || end.isNotEmpty) {
+      parts.add(
+        '${start.isEmpty ? '--:--' : start} - ${end.isEmpty ? '--:--' : end}',
+      );
+    }
+
+    if (parts.isEmpty) return 'เลือกกะแล้ว';
+    return parts.join(' • ');
   }
 
   @override
@@ -213,7 +240,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _snack(String msg) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg)),
+    );
   }
 
   void _tapLog(String msg) {
@@ -221,6 +250,94 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   String _norm(String s) => s.trim().toLowerCase();
+
+  void _clearPreviousPendingBlock() {
+    if (!mounted) return;
+    setState(() {
+      _attBlockedByPreviousPending = false;
+      _attPreviousPendingMessage = '';
+      _attPreviousSessionId = '';
+      _attPreviousWorkDate = '';
+      _attPreviousShiftId = '';
+      _attPreviousClinicId = '';
+      _attPreviousClinicName = '';
+      _attPreviousAction = '';
+      _attPreviousSession = <String, dynamic>{};
+    });
+  }
+
+  void _applyPreviousPendingBlockFromMap(Map<String, dynamic> data) {
+    final previousAny = data['previousSession'];
+    final previous = previousAny is Map
+        ? Map<String, dynamic>.from(previousAny)
+        : <String, dynamic>{};
+
+    final pendingContextAny = data['pendingContext'];
+    final pendingContext = pendingContextAny is Map
+        ? Map<String, dynamic>.from(pendingContextAny)
+        : <String, dynamic>{};
+
+    final previousSessionId = (data['previousSessionId'] ??
+            previous['_id'] ??
+            previous['sessionId'] ??
+            pendingContext['_id'] ??
+            pendingContext['sessionId'] ??
+            '')
+        .toString()
+        .trim();
+
+    final previousWorkDate = (data['previousWorkDate'] ??
+            previous['workDate'] ??
+            pendingContext['workDate'] ??
+            '')
+        .toString()
+        .trim();
+
+    final previousShiftId = (data['previousShiftId'] ??
+            previous['shiftId'] ??
+            pendingContext['shiftId'] ??
+            '')
+        .toString()
+        .trim();
+
+    final previousClinicId = (data['previousClinicId'] ??
+            previous['clinicId'] ??
+            pendingContext['clinicId'] ??
+            '')
+        .toString()
+        .trim();
+
+    final previousClinicName = (data['previousClinicName'] ??
+            previous['clinicName'] ??
+            previous['clinicLabel'] ??
+            pendingContext['clinicName'] ??
+            pendingContext['clinicLabel'] ??
+            '')
+        .toString()
+        .trim();
+
+    final previousMessage = (data['message'] ?? '').toString().trim();
+    final action = (data['action'] ?? '').toString().trim();
+
+    if (!mounted) return;
+    setState(() {
+      _attBlockedByPreviousPending = true;
+      _attPreviousPendingMessage = previousMessage;
+      _attPreviousSessionId = previousSessionId;
+      _attPreviousWorkDate = previousWorkDate;
+      _attPreviousShiftId = previousShiftId;
+      _attPreviousClinicId = previousClinicId;
+      _attPreviousClinicName = previousClinicName;
+      _attPreviousAction = action;
+      _attPreviousSession = previous.isNotEmpty ? previous : pendingContext;
+      _attCheckedIn = false;
+      _attCheckedOut = false;
+      _attErr = '';
+      _attStatusLine = previousMessage.isNotEmpty
+          ? previousMessage
+          : 'ยังมีรายการลงเวลาจากวันก่อนค้างอยู่ กรุณาแก้ไขและรออนุมัติก่อน';
+    });
+  }
 
   String _friendlyAuthError(Object e) {
     final s = e.toString().toLowerCase();
@@ -236,6 +353,12 @@ class _HomeScreenState extends State<HomeScreen> {
     if (s.contains('forbidden') || s.contains('403')) {
       return 'คุณไม่มีสิทธิ์ใช้งานเมนูนี้';
     }
+    if (s.contains('missing staffid') || s.contains('staffid')) {
+      return 'ไม่พบข้อมูลพนักงานของบัญชีนี้ กรุณาออกจากระบบแล้วเข้าสู่ระบบใหม่';
+    }
+    if (s.contains('missing clinic')) {
+      return 'ไม่พบข้อมูลคลินิกของบัญชีนี้ กรุณาออกจากระบบแล้วเข้าสู่ระบบใหม่';
+    }
     return 'เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้ง';
   }
 
@@ -245,6 +368,660 @@ class _HomeScreenState extends State<HomeScreen> {
     final m = now.month.toString().padLeft(2, '0');
     final d = now.day.toString().padLeft(2, '0');
     return '$y-$m-$d';
+  }
+
+  String _humanYmd(String ymd) {
+    final t = ymd.trim();
+    if (!RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(t)) return t;
+    final parts = t.split('-');
+    return '${parts[2]}/${parts[1]}/${parts[0]}';
+  }
+
+  double? _asDouble(dynamic v) {
+    if (v is num) return v.toDouble();
+    return double.tryParse((v ?? '').toString().trim());
+  }
+
+  bool get _policyRequireLocation {
+    final p = _policy['requireLocation'];
+    if (p is bool) return p;
+
+    final f = _features['requireLocation'];
+    if (f is bool) return f;
+
+    return false;
+  }
+
+  int get _policyGeoRadiusMeters {
+    final raw =
+        _policy['geoRadiusMeters'] ?? _features['geoRadiusMeters'] ?? 200;
+    if (raw is int) return raw;
+    if (raw is num) return raw.round();
+    return int.tryParse(raw.toString()) ?? 200;
+  }
+
+  bool get _attendanceNeedsLiveLocation {
+    if (_isEmployee) return true;
+    if (_policyRequireLocation) return true;
+    return false;
+  }
+
+  String _locationRuleText() {
+    final radius = _policyGeoRadiusMeters;
+    if (_isEmployee) {
+      return 'ต้องเปิด GPS และอยู่ในรัศมี $radius เมตรจากจุดที่คลินิกกำหนด';
+    }
+    return 'กรุณาเปิด GPS เพื่อให้ระบบตรวจสอบตำแหน่งปัจจุบัน';
+  }
+
+  String _formatAttendanceLocationSummary() {
+    final hasCoords = _attLat != null && _attLng != null;
+    final acc = _attAccuracyMeters;
+    final accText =
+        acc == null ? '' : ' • ความแม่นยำประมาณ ${acc.toStringAsFixed(0)} ม.';
+
+    if (_attLocationLoading || _checkingAttendanceLocation) {
+      return 'กำลังตรวจสอบตำแหน่งปัจจุบัน...';
+    }
+
+    if (_attLocationError.trim().isNotEmpty) {
+      return _attLocationError.trim();
+    }
+
+    if (hasCoords) {
+      return 'พร้อมใช้งาน • พบตำแหน่งแล้ว$accText';
+    }
+
+    return _locationRuleText();
+  }
+
+  void _setAttendanceLocationState({
+    bool? loading,
+    String? error,
+    double? lat,
+    double? lng,
+    double? accuracyMeters,
+    bool clearCoords = false,
+  }) {
+    if (!mounted) return;
+    setState(() {
+      if (loading != null) _attLocationLoading = loading;
+      if (error != null) _attLocationError = error;
+      if (clearCoords) {
+        _attLat = null;
+        _attLng = null;
+        _attAccuracyMeters = null;
+      }
+      if (lat != null) _attLat = lat;
+      if (lng != null) _attLng = lng;
+      if (accuracyMeters != null) _attAccuracyMeters = accuracyMeters;
+    });
+  }
+
+  Future<Position?> _readAttendancePosition({
+    bool showErrorSnack = true,
+  }) async {
+    if (!_attendanceNeedsLiveLocation) {
+      return null;
+    }
+
+    try {
+      _setAttendanceLocationState(
+        loading: true,
+        error: '',
+      );
+
+      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        const msg = 'กรุณาเปิด GPS ก่อนบันทึกเวลาทำงาน';
+        _setAttendanceLocationState(
+          loading: false,
+          error: msg,
+          clearCoords: true,
+        );
+        if (showErrorSnack) _snack(msg);
+        return null;
+      }
+
+      LocationPermission permission = await Geolocator.checkPermission();
+
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+
+      if (permission == LocationPermission.denied) {
+        const msg = 'กรุณาอนุญาตการเข้าถึงตำแหน่งเพื่อบันทึกเวลาทำงาน';
+        _setAttendanceLocationState(
+          loading: false,
+          error: msg,
+          clearCoords: true,
+        );
+        if (showErrorSnack) _snack(msg);
+        return null;
+      }
+
+      if (permission == LocationPermission.deniedForever) {
+        const msg =
+            'ระบบถูกปฏิเสธสิทธิ์ตำแหน่งถาวร กรุณาเปิดสิทธิ์ Location ในการตั้งค่าเครื่อง';
+        _setAttendanceLocationState(
+          loading: false,
+          error: msg,
+          clearCoords: true,
+        );
+        if (showErrorSnack) _snack(msg);
+        return null;
+      }
+
+      Position? pos;
+
+      try {
+        pos = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high,
+          timeLimit: const Duration(seconds: 12),
+        );
+      } catch (_) {
+        pos = await Geolocator.getLastKnownPosition();
+      }
+
+      if (pos == null) {
+        final msg = _isEmployee
+            ? 'ไม่สามารถอ่านตำแหน่งปัจจุบันได้ กรุณาลองใหม่อีกครั้ง'
+            : 'ไม่สามารถตรวจสอบตำแหน่งปัจจุบันได้ กรุณาลองใหม่อีกครั้ง';
+        _setAttendanceLocationState(
+          loading: false,
+          error: msg,
+          clearCoords: true,
+        );
+        if (showErrorSnack) _snack(msg);
+        return null;
+      }
+
+      _setAttendanceLocationState(
+        loading: false,
+        error: '',
+        lat: pos.latitude,
+        lng: pos.longitude,
+        accuracyMeters: pos.accuracy,
+      );
+
+      print(
+        '[ATTENDANCE][LOCATION] lat=${pos.latitude} lng=${pos.longitude} accuracy=${pos.accuracy}',
+      );
+
+      return pos;
+    } catch (e) {
+      final msg = 'ไม่สามารถตรวจสอบตำแหน่งได้ กรุณาลองใหม่อีกครั้ง';
+      print('[ATTENDANCE][LOCATION] ERROR $e');
+      _setAttendanceLocationState(
+        loading: false,
+        error: msg,
+        clearCoords: true,
+      );
+      if (showErrorSnack) _snack(msg);
+      return null;
+    }
+  }
+
+  Map<String, dynamic> _appendAttendanceLocation(
+    Map<String, dynamic> payload, {
+    Position? position,
+  }) {
+    final out = Map<String, dynamic>.from(payload);
+
+    final lat = position?.latitude ?? _attLat;
+    final lng = position?.longitude ?? _attLng;
+    final accuracy = position?.accuracy ?? _attAccuracyMeters;
+
+    if (lat != null && lng != null) {
+      out['lat'] = lat;
+      out['lng'] = lng;
+      out['latitude'] = lat;
+      out['longitude'] = lng;
+    }
+
+    if (accuracy != null) {
+      out['accuracyMeters'] = accuracy;
+    }
+
+    return out;
+  }
+
+  String _locationMessageFromApi({
+    required String fallback,
+    required http.Response? response,
+  }) {
+    if (response == null) return fallback;
+
+    final apiMsg = _extractApiMessage(response);
+    if (apiMsg.isNotEmpty) return apiMsg;
+
+    final code = _extractApiCode(response).toUpperCase();
+    if (code == 'LOCATION_REQUIRED') {
+      return 'กรุณาเปิด GPS และอนุญาตตำแหน่งก่อนบันทึกเวลาทำงาน';
+    }
+    if (code == 'OUTSIDE_ALLOWED_RADIUS') {
+      return 'คุณอยู่นอกพื้นที่คลินิกที่กำหนด ไม่สามารถบันทึกเวลาได้';
+    }
+    if (code == 'CLINIC_LOCATION_NOT_SET') {
+      return 'ยังไม่ได้ตั้งพิกัดอ้างอิงของคลินิก กรุณาตั้งค่าก่อนใช้งาน';
+    }
+
+    return fallback;
+  }
+
+  String _helperShiftTitle(Map<String, dynamic> sh) {
+    return (sh['title'] ??
+            sh['shiftTitle'] ??
+            sh['position'] ??
+            sh['roleName'] ??
+            sh['jobTitle'] ??
+            '')
+        .toString()
+        .trim();
+  }
+
+  String _helperShiftClinicName(Map<String, dynamic> sh) {
+    final clinicAny = sh['clinic'];
+    if (clinicAny is Map) {
+      final name = (clinicAny['name'] ??
+              clinicAny['clinicName'] ??
+              clinicAny['title'] ??
+              '')
+          .toString()
+          .trim();
+      if (name.isNotEmpty) return name;
+    }
+
+    return (sh['clinicName'] ??
+            sh['clinicTitle'] ??
+            sh['hospitalName'] ??
+            sh['workplaceName'] ??
+            sh['locationName'] ??
+            sh['clinicId'] ??
+            '')
+        .toString()
+        .trim();
+  }
+
+  String _helperShiftDate(Map<String, dynamic> sh) {
+    final raw =
+        (sh['date'] ?? sh['workDate'] ?? sh['day'] ?? '').toString().trim();
+    return _humanYmd(raw);
+  }
+
+  String _helperShiftStart(Map<String, dynamic> sh) {
+    return (sh['start'] ??
+            sh['startTime'] ??
+            sh['from'] ??
+            sh['begin'] ??
+            '')
+        .toString()
+        .trim();
+  }
+
+  String _helperShiftEnd(Map<String, dynamic> sh) {
+    return (sh['end'] ?? sh['endTime'] ?? sh['to'] ?? sh['finish'] ?? '')
+        .toString()
+        .trim();
+  }
+
+  String _helperShiftIdentityKey(Map<String, dynamic> sh) {
+    final id = (sh['_id'] ?? sh['id'] ?? sh['shiftId'] ?? '').toString().trim();
+    if (id.isNotEmpty) return 'id:$id';
+
+    final clinicId =
+        (sh['clinicId'] ?? sh['clinic']?['_id'] ?? sh['clinic']?['id'] ?? '')
+            .toString()
+            .trim();
+    final date = (sh['date'] ?? sh['workDate'] ?? '').toString().trim();
+    final start = _helperShiftStart(sh);
+    final end = _helperShiftEnd(sh);
+
+    return 'fallback:$clinicId|$date|$start|$end';
+  }
+
+  bool _sameShiftIdentity(
+    Map<String, dynamic>? a,
+    Map<String, dynamic>? b,
+  ) {
+    if (a == null || b == null) return false;
+    return _helperShiftIdentityKey(a) == _helperShiftIdentityKey(b);
+  }
+
+  List<Map<String, dynamic>> _sortHelperShifts(
+    List<Map<String, dynamic>> input,
+  ) {
+    final list = List<Map<String, dynamic>>.from(input);
+    list.sort((a, b) {
+      final da = (_helperShiftDate(a)).trim();
+      final db = (_helperShiftDate(b)).trim();
+      final sa = (_helperShiftStart(a)).trim();
+      final sb = (_helperShiftStart(b)).trim();
+      final ca = (_helperShiftClinicName(a)).trim();
+      final cb = (_helperShiftClinicName(b)).trim();
+
+      final dCmp = da.compareTo(db);
+      if (dCmp != 0) return dCmp;
+
+      final sCmp = sa.compareTo(sb);
+      if (sCmp != 0) return sCmp;
+
+      return ca.compareTo(cb);
+    });
+    return list;
+  }
+
+  List<Map<String, dynamic>> _dedupeHelperShiftList(
+    List<Map<String, dynamic>> input,
+  ) {
+    final out = <Map<String, dynamic>>[];
+    final seen = <String>{};
+
+    for (final raw in input) {
+      final item = Map<String, dynamic>.from(raw);
+      final key = _helperShiftIdentityKey(item);
+      if (key.isEmpty || seen.contains(key)) continue;
+      seen.add(key);
+      out.add(item);
+    }
+    return out;
+  }
+
+  Map<String, dynamic>? _pickHelperShiftFromCandidates(
+    List<Map<String, dynamic>> items,
+  ) {
+    if (items.isEmpty) return null;
+    if (items.length == 1) return items.first;
+
+    final selected = _selectedHelperShift;
+    if (selected != null) {
+      for (final item in items) {
+        if (_sameShiftIdentity(item, selected)) return item;
+      }
+    }
+
+    final sameClinic = _clinicId.trim();
+    if (sameClinic.isNotEmpty) {
+      for (final item in items) {
+        final cid =
+            (item['clinicId'] ??
+                    item['clinic']?['_id'] ??
+                    item['clinic']?['id'] ??
+                    '')
+                .toString()
+                .trim();
+        if (cid.isNotEmpty && cid == sameClinic) return item;
+      }
+    }
+
+    return null;
+  }
+
+  void _applySelectedHelperShift(
+    Map<String, dynamic>? shift, {
+    bool touchedByUser = false,
+    String runtimeSelectionMode = '',
+  }) {
+    if (!mounted) return;
+    setState(() {
+      _selectedHelperShift =
+          shift == null ? null : Map<String, dynamic>.from(shift);
+      if (touchedByUser) _helperShiftTouchedByUser = true;
+      if (runtimeSelectionMode.trim().isNotEmpty) {
+        _helperRuntimeShiftSelectionMode = runtimeSelectionMode.trim();
+      }
+    });
+  }
+
+  String _helperShiftSummaryLine() {
+    if (_helperShiftLoading) return 'กำลังโหลดกะงานของวันนี้';
+    if (_helperShiftErr.trim().isNotEmpty) return _helperShiftErr.trim();
+
+    if (_helperTodayShifts.isEmpty) {
+      return 'วันนี้ยังไม่พบกะงานสำหรับการสแกน';
+    }
+
+    if (_selectedHelperShift == null) {
+      if (_helperTodayShifts.length == 1) {
+        return 'พบกะงาน 1 รายการ กรุณาตรวจสอบก่อนสแกน';
+      }
+      return 'พบ ${_helperTodayShifts.length} กะงาน กรุณาเลือกกะก่อนสแกน';
+    }
+
+    final mode = _helperRuntimeShiftSelectionMode.trim();
+    if (mode == 'single_auto') {
+      return 'ระบบเลือกกะให้อัตโนมัติ • $_selectedHelperShiftLabel';
+    }
+    if (mode == 'time_auto') {
+      return 'ระบบเลือกกะตามช่วงเวลา • $_selectedHelperShiftLabel';
+    }
+
+    return _selectedHelperShiftLabel;
+  }
+
+  Future<void> _showHelperShiftPicker() async {
+    if (!_isHelper) return;
+    if (_helperTodayShifts.isEmpty) {
+      _snack('วันนี้ยังไม่พบกะงานสำหรับการสแกน');
+      return;
+    }
+
+    final selected = await showModalBottomSheet<Map<String, dynamic>>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: false,
+      builder: (ctx) {
+        return SafeArea(
+          child: ListView.separated(
+            shrinkWrap: true,
+            itemCount: _helperTodayShifts.length + 1,
+            separatorBuilder: (_, __) => const Divider(height: 1),
+            itemBuilder: (ctx, i) {
+              if (i == 0) {
+                return const ListTile(
+                  title: Text(
+                    'เลือกกะที่จะใช้สแกนลายนิ้วมือ',
+                    style: TextStyle(fontWeight: FontWeight.w900),
+                  ),
+                  subtitle: Text(
+                    'กรุณาเลือกกะที่กำลังทำงานอยู่จริง เพื่อให้ระบบส่ง shiftId ถูกต้อง',
+                  ),
+                );
+              }
+
+              final sh = _helperTodayShifts[i - 1];
+              final isSelected = _sameShiftIdentity(sh, _selectedHelperShift);
+              final clinic = _helperShiftClinicName(sh);
+              final title = _helperShiftTitle(sh);
+              final date = _helperShiftDate(sh);
+              final start = _helperShiftStart(sh);
+              final end = _helperShiftEnd(sh);
+
+              final subtitleParts = <String>[];
+              if (title.isNotEmpty && title != clinic) subtitleParts.add(title);
+              if (date.isNotEmpty) subtitleParts.add(date);
+              if (start.isNotEmpty || end.isNotEmpty) {
+                subtitleParts.add(
+                  '${start.isEmpty ? '--:--' : start} - ${end.isEmpty ? '--:--' : end}',
+                );
+              }
+
+              return ListTile(
+                leading: Icon(
+                  isSelected
+                      ? Icons.radio_button_checked
+                      : Icons.radio_button_off,
+                ),
+                title: Text(clinic.isEmpty ? 'กะงาน' : clinic),
+                subtitle: subtitleParts.isEmpty
+                    ? null
+                    : Text(subtitleParts.join(' • ')),
+                trailing: isSelected
+                    ? const Icon(Icons.check_circle, color: Colors.green)
+                    : null,
+                onTap: () => Navigator.pop(ctx, sh),
+              );
+            },
+          ),
+        );
+      },
+    );
+
+    if (selected == null) return;
+
+    _applySelectedHelperShift(
+      selected,
+      touchedByUser: true,
+      runtimeSelectionMode: 'manual_picker',
+    );
+    _snack('เลือกกะเรียบร้อยแล้ว');
+
+    if (_attendancePremiumEnabled && !_attBusy) {
+      await _refreshAttendanceToday(silent: true);
+    }
+  }
+
+  Future<void> _loadHelperTodayShifts({bool silent = false}) async {
+    if (!_isHelper) return;
+    if (_ctxLoading) return;
+
+    if (!silent && mounted) {
+      setState(() {
+        _helperShiftLoading = true;
+        _helperShiftErr = '';
+      });
+    } else if (mounted && _helperShiftErr.isNotEmpty) {
+      setState(() {
+        _helperShiftErr = '';
+      });
+    }
+
+    try {
+      final token = await _getTokenAny();
+      if (token == null || token.isEmpty) throw Exception('no token');
+
+      final headers = _authHeaders(token);
+      final workDate = _todayYmd();
+
+      final candidates = <Uri>[
+        _payrollUri('/shifts', qs: {'date': workDate}),
+        _payrollUri('/api/shifts', qs: {'date': workDate}),
+        _payrollUri('/shift-needs/my-shifts', qs: {'workDate': workDate}),
+        _payrollUri('/api/shift-needs/my-shifts', qs: {'workDate': workDate}),
+        _payrollUri('/shift-needs/my-shifts', qs: {'date': workDate}),
+        _payrollUri('/api/shift-needs/my-shifts', qs: {'date': workDate}),
+      ];
+
+      http.Response? successRes;
+
+      for (final uri in candidates) {
+        try {
+          final res = await _tryGet(uri, headers: headers);
+          if (res.statusCode == 404) continue;
+          if (res.statusCode == 401) throw Exception('unauthorized');
+          if (res.statusCode == 403) throw Exception('forbidden');
+
+          if (res.statusCode == 200) {
+            successRes = res;
+            break;
+          }
+        } catch (e) {
+          if (uri == candidates.last) rethrow;
+        }
+      }
+
+      List<Map<String, dynamic>> items = <Map<String, dynamic>>[];
+
+      if (successRes != null) {
+        final decoded = jsonDecode(successRes.body);
+
+        dynamic source = decoded;
+        if (decoded is Map) {
+          if (decoded['items'] is List) {
+            source = decoded['items'];
+          } else if (decoded['data'] is List) {
+            source = decoded['data'];
+          } else if (decoded['results'] is List) {
+            source = decoded['results'];
+          } else if (decoded['rows'] is List) {
+            source = decoded['rows'];
+          } else if (decoded['shifts'] is List) {
+            source = decoded['shifts'];
+          } else if (decoded['needs'] is List) {
+            source = decoded['needs'];
+          } else if (decoded['runtime'] is Map &&
+              (decoded['runtime'] as Map)['shift'] is Map) {
+            source = [
+              Map<String, dynamic>.from(
+                (decoded['runtime'] as Map)['shift'] as Map,
+              ),
+            ];
+          } else if (decoded['availableShifts'] is List) {
+            source = decoded['availableShifts'];
+          }
+        }
+
+        if (source is List) {
+          items = source
+              .whereType<Map>()
+              .map((e) => Map<String, dynamic>.from(e))
+              .toList();
+        }
+      }
+
+      items = _dedupeHelperShiftList(items);
+      items = _sortHelperShifts(items);
+
+      final picked = _pickHelperShiftFromCandidates(items);
+
+      if (!mounted) return;
+      setState(() {
+        _helperTodayShifts = items;
+        _selectedHelperShift = picked == null
+            ? (items.length == 1 ? items.first : null)
+            : Map<String, dynamic>.from(picked);
+        _helperShiftLoading = false;
+        _helperShiftErr = '';
+        if (items.length == 1 && _selectedHelperShift != null) {
+          _helperRuntimeShiftSelectionMode = 'single_auto';
+        } else if (_selectedHelperShift == null) {
+          _helperRuntimeShiftSelectionMode = '';
+        }
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _helperShiftLoading = false;
+        _helperShiftErr = 'ไม่สามารถโหลดกะงานของวันนี้ได้';
+        _helperTodayShifts = <Map<String, dynamic>>[];
+        _selectedHelperShift = null;
+        _helperRuntimeShiftSelectionMode = '';
+      });
+    }
+  }
+
+  bool _helperCanProceedScan() {
+    if (!_isHelper) return true;
+
+    if (_helperShiftLoading) {
+      _snack('กำลังโหลดกะงานของวันนี้ กรุณารอสักครู่');
+      return false;
+    }
+
+    if (_helperTodayShifts.isEmpty) {
+      final msg = _helperShiftErr.trim().isNotEmpty
+          ? _helperShiftErr.trim()
+          : 'วันนี้ยังไม่พบกะงานสำหรับการสแกน';
+      _snack(msg);
+      return false;
+    }
+
+    if (_selectedHelperShift == null || _selectedHelperShiftId.isEmpty) {
+      _snack('กรุณาเลือกกะก่อนสแกนลายนิ้วมือ');
+      return false;
+    }
+
+    return true;
   }
 
   void _setAttendanceUiPhase(
@@ -274,6 +1051,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _showSlowNetworkHint = false;
       _bioLoading = false;
       _attPosting = false;
+      _attLocationLoading = false;
     });
   }
 
@@ -352,11 +1130,18 @@ class _HomeScreenState extends State<HomeScreen> {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool(_kPremiumAttendanceKey, v);
     } catch (_) {}
+
     if (!mounted) return;
     setState(() {
       _premiumAttendanceEnabled = v;
     });
-    if (v && _isAttendanceUser) {
+
+    if (!v) return;
+
+    if (_isAttendanceUser) {
+      if (_isHelper) {
+        await _loadHelperTodayShifts();
+      }
       await _refreshAttendanceToday();
     }
   }
@@ -441,13 +1226,16 @@ class _HomeScreenState extends State<HomeScreen> {
         lines.add('OT จะนำไปคำนวณเงินได้ต่อเมื่อได้รับการอนุมัติแล้ว');
       }
       if (manualNeedApproval) {
-        lines.add('หากลืมลงเวลา ต้องส่งคำขอแก้ไขเวลาและรอการอนุมัติ');
+        lines.add('หากลืมลงเวลา ต้องส่งคำขอแก้ไขเวลาและรอคลินิกอนุมัติ');
       }
       if (manualReasonRequired) {
         lines.add('การขอแก้ไขเวลาทำงานจำเป็นต้องระบุเหตุผล');
       }
       if (lockAfterClose) {
         lines.add('เมื่อปิดรอบเงินเดือนแล้ว จะไม่สามารถแก้ไขเวลาย้อนหลังได้');
+      }
+      if (_policyRequireLocation || _isEmployee) {
+        lines.add(_locationRuleText());
       }
       return lines;
     }
@@ -533,8 +1321,12 @@ class _HomeScreenState extends State<HomeScreen> {
       await _loadClinicPolicy();
       await _loadUrgentNeeds();
 
-      if (_isEmployee) {
-        await _loadClosedMonthsForEmployee();
+      // ✅ ตัด self-service payslip ออกจาก Home / My
+      // - ไม่โหลด closed months ตอน bootstrap
+      // - เก็บ code ส่วนอื่นไว้ เผื่อใช้ภายหลัง
+
+      if (_isHelper && _attendancePremiumEnabled) {
+        await _loadHelperTodayShifts();
       }
 
       if (_isAttendanceUser && _attendancePremiumEnabled) {
@@ -801,8 +1593,12 @@ class _HomeScreenState extends State<HomeScreen> {
       } else {
         await _loadClinicPolicy();
         await _loadUrgentNeeds();
-        if (_isEmployee) {
-          await _loadClosedMonthsForEmployee();
+
+        // ✅ ตัด self-service payslip ออกจาก Home / My
+        // - ไม่ reload closed months ตอน active refresh
+
+        if (_isHelper && _attendancePremiumEnabled) {
+          await _loadHelperTodayShifts(silent: true);
         }
         if (_isAttendanceUser && _attendancePremiumEnabled && !_attBusy) {
           await _refreshAttendanceToday();
@@ -1219,6 +2015,7 @@ class _HomeScreenState extends State<HomeScreen> {
     String? reasonCode,
     String? reasonText,
     String? note,
+    Position? position,
   }) {
     final payload = <String, dynamic>{
       'workDate': _todayYmd(),
@@ -1226,7 +2023,12 @@ class _HomeScreenState extends State<HomeScreen> {
       'method': 'biometric',
     };
 
-    if (_clinicId.trim().isNotEmpty) {
+    final helperShiftId = _selectedHelperShiftId;
+    if (_isHelper && helperShiftId.isNotEmpty) {
+      payload['shiftId'] = helperShiftId;
+    }
+
+    if (!_isHelper && _clinicId.trim().isNotEmpty) {
       payload['clinicId'] = _clinicId.trim();
     }
 
@@ -1246,7 +2048,13 @@ class _HomeScreenState extends State<HomeScreen> {
       payload['note'] = note!.trim();
     }
 
-    return payload;
+    final withLocation = _appendAttendanceLocation(
+      payload,
+      position: position,
+    );
+
+    print('[ATTENDANCE][PAYLOAD] $withLocation');
+    return withLocation;
   }
 
   Map<String, dynamic> _decodeBodyMap(String body) {
@@ -1324,6 +2132,20 @@ class _HomeScreenState extends State<HomeScreen> {
     return hasIn && hasOut;
   }
 
+  bool _sessionMatchesSelectedHelperShift(Map<String, dynamic> s) {
+    if (!_isHelper) return true;
+
+    final selectedShiftId = _selectedHelperShiftId;
+    if (selectedShiftId.isEmpty) return true;
+
+    final sessionShiftId =
+        (s['shiftId'] ?? s['shift']?['_id'] ?? s['shift']?['id'] ?? '')
+            .toString()
+            .trim();
+
+    return sessionShiftId.isNotEmpty && sessionShiftId == selectedShiftId;
+  }
+
   List<Map<String, dynamic>> _extractAttendanceList(dynamic decoded) {
     List<Map<String, dynamic>> list = [];
 
@@ -1352,7 +2174,50 @@ class _HomeScreenState extends State<HomeScreen> {
           .toList();
     }
 
+    if (_isHelper && _selectedHelperShiftId.isNotEmpty) {
+      list = list.where(_sessionMatchesSelectedHelperShift).toList();
+    }
+
     return list;
+  }
+
+  bool _canOpenManualRequest({
+    bool showSnack = true,
+    bool helperShiftRequired = true,
+  }) {
+    if (_ctxLoading) {
+      if (showSnack) {
+        _snack('กำลังเตรียมข้อมูล กรุณาลองอีกครั้ง');
+      }
+      return false;
+    }
+
+    if (!_isAttendanceUser) {
+      if (showSnack) {
+        _snack('เมนูนี้สำหรับพนักงานหรือผู้ช่วยเท่านั้น');
+      }
+      return false;
+    }
+
+    if (!_attendancePremiumEnabled) {
+      if (showSnack) {
+        _snack('ฟีเจอร์นี้สำหรับแพ็กเกจพรีเมียม');
+      }
+      return false;
+    }
+
+    if (_openingManualRequestFlow) {
+      if (showSnack) {
+        _snack('กำลังเปิดหน้าคำขอแก้ไขเวลา กรุณารอสักครู่');
+      }
+      return false;
+    }
+
+    if (_isHelper && helperShiftRequired && !_helperCanProceedScan()) {
+      return false;
+    }
+
+    return true;
   }
 
   Future<bool> _openManualAttendanceRequest({
@@ -1360,27 +2225,54 @@ class _HomeScreenState extends State<HomeScreen> {
     String initialReasonCode = '',
     String initialReasonText = '',
     String initialMessage = '',
+    bool isFixingPreviousPending = false,
+    String previousSessionId = '',
+    String previousWorkDate = '',
+    String previousShiftId = '',
+    String previousClinicName = '',
   }) async {
     if (!mounted) return false;
+    if (!_canOpenManualRequest()) return false;
 
-    final ok = await Navigator.push<bool>(
-      context,
-      MaterialPageRoute(
-        builder: (_) => ManualAttendanceRequestScreen(
-          role: _role,
-          clinicId: _clinicId,
-          userId: _userId,
-          staffId: _staffId,
-          initialWorkDate: _todayYmd(),
-          initialManualRequestType: manualRequestType,
-          initialReasonCode: initialReasonCode,
-          initialReasonText: initialReasonText,
-          initialMessage: initialMessage,
+    _openingManualRequestFlow = true;
+    try {
+      final clinicNameForScreen = previousClinicName.trim().isNotEmpty
+          ? previousClinicName.trim()
+          : _attPreviousClinicName.trim().isNotEmpty
+              ? _attPreviousClinicName.trim()
+              : (_selectedHelperShift != null
+                  ? _helperShiftClinicName(_selectedHelperShift!)
+                  : '');
+
+      final ok = await Navigator.push<bool>(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ManualAttendanceRequestScreen(
+            role: _role,
+            clinicId: _clinicId,
+            userId: _userId,
+            staffId: _staffId,
+            initialClinicName: clinicNameForScreen,
+            initialWorkDate: previousWorkDate.trim().isNotEmpty
+                ? previousWorkDate.trim()
+                : _todayYmd(),
+            initialManualRequestType: manualRequestType,
+            initialReasonCode: initialReasonCode,
+            initialReasonText: initialReasonText,
+            initialMessage: initialMessage,
+            initialShiftId: _isHelper ? _selectedHelperShiftId : '',
+            isFixingPreviousPending: isFixingPreviousPending,
+            previousSessionId: previousSessionId,
+            previousWorkDate: previousWorkDate,
+            previousShiftId: previousShiftId,
+          ),
         ),
-      ),
-    );
+      );
 
-    return ok == true;
+      return ok == true;
+    } finally {
+      _openingManualRequestFlow = false;
+    }
   }
 
   Future<void> _showManualAttendanceRequiredDialog({
@@ -1424,6 +2316,58 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (submitted) {
       _snack('ส่งคำขอแก้ไขเวลาเรียบร้อยแล้ว');
+      await _refreshAttendanceToday(silent: true);
+    }
+  }
+
+  Future<void> _showPreviousAttendancePendingDialog({
+    required String title,
+    required String message,
+    required String previousSessionId,
+    required String previousWorkDate,
+    required String previousShiftId,
+    String previousClinicName = '',
+  }) async {
+    if (!mounted) return;
+
+    final openManual = await showDialog<bool>(
+          context: context,
+          builder: (ctx) {
+            return AlertDialog(
+              title: Text(title),
+              content: Text(message),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: const Text('ปิด'),
+                ),
+                ElevatedButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  child: const Text('แก้รายการวันก่อน'),
+                ),
+              ],
+            );
+          },
+        ) ??
+        false;
+
+    if (!openManual) return;
+
+    final submitted = await _openManualAttendanceRequest(
+      manualRequestType: 'forgot_checkout',
+      initialReasonCode: 'PREVIOUS_OPEN_SESSION',
+      initialReasonText: '',
+      initialMessage: message,
+      isFixingPreviousPending: true,
+      previousSessionId: previousSessionId,
+      previousWorkDate: previousWorkDate,
+      previousShiftId: previousShiftId,
+      previousClinicName: previousClinicName,
+    );
+
+    if (submitted) {
+      _snack('ส่งคำขอแก้ไขรายการค้างของวันก่อนเรียบร้อยแล้ว');
+      await _refreshAttendanceToday(silent: true);
     }
   }
 
@@ -1598,12 +2542,287 @@ class _HomeScreenState extends State<HomeScreen> {
     return result;
   }
 
+  Future<void> _showInfoDialog({
+    required String title,
+    required String message,
+    String okText = 'ตกลง',
+  }) async {
+    if (!mounted) return;
+
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          title: Text(title),
+          content: Text(message),
+          actions: [
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: Text(okText),
+            ),
+          ],
+        );
+      },
+    );
+  }
+    Future<void> _showHelperShiftResolutionDialog({
+    required String title,
+    required String message,
+  }) async {
+    if (!mounted) return;
+
+    final openPicker = await showDialog<bool>(
+          context: context,
+          builder: (ctx) {
+            return AlertDialog(
+              title: Text(title),
+              content: Text(message),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: const Text('ปิด'),
+                ),
+                ElevatedButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  child: const Text('เลือกกะงาน'),
+                ),
+              ],
+            );
+          },
+        ) ??
+        false;
+
+    if (!openPicker) return;
+
+    await _showHelperShiftPicker();
+  }
+
+  String _stringFromMap(Map<String, dynamic> m, List<String> keys) {
+    for (final k in keys) {
+      final v = (m[k] ?? '').toString().trim();
+      if (v.isNotEmpty) return v;
+    }
+    return '';
+  }
+
+  String _clinicSessionLabel(Map<String, dynamic> body) {
+    final clinicName = _stringFromMap(body, [
+      'existingClinicName',
+      'clinicName',
+      'existingClinicLabel',
+      'clinicLabel',
+    ]);
+    final clinicId = _stringFromMap(body, ['existingClinicId', 'clinicId']);
+    final workDate = _stringFromMap(body, ['existingWorkDate', 'workDate']);
+    final shiftName = _stringFromMap(body, [
+      'existingShiftName',
+      'shiftName',
+      'existingShiftLabel',
+      'shiftLabel',
+    ]);
+    final shiftId = _stringFromMap(body, ['existingShiftId', 'shiftId']);
+
+    final clinicLabel = clinicName.isNotEmpty ? clinicName : clinicId;
+    final finalShiftLabel = shiftName.isNotEmpty ? shiftName : shiftId;
+
+    final pieces = <String>[];
+    if (clinicLabel.isNotEmpty) pieces.add('คลินิก $clinicLabel');
+    if (workDate.isNotEmpty) pieces.add('วันที่ $workDate');
+    if (finalShiftLabel.isNotEmpty) pieces.add('กะ $finalShiftLabel');
+    return pieces.join(' • ');
+  }
+
+  String _previousPendingSessionLabel() {
+    final clinicLabel = _attPreviousClinicName.trim().isNotEmpty
+        ? _attPreviousClinicName.trim()
+        : _attPreviousClinicId.trim();
+
+    final pieces = <String>[];
+    if (clinicLabel.isNotEmpty) {
+      pieces.add('คลินิก $clinicLabel');
+    }
+    if (_attPreviousWorkDate.trim().isNotEmpty) {
+      pieces.add('วันที่ ${_attPreviousWorkDate.trim()}');
+    }
+    if (_attPreviousShiftId.trim().isNotEmpty) {
+      pieces.add('กะ ${_attPreviousShiftId.trim()}');
+    }
+    return pieces.join(' • ');
+  }
+
+  String _manualRequestTypeTitle(String type) {
+    switch (type) {
+      case 'check_in':
+        return 'ขอเช็คอินย้อนหลัง';
+      case 'check_out':
+        return 'ขอเช็คเอาท์ย้อนหลัง';
+      case 'forgot_checkout':
+        return 'ลืมเช็คเอาท์';
+      case 'edit_both':
+      default:
+        return 'ขอแก้ไขเวลาเข้า-ออก';
+    }
+  }
+
+  String _manualRequestTypeSubtitle(String type) {
+    switch (type) {
+      case 'check_in':
+        return 'ใช้เมื่อยังไม่มีรายการลงเวลา และต้องการขอเวลาเข้างาน';
+      case 'check_out':
+        return 'ใช้เมื่อมีเช็คอินอยู่แล้ว แต่ต้องการขอเวลาออกงาน';
+      case 'forgot_checkout':
+        return 'ใช้เมื่อเช็คอินแล้ว แต่ลืมเช็คเอาท์';
+      case 'edit_both':
+      default:
+        return 'ใช้เมื่อจำเป็นต้องขอแก้ทั้งเวลาเข้าและเวลาออก';
+    }
+  }
+
+  IconData _manualRequestTypeIcon(String type) {
+    switch (type) {
+      case 'check_in':
+        return Icons.login;
+      case 'check_out':
+        return Icons.logout;
+      case 'forgot_checkout':
+        return Icons.history_toggle_off;
+      case 'edit_both':
+      default:
+        return Icons.edit_calendar_outlined;
+    }
+  }
+
+  Future<void> _openManualRequestByType(
+    String manualRequestType, {
+    String initialReasonCode = '',
+    String initialReasonText = '',
+    String initialMessage = '',
+  }) async {
+    if (!_canOpenManualRequest()) return;
+
+    final submitted = await _openManualAttendanceRequest(
+      manualRequestType: manualRequestType,
+      initialReasonCode: initialReasonCode,
+      initialReasonText: initialReasonText,
+      initialMessage: initialMessage,
+    );
+
+    if (submitted) {
+      _snack('ส่งคำขอเรียบร้อยแล้ว');
+      await _refreshAttendanceToday(silent: true);
+    }
+  }
+
+  Future<void> _openPreviousPendingManualFix() async {
+    if (!_hasPreviousPendingBlock) {
+      _snack('ไม่พบรายการวันก่อนที่ต้องแก้ไข');
+      return;
+    }
+
+    if (!_canOpenManualRequest(helperShiftRequired: false)) return;
+
+    final message = _attPreviousPendingMessage.trim().isNotEmpty
+        ? _attPreviousPendingMessage.trim()
+        : 'ยังมีรายการลงเวลาจากวันก่อนค้างอยู่ กรุณาแก้ไขและรออนุมัติก่อน';
+
+    final submitted = await _openManualAttendanceRequest(
+      manualRequestType: 'forgot_checkout',
+      initialReasonCode: 'PREVIOUS_OPEN_SESSION',
+      initialReasonText: '',
+      initialMessage: message,
+      isFixingPreviousPending: true,
+      previousSessionId: _attPreviousSessionId,
+      previousWorkDate: _attPreviousWorkDate,
+      previousShiftId: _attPreviousShiftId,
+      previousClinicName: _attPreviousClinicName,
+    );
+
+    if (submitted) {
+      _snack('ส่งคำขอแก้ไขรายการค้างของวันก่อนเรียบร้อยแล้ว');
+      await _refreshAttendanceToday(silent: true);
+    }
+  }
+
+  Future<void> _showManualRequestMenu() async {
+    if (!_canOpenManualRequest()) return;
+
+    final picked = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) {
+        final types = <String>[
+          'check_in',
+          'check_out',
+          'forgot_checkout',
+          'edit_both',
+        ];
+
+        return SafeArea(
+          child: ListView.separated(
+            shrinkWrap: true,
+            itemCount: types.length + 1,
+            separatorBuilder: (_, __) => const Divider(height: 1),
+            itemBuilder: (ctx, i) {
+              if (i == 0) {
+                return ListTile(
+                  title: const Text(
+                    'เลือกประเภทคำขอแก้ไขเวลา',
+                    style: TextStyle(fontWeight: FontWeight.w900),
+                  ),
+                  subtitle: Text(
+                    _isHelper
+                        ? (_selectedHelperShift == null
+                            ? 'กรุณาเลือกกะก่อนส่งคำขอ'
+                            : 'กะที่เลือก: $_selectedHelperShiftLabel')
+                        : 'เลือกประเภทคำขอที่ต้องการส่งให้คลินิกอนุมัติ',
+                  ),
+                );
+              }
+
+              final type = types[i - 1];
+              return ListTile(
+                leading: Icon(_manualRequestTypeIcon(type)),
+                title: Text(_manualRequestTypeTitle(type)),
+                subtitle: Text(_manualRequestTypeSubtitle(type)),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => Navigator.pop(ctx, type),
+              );
+            },
+          ),
+        );
+      },
+    );
+
+    if (picked == null || picked.isEmpty) return;
+    await _openManualRequestByType(picked);
+  }
+
   Future<_AttendanceSubmitResult> _handleAttendanceConflictResponse(
     http.Response res, {
     required bool isCheckIn,
   }) async {
     final code = _extractApiCode(res);
     final apiMsg = _extractApiMessage(res);
+    final body = _decodeBodyMap(res.body);
+
+    if (code == 'PREVIOUS_ATTENDANCE_PENDING') {
+      _applyPreviousPendingBlockFromMap(body);
+
+      final message = apiMsg.isNotEmpty
+          ? apiMsg
+          : 'ยังมีรายการลงเวลาจากวันก่อนค้างอยู่ กรุณาแก้ไขและรออนุมัติก่อน';
+
+      await _showPreviousAttendancePendingDialog(
+        title: 'ยังมีรายการวันก่อนค้างอยู่',
+        message: message,
+        previousSessionId: _attPreviousSessionId,
+        previousWorkDate: _attPreviousWorkDate,
+        previousShiftId: _attPreviousShiftId,
+        previousClinicName: _attPreviousClinicName,
+      );
+
+      return _AttendanceSubmitResult.previousAttendancePending;
+    }
 
     if (code == 'ALREADY_CHECKED_IN') {
       _snack('วันนี้คุณเช็คอินแล้ว');
@@ -1611,12 +2830,20 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     if (code == 'ATTENDANCE_ALREADY_COMPLETED') {
-      _snack('วันนี้คุณบันทึกเวลาเข้า-ออกครบแล้ว');
+      _snack(
+        _isHelper && _selectedHelperShiftId.isNotEmpty
+            ? 'กะนี้บันทึกเวลาเข้า-ออกครบแล้ว'
+            : 'วันนี้คุณบันทึกเวลาเข้า-ออกครบแล้ว',
+      );
       return _AttendanceSubmitResult.alreadyDone;
     }
 
     if (code == 'NO_OPEN_SESSION') {
-      _snack('ไม่พบรายการเช็คอินที่เปิดอยู่สำหรับวันนี้');
+      _snack(
+        _isHelper && _selectedHelperShiftId.isNotEmpty
+            ? 'ไม่พบรายการเช็คอินที่เปิดอยู่สำหรับกะนี้'
+            : 'ไม่พบรายการเช็คอินที่เปิดอยู่สำหรับวันนี้',
+      );
       return _AttendanceSubmitResult.failed;
     }
 
@@ -1665,6 +2892,128 @@ class _HomeScreenState extends State<HomeScreen> {
       return _AttendanceSubmitResult.earlyCheckoutReasonRequired;
     }
 
+    if (code == 'MULTIPLE_ACTIVE_SHIFTS') {
+      await _showHelperShiftResolutionDialog(
+        title: 'พบหลายกะงานในช่วงเวลาเดียวกัน',
+        message: apiMsg.isNotEmpty
+            ? apiMsg
+            : 'วันนี้มีหลายกะงานที่เวลาซ้อนกัน ระบบยังไม่สามารถรู้ได้ว่าท่านกำลังสแกนให้คลินิกไหน\n\nกรุณาเลือกกะงานที่กำลังทำอยู่ก่อน แล้วค่อยสแกนใหม่',
+      );
+      return _AttendanceSubmitResult.shiftSelectionRequired;
+    }
+
+    if (code == 'SHIFT_NOT_RESOLVED') {
+      await _showHelperShiftResolutionDialog(
+        title: 'ยังไม่สามารถระบุกะงานได้',
+        message: apiMsg.isNotEmpty
+            ? apiMsg
+            : 'ระบบยังไม่สามารถระบุได้ว่าตอนนี้ท่านกำลังทำงานให้คลินิกไหน\n\nกรุณาเลือกกะงานของวันนี้ก่อน แล้วค่อยสแกนใหม่',
+      );
+      return _AttendanceSubmitResult.shiftSelectionRequired;
+    }
+
+    if (code == 'NO_SHIFT_TODAY') {
+      await _showInfoDialog(
+        title: 'ไม่พบกะงานของวันนี้',
+        message: apiMsg.isNotEmpty
+            ? apiMsg
+            : 'วันนี้ยังไม่พบกะงานที่สามารถใช้สแกนได้ กรุณาตรวจสอบตารางงานอีกครั้ง',
+      );
+      return _AttendanceSubmitResult.shiftSelectionRequired;
+    }
+
+    if (code == 'SHIFT_NOT_FOUND') {
+      await _showInfoDialog(
+        title: 'ไม่พบกะงานที่เลือก',
+        message: apiMsg.isNotEmpty
+            ? apiMsg
+            : 'ไม่พบกะงานที่เลือกในระบบ กรุณาเลือกกะใหม่อีกครั้ง',
+      );
+      await _loadHelperTodayShifts(silent: true);
+      return _AttendanceSubmitResult.shiftSelectionRequired;
+    }
+
+    if (code == 'SHIFT_NOT_ASSIGNED_TO_HELPER') {
+      await _showInfoDialog(
+        title: 'กะงานนี้ไม่ได้เป็นของบัญชีนี้',
+        message: apiMsg.isNotEmpty
+            ? apiMsg
+            : 'กะงานที่เลือกไม่ได้ถูกมอบหมายให้บัญชีนี้ กรุณาเลือกกะใหม่',
+      );
+      await _loadHelperTodayShifts(silent: true);
+      return _AttendanceSubmitResult.shiftSelectionRequired;
+    }
+
+    if (code == 'SHIFT_DATE_MISMATCH') {
+      await _showInfoDialog(
+        title: 'วันที่ของกะไม่ตรงกัน',
+        message: apiMsg.isNotEmpty
+            ? apiMsg
+            : 'กะงานที่เลือกไม่ตรงกับวันที่วันนี้ กรุณาเลือกกะใหม่',
+      );
+      await _loadHelperTodayShifts(silent: true);
+      return _AttendanceSubmitResult.shiftSelectionRequired;
+    }
+
+    if (code == 'ALREADY_CHECKED_IN_OTHER_SESSION') {
+      final label = _clinicSessionLabel(body);
+      await _showInfoDialog(
+        title: 'มีการเช็คอินค้างอยู่แล้ว',
+        message: label.isNotEmpty
+            ? 'ตอนนี้ท่านมี session ที่ยังไม่ปิดอยู่แล้ว\n$label\n\nกรุณาเช็คเอาท์ session เดิมให้เรียบร้อยก่อน จึงจะเช็คอินคลินิกใหม่ได้'
+            : 'ตอนนี้ท่านมี session ที่ยังไม่ปิดอยู่แล้ว\n\nกรุณาเช็คเอาท์ session เดิมให้เรียบร้อยก่อน จึงจะเช็คอินคลินิกใหม่ได้',
+      );
+      return _AttendanceSubmitResult.checkedInOtherClinic;
+    }
+
+    if (code == 'MULTIPLE_OPEN_SESSIONS') {
+      await _showInfoDialog(
+        title: 'พบรายการลงเวลาที่เปิดอยู่หลายรายการ',
+        message: apiMsg.isNotEmpty
+            ? apiMsg
+            : 'ระบบพบ open session มากกว่าหนึ่งรายการ จึงไม่สามารถเดาเองได้ว่าควรปิดรายการใด\n\nกรุณาให้ผู้ดูแลตรวจสอบข้อมูล หรือใช้ flow แก้ไขเวลาให้ถูกต้องก่อน',
+      );
+      return _AttendanceSubmitResult.multipleOpenSessions;
+    }
+
+    if (code == 'MANUAL_REQUEST_PENDING') {
+      final msg = apiMsg.isNotEmpty
+          ? apiMsg
+          : 'มีคำขอแก้ไขเวลาค้างอนุมัติอยู่แล้วสำหรับวันนี้';
+      _snack(msg);
+      return _AttendanceSubmitResult.manualRequired;
+    }
+
+    if (code == 'LOCATION_REQUIRED') {
+      final msg = _locationMessageFromApi(
+        fallback: 'กรุณาเปิด GPS และอนุญาตตำแหน่งก่อนบันทึกเวลาทำงาน',
+        response: res,
+      );
+      _setAttendanceLocationState(error: msg);
+      _snack(msg);
+      return _AttendanceSubmitResult.locationUnavailable;
+    }
+
+    if (code == 'OUTSIDE_ALLOWED_RADIUS') {
+      final msg = _locationMessageFromApi(
+        fallback: 'คุณอยู่นอกพื้นที่คลินิกที่กำหนด ไม่สามารถบันทึกเวลาได้',
+        response: res,
+      );
+      _setAttendanceLocationState(error: msg);
+      _snack(msg);
+      return _AttendanceSubmitResult.locationUnavailable;
+    }
+
+    if (code == 'CLINIC_LOCATION_NOT_SET') {
+      final msg = _locationMessageFromApi(
+        fallback: 'ยังไม่ได้ตั้งพิกัดอ้างอิงของคลินิก กรุณาตั้งค่าก่อนใช้งาน',
+        response: res,
+      );
+      _setAttendanceLocationState(error: msg);
+      _snack(msg);
+      return _AttendanceSubmitResult.locationUnavailable;
+    }
+
     if (apiMsg.isNotEmpty) {
       _snack(apiMsg);
     } else {
@@ -1683,7 +3032,18 @@ class _HomeScreenState extends State<HomeScreen> {
       _attErr = '';
       _attCheckedIn = true;
       _attCheckedOut = false;
-      _attStatusLine = 'วันนี้เช็คอินเรียบร้อยแล้ว (ยังไม่ได้เช็คเอาท์)';
+      _attBlockedByPreviousPending = false;
+      _attPreviousPendingMessage = '';
+      _attPreviousSessionId = '';
+      _attPreviousWorkDate = '';
+      _attPreviousShiftId = '';
+      _attPreviousClinicId = '';
+      _attPreviousClinicName = '';
+      _attPreviousAction = '';
+      _attPreviousSession = <String, dynamic>{};
+      _attStatusLine = _isHelper && _selectedHelperShift != null
+          ? 'เช็คอินกะที่เลือกเรียบร้อยแล้ว (ยังไม่ได้เช็คเอาท์)'
+          : 'วันนี้เช็คอินเรียบร้อยแล้ว (ยังไม่ได้เช็คเอาท์)';
     });
   }
 
@@ -1693,7 +3053,18 @@ class _HomeScreenState extends State<HomeScreen> {
       _attErr = '';
       _attCheckedIn = true;
       _attCheckedOut = true;
-      _attStatusLine = 'วันนี้เช็คอินและเช็คเอาท์เรียบร้อยแล้ว';
+      _attBlockedByPreviousPending = false;
+      _attPreviousPendingMessage = '';
+      _attPreviousSessionId = '';
+      _attPreviousWorkDate = '';
+      _attPreviousShiftId = '';
+      _attPreviousClinicId = '';
+      _attPreviousClinicName = '';
+      _attPreviousAction = '';
+      _attPreviousSession = <String, dynamic>{};
+      _attStatusLine = _isHelper && _selectedHelperShift != null
+          ? 'เช็คอินและเช็คเอาท์กะที่เลือกเรียบร้อยแล้ว'
+          : 'วันนี้เช็คอินและเช็คเอาท์เรียบร้อยแล้ว';
     });
   }
 
@@ -1702,9 +3073,10 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       _attErr = '';
       _attCheckedIn = true;
-      if (!_attCheckedOut) {
-        _attStatusLine = 'วันนี้เช็คอินเรียบร้อยแล้ว (ยังไม่ได้เช็คเอาท์)';
-      }
+      _attCheckedOut = false;
+      _attStatusLine = _isHelper && _selectedHelperShift != null
+          ? 'กะนี้เช็คอินเรียบร้อยแล้ว (ยังไม่ได้เช็คเอาท์)'
+          : 'วันนี้เช็คอินเรียบร้อยแล้ว (ยังไม่ได้เช็คเอาท์)';
     });
   }
 
@@ -1714,7 +3086,9 @@ class _HomeScreenState extends State<HomeScreen> {
       _attErr = '';
       _attCheckedIn = true;
       _attCheckedOut = true;
-      _attStatusLine = 'วันนี้เช็คอินและเช็คเอาท์เรียบร้อยแล้ว';
+      _attStatusLine = _isHelper && _selectedHelperShift != null
+          ? 'กะนี้เช็คอินและเช็คเอาท์เรียบร้อยแล้ว'
+          : 'วันนี้เช็คอินและเช็คเอาท์เรียบร้อยแล้ว';
     });
   }
 
@@ -1725,6 +3099,13 @@ class _HomeScreenState extends State<HomeScreen> {
     if (_attBusy && !silent) {
       print('[ATTENDANCE][REFRESH] skipped because busy');
       return;
+    }
+
+    if (_isHelper &&
+        !_helperShiftLoading &&
+        _helperTodayShifts.isEmpty &&
+        !_helperShiftTouchedByUser) {
+      await _loadHelperTodayShifts(silent: true);
     }
 
     final int seq = ++_attRefreshSeq;
@@ -1740,182 +3121,102 @@ class _HomeScreenState extends State<HomeScreen> {
       final token = await _getTokenAny();
       if (token == null || token.isEmpty) throw Exception('no token');
 
-      final headers = _authHeaders(token);
+      final workDate = _todayYmd();
 
-      final previewCandidates = <String>[
-        '/attendance/me-preview',
-        '/api/attendance/me-preview',
-      ];
-
-      for (final p in previewCandidates) {
-        try {
-          final u = _payrollUri(p, qs: {'workDate': _todayYmd()});
-          final res = await _tryGet(u, headers: headers);
-
-          if (seq != _attRefreshSeq) return;
-
-          if (res.statusCode == 404) continue;
-          if (res.statusCode == 401) throw Exception('no token');
-
-          if (res.statusCode == 200) {
-            final decoded = jsonDecode(res.body);
-            Map<String, dynamic> m = {};
-            if (decoded is Map) m = Map<String, dynamic>.from(decoded);
-
-            final dataAny = (m['data'] is Map) ? m['data'] : m;
-            final data = (dataAny is Map)
-                ? Map<String, dynamic>.from(dataAny)
-                : <String, dynamic>{};
-
-            if (data['policy'] is Map) {
-              _applyPolicyFromMap(Map<String, dynamic>.from(data['policy']));
-            }
-
-            final explicitCheckedIn =
-                data['checkedIn'] == true || data['hasCheckIn'] == true;
-            final explicitCheckedOut =
-                data['checkedOut'] == true || data['hasCheckOut'] == true;
-
-            bool checkedIn = explicitCheckedIn;
-            bool checkedOut = explicitCheckedOut;
-
-            final attendanceAny = data['attendance'];
-            final attendance = attendanceAny is Map
-                ? Map<String, dynamic>.from(attendanceAny)
-                : <String, dynamic>{};
-
-            final openSessionAny = attendance['openSession'];
-            final hasOpenSession = openSessionAny is Map &&
-                Map<String, dynamic>.from(openSessionAny).isNotEmpty;
-
-            final pendingManualAny = attendance['pendingManualSession'];
-            final hasPendingManual = pendingManualAny is Map &&
-                Map<String, dynamic>.from(pendingManualAny).isNotEmpty;
-
-            List<Map<String, dynamic>> sessions = <Map<String, dynamic>>[];
-            if (data['sessions'] is List) {
-              sessions = (data['sessions'] as List)
-                  .whereType<Map>()
-                  .map((e) => Map<String, dynamic>.from(e))
-                  .toList();
-            }
-
-            Map<String, dynamic>? todayOpen;
-            Map<String, dynamic>? todayDone;
-
-            for (final s in sessions) {
-              if (!_isTodaySession(s)) continue;
-
-              if (_sessionLooksOpen(s)) {
-                todayOpen = s;
-                break;
-              }
-
-              if (_sessionLooksClosed(s)) {
-                todayDone ??= s;
-              }
-            }
-
-            if (hasPendingManual) {
-              checkedIn = true;
-              checkedOut = false;
-            } else if (hasOpenSession || todayOpen != null) {
-              checkedIn = true;
-              checkedOut = false;
-            } else if (todayDone != null) {
-              checkedIn = true;
-              checkedOut = true;
-            } else if (!checkedIn && !checkedOut) {
-              final hasTopLevelCheckIn = _hasValue(data['checkInAt']);
-              final hasTopLevelCheckOut = _hasValue(data['checkOutAt']);
-
-              if (hasTopLevelCheckIn && !hasTopLevelCheckOut) {
-                checkedIn = true;
-                checkedOut = false;
-              } else if (hasTopLevelCheckIn && hasTopLevelCheckOut) {
-                checkedIn = true;
-                checkedOut = true;
-              }
-            }
-
-            if (!checkedIn && data['summary'] is Map) {
-              final summary = Map<String, dynamic>.from(data['summary']);
-              final workedMinutes = summary['workedMinutes'];
-              if (workedMinutes is num && workedMinutes > 0) {
-                checkedIn = true;
-                checkedOut = true;
-              }
-            }
-
-            final msg = (data['message'] ?? '').toString().trim();
-            final line = msg.isNotEmpty
-                ? msg
-                : hasPendingManual
-                    ? 'วันนี้มีคำขอแก้ไขเวลา รอการอนุมัติ'
-                    : checkedIn
-                        ? (checkedOut
-                            ? 'วันนี้เช็คอินและเช็คเอาท์เรียบร้อยแล้ว'
-                            : 'วันนี้เช็คอินเรียบร้อยแล้ว (ยังไม่ได้เช็คเอาท์)')
-                        : 'วันนี้ยังไม่ได้เช็คอิน';
-
-            if (!mounted || seq != _attRefreshSeq) return;
-            setState(() {
-              _attLoading = false;
-              _attErr = '';
-              _attStatusLine = line;
-              _attCheckedIn = checkedIn;
-              _attCheckedOut = checkedOut;
-            });
-            return;
-          }
-
-          if (res.statusCode == 403) {
-            if (!mounted || seq != _attRefreshSeq) return;
-            setState(() {
-              _attLoading = false;
-              _attErr = 'คุณไม่มีสิทธิ์ใช้งานเมนูนี้';
-            });
-            return;
-          }
-
-          if (res.statusCode >= 400 && res.statusCode < 500) break;
-        } catch (_) {
-          continue;
-        }
-      }
-
-      final meCandidates = <String>[
-        '/attendance/me',
-        '/api/attendance/me',
-      ];
-
-      for (final p in meCandidates) {
-        final u = _payrollUri(p);
-        final r = await _tryGet(u, headers: headers);
+      try {
+        final preview = await AttendanceApi.myDayPreview(
+          token: token,
+          workDate: workDate,
+          shiftId: _isHelper ? _selectedHelperShiftId : null,
+        );
 
         if (seq != _attRefreshSeq) return;
 
-        if (r.statusCode == 404) continue;
-        if (r.statusCode == 401) throw Exception('no token');
+        final dataAny = (preview['data'] is Map) ? preview['data'] : preview;
+        final data = (dataAny is Map)
+            ? Map<String, dynamic>.from(dataAny)
+            : <String, dynamic>{};
 
-        if (r.statusCode == 403) {
-          if (!mounted || seq != _attRefreshSeq) return;
-          setState(() {
-            _attLoading = false;
-            _attErr = 'คุณไม่มีสิทธิ์ใช้งานเมนูนี้';
-          });
-          return;
+        _clearPreviousPendingBlock();
+
+        if (data['policy'] is Map) {
+          _applyPolicyFromMap(Map<String, dynamic>.from(data['policy']));
         }
 
-        if (r.statusCode != 200) break;
+        if (_isHelper) {
+          final runtime = (data['runtime'] is Map)
+              ? Map<String, dynamic>.from(data['runtime'])
+              : <String, dynamic>{};
 
-        final decoded = jsonDecode(r.body);
-        final list = _extractAttendanceList(decoded);
+          final availableAny = runtime['availableShifts'];
+          if (availableAny is List) {
+            final shifts = availableAny
+                .whereType<Map>()
+                .map((e) => Map<String, dynamic>.from(e))
+                .toList();
+            final deduped = _sortHelperShifts(_dedupeHelperShiftList(shifts));
+
+            if (mounted && deduped.isNotEmpty) {
+              setState(() {
+                _helperTodayShifts = deduped;
+              });
+            }
+          }
+
+          if (runtime['shift'] is Map) {
+            final runtimeShift = Map<String, dynamic>.from(runtime['shift']);
+            final mode = (runtime['shiftSelectionMode'] ?? '')
+                .toString()
+                .trim();
+
+            if (_selectedHelperShift == null ||
+                !_helperShiftTouchedByUser ||
+                _sameShiftIdentity(runtimeShift, _selectedHelperShift)) {
+              _applySelectedHelperShift(
+                runtimeShift,
+                runtimeSelectionMode: mode,
+              );
+            }
+          }
+        }
+
+        final explicitCheckedIn =
+            data['checkedIn'] == true || data['hasCheckIn'] == true;
+        final explicitCheckedOut =
+            data['checkedOut'] == true || data['hasCheckOut'] == true;
+
+        bool checkedIn = explicitCheckedIn;
+        bool checkedOut = explicitCheckedOut;
+
+        final attendanceAny = data['attendance'];
+        final attendance = attendanceAny is Map
+            ? Map<String, dynamic>.from(attendanceAny)
+            : <String, dynamic>{};
+
+        final openSessionAny = attendance['openSession'];
+        final hasOpenSession = openSessionAny is Map &&
+            Map<String, dynamic>.from(openSessionAny).isNotEmpty;
+
+        final pendingManualAny = attendance['pendingManualSession'];
+        final hasPendingManual = pendingManualAny is Map &&
+            Map<String, dynamic>.from(pendingManualAny).isNotEmpty;
+
+        List<Map<String, dynamic>> sessions = <Map<String, dynamic>>[];
+        if (data['sessions'] is List) {
+          sessions = (data['sessions'] as List)
+              .whereType<Map>()
+              .map((e) => Map<String, dynamic>.from(e))
+              .toList();
+        }
+
+        if (_isHelper && _selectedHelperShiftId.isNotEmpty) {
+          sessions = sessions.where(_sessionMatchesSelectedHelperShift).toList();
+        }
 
         Map<String, dynamic>? todayOpen;
         Map<String, dynamic>? todayDone;
 
-        for (final s in list) {
+        for (final s in sessions) {
           if (!_isTodaySession(s)) continue;
 
           if (_sessionLooksOpen(s)) {
@@ -1928,13 +3229,71 @@ class _HomeScreenState extends State<HomeScreen> {
           }
         }
 
-        final checkedIn = todayOpen != null || todayDone != null;
-        final checkedOut = todayOpen == null && todayDone != null;
-        final line = checkedIn
-            ? (checkedOut
-                ? 'วันนี้เช็คอินและเช็คเอาท์เรียบร้อยแล้ว'
-                : 'วันนี้เช็คอินเรียบร้อยแล้ว (ยังไม่ได้เช็คเอาท์)')
-            : 'วันนี้ยังไม่ได้เช็คอิน';
+        final hasTopLevelCheckIn = _hasValue(data['checkInAt']);
+        final hasTopLevelCheckOut = _hasValue(data['checkOutAt']);
+        final hasSummaryWorkedMinutes = data['summary'] is Map &&
+            ((Map<String, dynamic>.from(data['summary'])['workedMinutes']
+                    is num)
+                ? (Map<String, dynamic>.from(
+                            data['summary'])['workedMinutes'] as num) >
+                        0
+                : false);
+
+        if (hasOpenSession || todayOpen != null) {
+          checkedIn = true;
+          checkedOut = false;
+        } else if (todayDone != null) {
+          checkedIn = true;
+          checkedOut = true;
+        } else if (hasPendingManual) {
+          checkedIn = false;
+          checkedOut = false;
+        } else if (hasTopLevelCheckIn && !hasTopLevelCheckOut) {
+          checkedIn = true;
+          checkedOut = false;
+        } else if (hasTopLevelCheckIn && hasTopLevelCheckOut) {
+          checkedIn = true;
+          checkedOut = true;
+        } else if (hasSummaryWorkedMinutes) {
+          checkedIn = true;
+          checkedOut = true;
+        } else if (!checkedIn && !checkedOut) {
+          checkedIn = false;
+          checkedOut = false;
+        }
+
+        final msg = (data['message'] ?? '').toString().trim();
+        String line = msg.isNotEmpty
+            ? msg
+            : hasPendingManual
+                ? 'วันนี้มีคำขอแก้ไขเวลารอการอนุมัติ'
+                : checkedIn
+                    ? (checkedOut
+                        ? 'วันนี้เช็คอินและเช็คเอาท์เรียบร้อยแล้ว'
+                        : 'วันนี้เช็คอินเรียบร้อยแล้ว (ยังไม่ได้เช็คเอาท์)')
+                    : 'วันนี้ยังไม่ได้เช็คอิน';
+
+        if (_isHelper) {
+          if (_helperTodayShifts.isEmpty) {
+            line = 'วันนี้ยังไม่พบกะงานสำหรับการสแกน';
+          } else if (_selectedHelperShift == null) {
+            line = 'กรุณาเลือกกะก่อนสแกนลายนิ้วมือ';
+          } else if (hasPendingManual && !checkedIn && !checkedOut) {
+            line = msg.isNotEmpty
+                ? msg
+                : 'มีคำขอแก้ไขเวลารออนุมัติสำหรับกะที่เลือก • $_selectedHelperShiftLabel';
+          } else if (!checkedIn && !checkedOut) {
+            line = 'พร้อมสแกนสำหรับกะที่เลือก • $_selectedHelperShiftLabel';
+          } else if (checkedIn && !checkedOut) {
+            line = 'เช็คอินแล้วสำหรับกะที่เลือก • $_selectedHelperShiftLabel';
+          } else if (checkedIn && checkedOut) {
+            line = 'เช็คอินและเช็คเอาท์แล้วสำหรับกะที่เลือก';
+          }
+        } else if (hasPendingManual && !checkedIn && !checkedOut) {
+          line = msg.isNotEmpty ? msg : 'มีคำขอแก้ไขเวลารอการอนุมัติ';
+        } else if (_attendanceNeedsLiveLocation && !checkedIn) {
+          line = 'ยังไม่ได้เช็คอิน • ${_locationRuleText()}';
+        }
 
         if (!mounted || seq != _attRefreshSeq) return;
         setState(() {
@@ -1945,12 +3304,93 @@ class _HomeScreenState extends State<HomeScreen> {
           _attCheckedOut = checkedOut;
         });
         return;
+      } on AttendanceApiException catch (e) {
+        print('[ATTENDANCE][REFRESH][PREVIEW][API] $e');
+
+        if (e.isPreviousAttendancePending) {
+          if (seq != _attRefreshSeq) return;
+
+          _applyPreviousPendingBlockFromMap(e.data);
+
+          String line = e.message.trim().isNotEmpty
+              ? e.message.trim()
+              : 'ยังมีรายการลงเวลาจากวันก่อนค้างอยู่ กรุณาแก้ไขและรออนุมัติก่อน';
+
+          if (_isHelper && _selectedHelperShift != null) {
+            line = '$line\nกะที่เลือก: $_selectedHelperShiftLabel';
+          }
+
+          if (!mounted || seq != _attRefreshSeq) return;
+          setState(() {
+            _attLoading = false;
+            _attErr = '';
+            _attStatusLine = line;
+            _attCheckedIn = false;
+            _attCheckedOut = false;
+          });
+          return;
+        }
+      } catch (e) {
+        print('[ATTENDANCE][REFRESH][PREVIEW] $e');
+      }
+
+      final me = await AttendanceApi.mySessions(
+        token: token,
+        dateFrom: workDate,
+        dateTo: workDate,
+        shiftId: _isHelper ? _selectedHelperShiftId : null,
+      );
+
+      if (seq != _attRefreshSeq) return;
+
+      _clearPreviousPendingBlock();
+
+      final list = _extractAttendanceList(me);
+
+      Map<String, dynamic>? todayOpen;
+      Map<String, dynamic>? todayDone;
+
+      for (final s in list) {
+        if (!_isTodaySession(s)) continue;
+
+        if (_sessionLooksOpen(s)) {
+          todayOpen = s;
+          break;
+        }
+
+        if (_sessionLooksClosed(s)) {
+          todayDone ??= s;
+        }
+      }
+
+      final checkedIn = todayOpen != null || todayDone != null;
+      final checkedOut = todayOpen == null && todayDone != null;
+
+      String line = checkedIn
+          ? (checkedOut
+              ? 'วันนี้เช็คอินและเช็คเอาท์เรียบร้อยแล้ว'
+              : 'วันนี้เช็คอินเรียบร้อยแล้ว (ยังไม่ได้เช็คเอาท์)')
+          : 'วันนี้ยังไม่ได้เช็คอิน';
+
+      if (_isHelper) {
+        if (_helperTodayShifts.isEmpty) {
+          line = 'วันนี้ยังไม่พบกะงานสำหรับการสแกน';
+        } else if (_selectedHelperShift == null) {
+          line = 'กรุณาเลือกกะก่อนสแกนลายนิ้วมือ';
+        } else if (!checkedIn && !checkedOut) {
+          line = 'พร้อมสแกนสำหรับกะที่เลือก • $_selectedHelperShiftLabel';
+        }
+      } else if (_attendanceNeedsLiveLocation && !checkedIn) {
+        line = 'ยังไม่ได้เช็คอิน • ${_locationRuleText()}';
       }
 
       if (!mounted || seq != _attRefreshSeq) return;
       setState(() {
         _attLoading = false;
-        _attErr = 'ไม่สามารถเชื่อมต่อได้ กรุณาลองใหม่';
+        _attErr = '';
+        _attStatusLine = line;
+        _attCheckedIn = checkedIn;
+        _attCheckedOut = checkedOut;
       });
     } catch (e) {
       if (!mounted || seq != _attRefreshSeq) return;
@@ -1963,73 +3403,87 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<_AttendanceSubmitResult> _postAttendanceCheckIn({
     required String token,
+    Position? position,
   }) async {
-    final headers = _authHeaders(token);
-    final body = jsonEncode(_attendancePayload());
+    try {
+      await AttendanceApi.checkIn(
+        token: token,
+        workDate: _todayYmd(),
+        shiftId: _isHelper ? _selectedHelperShiftId : null,
+        biometricVerified: true,
+        lat: position?.latitude ?? _attLat,
+        lng: position?.longitude ?? _attLng,
+      );
 
-    final candidates = <String>[
-      '/attendance/check-in',
-      '/api/attendance/check-in',
-    ];
+      print('[ATTENDANCE][CHECKIN][API] success');
+      return _AttendanceSubmitResult.success;
+    } on AttendanceApiException catch (e) {
+      print('[ATTENDANCE][CHECKIN][API] $e');
 
-    http.Response? lastRes;
+      if (e.isPreviousAttendancePending) {
+        _applyPreviousPendingBlockFromMap(e.data);
 
-    for (final p in candidates) {
-      try {
-        final u = _payrollUri(p);
-        print('[ATTENDANCE][CHECKIN] POST $u');
-        print('[ATTENDANCE][CHECKIN] BODY $body');
+        final message = e.message.trim().isNotEmpty
+            ? e.message.trim()
+            : 'ยังมีรายการลงเวลาจากวันก่อนค้างอยู่ กรุณาแก้ไขและรออนุมัติก่อน';
 
-        final res = await _tryPost(u, headers: headers, body: body);
-        lastRes = res;
+        final previousClinicName =
+            (e.data['previousClinicName'] ?? '').toString().trim();
 
-        print(
-          '[ATTENDANCE][CHECKIN] STATUS=${res.statusCode} BODY=${res.body}',
+        await _showPreviousAttendancePendingDialog(
+          title: 'ยังมีรายการวันก่อนค้างอยู่',
+          message: message,
+          previousSessionId: e.previousSessionId,
+          previousWorkDate: e.previousWorkDate,
+          previousShiftId: e.previousShiftId,
+          previousClinicName: previousClinicName,
         );
 
-        if (res.statusCode == 200 || res.statusCode == 201) {
-          return _AttendanceSubmitResult.success;
-        }
-
-        if (res.statusCode == 409) {
-          return _handleAttendanceConflictResponse(res, isCheckIn: true);
-        }
-
-        if (res.statusCode == 404) continue;
-
-        if (res.statusCode == 401) {
-          _snack('เซสชันหมดอายุ กรุณาเข้าสู่ระบบอีกครั้ง');
-          return _AttendanceSubmitResult.unauthorized;
-        }
-
-        if (res.statusCode == 403) {
-          _snack('คุณไม่มีสิทธิ์บันทึกเวลาเข้างาน');
-          return _AttendanceSubmitResult.forbidden;
-        }
-
-        final apiMsg = _extractApiMessage(res);
-        if (apiMsg.isNotEmpty) {
-          _snack(apiMsg);
-        } else {
-          _snack('ไม่สามารถบันทึกเวลาเข้างานได้ กรุณาลองใหม่');
-        }
-        return _AttendanceSubmitResult.failed;
-      } catch (e) {
-        print('[ATTENDANCE][CHECKIN] ERROR $e');
-        continue;
+        return _AttendanceSubmitResult.previousAttendancePending;
       }
-    }
 
-    if (lastRes != null) {
-      final apiMsg = _extractApiMessage(lastRes);
-      _snack(apiMsg.isNotEmpty
-          ? apiMsg
-          : 'ไม่สามารถบันทึกเวลาเข้างานได้ กรุณาลองใหม่');
-    } else {
-      _snack('ไม่สามารถเชื่อมต่อได้ กรุณาลองใหม่');
-    }
+      if (e.statusCode == 401) {
+        _snack('เซสชันหมดอายุ กรุณาเข้าสู่ระบบอีกครั้ง');
+        return _AttendanceSubmitResult.unauthorized;
+      }
 
-    return _AttendanceSubmitResult.failed;
+      if (e.statusCode == 403) {
+        _snack(
+          e.message.isNotEmpty ? e.message : 'คุณไม่มีสิทธิ์บันทึกเวลาเข้างาน',
+        );
+        return _AttendanceSubmitResult.forbidden;
+      }
+
+      if (e.statusCode == 400 || e.statusCode == 409) {
+        final fakeRes = http.Response(
+          jsonEncode(e.data),
+          e.statusCode,
+          headers: const {'content-type': 'application/json'},
+        );
+        return await _handleAttendanceConflictResponse(
+          fakeRes,
+          isCheckIn: true,
+        );
+      }
+
+      _snack(
+        e.message.isNotEmpty
+            ? e.message
+            : 'ไม่สามารถบันทึกเวลาเข้างานได้ กรุณาลองใหม่',
+      );
+      return _AttendanceSubmitResult.failed;
+    } catch (e) {
+      final text = e.toString();
+      print('[ATTENDANCE][CHECKIN] ERROR $text');
+
+      if (text.startsWith('Exception: ')) {
+        _snack(text.replaceFirst('Exception: ', ''));
+      } else {
+        _snack('ไม่สามารถบันทึกเวลาเข้างานได้ กรุณาลองใหม่');
+      }
+
+      return _AttendanceSubmitResult.failed;
+    }
   }
 
   Future<_AttendanceSubmitResult> _postAttendanceCheckOut({
@@ -2037,196 +3491,90 @@ class _HomeScreenState extends State<HomeScreen> {
     String? reasonCode,
     String? reasonText,
     String? note,
+    Position? position,
   }) async {
-    final headers = _authHeaders(token);
-    final body = jsonEncode(
-      _attendancePayload(
-        reasonCode: reasonCode,
-        reasonText: reasonText,
-        note: note,
-      ),
-    );
+    try {
+      await AttendanceApi.checkOut(
+        token: token,
+        workDate: _todayYmd(),
+        shiftId: _isHelper ? _selectedHelperShiftId : null,
+        biometricVerified: true,
+        reasonCode: reasonCode ?? '',
+        reasonText: reasonText ?? '',
+        note: note ?? '',
+        lat: position?.latitude ?? _attLat,
+        lng: position?.longitude ?? _attLng,
+      );
 
-    final directCandidates = <String>[
-      '/attendance/check-out',
-      '/api/attendance/check-out',
-    ];
+      print('[ATTENDANCE][CHECKOUT][API] success');
+      return _AttendanceSubmitResult.success;
+    } on AttendanceApiException catch (e) {
+      print('[ATTENDANCE][CHECKOUT][API] $e');
 
-    http.Response? lastRes;
-    bool shouldTryIdFallback = false;
+      if (e.isPreviousAttendancePending) {
+        _applyPreviousPendingBlockFromMap(e.data);
 
-    for (final p in directCandidates) {
-      try {
-        final u = _payrollUri(p);
-        print('[ATTENDANCE][CHECKOUT] POST $u');
-        print('[ATTENDANCE][CHECKOUT] BODY $body');
+        final message = e.message.trim().isNotEmpty
+            ? e.message.trim()
+            : 'ยังมีรายการลงเวลาจากวันก่อนค้างอยู่ กรุณาแก้ไขและรออนุมัติก่อน';
 
-        final res = await _tryPost(u, headers: headers, body: body);
-        lastRes = res;
+        final previousClinicName =
+            (e.data['previousClinicName'] ?? '').toString().trim();
 
-        print(
-          '[ATTENDANCE][CHECKOUT] STATUS=${res.statusCode} BODY=${res.body}',
+        await _showPreviousAttendancePendingDialog(
+          title: 'ยังมีรายการวันก่อนค้างอยู่',
+          message: message,
+          previousSessionId: e.previousSessionId,
+          previousWorkDate: e.previousWorkDate,
+          previousShiftId: e.previousShiftId,
+          previousClinicName: previousClinicName,
         );
 
-        if (res.statusCode == 200 || res.statusCode == 201) {
-          return _AttendanceSubmitResult.success;
-        }
-
-        if (res.statusCode == 409) {
-          final code = _extractApiCode(res);
-
-          if (code == 'NO_OPEN_SESSION') {
-            shouldTryIdFallback = true;
-            continue;
-          }
-
-          return _handleAttendanceConflictResponse(res, isCheckIn: false);
-        }
-
-        if (res.statusCode == 404) {
-          shouldTryIdFallback = true;
-          continue;
-        }
-
-        if (res.statusCode == 401) {
-          _snack('เซสชันหมดอายุ กรุณาเข้าสู่ระบบอีกครั้ง');
-          return _AttendanceSubmitResult.unauthorized;
-        }
-
-        if (res.statusCode == 403) {
-          _snack('คุณไม่มีสิทธิ์บันทึกเวลาออกงาน');
-          return _AttendanceSubmitResult.forbidden;
-        }
-
-        final apiMsg = _extractApiMessage(res);
-        if (apiMsg.isNotEmpty) {
-          _snack(apiMsg);
-        } else {
-          _snack('ไม่สามารถบันทึกเวลาออกงานได้ กรุณาลองใหม่');
-        }
-        return _AttendanceSubmitResult.failed;
-      } catch (e) {
-        print('[ATTENDANCE][CHECKOUT] ERROR $e');
-        continue;
+        return _AttendanceSubmitResult.previousAttendancePending;
       }
-    }
 
-    if (shouldTryIdFallback) {
-      try {
-        final meCandidates = <String>[
-          '/attendance/me',
-          '/api/attendance/me',
-        ];
-
-        for (final p in meCandidates) {
-          final u = _payrollUri(p);
-          print('[ATTENDANCE][CHECKOUT] FALLBACK GET $u');
-
-          final r = await _tryGet(u, headers: headers);
-
-          print(
-            '[ATTENDANCE][CHECKOUT] FALLBACK STATUS=${r.statusCode} BODY=${r.body}',
-          );
-
-          if (r.statusCode == 404) continue;
-
-          if (r.statusCode == 401) {
-            _snack('เซสชันหมดอายุ กรุณาเข้าสู่ระบบอีกครั้ง');
-            return _AttendanceSubmitResult.unauthorized;
-          }
-
-          if (r.statusCode == 403) {
-            _snack('คุณไม่มีสิทธิ์บันทึกเวลาออกงาน');
-            return _AttendanceSubmitResult.forbidden;
-          }
-
-          if (r.statusCode != 200) break;
-
-          final decoded = jsonDecode(r.body);
-          final list = _extractAttendanceList(decoded);
-
-          Map<String, dynamic>? openToday;
-
-          for (final s in list) {
-            final hasOut = _hasValue(
-              s['checkOutAt'] ?? s['checkoutAt'] ?? s['checkOutTime'],
-            );
-
-            if (_isTodaySession(s) && !hasOut) {
-              openToday = s;
-              break;
-            }
-          }
-
-          final id =
-              (openToday?['_id'] ?? openToday?['id'] ?? '').toString().trim();
-
-          print('[ATTENDANCE][CHECKOUT] FALLBACK SESSION ID=$id');
-
-          if (id.isEmpty) {
-            _snack('วันนี้ไม่พบรายการเช็คอินที่ยังเปิดอยู่');
-            return _AttendanceSubmitResult.failed;
-          }
-
-          final idCandidates = <String>[
-            '/attendance/$id/check-out',
-            '/api/attendance/$id/check-out',
-          ];
-
-          for (final p2 in idCandidates) {
-            final u2 = _payrollUri(p2);
-            print('[ATTENDANCE][CHECKOUT] FALLBACK POST $u2');
-
-            final r2 = await _tryPost(u2, headers: headers, body: body);
-            lastRes = r2;
-
-            print(
-              '[ATTENDANCE][CHECKOUT] FALLBACK POST STATUS=${r2.statusCode} BODY=${r2.body}',
-            );
-
-            if (r2.statusCode == 200 || r2.statusCode == 201) {
-              return _AttendanceSubmitResult.success;
-            }
-
-            if (r2.statusCode == 409) {
-              return _handleAttendanceConflictResponse(r2, isCheckIn: false);
-            }
-
-            if (r2.statusCode == 401) {
-              _snack('เซสชันหมดอายุ กรุณาเข้าสู่ระบบอีกครั้ง');
-              return _AttendanceSubmitResult.unauthorized;
-            }
-            if (r2.statusCode == 403) {
-              _snack('คุณไม่มีสิทธิ์บันทึกเวลาออกงาน');
-              return _AttendanceSubmitResult.forbidden;
-            }
-            if (r2.statusCode == 404) continue;
-
-            final apiMsg = _extractApiMessage(r2);
-            if (apiMsg.isNotEmpty) {
-              _snack(apiMsg);
-            } else {
-              _snack('ไม่สามารถบันทึกเวลาออกงานได้ กรุณาลองใหม่');
-            }
-            return _AttendanceSubmitResult.failed;
-          }
-
-          break;
-        }
-      } catch (e) {
-        print('[ATTENDANCE][CHECKOUT] FALLBACK ERROR $e');
+      if (e.statusCode == 401) {
+        _snack('เซสชันหมดอายุ กรุณาเข้าสู่ระบบอีกครั้ง');
+        return _AttendanceSubmitResult.unauthorized;
       }
-    }
 
-    if (lastRes != null) {
-      final apiMsg = _extractApiMessage(lastRes);
-      _snack(apiMsg.isNotEmpty
-          ? apiMsg
-          : 'ไม่สามารถบันทึกเวลาออกงานได้ กรุณาลองใหม่');
-    } else {
-      _snack('ไม่สามารถเชื่อมต่อได้ กรุณาลองใหม่');
+      if (e.statusCode == 403) {
+        _snack(
+          e.message.isNotEmpty ? e.message : 'คุณไม่มีสิทธิ์บันทึกเวลาออกงาน',
+        );
+        return _AttendanceSubmitResult.forbidden;
+      }
+
+      if (e.statusCode == 400 || e.statusCode == 409) {
+        final fakeRes = http.Response(
+          jsonEncode(e.data),
+          e.statusCode,
+          headers: const {'content-type': 'application/json'},
+        );
+        return await _handleAttendanceConflictResponse(
+          fakeRes,
+          isCheckIn: false,
+        );
+      }
+
+      _snack(
+        e.message.isNotEmpty
+            ? e.message
+            : 'ไม่สามารถบันทึกเวลาออกงานได้ กรุณาลองใหม่',
+      );
+      return _AttendanceSubmitResult.failed;
+    } catch (e) {
+      final text = e.toString();
+      print('[ATTENDANCE][CHECKOUT] ERROR $text');
+
+      if (text.startsWith('Exception: ')) {
+        _snack(text.replaceFirst('Exception: ', ''));
+      } else {
+        _snack('ไม่สามารถบันทึกเวลาออกงานได้ กรุณาลองใหม่');
+      }
+
+      return _AttendanceSubmitResult.failed;
     }
-    return _AttendanceSubmitResult.failed;
   }
 
   Future<void> _scanAndCheckIn() async {
@@ -2257,19 +3605,50 @@ class _HomeScreenState extends State<HomeScreen> {
         return;
       }
 
+      if (_hasPreviousPendingBlock) {
+        final label = _previousPendingSessionLabel();
+        await _showPreviousAttendancePendingDialog(
+          title: 'ยังมีรายการวันก่อนค้างอยู่',
+          message: label.isNotEmpty
+              ? 'ยังมีรายการลงเวลาจากวันก่อนค้างอยู่\n$label\n\nกรุณาแก้ไขและรออนุมัติก่อน จึงจะเริ่มลงเวลาวันใหม่ได้'
+              : 'ยังมีรายการลงเวลาจากวันก่อนค้างอยู่ กรุณาแก้ไขและรออนุมัติก่อน จึงจะเริ่มลงเวลาวันใหม่ได้',
+          previousSessionId: _attPreviousSessionId,
+          previousWorkDate: _attPreviousWorkDate,
+          previousShiftId: _attPreviousShiftId,
+          previousClinicName: _attPreviousClinicName,
+        );
+        return;
+      }
+
+      if (_isHelper && !_helperCanProceedScan()) {
+        return;
+      }
+
       if (_attCheckedIn && !_attCheckedOut) {
-        _snack('วันนี้คุณเช็คอินแล้ว');
+        _snack(
+          _isHelper && _selectedHelperShiftId.isNotEmpty
+              ? 'กะนี้เช็คอินแล้ว'
+              : 'วันนี้คุณเช็คอินแล้ว',
+        );
         return;
       }
 
       if (_attCheckedIn && _attCheckedOut) {
-        _snack('วันนี้คุณบันทึกเวลาเข้า-ออกครบแล้ว');
+        _snack(
+          _isHelper && _selectedHelperShiftId.isNotEmpty
+              ? 'กะนี้บันทึกเวลาเข้า-ออกครบแล้ว'
+              : 'วันนี้คุณบันทึกเวลาเข้า-ออกครบแล้ว',
+        );
         return;
       }
 
       _setAttendanceUiPhase(
         _AttendanceUiPhase.checkingInBio,
-        progressText: 'กรุณาสแกนลายนิ้วมือ',
+        progressText: _isHelper
+            ? (_selectedHelperShift == null
+                ? 'กรุณาเลือกกะก่อน แล้วสแกนลายนิ้วมือ'
+                : 'กำลังสแกนสำหรับกะ: $_selectedHelperShiftLabel')
+            : 'กรุณาสแกนลายนิ้วมือ',
         clearErr: true,
       );
 
@@ -2278,6 +3657,20 @@ class _HomeScreenState extends State<HomeScreen> {
       print('[ATTENDANCE][CHECKIN] AFTER BIO ok=$okBio');
 
       if (!okBio) return;
+
+      Position? position;
+      if (_attendanceNeedsLiveLocation) {
+        _setAttendanceUiPhase(
+          _AttendanceUiPhase.checkingInSubmit,
+          progressText: 'กำลังตรวจสอบตำแหน่งปัจจุบัน',
+          clearErr: true,
+        );
+
+        position = await _readAttendancePosition();
+        if (position == null) {
+          return;
+        }
+      }
 
       final token = await _getTokenAny();
       print(
@@ -2291,12 +3684,19 @@ class _HomeScreenState extends State<HomeScreen> {
 
       _setAttendanceUiPhase(
         _AttendanceUiPhase.checkingInSubmit,
-        progressText: 'กำลังบันทึกข้อมูล',
+        progressText: _isHelper
+            ? 'กำลังตรวจสอบกะงานและบันทึกเวลา'
+            : (_attendanceNeedsLiveLocation
+                ? 'กำลังตรวจสอบตำแหน่งและบันทึกเวลา'
+                : 'กำลังบันทึกข้อมูล'),
       );
       _startSlowNetworkHint();
 
       print('[ATTENDANCE][CHECKIN] BEFORE POST');
-      final result = await _postAttendanceCheckIn(token: token);
+      final result = await _postAttendanceCheckIn(
+        token: token,
+        position: position,
+      );
       print('[ATTENDANCE][CHECKIN] RESULT=$result');
 
       if (result == _AttendanceSubmitResult.success) {
@@ -2307,6 +3707,25 @@ class _HomeScreenState extends State<HomeScreen> {
         _applyImmediateAlreadyCheckedInUi();
         await _refreshAttendanceToday(silent: true);
       } else if (result == _AttendanceSubmitResult.manualRequired) {
+        await _refreshAttendanceToday(silent: true);
+      } else if (result ==
+          _AttendanceSubmitResult.previousAttendancePending) {
+        await _refreshAttendanceToday(silent: true);
+      } else if (result == _AttendanceSubmitResult.shiftSelectionRequired) {
+        await _loadHelperTodayShifts(silent: true);
+        await _refreshAttendanceToday(silent: true);
+      } else if (result == _AttendanceSubmitResult.checkedInOtherClinic) {
+        await _refreshAttendanceToday(silent: true);
+      } else if (result == _AttendanceSubmitResult.multipleOpenSessions) {
+        await _refreshAttendanceToday(silent: true);
+      } else if (result == _AttendanceSubmitResult.locationUnavailable ||
+          result == _AttendanceSubmitResult.locationPermissionDenied ||
+          result == _AttendanceSubmitResult.locationServiceDisabled) {
+        await _refreshAttendanceToday(silent: true);
+        if (_attLocationError.trim().isNotEmpty) {
+          _snack(_attLocationError.trim());
+        }
+      } else {
         await _refreshAttendanceToday(silent: true);
       }
     } finally {
@@ -2344,19 +3763,50 @@ class _HomeScreenState extends State<HomeScreen> {
         return;
       }
 
+      if (_hasPreviousPendingBlock) {
+        final label = _previousPendingSessionLabel();
+        await _showPreviousAttendancePendingDialog(
+          title: 'ยังมีรายการวันก่อนค้างอยู่',
+          message: label.isNotEmpty
+              ? 'ยังมีรายการลงเวลาจากวันก่อนค้างอยู่\n$label\n\nกรุณาแก้ไขและรออนุมัติก่อน จึงจะเริ่มลงเวลาวันใหม่ได้'
+              : 'ยังมีรายการลงเวลาจากวันก่อนค้างอยู่ กรุณาแก้ไขและรออนุมัติก่อน จึงจะเริ่มลงเวลาวันใหม่ได้',
+          previousSessionId: _attPreviousSessionId,
+          previousWorkDate: _attPreviousWorkDate,
+          previousShiftId: _attPreviousShiftId,
+          previousClinicName: _attPreviousClinicName,
+        );
+        return;
+      }
+
+      if (_isHelper && !_helperCanProceedScan()) {
+        return;
+      }
+
       if (!_attCheckedIn) {
-        _snack('วันนี้คุณยังไม่ได้เช็คอิน');
+        _snack(
+          _isHelper && _selectedHelperShiftId.isNotEmpty
+              ? 'กะนี้ยังไม่ได้เช็คอิน'
+              : 'วันนี้คุณยังไม่ได้เช็คอิน',
+        );
         return;
       }
 
       if (_attCheckedOut) {
-        _snack('วันนี้คุณเช็คเอาท์แล้ว');
+        _snack(
+          _isHelper && _selectedHelperShiftId.isNotEmpty
+              ? 'กะนี้เช็คเอาท์แล้ว'
+              : 'วันนี้คุณเช็คเอาท์แล้ว',
+        );
         return;
       }
 
       _setAttendanceUiPhase(
         _AttendanceUiPhase.checkingOutBio,
-        progressText: 'กรุณาสแกนลายนิ้วมือ',
+        progressText: _isHelper
+            ? (_selectedHelperShift == null
+                ? 'กรุณาเลือกกะก่อน แล้วสแกนลายนิ้วมือ'
+                : 'กำลังเช็คเอาท์สำหรับกะ: $_selectedHelperShiftLabel')
+            : 'กรุณาสแกนลายนิ้วมือ',
         clearErr: true,
       );
 
@@ -2365,6 +3815,20 @@ class _HomeScreenState extends State<HomeScreen> {
       print('[ATTENDANCE][CHECKOUT] AFTER BIO ok=$okBio');
 
       if (!okBio) return;
+
+      Position? position;
+      if (_attendanceNeedsLiveLocation) {
+        _setAttendanceUiPhase(
+          _AttendanceUiPhase.checkingOutSubmit,
+          progressText: 'กำลังตรวจสอบตำแหน่งปัจจุบัน',
+          clearErr: true,
+        );
+
+        position = await _readAttendancePosition();
+        if (position == null) {
+          return;
+        }
+      }
 
       final token = await _getTokenAny();
       print(
@@ -2378,12 +3842,19 @@ class _HomeScreenState extends State<HomeScreen> {
 
       _setAttendanceUiPhase(
         _AttendanceUiPhase.checkingOutSubmit,
-        progressText: 'กำลังบันทึกข้อมูล',
+        progressText: _isHelper
+            ? 'กำลังตรวจสอบ session ของกะที่เลือกและบันทึกเวลา'
+            : (_attendanceNeedsLiveLocation
+                ? 'กำลังตรวจสอบตำแหน่งและบันทึกเวลา'
+                : 'กำลังบันทึกข้อมูล'),
       );
       _startSlowNetworkHint();
 
       print('[ATTENDANCE][CHECKOUT] BEFORE POST');
-      final result = await _postAttendanceCheckOut(token: token);
+      final result = await _postAttendanceCheckOut(
+        token: token,
+        position: position,
+      );
       print('[ATTENDANCE][CHECKOUT] RESULT=$result');
 
       if (result == _AttendanceSubmitResult.success) {
@@ -2395,17 +3866,37 @@ class _HomeScreenState extends State<HomeScreen> {
         await _refreshAttendanceToday(silent: true);
       } else if (result == _AttendanceSubmitResult.manualRequired) {
         await _refreshAttendanceToday(silent: true);
+      } else if (result ==
+          _AttendanceSubmitResult.previousAttendancePending) {
+        await _refreshAttendanceToday(silent: true);
       } else if (result == _AttendanceSubmitResult.earlyCheckoutReasonRequired) {
         _resetAttendanceUiPhase();
 
         final reason = await _showEarlyCheckoutReasonDialog();
         if (reason == null) {
+          await _refreshAttendanceToday(silent: true);
           return;
+        }
+
+        Position? retryPosition = position;
+        if (_attendanceNeedsLiveLocation && retryPosition == null) {
+          _setAttendanceUiPhase(
+            _AttendanceUiPhase.checkingOutSubmit,
+            progressText: 'กำลังตรวจสอบตำแหน่งปัจจุบัน',
+            clearErr: true,
+          );
+          retryPosition = await _readAttendancePosition();
+          if (retryPosition == null) {
+            await _refreshAttendanceToday(silent: true);
+            return;
+          }
         }
 
         _setAttendanceUiPhase(
           _AttendanceUiPhase.checkingOutSubmit,
-          progressText: 'กำลังบันทึกข้อมูลพร้อมเหตุผล',
+          progressText: _attendanceNeedsLiveLocation
+              ? 'กำลังตรวจสอบตำแหน่งและบันทึกข้อมูลพร้อมเหตุผล'
+              : 'กำลังบันทึกข้อมูลพร้อมเหตุผล',
           clearErr: true,
         );
         _startSlowNetworkHint();
@@ -2415,10 +3906,10 @@ class _HomeScreenState extends State<HomeScreen> {
           reasonCode: reason['reasonCode'],
           reasonText: reason['reasonText'],
           note: reason['note'],
+          position: retryPosition,
         );
 
         print('[ATTENDANCE][CHECKOUT] RETRY RESULT=$retry');
-
         if (retry == _AttendanceSubmitResult.success) {
           _applyImmediateCheckOutUi();
           _snack('บันทึกเวลาออกงานเรียบร้อยแล้ว');
@@ -2428,7 +3919,42 @@ class _HomeScreenState extends State<HomeScreen> {
           await _refreshAttendanceToday(silent: true);
         } else if (retry == _AttendanceSubmitResult.manualRequired) {
           await _refreshAttendanceToday(silent: true);
+        } else if (retry ==
+            _AttendanceSubmitResult.previousAttendancePending) {
+          await _refreshAttendanceToday(silent: true);
+        } else if (retry == _AttendanceSubmitResult.shiftSelectionRequired) {
+          await _loadHelperTodayShifts(silent: true);
+          await _refreshAttendanceToday(silent: true);
+        } else if (retry == _AttendanceSubmitResult.checkedInOtherClinic) {
+          await _refreshAttendanceToday(silent: true);
+        } else if (retry == _AttendanceSubmitResult.multipleOpenSessions) {
+          await _refreshAttendanceToday(silent: true);
+        } else if (retry == _AttendanceSubmitResult.locationUnavailable ||
+            retry == _AttendanceSubmitResult.locationPermissionDenied ||
+            retry == _AttendanceSubmitResult.locationServiceDisabled) {
+          await _refreshAttendanceToday(silent: true);
+          if (_attLocationError.trim().isNotEmpty) {
+            _snack(_attLocationError.trim());
+          }
+        } else {
+          await _refreshAttendanceToday(silent: true);
         }
+      } else if (result == _AttendanceSubmitResult.shiftSelectionRequired) {
+        await _loadHelperTodayShifts(silent: true);
+        await _refreshAttendanceToday(silent: true);
+      } else if (result == _AttendanceSubmitResult.checkedInOtherClinic) {
+        await _refreshAttendanceToday(silent: true);
+      } else if (result == _AttendanceSubmitResult.multipleOpenSessions) {
+        await _refreshAttendanceToday(silent: true);
+      } else if (result == _AttendanceSubmitResult.locationUnavailable ||
+          result == _AttendanceSubmitResult.locationPermissionDenied ||
+          result == _AttendanceSubmitResult.locationServiceDisabled) {
+        await _refreshAttendanceToday(silent: true);
+        if (_attLocationError.trim().isNotEmpty) {
+          _snack(_attLocationError.trim());
+        }
+      } else {
+        await _refreshAttendanceToday(silent: true);
       }
     } finally {
       _resetAttendanceUiPhase();
@@ -2465,11 +3991,16 @@ class _HomeScreenState extends State<HomeScreen> {
           role: _role,
           clinicId: _clinicId,
           staffId: _staffId,
+          initialShiftId: _isHelper ? _selectedHelperShiftId : '',
+          initialShiftLabel: _isHelper ? _selectedHelperShiftLabel : '',
         ),
       ),
     );
 
     if (_attendancePremiumEnabled && _isAttendanceUser && !_attBusy) {
+      if (_isHelper) {
+        await _loadHelperTodayShifts(silent: true);
+      }
       await _refreshAttendanceToday();
     }
   }
@@ -2561,6 +4092,123 @@ class _HomeScreenState extends State<HomeScreen> {
     await _loadClosedMonthsForEmployee();
   }
 
+  Future<void> _openEmployeePayslipPicker() async {
+    _tapLog('MY_EMP_PAYSLIP');
+
+    if (_openingPayslipPicker) {
+      _snack('กำลังเปิดรายการสลิปเงินเดือน กรุณารอสักครู่');
+      return;
+    }
+
+    if (!_isEmployee) {
+      _snack('เมนูนี้สำหรับพนักงานเท่านั้น');
+      return;
+    }
+
+    final staffId = _staffId.trim();
+    if (staffId.isEmpty) {
+      _snack('ไม่พบข้อมูลพนักงาน กรุณาออกจากระบบแล้วเข้าสู่ระบบใหม่');
+      return;
+    }
+
+    _openingPayslipPicker = true;
+    try {
+      await _loadClosedMonthsForEmployee();
+      if (!mounted) return;
+
+      if (_payslipErr.trim().isNotEmpty) {
+        _snack(_payslipErr.trim());
+        return;
+      }
+
+      final months = _closedMonths
+          .map((e) => (e['month'] ?? '').toString().trim())
+          .where((m) => m.isNotEmpty)
+          .toList();
+
+      if (months.isEmpty) {
+        _snack('ขณะนี้ยังไม่มีงวดเงินเดือนที่ปิดแล้ว');
+        return;
+      }
+
+      final picked = await showModalBottomSheet<String>(
+        context: context,
+        showDragHandle: true,
+        builder: (ctx) {
+          return SafeArea(
+            child: ListView(
+              shrinkWrap: true,
+              children: [
+                const ListTile(
+                  title: Text(
+                    'เลือกงวดเงินเดือนที่ต้องการดู',
+                    style: TextStyle(fontWeight: FontWeight.w900),
+                  ),
+                ),
+                ...months.map((m) {
+                  return ListTile(
+                    leading: const Icon(Icons.receipt_long),
+                    title: Text('งวด $m'),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () => Navigator.pop(ctx, m),
+                  );
+                }),
+                const SizedBox(height: 12),
+              ],
+            ),
+          );
+        },
+      );
+
+      if (picked != null && picked.isNotEmpty) {
+        await _openPayslipMonth(picked);
+      }
+    } finally {
+      _openingPayslipPicker = false;
+    }
+  }
+
+  Future<void> _checkAttendanceLocationNow() async {
+    _tapLog('CHECK_ATTENDANCE_LOCATION_NOW');
+
+    if (_checkingAttendanceLocation) {
+      _snack('กำลังตรวจสอบตำแหน่ง กรุณารอสักครู่');
+      return;
+    }
+
+    if (!_isEmployee && !_isAttendanceUser) {
+      _snack('เมนูนี้สำหรับผู้ใช้งานการลงเวลาเท่านั้น');
+      return;
+    }
+
+    if (!_attendancePremiumEnabled) {
+      _snack('ฟีเจอร์นี้สำหรับแพ็กเกจพรีเมียม');
+      return;
+    }
+
+    if (!_attendanceNeedsLiveLocation) {
+      _snack('บัญชีนี้ไม่จำเป็นต้องตรวจตำแหน่งก่อนลงเวลา');
+      return;
+    }
+
+    _checkingAttendanceLocation = true;
+    try {
+      final pos = await _readAttendancePosition();
+      if (pos == null) return;
+
+      final accText = pos.accuracy.isFinite
+          ? ' ความแม่นยำประมาณ ${pos.accuracy.toStringAsFixed(0)} เมตร'
+          : '';
+
+      _snack('ตรวจพบตำแหน่งเรียบร้อยแล้ว$accText');
+    } finally {
+      _checkingAttendanceLocation = false;
+      if (mounted) {
+        setState(() {});
+      }
+    }
+  }
+
   String _oneLineNeed(Map<String, dynamic> n) {
     final title = (n['title'] ?? 'ต้องการผู้ช่วย').toString();
     final date = (n['date'] ?? '').toString();
@@ -2603,6 +4251,183 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  Widget _helperShiftSelectionCard() {
+    if (!_isHelper) return const SizedBox.shrink();
+    if (!_attendancePremiumEnabled) return const SizedBox.shrink();
+
+    final hasShifts = _helperTodayShifts.isNotEmpty;
+    final canPick = !_helperShiftLoading && hasShifts;
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'เลือกกะที่จะใช้สแกนลายนิ้วมือ',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              _helperShiftSummaryLine(),
+              style: TextStyle(color: Colors.grey.shade700),
+            ),
+            if (_helperHasMultipleShifts) ...[
+              const SizedBox(height: 6),
+              Text(
+                'วันนี้มีหลายกะงาน กรุณาเลือกกะที่กำลังทำอยู่จริงก่อนสแกน',
+                style: TextStyle(
+                  color: Colors.orange.shade800,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+            const SizedBox(height: 10),
+            if (_selectedHelperShift != null) ...[
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.green.withOpacity(0.08),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: Colors.green.withOpacity(0.25),
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'กะที่เลือกอยู่',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w800,
+                        color: Colors.green,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      _selectedHelperShiftLabel,
+                      style: const TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 10),
+            ],
+            Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed:
+                        _helperShiftLoading ? null : _showHelperShiftPicker,
+                    icon: _helperShiftLoading
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.work_outline),
+                    label: Text(
+                      hasShifts
+                          ? (_selectedHelperShift == null
+                              ? 'เลือกกะงาน'
+                              : 'เปลี่ยนกะงาน')
+                          : 'ดูกะงานวันนี้',
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                OutlinedButton.icon(
+                  onPressed: _helperShiftLoading
+                      ? null
+                      : () => _loadHelperTodayShifts(),
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('รีเฟรช'),
+                ),
+              ],
+            ),
+            if (!canPick &&
+                !_helperShiftLoading &&
+                _helperShiftErr.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text(
+                _helperShiftErr,
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.error,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _attendancePreviousPendingCard() {
+    if (!_hasPreviousPendingBlock) return const SizedBox.shrink();
+
+    final label = _previousPendingSessionLabel();
+
+    return Card(
+      color: Colors.orange.shade50,
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'ยังมีรายการวันก่อนค้างอยู่',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w900,
+                color: Colors.orange.shade900,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              _attPreviousPendingMessage.trim().isNotEmpty
+                  ? _attPreviousPendingMessage.trim()
+                  : 'กรุณาแก้ไขรายการลงเวลาของวันก่อน และรอการอนุมัติก่อน จึงจะเริ่มลงเวลาวันใหม่ได้',
+              style: TextStyle(
+                color: Colors.orange.shade900,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            if (label.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text(
+                label,
+                style: TextStyle(
+                  color: Colors.orange.shade900,
+                ),
+              ),
+            ],
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: _openPreviousPendingManualFix,
+                    icon: const Icon(Icons.edit_calendar_outlined),
+                    label: const Text('แก้รายการวันก่อน'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                OutlinedButton.icon(
+                  onPressed: _attBusy ? null : () => _refreshAttendanceToday(),
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('รีเฟรช'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _attendancePremiumGateCard({bool compact = false}) {
     if (!_isAttendanceUser) return const SizedBox.shrink();
 
@@ -2611,8 +4436,8 @@ class _HomeScreenState extends State<HomeScreen> {
         : 'พรีเมียม: บันทึกเวลางานด้วยลายนิ้วมือ';
 
     final subtitle = _isHelper
-        ? 'ผู้ช่วยสามารถเช็คอินและเช็คเอาท์ด้วยลายนิ้วมือ เพื่อให้ระบบคำนวณชั่วโมงทำงานจริงได้แม่นยำยิ่งขึ้น'
-        : 'เช็คอินและเช็คเอาท์ด้วยลายนิ้วมือ เพื่อให้ระบบคำนวณชั่วโมงทำงานและ OT ได้อัตโนมัติ';
+        ? 'ผู้ช่วยสามารถเลือกกะงานก่อนเช็คอินและเช็คเอาท์ด้วยลายนิ้วมือ เพื่อให้ระบบคำนวณชั่วโมงทำงานจริงได้แม่นยำยิ่งขึ้น'
+        : 'เช็คอินและเช็คเอาท์ด้วยลายนิ้วมือ พร้อมตรวจตำแหน่งปัจจุบัน เพื่อให้ระบบคำนวณชั่วโมงทำงานและ OT ได้อัตโนมัติ';
 
     return PremiumGateCard(
       loading: _premiumLoading || _policyLoading,
@@ -2652,10 +4477,22 @@ class _HomeScreenState extends State<HomeScreen> {
     if (!_isAttendanceUser) return const SizedBox.shrink();
     if (!_attendancePremiumEnabled) return const SizedBox.shrink();
 
+    final helperHeader = _selectedHelperShift != null
+        ? 'บันทึกเวลาทำงาน (ผู้ช่วย) • เลือกกะแล้ว'
+        : 'บันทึกเวลาทำงาน (ผู้ช่วย)';
+
+    String statusLine = _displayAttendanceStatusLine;
+    if (_attLocationLoading && _attendanceNeedsLiveLocation) {
+      statusLine = 'กำลังตรวจสอบตำแหน่งปัจจุบัน';
+    } else if (_attLocationError.trim().isNotEmpty &&
+        !_attCheckedIn &&
+        !_isHelper) {
+      statusLine = _attLocationError.trim();
+    }
+
     return AttendanceCard(
-      title: header ??
-          (_isHelper ? 'บันทึกเวลาทำงานวันนี้ (ผู้ช่วย)' : 'บันทึกเวลาทำงานวันนี้'),
-      statusLine: _displayAttendanceStatusLine,
+      title: header ?? (_isHelper ? helperHeader : 'บันทึกเวลาทำงานวันนี้'),
+      statusLine: statusLine,
       errText: _attErr,
       loading: _attLoading,
       posting: _attPosting,
@@ -2666,23 +4503,6 @@ class _HomeScreenState extends State<HomeScreen> {
       onCheckOut: _scanAndCheckOut,
       onRefresh: () => _refreshAttendanceToday(),
       onOpenHistory: _openAttendanceHistory,
-    );
-  }
-
-  Widget _employeePayslipCard() {
-    if (!_isEmployee) return const SizedBox.shrink();
-
-    final months = _closedMonths
-        .map((e) => (e['month'] ?? '').toString().trim())
-        .where((m) => m.isNotEmpty)
-        .toList();
-
-    return PayslipCard(
-      loading: _payslipLoading,
-      errText: _payslipErr,
-      months: months,
-      onRetry: _loadClosedMonthsForEmployee,
-      onOpenMonth: _openPayslipMonth,
     );
   }
 
@@ -2728,7 +4548,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     child: OutlinedButton.icon(
                       onPressed: _openHelperMarketplaceForClinicTrustScore,
                       icon: const Icon(Icons.storefront_outlined),
-                      label: const Text('เลือกผู้ช่วยจาก Marketplace'),
+                      label: const Text('เลือกผู้ช่วย'),
                     ),
                   ),
                 ],
@@ -2781,10 +4601,20 @@ class _HomeScreenState extends State<HomeScreen> {
         header: _isHelper ? 'บันทึกเวลาทำงาน (ผู้ช่วย)' : 'บันทึกเวลาทำงาน',
       ),
       policyCard: _policyCard(),
-      payslipCard: _employeePayslipCard(),
+
+      // ✅ ตัด self-service payslip card ออกจากหน้าแรก
+      payslipCard: const SizedBox.shrink(),
+
       urgentCard: _urgentCardCompact(),
       trustScoreCard: trustScoreCard,
       marketCard: marketCard,
+      helperShiftCard: Column(
+        children: [
+          _attendancePreviousPendingCard(),
+          if (_hasPreviousPendingBlock) const SizedBox(height: 12),
+          _helperShiftSelectionCard(),
+        ],
+      ),
     );
   }
 
@@ -2819,8 +4649,8 @@ class _HomeScreenState extends State<HomeScreen> {
                 const Divider(height: 1),
                 ListTile(
                   leading: const Icon(Icons.storefront_outlined),
-                  title: const Text('เลือกผู้ช่วยจาก Marketplace'),
-                  subtitle: const Text('เลือกผู้ช่วยเพื่อไปดู Trust Score'),
+                  title: const Text('เลือกผู้ช่วย'),
+                  subtitle: const Text('เลือกผู้ช่วยเพื่อดูคะแนนความน่าเชื่อถือ'),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: _openHelperMarketplaceForClinicTrustScore,
                 ),
@@ -2848,6 +4678,20 @@ class _HomeScreenState extends State<HomeScreen> {
         ? Card(
             child: Column(
               children: [
+                if (_hasPreviousPendingBlock) ...[
+                  ListTile(
+                    leading: const Icon(Icons.warning_amber_rounded),
+                    title: const Text('แก้รายการลงเวลาวันก่อน'),
+                    subtitle: Text(
+                      _attPreviousWorkDate.trim().isNotEmpty
+                          ? 'พบรายการค้างของวันที่ ${_attPreviousWorkDate.trim()} แตะเพื่อส่งคำขอแก้ไข'
+                          : 'ยังมีรายการลงเวลาวันก่อนค้างอยู่ แตะเพื่อส่งคำขอแก้ไข',
+                    ),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: _openPreviousPendingManualFix,
+                  ),
+                  const Divider(height: 1),
+                ],
                 ListTile(
                   leading: const Icon(Icons.person_outline),
                   title: const Text('ข้อมูลของฉัน (ผู้ช่วย)'),
@@ -2862,6 +4706,37 @@ class _HomeScreenState extends State<HomeScreen> {
                   trailing: const Icon(Icons.chevron_right),
                   onTap: _openHelperOpenNeeds,
                 ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.fingerprint),
+                  title: const Text('เลือกกะสำหรับสแกนลายนิ้วมือ'),
+                  subtitle: Text(
+                    _selectedHelperShift == null
+                        ? 'ยังไม่ได้เลือกกะ'
+                        : _selectedHelperShiftLabel,
+                  ),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap:
+                      _attendancePremiumEnabled ? _showHelperShiftPicker : null,
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.edit_calendar_outlined),
+                  title: const Text('คำขอแก้ไขเวลา'),
+                  subtitle: Text(
+                    _hasPreviousPendingBlock
+                        ? 'มีรายการวันก่อนค้างอยู่ แตะเพื่อแก้ไขก่อน'
+                        : (_attendancePremiumEnabled
+                            ? 'ส่งคำขอเช็คอินย้อนหลัง ลืมเช็คเอาท์ หรือแก้ไขเวลา'
+                            : 'เปิดแพ็กเกจพรีเมียมก่อนใช้งานเมนูนี้'),
+                  ),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: _hasPreviousPendingBlock
+                      ? _openPreviousPendingManualFix
+                      : (_attendancePremiumEnabled
+                          ? _showManualRequestMenu
+                          : null),
+                ),
               ],
             ),
           )
@@ -2871,59 +4746,56 @@ class _HomeScreenState extends State<HomeScreen> {
         ? Card(
             child: Column(
               children: [
+                if (_hasPreviousPendingBlock) ...[
+                  ListTile(
+                    leading: const Icon(Icons.warning_amber_rounded),
+                    title: const Text('แก้รายการลงเวลาวันก่อน'),
+                    subtitle: Text(
+                      _attPreviousWorkDate.trim().isNotEmpty
+                          ? 'พบรายการค้างของวันที่ ${_attPreviousWorkDate.trim()} แตะเพื่อส่งคำขอแก้ไข'
+                          : 'ยังมีรายการลงเวลาวันก่อนค้างอยู่ แตะเพื่อส่งคำขอแก้ไข',
+                    ),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: _openPreviousPendingManualFix,
+                  ),
+                  const Divider(height: 1),
+                ],
                 ListTile(
-                  leading: const Icon(Icons.receipt_long_outlined),
-                  title: const Text('สลิปเงินเดือน'),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () async {
-                    _tapLog('MY_EMP_PAYSLIP');
-                    await _loadClosedMonthsForEmployee();
-                    if (!mounted) return;
-
-                    final months = _closedMonths
-                        .map((e) => (e['month'] ?? '').toString().trim())
-                        .where((m) => m.isNotEmpty)
-                        .toList();
-
-                    if (months.isEmpty) {
-                      _snack('ขณะนี้ยังไม่มีงวดเงินเดือนที่ปิดแล้ว');
-                      return;
-                    }
-
-                    final picked = await showModalBottomSheet<String>(
-                      context: context,
-                      showDragHandle: true,
-                      builder: (ctx) {
-                        return SafeArea(
-                          child: ListView(
-                            shrinkWrap: true,
-                            children: [
-                              const ListTile(
-                                title: Text(
-                                  'เลือกงวดเงินเดือนที่ต้องการดู',
-                                  style: TextStyle(fontWeight: FontWeight.w900),
-                                ),
-                              ),
-                              ...months.map((m) {
-                                return ListTile(
-                                  leading: const Icon(Icons.receipt_long),
-                                  title: Text('งวด $m'),
-                                  trailing: const Icon(Icons.chevron_right),
-                                  onTap: () => Navigator.pop(ctx, m),
-                                );
-                              }),
-                              const SizedBox(height: 12),
-                            ],
-                          ),
-                        );
-                      },
-                    );
-
-                    if (picked != null && picked.isNotEmpty) {
-                      await _openPayslipMonth(picked);
-                    }
-                  },
+                  leading: const Icon(Icons.location_on_outlined),
+                  title: const Text('การตรวจตำแหน่งสำหรับลงเวลา'),
+                  subtitle: Text(_formatAttendanceLocationSummary()),
+                  trailing: _checkingAttendanceLocation
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.chevron_right),
+                  onTap: (_attendancePremiumEnabled &&
+                          !_checkingAttendanceLocation)
+                      ? _checkAttendanceLocationNow
+                      : null,
                 ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.edit_calendar_outlined),
+                  title: const Text('คำขอแก้ไขเวลา'),
+                  subtitle: Text(
+                    _hasPreviousPendingBlock
+                        ? 'มีรายการวันก่อนค้างอยู่ แตะเพื่อแก้ไขก่อน'
+                        : (_attendancePremiumEnabled
+                            ? 'ส่งคำขอกรณีลืมเช็คเอาท์ เช็คเอาท์ก่อนเวลา หรือแก้ไขเวลา'
+                            : 'เปิดแพ็กเกจพรีเมียมก่อนใช้งานเมนูนี้'),
+                  ),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: _hasPreviousPendingBlock
+                      ? _openPreviousPendingManualFix
+                      : (_attendancePremiumEnabled
+                          ? _showManualRequestMenu
+                          : null),
+                ),
+
+                // ✅ ตัดเมนู “สลิปเงินเดือน” ออกจาก My tab
               ],
             ),
           )
@@ -3239,7 +5111,10 @@ class _PayslipMonthDetailScreenState extends State<_PayslipMonthDetailScreen> {
                               ),
                             ),
                             const SizedBox(height: 10),
-                            _kv('รายรับรวม', '฿${_fmtMoney(r?['grossMonthly'])}'),
+                            _kv(
+                              'รายรับรวม',
+                              '฿${_fmtMoney(r?['grossMonthly'])}',
+                            ),
                             _kv(
                               'ภาษีหัก ณ ที่จ่าย',
                               '฿${_fmtMoney(r?['withheldTaxMonthly'])}',
@@ -3277,7 +5152,10 @@ class _PayslipMonthDetailScreenState extends State<_PayslipMonthDetailScreen> {
                               ),
                             ),
                             const SizedBox(height: 10),
-                            _kv('ค่า OT ที่รวมในงวดนี้', '฿${_fmtMoney(r?['otPay'])}'),
+                            _kv(
+                              'ค่า OT ที่รวมในงวดนี้',
+                              '฿${_fmtMoney(r?['otPay'])}',
+                            ),
                             _kv(
                               'เวลาที่อนุมัติรวม (นาที)',
                               '${(r?['otApprovedMinutes'] ?? 0)}',
@@ -3286,7 +5164,10 @@ class _PayslipMonthDetailScreenState extends State<_PayslipMonthDetailScreen> {
                               'ชั่วโมงถ่วงน้ำหนัก',
                               '${(r?['otApprovedWeightedHours'] ?? 0)}',
                             ),
-                            _kv('จำนวนรายการ', '${(r?['otApprovedCount'] ?? 0)}'),
+                            _kv(
+                              'จำนวนรายการ',
+                              '${(r?['otApprovedCount'] ?? 0)}',
+                            ),
                           ],
                         ),
                       ),
@@ -3306,7 +5187,10 @@ class _PayslipMonthDetailScreenState extends State<_PayslipMonthDetailScreen> {
                               ),
                             ),
                             const SizedBox(height: 10),
-                            _kv('เงินเดือนหรือฐานค่าจ้าง', '฿${_fmtMoney(r?['grossBase'])}'),
+                            _kv(
+                              'เงินเดือนหรือฐานค่าจ้าง',
+                              '฿${_fmtMoney(r?['grossBase'])}',
+                            ),
                             _kv('โบนัส', '฿${_fmtMoney(r?['bonus'])}'),
                             _kv(
                               'เงินเพิ่มอื่น ๆ',

@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -25,6 +26,21 @@ class _ClinicAttendanceApprovalScreenState
   String _workDate = '';
 
   List<Map<String, dynamic>> _items = [];
+
+  void _log(String message, [Object? data]) {
+    if (!kDebugMode) return;
+    try {
+      if (data == null) {
+        debugPrint('[ATTENDANCE_APPROVAL] $message');
+      } else if (data is String) {
+        debugPrint('[ATTENDANCE_APPROVAL] $message: $data');
+      } else {
+        debugPrint('[ATTENDANCE_APPROVAL] $message: ${jsonEncode(data)}');
+      }
+    } catch (_) {
+      debugPrint('[ATTENDANCE_APPROVAL] $message: $data');
+    }
+  }
 
   @override
   void initState() {
@@ -219,6 +235,23 @@ class _ClinicAttendanceApprovalScreenState
     return 'ไม่ระบุชื่อ';
   }
 
+  void _showSnackNow(String msg) {
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    if (messenger == null) return;
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  void _removeItemLocally(String id) {
+    if (!mounted) return;
+    setState(() {
+      _items.removeWhere(
+        (e) => ((e['_id'] ?? e['id'] ?? '').toString().trim()) == id,
+      );
+    });
+  }
+
   Future<void> _pickWorkDate() async {
     final initial = DateTime.tryParse(_workDate) ?? DateTime.now();
     final picked = await showDatePicker(
@@ -254,6 +287,7 @@ class _ClinicAttendanceApprovalScreenState
         throw Exception('no token');
       }
 
+      if (!mounted) return;
       final headers = _authHeaders(token);
 
       final candidates = <String>[
@@ -264,16 +298,27 @@ class _ClinicAttendanceApprovalScreenState
       http.Response? lastRes;
 
       for (final p in candidates) {
-        final res = await _tryGet(
-          _payrollUri(
-            p,
-            qs: {
-              'approvalStatus': _approvalStatus,
-              'workDate': _workDate,
-            },
-          ),
-          headers: headers,
+        final uri = _payrollUri(
+          p,
+          qs: {
+            'approvalStatus': _approvalStatus,
+            'workDate': _workDate,
+          },
         );
+
+        _log('LOAD REQUEST', {
+          'url': uri.toString(),
+          'approvalStatus': _approvalStatus,
+          'workDate': _workDate,
+        });
+
+        final res = await _tryGet(uri, headers: headers);
+
+        _log('LOAD RESPONSE', {
+          'url': uri.toString(),
+          'statusCode': res.statusCode,
+          'body': res.body,
+        });
 
         lastRes = res;
 
@@ -327,227 +372,62 @@ class _ClinicAttendanceApprovalScreenState
     }
   }
 
-  Future<void> _approveItem(Map<String, dynamic> item) async {
-    if (_submitting) return;
-
-    final id = (item['_id'] ?? item['id'] ?? '').toString().trim();
-    if (id.isEmpty) {
-      _snack('ไม่พบรหัสคำขอ');
-      return;
-    }
-
+  Future<String?> _showApproveDialog(Map<String, dynamic> item) async {
     final noteCtrl = TextEditingController();
 
-    final ok = await showDialog<bool>(
+    final result = await showDialog<String?>(
       context: context,
-      builder: (ctx) {
-        bool loading = false;
-        String err = '';
-
-        return StatefulBuilder(
-          builder: (ctx, setSt) {
-            Future<void> submit() async {
-              setSt(() {
-                loading = true;
-                err = '';
-              });
-
-              try {
-                final token = await _getTokenAny();
-                if (token == null || token.isEmpty) {
-                  setSt(() {
-                    loading = false;
-                    err = 'เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่';
-                  });
-                  return;
-                }
-
-                final headers = _authHeaders(token);
-                final body = jsonEncode({
-                  'approvalNote': noteCtrl.text.trim(),
-                });
-
-                final candidates = <String>[
-                  '/attendance/manual-request/$id/approve',
-                  '/api/attendance/manual-request/$id/approve',
-                ];
-
-                for (final p in candidates) {
-                  final res = await _tryPost(
-                    _payrollUri(p),
-                    headers: headers,
-                    body: body,
-                  );
-
-                  if (res.statusCode == 404) continue;
-
-                  if (res.statusCode == 200 || res.statusCode == 201) {
-                    if (!ctx.mounted) return;
-                    Navigator.pop(ctx, true);
-                    return;
-                  }
-
-                  final msg = _extractApiMessage(res);
-                  setSt(() {
-                    loading = false;
-                    err = msg.isNotEmpty ? msg : 'อนุมัติไม่สำเร็จ';
-                  });
-                  return;
-                }
-
-                setSt(() {
-                  loading = false;
-                  err = 'อนุมัติไม่สำเร็จ';
-                });
-              } catch (_) {
-                setSt(() {
-                  loading = false;
-                  err = 'เชื่อมต่อไม่สำเร็จ';
-                });
-              }
-            }
-
-            return AlertDialog(
-              title: const Text('อนุมัติคำขอ'),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  TextField(
-                    controller: noteCtrl,
-                    decoration: const InputDecoration(
-                      labelText: 'หมายเหตุถึงพนักงาน (ถ้ามี)',
-                      border: OutlineInputBorder(),
-                    ),
-                    minLines: 2,
-                    maxLines: 3,
-                  ),
-                  if (err.isNotEmpty) ...[
-                    const SizedBox(height: 10),
-                    Text(
-                      err,
-                      style: TextStyle(
-                        color: Theme.of(ctx).colorScheme.error,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-              actions: [
-                TextButton(
-                  onPressed: loading ? null : () => Navigator.pop(ctx, false),
-                  child: const Text('ยกเลิก'),
-                ),
-                FilledButton(
-                  onPressed: loading ? null : submit,
-                  child: loading
-                      ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Text('อนุมัติ'),
-                ),
-              ],
-            );
-          },
+      barrierDismissible: true,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('อนุมัติคำขอ'),
+          content: TextField(
+            controller: noteCtrl,
+            decoration: const InputDecoration(
+              labelText: 'หมายเหตุถึงพนักงาน (ถ้ามี)',
+              border: OutlineInputBorder(),
+            ),
+            minLines: 2,
+            maxLines: 3,
+            textInputAction: TextInputAction.done,
+            onSubmitted: (_) {
+              FocusScope.of(dialogContext).unfocus();
+            },
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                FocusScope.of(dialogContext).unfocus();
+                Navigator.of(dialogContext).pop(null);
+              },
+              child: const Text('ยกเลิก'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final text = noteCtrl.text.trim();
+                FocusScope.of(dialogContext).unfocus();
+                Navigator.of(dialogContext).pop(text);
+              },
+              child: const Text('อนุมัติ'),
+            ),
+          ],
         );
       },
     );
 
-    noteCtrl.dispose();
-
-    if (ok == true) {
-      _snack('อนุมัติคำขอแล้ว');
-      await _load();
-    }
+    return result;
   }
 
-  Future<void> _rejectItem(Map<String, dynamic> item) async {
-    if (_submitting) return;
-
-    final id = (item['_id'] ?? item['id'] ?? '').toString().trim();
-    if (id.isEmpty) {
-      _snack('ไม่พบรหัสคำขอ');
-      return;
-    }
-
+  Future<String?> _showRejectDialog(Map<String, dynamic> item) async {
     final reasonCtrl = TextEditingController();
+    String err = '';
 
-    final ok = await showDialog<bool>(
+    final result = await showDialog<String?>(
       context: context,
-      builder: (ctx) {
-        bool loading = false;
-        String err = '';
-
+      barrierDismissible: true,
+      builder: (dialogContext) {
         return StatefulBuilder(
-          builder: (ctx, setSt) {
-            Future<void> submit() async {
-              if (reasonCtrl.text.trim().isEmpty) {
-                setSt(() => err = 'กรุณาระบุเหตุผลที่ไม่อนุมัติ');
-                return;
-              }
-
-              setSt(() {
-                loading = true;
-                err = '';
-              });
-
-              try {
-                final token = await _getTokenAny();
-                if (token == null || token.isEmpty) {
-                  setSt(() {
-                    loading = false;
-                    err = 'เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่';
-                  });
-                  return;
-                }
-
-                final headers = _authHeaders(token);
-                final body = jsonEncode({
-                  'rejectReason': reasonCtrl.text.trim(),
-                });
-
-                final candidates = <String>[
-                  '/attendance/manual-request/$id/reject',
-                  '/api/attendance/manual-request/$id/reject',
-                ];
-
-                for (final p in candidates) {
-                  final res = await _tryPost(
-                    _payrollUri(p),
-                    headers: headers,
-                    body: body,
-                  );
-
-                  if (res.statusCode == 404) continue;
-
-                  if (res.statusCode == 200 || res.statusCode == 201) {
-                    if (!ctx.mounted) return;
-                    Navigator.pop(ctx, true);
-                    return;
-                  }
-
-                  final msg = _extractApiMessage(res);
-                  setSt(() {
-                    loading = false;
-                    err = msg.isNotEmpty ? msg : 'ไม่สามารถปฏิเสธคำขอได้';
-                  });
-                  return;
-                }
-
-                setSt(() {
-                  loading = false;
-                  err = 'ไม่สามารถปฏิเสธคำขอได้';
-                });
-              } catch (_) {
-                setSt(() {
-                  loading = false;
-                  err = 'เชื่อมต่อไม่สำเร็จ';
-                });
-              }
-            }
-
+          builder: (innerContext, setInnerState) {
             return AlertDialog(
               title: const Text('ไม่อนุมัติคำขอ'),
               content: Column(
@@ -561,13 +441,17 @@ class _ClinicAttendanceApprovalScreenState
                     ),
                     minLines: 2,
                     maxLines: 4,
+                    textInputAction: TextInputAction.done,
+                    onSubmitted: (_) {
+                      FocusScope.of(dialogContext).unfocus();
+                    },
                   ),
                   if (err.isNotEmpty) ...[
                     const SizedBox(height: 10),
                     Text(
                       err,
                       style: TextStyle(
-                        color: Theme.of(ctx).colorScheme.error,
+                        color: Theme.of(innerContext).colorScheme.error,
                         fontWeight: FontWeight.w700,
                       ),
                     ),
@@ -576,18 +460,25 @@ class _ClinicAttendanceApprovalScreenState
               ),
               actions: [
                 TextButton(
-                  onPressed: loading ? null : () => Navigator.pop(ctx, false),
+                  onPressed: () {
+                    FocusScope.of(dialogContext).unfocus();
+                    Navigator.of(dialogContext).pop(null);
+                  },
                   child: const Text('ยกเลิก'),
                 ),
                 FilledButton(
-                  onPressed: loading ? null : submit,
-                  child: loading
-                      ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Text('ยืนยันไม่อนุมัติ'),
+                  onPressed: () {
+                    final text = reasonCtrl.text.trim();
+                    if (text.isEmpty) {
+                      setInnerState(() {
+                        err = 'กรุณาระบุเหตุผลที่ไม่อนุมัติ';
+                      });
+                      return;
+                    }
+                    FocusScope.of(dialogContext).unfocus();
+                    Navigator.of(dialogContext).pop(text);
+                  },
+                  child: const Text('ยืนยันไม่อนุมัติ'),
                 ),
               ],
             );
@@ -596,17 +487,203 @@ class _ClinicAttendanceApprovalScreenState
       },
     );
 
-    reasonCtrl.dispose();
+    return result;
+  }
 
-    if (ok == true) {
-      _snack('บันทึกการไม่อนุมัติแล้ว');
-      await _load();
+  Future<void> _approveItem(Map<String, dynamic> item) async {
+    if (_submitting) return;
+
+    final id = (item['_id'] ?? item['id'] ?? '').toString().trim();
+    if (id.isEmpty) {
+      _showSnackNow('ไม่พบรหัสคำขอ');
+      return;
+    }
+
+    final approvalNote = await _showApproveDialog(item);
+    if (!mounted) return;
+    if (approvalNote == null) return;
+
+    setState(() {
+      _submitting = true;
+    });
+
+    try {
+      final token = await _getTokenAny();
+      if (token == null || token.isEmpty) {
+        if (!mounted) return;
+        _showSnackNow('เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่');
+        return;
+      }
+
+      if (!mounted) return;
+      final headers = _authHeaders(token);
+      final body = jsonEncode({
+        'action': 'approve',
+        'approvalNote': approvalNote,
+      });
+
+      final candidates = <String>[
+        '/attendance/manual-request/$id/approve',
+        '/api/attendance/manual-request/$id/approve',
+      ];
+
+      http.Response? lastRes;
+
+      for (final p in candidates) {
+        final uri = _payrollUri(p);
+
+        _log('APPROVE REQUEST', {
+          'url': uri.toString(),
+          'id': id,
+          'body': jsonDecode(body),
+        });
+
+        final res = await _tryPost(
+          uri,
+          headers: headers,
+          body: body,
+        );
+
+        _log('APPROVE RESPONSE', {
+          'url': uri.toString(),
+          'statusCode': res.statusCode,
+          'body': res.body,
+        });
+
+        lastRes = res;
+
+        if (res.statusCode == 404) continue;
+
+        if (res.statusCode == 200 || res.statusCode == 201) {
+          if (!mounted) return;
+
+          _removeItemLocally(id);
+
+          if (mounted) {
+            setState(() {
+              _submitting = false;
+            });
+          }
+
+          _showSnackNow('อนุมัติคำขอแล้ว');
+          return;
+        }
+
+        break;
+      }
+
+      if (!mounted) return;
+      final msg = lastRes != null ? _extractApiMessage(lastRes) : '';
+      _showSnackNow(msg.isNotEmpty ? msg : 'อนุมัติไม่สำเร็จ');
+    } catch (e) {
+      _log('APPROVE ERROR', e.toString());
+      if (!mounted) return;
+      _showSnackNow('เชื่อมต่อไม่สำเร็จ');
+    } finally {
+      if (mounted && _submitting) {
+        setState(() {
+          _submitting = false;
+        });
+      }
     }
   }
 
-  void _snack(String msg) {
+  Future<void> _rejectItem(Map<String, dynamic> item) async {
+    if (_submitting) return;
+
+    final id = (item['_id'] ?? item['id'] ?? '').toString().trim();
+    if (id.isEmpty) {
+      _showSnackNow('ไม่พบรหัสคำขอ');
+      return;
+    }
+
+    final rejectReason = await _showRejectDialog(item);
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+    if (rejectReason == null) return;
+
+    setState(() {
+      _submitting = true;
+    });
+
+    try {
+      final token = await _getTokenAny();
+      if (token == null || token.isEmpty) {
+        if (!mounted) return;
+        _showSnackNow('เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่');
+        return;
+      }
+
+      if (!mounted) return;
+      final headers = _authHeaders(token);
+      final body = jsonEncode({
+        'action': 'reject',
+        'rejectReason': rejectReason,
+      });
+
+      final candidates = <String>[
+        '/attendance/manual-request/$id/reject',
+        '/api/attendance/manual-request/$id/reject',
+      ];
+
+      http.Response? lastRes;
+
+      for (final p in candidates) {
+        final uri = _payrollUri(p);
+
+        _log('REJECT REQUEST', {
+          'url': uri.toString(),
+          'id': id,
+          'body': jsonDecode(body),
+        });
+
+        final res = await _tryPost(
+          uri,
+          headers: headers,
+          body: body,
+        );
+
+        _log('REJECT RESPONSE', {
+          'url': uri.toString(),
+          'statusCode': res.statusCode,
+          'body': res.body,
+        });
+
+        lastRes = res;
+
+        if (res.statusCode == 404) continue;
+
+        if (res.statusCode == 200 || res.statusCode == 201) {
+          if (!mounted) return;
+
+          _removeItemLocally(id);
+
+          if (mounted) {
+            setState(() {
+              _submitting = false;
+            });
+          }
+
+          _showSnackNow('บันทึกการไม่อนุมัติแล้ว');
+          return;
+        }
+
+        break;
+      }
+
+      if (!mounted) return;
+      final msg = lastRes != null ? _extractApiMessage(lastRes) : '';
+      _showSnackNow(msg.isNotEmpty ? msg : 'ไม่สามารถปฏิเสธคำขอได้');
+    } catch (e) {
+      _log('REJECT ERROR', e.toString());
+      if (!mounted) return;
+      _showSnackNow('เชื่อมต่อไม่สำเร็จ');
+    } finally {
+      if (mounted && _submitting) {
+        setState(() {
+          _submitting = false;
+        });
+      }
+    }
   }
 
   Widget _kv(String k, String v) {
@@ -643,11 +720,10 @@ class _ClinicAttendanceApprovalScreenState
     final requestedCheckInAt = item['requestedCheckInAt'];
     final requestedCheckOutAt = item['requestedCheckOutAt'];
     final workDate = (item['workDate'] ?? '').toString().trim();
-    final reasonCode = (item['requestReasonCode'] ??
-            item['reasonCode'] ??
-            '')
-        .toString()
-        .trim();
+    final reasonCode =
+        (item['requestReasonCode'] ?? item['reasonCode'] ?? '')
+            .toString()
+            .trim();
     final reasonText = (item['requestReasonText'] ??
             item['reasonText'] ??
             item['manualReason'] ??
@@ -677,7 +753,8 @@ class _ClinicAttendanceApprovalScreenState
                   padding:
                       const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                   decoration: BoxDecoration(
-                    color: _statusColor(context, approvalStatus).withOpacity(0.12),
+                    color:
+                        _statusColor(context, approvalStatus).withOpacity(0.12),
                     borderRadius: BorderRadius.circular(999),
                   ),
                   child: Text(
@@ -699,28 +776,36 @@ class _ClinicAttendanceApprovalScreenState
             _kv('รหัสเหตุผล', reasonCode.isEmpty ? '-' : reasonCode),
             _kv('รายละเอียด', reasonText.isEmpty ? '-' : reasonText),
             if ((item['approvalNote'] ?? '').toString().trim().isNotEmpty)
-              _kv('หมายเหตุอนุมัติ',
-                  (item['approvalNote'] ?? '').toString().trim()),
+              _kv(
+                'หมายเหตุอนุมัติ',
+                (item['approvalNote'] ?? '').toString().trim(),
+              ),
             if ((item['rejectReason'] ?? '').toString().trim().isNotEmpty)
-              _kv('เหตุผลที่ไม่อนุมัติ',
-                  (item['rejectReason'] ?? '').toString().trim()),
+              _kv(
+                'เหตุผลที่ไม่อนุมัติ',
+                (item['rejectReason'] ?? '').toString().trim(),
+              ),
             if (_approvalStatus == 'pending') ...[
               const SizedBox(height: 12),
               Row(
                 children: [
                   Expanded(
                     child: OutlinedButton.icon(
-                      onPressed: _submitting ? null : () => _rejectItem(item),
+                      onPressed: (_submitting || _loading)
+                          ? null
+                          : () => _rejectItem(item),
                       icon: const Icon(Icons.close),
-                      label: const Text('ไม่อนุมัติ'),
+                      label: Text(_submitting ? 'กำลังทำรายการ...' : 'ไม่อนุมัติ'),
                     ),
                   ),
                   const SizedBox(width: 10),
                   Expanded(
                     child: FilledButton.icon(
-                      onPressed: _submitting ? null : () => _approveItem(item),
+                      onPressed: (_submitting || _loading)
+                          ? null
+                          : () => _approveItem(item),
                       icon: const Icon(Icons.check),
-                      label: const Text('อนุมัติ'),
+                      label: Text(_submitting ? 'กำลังทำรายการ...' : 'อนุมัติ'),
                     ),
                   ),
                 ],
@@ -812,13 +897,15 @@ class _ClinicAttendanceApprovalScreenState
                         child: Text('ไม่อนุมัติ'),
                       ),
                     ],
-                    onChanged: (v) async {
-                      if (v == null) return;
-                      setState(() {
-                        _approvalStatus = v;
-                      });
-                      await _load();
-                    },
+                    onChanged: (_loading || _submitting)
+                        ? null
+                        : (v) async {
+                            if (v == null) return;
+                            setState(() {
+                              _approvalStatus = v;
+                            });
+                            await _load();
+                          },
                   ),
                   const SizedBox(height: 12),
                   ListTile(
@@ -827,7 +914,7 @@ class _ClinicAttendanceApprovalScreenState
                     title: const Text('วันที่ทำงาน'),
                     subtitle: Text(_fmtDate(_workDate)),
                     trailing: const Icon(Icons.chevron_right),
-                    onTap: _pickWorkDate,
+                    onTap: (_loading || _submitting) ? null : _pickWorkDate,
                   ),
                 ],
               ),
@@ -865,7 +952,7 @@ class _ClinicAttendanceApprovalScreenState
         actions: [
           IconButton(
             tooltip: 'รีเฟรช',
-            onPressed: _load,
+            onPressed: (_loading || _submitting) ? null : _load,
             icon: const Icon(Icons.refresh),
           ),
         ],

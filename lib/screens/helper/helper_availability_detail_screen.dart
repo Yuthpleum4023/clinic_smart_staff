@@ -1,30 +1,54 @@
 // lib/screens/helper/helper_availability_detail_screen.dart
 //
-// ✅ Helper Availability Detail — PROD CLEAN + POWER ACTIONS (MODEL-MATCHED)
+// ✅ Helper Availability Detail — FINAL CLEAN
 // - PROD CLEAN (ไม่โชว์ debug / ไม่โชว์ id/clinicId/raw status)
-// - 🔥 โทรเลย
-// - 🔥 เปิด Google Maps
-// - 🔥 นำทางทันที (google.navigation)
-// - Copy เบอร์/ที่อยู่ ได้
+// - โทรเลย / เปิด Google Maps / นำทางทันที / copy ได้
 //
-// ✅ PATCH NEW (STORE READY)
-// - ✅ รองรับ bookedClinicLocationLabel
-// - ✅ รองรับ bookedClinicDistanceText / bookedClinicDistanceKm
-// - ✅ แสดง "ห่างจากคุณ X กม."
-// - ✅ fallback ดีเมื่อไม่มี location/distance
+// ✅ STORE READY
+// - รองรับ bookedClinicLocationLabel
+// - รองรับ bookedClinicDistanceText / bookedClinicDistanceKm
+// - แสดง "ห่างจากคุณ X กม."
+// - fallback ดีเมื่อไม่มี distance จาก backend
+// - ใช้ LocationEngine / LocationManager แบบเดียวกับทั้งแอป
 //
-// ✅ FIX RED:
+// ✅ FINAL CLEANUP
+// - ลบ import ที่ไม่ใช้
+// - เช็กพิกัดให้แน่นขึ้น (กัน 0,0)
+// - ใช้ Uri ตรง ๆ สำหรับ maps/nav
+// - ✅ ไม่สร้าง AppLocation เองแล้ว เพื่อตัดปัญหา undefined
+//
+// ✅ NOTE
 // - model ของท่าน clinicLat/clinicLng เป็น num? -> แปลงเป็น double? ด้วย toDouble()
+
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'package:clinic_smart_staff/models/availability_model.dart';
+import 'package:clinic_smart_staff/services/location_engine.dart';
+import 'package:clinic_smart_staff/services/location_manager.dart';
 
-class HelperAvailabilityDetailScreen extends StatelessWidget {
+class HelperAvailabilityDetailScreen extends StatefulWidget {
   final Availability a;
-  const HelperAvailabilityDetailScreen({super.key, required this.a});
+
+  const HelperAvailabilityDetailScreen({
+    super.key,
+    required this.a,
+  });
+
+  @override
+  State<HelperAvailabilityDetailScreen> createState() =>
+      _HelperAvailabilityDetailScreenState();
+}
+
+class _HelperAvailabilityDetailScreenState
+    extends State<HelperAvailabilityDetailScreen> {
+  double? _fallbackDistanceKm;
+  bool _loadingFallbackDistance = false;
+
+  Availability get a => widget.a;
 
   String _s(String v) => v.trim().isEmpty ? '-' : v.trim();
   String _raw(dynamic v) => (v ?? '').toString().trim();
@@ -34,20 +58,119 @@ class HelperAvailabilityDetailScreen extends StatelessWidget {
   double? get _lat => a.clinicLat?.toDouble();
   double? get _lng => a.clinicLng?.toDouble();
 
-  bool get _hasLocation => _lat != null && _lng != null;
-
-  String _mapsUrl() {
-    if (!_hasLocation) return '';
-    return 'https://www.google.com/maps/search/?api=1&query=$_lat,$_lng';
+  bool get _hasLocation {
+    final lat = _lat;
+    final lng = _lng;
+    if (lat == null || lng == null) return false;
+    if (lat == 0 || lng == 0) return false;
+    if (lat < -90 || lat > 90) return false;
+    if (lng < -180 || lng > 180) return false;
+    return true;
   }
 
-  Uri _navUri() {
-    return Uri.parse('google.navigation:q=$_lat,$_lng');
+  @override
+  void initState() {
+    super.initState();
+    _prepareFallbackDistance();
   }
 
-  Uri _webDirUri() {
+  double? _distanceKmBetweenRaw(
+    double? lat1,
+    double? lng1,
+    double? lat2,
+    double? lng2,
+  ) {
+    if (lat1 == null || lng1 == null || lat2 == null || lng2 == null) {
+      return null;
+    }
+    if (!lat1.isFinite || !lng1.isFinite || !lat2.isFinite || !lng2.isFinite) {
+      return null;
+    }
+    if (lat1 == 0 || lng1 == 0 || lat2 == 0 || lng2 == 0) {
+      return null;
+    }
+    if (lat1 < -90 || lat1 > 90 || lat2 < -90 || lat2 > 90) {
+      return null;
+    }
+    if (lng1 < -180 || lng1 > 180 || lng2 < -180 || lng2 > 180) {
+      return null;
+    }
+
+    const r = 6371.0;
+
+    double degToRad(double deg) => deg * math.pi / 180.0;
+
+    final dLat = degToRad(lat2 - lat1);
+    final dLng = degToRad(lng2 - lng1);
+
+    final aVal = math.sin(dLat / 2) * math.sin(dLat / 2) +
+        math.cos(degToRad(lat1)) *
+            math.cos(degToRad(lat2)) *
+            math.sin(dLng / 2) *
+            math.sin(dLng / 2);
+
+    final c = 2 * math.atan2(math.sqrt(aVal), math.sqrt(1 - aVal));
+    final km = r * c;
+
+    if (!km.isFinite) return null;
+    return km;
+  }
+
+  Future<void> _prepareFallbackDistance() async {
+    if (!_isBooked) return;
+    if (!_hasLocation) return;
+    if (_clinicDistanceText.isNotEmpty) return;
+
+    if (mounted) {
+      setState(() => _loadingFallbackDistance = true);
+    }
+
+    try {
+      final helperLoc =
+          await LocationManager.loadHelperLocationSmart(allowGpsFallback: false);
+
+      if (helperLoc == null) return;
+
+      final lat = _lat;
+      final lng = _lng;
+      if (lat == null || lng == null) return;
+
+      final km = _distanceKmBetweenRaw(
+        helperLoc.lat,
+        helperLoc.lng,
+        lat,
+        lng,
+      );
+
+      if (!mounted) return;
+      setState(() {
+        _fallbackDistanceKm = km;
+      });
+    } catch (_) {
+      // เงียบไว้ หน้ายังใช้งานได้
+    } finally {
+      if (mounted) {
+        setState(() => _loadingFallbackDistance = false);
+      }
+    }
+  }
+
+  Uri? _mapsUri() {
+    if (!_hasLocation) return null;
     return Uri.parse(
-      'https://www.google.com/maps/dir/?api=1&destination=$_lat,$_lng&travelmode=driving',
+      'https://www.google.com/maps/search/?api=1&query=${_lat!},${_lng!}',
+    );
+  }
+
+  Uri? _navUri() {
+    if (!_hasLocation) return null;
+    return Uri.parse('google.navigation:q=${_lat!},${_lng!}');
+  }
+
+  Uri? _webDirUri() {
+    if (!_hasLocation) return null;
+    return Uri.parse(
+      'https://www.google.com/maps/dir/?api=1&destination=${_lat!},${_lng!}&travelmode=driving',
     );
   }
 
@@ -56,34 +179,48 @@ class HelperAvailabilityDetailScreen extends StatelessWidget {
   }
 
   String get _clinicLocationLabel {
-    final v = _raw(a.bookedClinicLocationLabel);
-    if (v.isNotEmpty) return v;
+    final explicit = _raw(a.bookedClinicLocationLabel);
+    if (explicit.isNotEmpty) return explicit;
 
-    final fromClinicAddress = _raw(a.clinicLocationText);
-    if (fromClinicAddress.isNotEmpty) return fromClinicAddress;
+    final fromModel = _raw(a.clinicLocationText);
+    if (fromModel.isNotEmpty) return fromModel;
 
-    final district = _raw(a.bookedClinicDistrict);
-    final province = _raw(a.bookedClinicProvince);
-    if (district.isNotEmpty && province.isNotEmpty) return '$district, $province';
-    if (province.isNotEmpty) return province;
-    if (district.isNotEmpty) return district;
+    return LocationEngine.resolveLocationLabelForItem({
+      'locationLabel': a.bookedClinicLocationLabel,
+      'district': a.bookedClinicDistrict,
+      'province': a.bookedClinicProvince,
+      'address': a.clinicAddress,
+    });
+  }
 
-    final clinicAddr = _raw(a.clinicAddress);
-    if (clinicAddr.isNotEmpty) return clinicAddr;
+  String get _clinicDistanceText {
+    final explicit = _raw(a.bookedClinicDistanceText);
+    if (explicit.isNotEmpty) return explicit;
+
+    final modelKm = a.bookedClinicDistanceKm?.toDouble();
+    if (modelKm != null) {
+      return LocationEngine.formatDistanceKm(modelKm);
+    }
+
+    if (_fallbackDistanceKm != null) {
+      return LocationEngine.formatDistanceKm(_fallbackDistanceKm);
+    }
 
     return '';
   }
 
-  String get _clinicDistanceText {
-    final t = _raw(a.bookedClinicDistanceText);
-    if (t.isNotEmpty) return t;
+  String get _clinicNearbyLabel {
+    if (a.bookedClinicDistanceKm != null) {
+      return LocationEngine.nearbyLabelFromDistance(
+        a.bookedClinicDistanceKm!.toDouble(),
+      );
+    }
 
-    final km = a.bookedClinicDistanceKm;
-    if (km == null) return '';
+    if (_fallbackDistanceKm != null) {
+      return LocationEngine.nearbyLabelFromDistance(_fallbackDistanceKm);
+    }
 
-    final n = km.toDouble();
-    if (n < 10) return '${n.toStringAsFixed(1)} กม.';
-    return '${n.round()} กม.';
+    return '';
   }
 
   String get _clinicLocationDistanceLine {
@@ -105,12 +242,18 @@ class HelperAvailabilityDetailScreen extends StatelessWidget {
   Future<void> _copy(BuildContext context, String text, String okMsg) async {
     final t = text.trim();
     if (t.isEmpty) return;
+
     await Clipboard.setData(ClipboardData(text: t));
+
     if (!context.mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(okMsg)));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(okMsg)),
+    );
   }
 
-  Future<void> _launchExternal(BuildContext context, Uri uri) async {
+  Future<void> _launchExternal(BuildContext context, Uri? uri) async {
+    if (uri == null) return;
+
     try {
       final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
       if (!ok && context.mounted) {
@@ -129,7 +272,10 @@ class HelperAvailabilityDetailScreen extends StatelessWidget {
   Widget _sectionTitle(String text) {
     return Text(
       text,
-      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
+      style: const TextStyle(
+        fontSize: 16,
+        fontWeight: FontWeight.w900,
+      ),
     );
   }
 
@@ -143,8 +289,11 @@ class HelperAvailabilityDetailScreen extends StatelessWidget {
     final clinicPhone = _raw(a.clinicPhone);
     final clinicAddr = _raw(a.clinicAddress);
     final clinicLocationDistanceLine = _clinicLocationDistanceLine;
+    final clinicNearbyLabel = _clinicNearbyLabel;
 
-    final maps = _mapsUrl();
+    final mapsUri = _mapsUri();
+    final navUri = _navUri();
+    final webDirUri = _webDirUri();
 
     final hasClinicMeta = clinicName.isNotEmpty ||
         clinicPhone.isNotEmpty ||
@@ -230,6 +379,26 @@ class HelperAvailabilityDetailScreen extends StatelessWidget {
                       _row('ตำแหน่ง', clinicLocationDistanceLine),
                       const SizedBox(height: 6),
                     ],
+                    if (_loadingFallbackDistance) ...[
+                      Text(
+                        'กำลังคำนวณระยะทาง...',
+                        style: TextStyle(
+                          color: cs.onSurface.withOpacity(0.6),
+                          fontSize: 12,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                    ],
+                    if (clinicNearbyLabel.isNotEmpty) ...[
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          _pill(clinicNearbyLabel, Colors.green),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+                    ],
                     if (clinicPhone.isNotEmpty) ...[
                       _row('โทร', clinicPhone),
                       const SizedBox(height: 6),
@@ -257,37 +426,41 @@ class HelperAvailabilityDetailScreen extends StatelessWidget {
                         if (_hasLocation)
                           FilledButton.icon(
                             onPressed: () =>
-                                _launchExternal(context, _navUri()),
+                                _launchExternal(context, navUri),
                             icon: const Icon(Icons.navigation),
                             label: const Text('นำทาง'),
                           ),
                         if (_hasLocation)
                           OutlinedButton.icon(
-                            onPressed: () => _launchExternal(
-                              context,
-                              Uri.parse(maps),
-                            ),
+                            onPressed: () =>
+                                _launchExternal(context, mapsUri),
                             icon: const Icon(Icons.map),
                             label: const Text('เปิดแผนที่'),
                           ),
                         if (_hasLocation)
                           OutlinedButton.icon(
                             onPressed: () =>
-                                _launchExternal(context, _webDirUri()),
+                                _launchExternal(context, webDirUri),
                             icon: const Icon(Icons.directions),
                             label: const Text('เส้นทาง (สำรอง)'),
                           ),
                         if (clinicPhone.isNotEmpty)
                           OutlinedButton.icon(
-                            onPressed: () =>
-                                _copy(context, clinicPhone, 'คัดลอกเบอร์แล้ว'),
+                            onPressed: () => _copy(
+                              context,
+                              clinicPhone,
+                              'คัดลอกเบอร์แล้ว',
+                            ),
                             icon: const Icon(Icons.copy),
                             label: const Text('คัดลอกเบอร์'),
                           ),
                         if (clinicAddr.isNotEmpty)
                           OutlinedButton.icon(
-                            onPressed: () =>
-                                _copy(context, clinicAddr, 'คัดลอกที่อยู่แล้ว'),
+                            onPressed: () => _copy(
+                              context,
+                              clinicAddr,
+                              'คัดลอกที่อยู่แล้ว',
+                            ),
                             icon: const Icon(Icons.copy),
                             label: const Text('คัดลอกที่อยู่'),
                           ),
@@ -319,7 +492,10 @@ class HelperAvailabilityDetailScreen extends StatelessWidget {
       children: [
         SizedBox(
           width: 90,
-          child: Text(k, style: const TextStyle(fontWeight: FontWeight.w800)),
+          child: Text(
+            k,
+            style: const TextStyle(fontWeight: FontWeight.w800),
+          ),
         ),
         const SizedBox(width: 10),
         Expanded(child: Text(_s(v))),

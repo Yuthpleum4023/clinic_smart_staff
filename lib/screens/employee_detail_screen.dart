@@ -1,35 +1,3 @@
-// lib/screens/employee_detail_screen.dart
-//
-// ✅ FULL FILE (COPY-PASTE READY)
-// ✅ CLEANED VERSION:
-// - ❌ ตัด Manual Attendance ออกจากหน้านี้ทั้งหมด
-// - ✅ คง Manual OT / Backend OT / Local OT / Payroll / Edit Employee ไว้
-// - ✅ คง PIN lock/unlock flow ไว้
-// - ✅ คง SSO / Part-time hours / OT policy flow ไว้
-// - ✅ NEW: รองรับ 2 เส้นทางภาษี
-//   - ไม่หักภาษี
-//   - หักภาษี ณ ที่จ่าย
-// - ✅ NEW: เก็บ tax mode แยกรายพนักงานผ่าน SharedPreferences
-// - ✅ NEW: ทั้ง 2 flow ไปหน้า preview/payroll เดียวกัน
-// - ✅ NEW: แสดง linkedUserId บนหน้า detail
-// - ✅ NEW: ใช้ linkedUserId เป็น priority เวลาเรียก payroll/tax/OT เท่าที่ฝั่ง client ส่งได้
-//
-// ✅ UPDATED FOR NEW BACKEND CONTRACT:
-// - staffId จริงอาจเป็น Mongo _id string จาก staff_service
-// - ไม่บังคับ prefix stf_ อีกแล้ว
-// - payroll / OT / bulk approve / preview ใช้ staffId non-empty ได้เลย
-//
-// IMPORTANT:
-// - Manual Attendance ใหม่ให้ใช้จาก:
-//   - lib/screens/home/attendance/manual_attendance_request_screen.dart
-//   - lib/screens/clinic/clinic_attendance_approval_screen.dart
-//
-// NOTE:
-// - เวอร์ชันนี้ตั้งใจให้ COMPILE ผ่านกับ PayrollAfterTaxPreviewScreen
-//   ที่ท่านใช้อยู่
-// - linkedUserId ถูกใช้เป็น priority ในการ query/filter/body ก่อน fallback ไป staffId
-//
-
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -213,6 +181,13 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
 
   _EmployeeTaxMode _taxMode = _EmployeeTaxMode.none;
 
+  bool _loadingClinicPayrollConfig = false;
+  String _clinicPayrollConfigError = '';
+
+  bool? _clinicSsoEnabled;
+  double? _clinicSsoEmployeeRate;
+  double? _clinicSsoMaxWageBase;
+
   bool get _hasBackendOt => _backendOtRows.isNotEmpty;
 
   double get _normalOtMultiplier {
@@ -225,6 +200,29 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     final v = _policyHolidayMultiplier;
     if (v == null || v <= 0) return _defaultOtHolidayMultiplier;
     return v;
+  }
+
+  double get _effectiveClinicSsoRate {
+    final v = _clinicSsoEmployeeRate;
+    if (v == null || v <= 0) return 0.05;
+    return v;
+  }
+
+  double get _effectiveClinicSsoMaxWageBase {
+    final v = _clinicSsoMaxWageBase;
+    if (v == null || v <= 0) return 17500.0;
+    return v;
+  }
+
+  bool get _effectiveClinicSsoEnabled {
+    return _clinicSsoEnabled != false;
+  }
+
+  double _computeSsoFromClinicConfig(double salaryBase) {
+    if (!_effectiveClinicSsoEnabled) return 0.0;
+    final contributableBase =
+        salaryBase.clamp(0.0, _effectiveClinicSsoMaxWageBase);
+    return contributableBase * _effectiveClinicSsoRate;
   }
 
   String get _employeeTaxModeKey => 'employee_tax_mode_${emp.id}';
@@ -245,10 +243,10 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     emp = widget.employee;
     selectedMonth = DateTime(DateTime.now().year, DateTime.now().month, 1);
 
-    _initSsoPercentFromPrefs();
     _initTaxSettingsFromPrefs();
     _loadWorkEntriesIfNeeded();
     _loadClinicOtPolicy();
+    _loadClinicPayrollConfig();
     _loadBackendOtForSelectedMonth();
   }
 
@@ -540,6 +538,98 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
         _policyHolidayMultiplier = _defaultOtHolidayMultiplier;
         _loadingOtPolicy = false;
         _otPolicyError = 'โหลดตัวคูณ OT จาก policy ไม่สำเร็จ';
+      });
+    }
+  }
+
+  Future<void> _loadClinicPayrollConfig() async {
+    if (!mounted || _disposed) return;
+
+    setState(() {
+      _loadingClinicPayrollConfig = true;
+      _clinicPayrollConfigError = '';
+    });
+
+    try {
+      final token = await _getToken();
+      if (token == null || token.trim().isEmpty) {
+        throw Exception('NO_TOKEN');
+      }
+
+      final clinicId = await _resolveClinicId();
+      if (clinicId == null || clinicId.trim().isEmpty) {
+        throw Exception('NO_CLINIC_ID');
+      }
+
+      final candidates = <String>[
+        '/clinics/$clinicId',
+        '/api/clinics/$clinicId',
+      ];
+
+      http.Response? okRes;
+
+      for (final p in candidates) {
+        final res = await http.get(_uri(p), headers: _headers(token));
+        if (res.statusCode == 200) {
+          okRes = res;
+          break;
+        }
+      }
+
+      if (okRes == null) {
+        throw Exception('NO_OK_RESPONSE');
+      }
+
+      final decoded = jsonDecode(okRes.body);
+      final clinicAny = (decoded is Map && decoded['clinic'] is Map)
+          ? decoded['clinic']
+          : decoded;
+
+      if (clinicAny is! Map) {
+        throw Exception('BAD_CLINIC_PAYLOAD');
+      }
+
+      final clinic = Map<String, dynamic>.from(
+        clinicAny.map((k, v) => MapEntry(k.toString(), v)),
+      );
+
+      final socialSecurityAny = clinic['socialSecurity'];
+      final socialSecurity = socialSecurityAny is Map
+          ? Map<String, dynamic>.from(
+              socialSecurityAny.map((k, v) => MapEntry(k.toString(), v)),
+            )
+          : <String, dynamic>{};
+
+      final enabled = socialSecurity.containsKey('enabled')
+          ? socialSecurity['enabled'] == true
+          : true;
+
+      final rate = (socialSecurity['employeeRate'] is num)
+          ? (socialSecurity['employeeRate'] as num).toDouble()
+          : double.tryParse('${socialSecurity['employeeRate'] ?? ''}');
+
+      final maxWageBase = (socialSecurity['maxWageBase'] is num)
+          ? (socialSecurity['maxWageBase'] as num).toDouble()
+          : double.tryParse('${socialSecurity['maxWageBase'] ?? ''}');
+
+      if (!mounted || _disposed) return;
+      setState(() {
+        _clinicSsoEnabled = enabled;
+        _clinicSsoEmployeeRate = (rate != null && rate >= 0) ? rate : 0.05;
+        _clinicSsoMaxWageBase =
+            (maxWageBase != null && maxWageBase > 0) ? maxWageBase : 17500.0;
+
+        ssoPercentCtrl.text =
+            ((_clinicSsoEmployeeRate ?? 0.05) * 100).toStringAsFixed(2);
+
+        _loadingClinicPayrollConfig = false;
+        _clinicPayrollConfigError = '';
+      });
+    } catch (_) {
+      if (!mounted || _disposed) return;
+      setState(() {
+        _loadingClinicPayrollConfig = false;
+        _clinicPayrollConfigError = 'โหลดค่า SSO ของคลินิกไม่สำเร็จ';
       });
     }
   }
@@ -998,6 +1088,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       setState(() => emp = result);
       _snack('อัปเดตข้อมูลพนักงานแล้ว');
       await _loadClinicOtPolicy();
+      await _loadClinicPayrollConfig();
       await _loadBackendOtForSelectedMonth();
       await _initTaxSettingsFromPrefs();
     }
@@ -1038,8 +1129,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       return;
     }
 
-    final verified =
-        await _promptVerifyPin(oldPin, title: 'ยืนยันรหัสเดิม');
+    final verified = await _promptVerifyPin(oldPin, title: 'ยืนยันรหัสเดิม');
     if (!mounted || _disposed) return;
 
     if (!verified) {
@@ -1210,19 +1300,11 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     return ok == true;
   }
 
-  Future<void> _initSsoPercentFromPrefs() async {
-    final prefs = await SharedPreferences.getInstance();
-    final p = prefs.getDouble('settings_sso_percent') ?? 5.0;
-    if (!mounted || _disposed) return;
-    ssoPercentCtrl.text = p.toStringAsFixed(2);
-  }
-
   Future<void> _initTaxSettingsFromPrefs() async {
     final prefs = await SharedPreferences.getInstance();
     final rawMode = (prefs.getString(_employeeTaxModeKey) ?? 'none').trim();
-    final p =
-        prefs.getDouble(_employeeWithholdingPercentKey) ??
-            _defaultWithholdingPercent;
+    final p = prefs.getDouble(_employeeWithholdingPercentKey) ??
+        _defaultWithholdingPercent;
 
     if (!mounted || _disposed) return;
     setState(() {
@@ -1231,11 +1313,6 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
           : _EmployeeTaxMode.none;
       withholdingPercentCtrl.text = p.toStringAsFixed(2);
     });
-  }
-
-  double _getSsoPercent() {
-    final v = double.tryParse(ssoPercentCtrl.text.trim());
-    return (v == null || v <= 0) ? 5.0 : v;
   }
 
   double _getWithholdingPercent() {
@@ -1252,25 +1329,62 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       return;
     }
 
-    final v = double.tryParse(ssoPercentCtrl.text.trim());
-    if (v == null || v <= 0 || v > 20) {
+    final percent = double.tryParse(ssoPercentCtrl.text.trim());
+    if (percent == null || percent < 0 || percent > 100) {
       _snack('กรุณาใส่ % ให้ถูกต้อง (เช่น 5.00)');
       return;
     }
+
+    final rateDecimal = percent / 100.0;
 
     if (!mounted || _disposed) return;
     setState(() => _savingSso = true);
 
     try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setDouble('settings_sso_percent', v);
+      final token = await _getToken();
+      if (token == null || token.trim().isEmpty) {
+        throw Exception('NO_TOKEN');
+      }
+
+      final body = {
+        'socialSecurityEnabled': true,
+        'socialSecurityEmployeeRate': rateDecimal,
+        'socialSecurityMaxWageBase': _effectiveClinicSsoMaxWageBase,
+      };
+
+      final candidates = <String>[
+        '/clinics/me/profile',
+        '/api/clinics/me/profile',
+      ];
+
+      http.Response? okRes;
+
+      for (final p in candidates) {
+        final res = await http.patch(
+          _uri(p),
+          headers: _headers(token),
+          body: jsonEncode(body),
+        );
+
+        if (res.statusCode == 200) {
+          okRes = res;
+          break;
+        }
+      }
+
+      if (okRes == null) {
+        throw Exception('SAVE_FAILED');
+      }
 
       if (!mounted || _disposed) return;
-      FocusScope.of(context).unfocus();
-      setState(() {});
-      _snack('บันทึก SSO% = ${v.toStringAsFixed(2)} แล้ว');
+      setState(() {
+        _clinicSsoEnabled = true;
+        _clinicSsoEmployeeRate = rateDecimal;
+      });
+
+      _snack('บันทึกค่า SSO ของคลินิกแล้ว');
     } catch (_) {
-      _snack('บันทึกไม่สำเร็จ');
+      _snack('บันทึกค่า SSO ไม่สำเร็จ');
     } finally {
       if (!mounted || _disposed) return;
       setState(() => _savingSso = false);
@@ -1460,6 +1574,10 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     required double otPay,
     required double absentDeduction,
     required double totalMonthPayBeforeTax,
+    required double netNoOtFulltime,
+    required double normalPay,
+    required double totalOtHours,
+    required double netAfterTax,
   }) async {
     try {
       final clinicId = await _resolveClinicId();
@@ -1476,6 +1594,22 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
         return;
       }
 
+      final withholdingAmount =
+          _taxMode == _EmployeeTaxMode.withholding
+              ? totalMonthPayBeforeTax * (_getWithholdingPercent() / 100.0)
+              : 0.0;
+
+      final detailNetBeforeOt = isParttime ? normalPay : grossMonthlyForTax;
+      final detailLeaveDeduction = isParttime ? 0.0 : absentDeduction;
+      final detailOtAmount = otPay;
+      final detailGrossBeforeTax = totalMonthPayBeforeTax;
+      final detailSsoAmount = ssoForTax;
+      final detailTaxAmount = withholdingAmount;
+
+      final detailNetPay = (detailGrossBeforeTax - detailTaxAmount)
+          .clamp(0.0, double.infinity)
+          .toDouble();
+
       await Navigator.push(
         context,
         MaterialPageRoute(
@@ -1488,20 +1622,25 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
             otPay: otPay,
             bonus: emp.bonus,
             otherAllowance: 0,
-            otherDeduction: isParttime ? 0 : absentDeduction,
+            otherDeduction: detailLeaveDeduction,
             pvdEmployeeMonthly: 0,
             closeMonth: _fmtCloseMonth(selectedMonth),
-            taxMode: _taxMode == _EmployeeTaxMode.withholding
-                ? 'withholding'
-                : 'none',
-            withholdingPercent:
-                _taxMode == _EmployeeTaxMode.withholding
-                    ? _getWithholdingPercent()
-                    : 0,
-            withholdingAmount:
-                _taxMode == _EmployeeTaxMode.withholding
-                    ? totalMonthPayBeforeTax * (_getWithholdingPercent() / 100.0)
-                    : 0,
+            taxMode:
+                _taxMode == _EmployeeTaxMode.withholding ? 'withholding' : 'none',
+            withholdingPercent: _taxMode == _EmployeeTaxMode.withholding
+                ? _getWithholdingPercent()
+                : 0,
+            withholdingAmount: _taxMode == _EmployeeTaxMode.withholding
+                ? withholdingAmount
+                : 0,
+            detailNetBeforeOt: detailNetBeforeOt,
+            detailLeaveDeduction: detailLeaveDeduction,
+            detailOtAmount: detailOtAmount,
+            detailGrossBeforeTax: detailGrossBeforeTax,
+            detailSsoAmount: detailSsoAmount,
+            detailTaxAmount: detailTaxAmount,
+            detailNetPay: detailNetPay,
+            detailOtHours: totalOtHours,
           ),
         ),
       );
@@ -2192,20 +2331,37 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
         ? localTotalOtAmount
         : (_backendApprovedCount > 0 ? backendOtPay : localTotalOtAmount);
 
-    final ssoPercent = _getSsoPercent();
-    final ssoAmount = isParttime ? 0.0 : emp.socialSecurity(ssoPercent);
+    final ssoAmount =
+        isParttime ? 0.0 : _computeSsoFromClinicConfig(emp.baseSalary);
     final absentDeduction = isParttime ? 0.0 : emp.absentDeduction();
 
     final normalPay = isParttime ? (totalWorkHours * hourlyWage) : 0.0;
 
-    final netNoOtFulltime = isParttime ? 0.0 : emp.netSalary(ssoPercent);
-    final totalMonthPayFulltime =
-        isParttime ? 0.0 : (netNoOtFulltime + otPay);
+    // ✅ FULL-TIME: ฐานเงินเดือนล้วนสำหรับคิด SSO
+    final grossBaseFulltime = isParttime ? 0.0 : emp.baseSalary;
+
+    // ✅ หลังหัก SSO + หลังหักลา/ขาด แต่ยังไม่รวม OT/โบนัส
+    final afterSsoAndLeaveNoOtFulltime = isParttime
+        ? 0.0
+        : (grossBaseFulltime - ssoAmount - absentDeduction)
+            .clamp(0.0, double.infinity)
+            .toDouble();
+
+    // ✅ ยอดก่อนภาษีของเดือนนี้ตามสูตรธุรกิจ:
+    // เงินเดือน - SSO - หักลา/ขาด + OT + bonus
+    final totalMonthPayFulltime = isParttime
+        ? 0.0
+        : (grossBaseFulltime - ssoAmount - absentDeduction + otPay + emp.bonus)
+            .clamp(0.0, double.infinity)
+            .toDouble();
+
     final totalMonthPayParttime =
         isParttime ? (normalPay + otPay + emp.bonus) : 0.0;
 
+    // ✅ ส่งฐานเงินเดือนจริงให้ preview/backend
     final grossMonthlyForTax =
-        isParttime ? (normalPay + emp.bonus) : (emp.baseSalary + emp.bonus);
+        isParttime ? normalPay : grossBaseFulltime;
+
     final ssoForTax = ssoAmount;
 
     final totalMonthPayBeforeTax =
@@ -2409,34 +2565,58 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                         if (!isParttime) ...[
                           const Text('ประเภท: Full-time'),
                           const SizedBox(height: 6),
-                          const Text('อัตราประกันสังคม (%)'),
+                          const Text('อัตราประกันสังคมของคลินิก (%)'),
                           const SizedBox(height: 6),
+                          if (_loadingClinicPayrollConfig)
+                            const Padding(
+                              padding: EdgeInsets.only(bottom: 8),
+                              child: LinearProgressIndicator(minHeight: 3),
+                            ),
+                          if (_clinicPayrollConfigError.isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 8),
+                              child: Text(
+                                _clinicPayrollConfigError,
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.orange,
+                                ),
+                              ),
+                            ),
                           Column(
                             crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
                               TextField(
                                 controller: ssoPercentCtrl,
-                                enabled: _isEditUnlocked && !_savingSso,
+                                enabled: _isEditUnlocked &&
+                                    !_savingSso &&
+                                    !_loadingClinicPayrollConfig,
                                 keyboardType:
                                     const TextInputType.numberWithOptions(
                                   decimal: true,
                                 ),
                                 inputFormatters: [_decimalFormatter],
-                                decoration: const InputDecoration(
+                                decoration: InputDecoration(
                                   labelText: 'เช่น 5.00',
-                                  border: OutlineInputBorder(),
+                                  helperText:
+                                      'เพดานฐานค่าจ้าง: ${_effectiveClinicSsoMaxWageBase.toStringAsFixed(0)} บาท',
+                                  border: const OutlineInputBorder(),
                                 ),
                               ),
                               const SizedBox(height: 8),
                               ElevatedButton(
                                 onPressed:
-                                    (_savingSso) ? null : _saveSsoPercentFromUI,
-                                child:
-                                    Text(_savingSso ? 'กำลังบันทึก...' : 'บันทึก'),
+                                    (_savingSso || _loadingClinicPayrollConfig)
+                                        ? null
+                                        : _saveSsoPercentFromUI,
+                                child: Text(_savingSso ? 'กำลังบันทึก...' : 'บันทึก'),
                               ),
                             ],
                           ),
                           const SizedBox(height: 10),
+                          Text(
+                            'เงินเดือนฐาน: ${grossBaseFulltime.toStringAsFixed(2)} บาท',
+                          ),
                           Text(
                             'หักประกันสังคม: -${ssoAmount.toStringAsFixed(2)} บาท',
                           ),
@@ -2448,12 +2628,13 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                             'ชั่วโมง OT รวม: ${totalOtHours.toStringAsFixed(2)} ชม.',
                           ),
                           Text('ค่า OT รวม: ${otPay.toStringAsFixed(2)} บาท'),
+                          Text('โบนัส: ${emp.bonus.toStringAsFixed(2)} บาท'),
                           const SizedBox(height: 10),
                           Text(
-                            'สุทธิเดิม (ไม่รวม OT): ${netNoOtFulltime.toStringAsFixed(2)} บาท',
+                            'ยอดหลังหักประกันสังคมและหักลา/ขาด (ไม่รวม OT/โบนัส): ${afterSsoAndLeaveNoOtFulltime.toStringAsFixed(2)} บาท',
                           ),
                           Text(
-                            'สุทธิรวม OT (ก่อนหักภาษี): ${totalMonthPayFulltime.toStringAsFixed(2)} บาท',
+                            'ยอดรวมก่อนภาษี: ${totalMonthPayFulltime.toStringAsFixed(2)} บาท',
                             style: const TextStyle(
                               fontWeight: FontWeight.bold,
                               fontSize: 16,
@@ -2482,6 +2663,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                             'ชั่วโมง OT รวม: ${totalOtHours.toStringAsFixed(2)} ชม.',
                           ),
                           Text('ค่า OT รวม: ${otPay.toStringAsFixed(2)} บาท'),
+                          Text('โบนัส: ${emp.bonus.toStringAsFixed(2)} บาท'),
                           const Divider(height: 18),
                           Text(
                             'รวมทั้งเดือน (ก่อนหักภาษี): ${totalMonthPayParttime.toStringAsFixed(2)} บาท',
@@ -2515,6 +2697,10 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                                 otPay: otPay,
                                 absentDeduction: absentDeduction,
                                 totalMonthPayBeforeTax: totalMonthPayBeforeTax,
+                                netNoOtFulltime: afterSsoAndLeaveNoOtFulltime,
+                                normalPay: normalPay,
+                                totalOtHours: totalOtHours,
+                                netAfterTax: netAfterTax,
                               );
                             },
                           ),

@@ -8,6 +8,7 @@
 // - ✅ bookedByClinicId + clinic contact
 // - ✅ NEW: helper location snapshot
 // - ✅ NEW: distance for clinic-side list
+// - ✅ NEW: nearbyLabel / isNearby
 // - ✅ NEW: booked clinic location + distance for helper-side detail
 // - ✅ มีทั้ง fromMap และ fromJson
 //
@@ -39,9 +40,13 @@ class Availability {
   final String address;
   final String locationLabel;
 
-  // ✅ clinic-side distance (เวลาคลินิกดูรายการ availability)
+  // ✅ clinic-side distance
   final num? distanceKm;
   final String distanceText;
+
+  // ✅ NEW: nearby
+  final bool isNearby;
+  final String nearbyLabel;
 
   // ✅ BOOKING
   final String bookedNote;
@@ -51,14 +56,14 @@ class Availability {
   // ✅ who booked
   final String bookedByClinicId;
 
-  // ✅ clinic contact (backend may enrich)
+  // ✅ clinic contact
   final String clinicName;
   final String clinicPhone;
   final String clinicAddress;
   final num? clinicLat;
   final num? clinicLng;
 
-  // ✅ booked clinic location + distance (เวลาผู้ช่วยดู availability ของตัวเอง)
+  // ✅ booked clinic location + distance
   final String bookedClinicDistrict;
   final String bookedClinicProvince;
   final String bookedClinicLocationLabel;
@@ -88,6 +93,8 @@ class Availability {
     required this.locationLabel,
     required this.distanceKm,
     required this.distanceText,
+    required this.isNearby,
+    required this.nearbyLabel,
     required this.bookedNote,
     required this.shiftId,
     required this.bookedHourlyRate,
@@ -119,6 +126,12 @@ class Availability {
     final t = v.toString().trim();
     if (t.isEmpty) return null;
     return num.tryParse(t);
+  }
+
+  static bool _b(dynamic v) {
+    if (v is bool) return v;
+    final s = _s(v).toLowerCase();
+    return s == 'true' || s == '1' || s == 'yes';
   }
 
   static String _buildLocationLabel({
@@ -181,6 +194,10 @@ class Availability {
     final distanceKm = _nNull(m['distanceKm']);
     final distanceText = _s(m['distanceText']);
 
+    // ✅ NEW: nearby
+    final isNearby = _b(m['isNearby']);
+    final nearbyLabel = _s(m['nearbyLabel']);
+
     // ✅ BOOKING FIELDS
     final bookedNote = _s(m['bookedNote'] ?? m['bookingNote']);
     final shiftId = _s(m['shiftId'] ?? m['shift_id']);
@@ -234,6 +251,8 @@ class Availability {
       locationLabel: locationLabel,
       distanceKm: distanceKm,
       distanceText: distanceText,
+      isNearby: isNearby,
+      nearbyLabel: nearbyLabel,
       bookedNote: bookedNote,
       shiftId: shiftId,
       bookedHourlyRate: bookedHourlyRate,
@@ -254,7 +273,8 @@ class Availability {
 
   bool get isBooked => status.toLowerCase().trim() == 'booked';
 
-  bool get isOpen => status.toLowerCase().trim().isEmpty ||
+  bool get isOpen =>
+      status.toLowerCase().trim().isEmpty ||
       status.toLowerCase().trim() == 'open';
 
   bool get isCancelled => status.toLowerCase().trim() == 'cancelled';

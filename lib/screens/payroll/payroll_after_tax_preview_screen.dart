@@ -23,7 +23,6 @@ class PayrollAfterTaxPreviewScreen extends StatefulWidget {
   // ถ้าส่งมา จะใช้เป็นเดือนปิดงวดโดยตรง (yyyy-MM)
   final String? closeMonth;
 
-  // ✅ รองรับ 3 flow ภาษี
   // none = ไม่หักภาษี
   // withholding = หักภาษี ณ ที่จ่าย
   // annual = ใช้ tax engine แบบทั้งปี
@@ -31,11 +30,19 @@ class PayrollAfterTaxPreviewScreen extends StatefulWidget {
   final double withholdingPercent;
   final double? withholdingAmount;
 
-  // ✅ NEW:
-  // ป้องกัน admin preview ไปเรียก /users/me/payroll/calc-tax ผิดคน
-  // - false = ห้ามใช้ self annual tax engine
-  // - true  = อนุญาตใช้ self annual tax engine (เหมาะกับ self-service)
+  // false = ห้ามใช้ self annual tax engine
+  // true  = อนุญาตใช้ self annual tax engine
   final bool allowSelfAnnualTaxEngine;
+
+  // detail snapshot จากหน้า employee detail
+  final double detailNetBeforeOt; // ฐานเงินเดือน / ฐานก่อน OT
+  final double detailLeaveDeduction;
+  final double detailOtAmount;
+  final double detailGrossBeforeTax; // ยอดก่อนภาษี
+  final double detailSsoAmount;
+  final double detailTaxAmount;
+  final double detailNetPay;
+  final double detailOtHours;
 
   const PayrollAfterTaxPreviewScreen({
     super.key,
@@ -54,6 +61,14 @@ class PayrollAfterTaxPreviewScreen extends StatefulWidget {
     this.withholdingPercent = 0,
     this.withholdingAmount,
     this.allowSelfAnnualTaxEngine = false,
+    this.detailNetBeforeOt = 0,
+    this.detailLeaveDeduction = 0,
+    this.detailOtAmount = 0,
+    this.detailGrossBeforeTax = 0,
+    this.detailSsoAmount = 0,
+    this.detailTaxAmount = 0,
+    this.detailNetPay = 0,
+    this.detailOtHours = 0,
   });
 
   @override
@@ -152,6 +167,60 @@ class _PreviewTaxVM {
   }
 }
 
+class _PayslipBreakdown {
+  final double salary;
+  final double socialSecurity;
+  final double ot;
+  final double commission;
+  final double bonus;
+  final double leaveDeduction;
+  final double tax;
+  final double pvd;
+  final double grossBeforeTax;
+  final double netAfterTaxBeforeSso;
+  final double netPay;
+  final double otHours;
+
+  const _PayslipBreakdown({
+    required this.salary,
+    required this.socialSecurity,
+    required this.ot,
+    required this.commission,
+    required this.bonus,
+    required this.leaveDeduction,
+    required this.tax,
+    required this.pvd,
+    required this.grossBeforeTax,
+    required this.netAfterTaxBeforeSso,
+    required this.netPay,
+    required this.otHours,
+  });
+
+  double get recomputedNet =>
+      salary -
+      socialSecurity +
+      ot +
+      commission +
+      bonus -
+      leaveDeduction -
+      tax -
+      pvd;
+
+  bool get hasMismatch => (recomputedNet - netPay).abs() >= 0.01;
+}
+
+class _LineItem {
+  final String label;
+  final String sign;
+  final double amount;
+
+  const _LineItem({
+    required this.label,
+    required this.sign,
+    required this.amount,
+  });
+}
+
 class _PayrollAfterTaxPreviewScreenState
     extends State<PayrollAfterTaxPreviewScreen> {
   late int _year;
@@ -178,6 +247,8 @@ class _PayrollAfterTaxPreviewScreenState
   }
 
   String _money(num n) => n.toStringAsFixed(2);
+
+  double _round2(double v) => double.parse(v.toStringAsFixed(2));
 
   void _snack(String msg) {
     if (!mounted) return;
@@ -226,14 +297,135 @@ class _PayrollAfterTaxPreviewScreenState
     );
   }
 
+  double _safeNonNegative(double v) => v < 0 ? 0.0 : v;
+
+  bool get _hasDetailSnapshot {
+    return widget.detailGrossBeforeTax > 0 ||
+        widget.detailNetBeforeOt > 0 ||
+        widget.detailNetPay > 0 ||
+        widget.detailOtAmount > 0 ||
+        widget.detailLeaveDeduction > 0 ||
+        widget.detailSsoAmount > 0 ||
+        widget.detailTaxAmount > 0;
+  }
+
   double _resolveWithholdingAmount() {
     final explicit = widget.withholdingAmount;
-    if (explicit != null && explicit >= 0) return explicit;
+    if (explicit != null && explicit >= 0) return _round2(explicit);
+
+    if (widget.detailTaxAmount > 0) return _round2(widget.detailTaxAmount);
 
     final pct = widget.withholdingPercent;
     if (pct <= 0) return 0.0;
 
-    return widget.grossMonthly * (pct / 100.0);
+    final base = widget.detailGrossBeforeTax > 0
+        ? widget.detailGrossBeforeTax
+        : widget.grossMonthly;
+
+    return _round2(_safeNonNegative(base) * (pct / 100.0));
+  }
+
+  _PayslipBreakdown _buildBreakdown() {
+    final salary = _round2(
+      _safeNonNegative(
+        _hasDetailSnapshot && widget.detailNetBeforeOt > 0
+            ? widget.detailNetBeforeOt
+            : widget.grossMonthly,
+      ),
+    );
+
+    final socialSecurity = _round2(
+      _safeNonNegative(
+        widget.detailSsoAmount > 0
+            ? widget.detailSsoAmount
+            : widget.ssoEmployeeMonthly,
+      ),
+    );
+
+    final ot = _round2(
+      _safeNonNegative(
+        widget.detailOtAmount > 0 ? widget.detailOtAmount : widget.otPay,
+      ),
+    );
+
+    final commission = _round2(_safeNonNegative(widget.otherAllowance));
+    final bonus = _round2(_safeNonNegative(widget.bonus));
+
+    final leaveDeduction = _round2(
+      _safeNonNegative(
+        widget.detailLeaveDeduction > 0
+            ? widget.detailLeaveDeduction
+            : widget.otherDeduction,
+      ),
+    );
+
+    final pvd = _round2(_safeNonNegative(widget.pvdEmployeeMonthly));
+
+    double tax;
+    if (_safeTaxMode == 'none') {
+      tax = 0.0;
+    } else if (_safeTaxMode == 'withholding') {
+      tax = _round2(_resolveWithholdingAmount());
+    } else if (widget.detailTaxAmount > 0) {
+      tax = _round2(widget.detailTaxAmount);
+    } else {
+      tax = 0.0;
+    }
+
+    final grossBeforeTax = _round2(
+      (salary - leaveDeduction + ot + commission + bonus)
+          .clamp(0.0, double.infinity)
+          .toDouble(),
+    );
+
+    final netAfterTaxBeforeSso = _round2(
+      (grossBeforeTax - tax).clamp(0.0, double.infinity).toDouble(),
+    );
+
+    final fallbackNet = _round2(
+      (salary -
+              socialSecurity +
+              ot +
+              commission +
+              bonus -
+              leaveDeduction -
+              tax -
+              pvd)
+          .clamp(0.0, double.infinity)
+          .toDouble(),
+    );
+
+    final netPay = _round2(
+      widget.detailNetPay > 0 ? widget.detailNetPay : fallbackNet,
+    );
+
+    return _PayslipBreakdown(
+      salary: salary,
+      socialSecurity: socialSecurity,
+      ot: ot,
+      commission: commission,
+      bonus: bonus,
+      leaveDeduction: leaveDeduction,
+      tax: tax,
+      pvd: pvd,
+      grossBeforeTax: grossBeforeTax,
+      netAfterTaxBeforeSso: netAfterTaxBeforeSso,
+      netPay: netPay,
+      otHours: _round2(_safeNonNegative(widget.detailOtHours)),
+    );
+  }
+
+  List<_LineItem> _buildLineItems(_PayslipBreakdown b) {
+    return [
+      _LineItem(label: 'เงินเดือน', sign: '', amount: b.salary),
+      _LineItem(label: 'ประกันสังคม', sign: '-', amount: b.socialSecurity),
+      _LineItem(label: 'OT', sign: '+', amount: b.ot),
+      _LineItem(label: 'Commission / รายได้อื่น', sign: '+', amount: b.commission),
+      _LineItem(label: 'โบนัส', sign: '+', amount: b.bonus),
+      _LineItem(label: 'หักวันลา/ขาด', sign: '-', amount: b.leaveDeduction),
+      _LineItem(label: 'ภาษี', sign: '-', amount: b.tax),
+      _LineItem(label: 'PVD', sign: '-', amount: b.pvd),
+    ];
   }
 
   Future<void> _load() async {
@@ -246,15 +438,32 @@ class _PayrollAfterTaxPreviewScreenState
 
     try {
       final mode = _safeTaxMode;
+      final breakdown = _buildBreakdown();
+
+      if (_hasDetailSnapshot) {
+        final vm = _PreviewTaxVM.manual(
+          taxYear: _year,
+          taxMode: mode,
+          grossMonthly: breakdown.grossBeforeTax,
+          monthlyTax: breakdown.tax,
+          ssoEmployeeMonthly: breakdown.socialSecurity,
+          pvdEmployeeMonthly: breakdown.pvd,
+          sourceLabel: 'ใช้เลขจากหน้า detail',
+        );
+
+        if (!mounted) return;
+        setState(() => _vm = vm);
+        return;
+      }
 
       if (mode == 'none') {
         final vm = _PreviewTaxVM.manual(
           taxYear: _year,
           taxMode: mode,
-          grossMonthly: widget.grossMonthly,
+          grossMonthly: breakdown.grossBeforeTax,
           monthlyTax: 0.0,
-          ssoEmployeeMonthly: widget.ssoEmployeeMonthly,
-          pvdEmployeeMonthly: widget.pvdEmployeeMonthly,
+          ssoEmployeeMonthly: breakdown.socialSecurity,
+          pvdEmployeeMonthly: breakdown.pvd,
           sourceLabel: 'ตามโหมดไม่หักภาษี',
         );
 
@@ -264,15 +473,13 @@ class _PayrollAfterTaxPreviewScreenState
       }
 
       if (mode == 'withholding') {
-        final withholding = _resolveWithholdingAmount();
-
         final vm = _PreviewTaxVM.manual(
           taxYear: _year,
           taxMode: mode,
-          grossMonthly: widget.grossMonthly,
-          monthlyTax: withholding,
-          ssoEmployeeMonthly: widget.ssoEmployeeMonthly,
-          pvdEmployeeMonthly: widget.pvdEmployeeMonthly,
+          grossMonthly: breakdown.grossBeforeTax,
+          monthlyTax: breakdown.tax,
+          ssoEmployeeMonthly: breakdown.socialSecurity,
+          pvdEmployeeMonthly: breakdown.pvd,
           sourceLabel: widget.withholdingPercent > 0
               ? 'ตามอัตราหักภาษี ${widget.withholdingPercent.toStringAsFixed(2)}%'
               : 'ตามยอดภาษีหัก ณ ที่จ่าย',
@@ -283,18 +490,15 @@ class _PayrollAfterTaxPreviewScreenState
         return;
       }
 
-      // ✅ annual mode
-      // เรียก self tax engine เฉพาะตอน caller อนุญาตเท่านั้น
       if (!widget.allowSelfAnnualTaxEngine) {
         final vm = _PreviewTaxVM.manual(
           taxYear: _year,
           taxMode: mode,
-          grossMonthly: widget.grossMonthly,
+          grossMonthly: breakdown.grossBeforeTax,
           monthlyTax: 0.0,
-          ssoEmployeeMonthly: widget.ssoEmployeeMonthly,
-          pvdEmployeeMonthly: widget.pvdEmployeeMonthly,
-          sourceLabel:
-              'annual preview แบบปลอดภัย (ไม่ได้เรียก self tax engine เพราะหน้าจอนี้อาจเป็น admin preview)',
+          ssoEmployeeMonthly: breakdown.socialSecurity,
+          pvdEmployeeMonthly: breakdown.pvd,
+          sourceLabel: 'annual preview แบบปลอดภัย',
         );
 
         if (!mounted) return;
@@ -304,9 +508,9 @@ class _PayrollAfterTaxPreviewScreenState
 
       final raw = await PayrollTaxApi.calcMyTax(
         year: _year,
-        grossMonthly: widget.grossMonthly,
-        ssoEmployeeMonthly: widget.ssoEmployeeMonthly,
-        pvdEmployeeMonthly: widget.pvdEmployeeMonthly,
+        grossMonthly: breakdown.grossBeforeTax,
+        ssoEmployeeMonthly: breakdown.socialSecurity,
+        pvdEmployeeMonthly: breakdown.pvd,
       );
 
       final r = _ensureResult(raw);
@@ -420,6 +624,8 @@ class _PayrollAfterTaxPreviewScreenState
       return;
     }
 
+    final breakdown = _buildBreakdown();
+
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
@@ -427,7 +633,9 @@ class _PayrollAfterTaxPreviewScreenState
         content: Text(
           'เดือน: $month\n\n'
           'รูปแบบภาษี: ${_taxModeLabel(_safeTaxMode)}\n'
-          '${_safeTaxMode == 'withholding' ? 'ยอดภาษีเดือนนี้: ${_money(_vm!.estimatedMonthlyTax)} บาท\n' : ''}'
+          'เงินเดือน: ${_money(breakdown.salary)} บาท\n'
+          'ประกันสังคม: ${_money(breakdown.socialSecurity)} บาท\n'
+          'ภาษี: ${_money(breakdown.tax)} บาท\n'
           '\nการปิดงวดจะ “ล็อกข้อมูล” และไม่สามารถแก้ไขย้อนหลังได้\n'
           'คุณแน่ใจหรือไม่?',
         ),
@@ -454,13 +662,13 @@ class _PayrollAfterTaxPreviewScreenState
         clinicId: widget.clinicId,
         employeeId: staffId,
         month: month,
-        grossBase: widget.grossMonthly,
-        otPay: widget.otPay,
-        bonus: widget.bonus,
-        otherAllowance: widget.otherAllowance,
-        otherDeduction: widget.otherDeduction,
-        ssoEmployeeMonthly: widget.ssoEmployeeMonthly,
-        pvdEmployeeMonthly: widget.pvdEmployeeMonthly,
+        grossBase: breakdown.salary,
+        otPay: breakdown.ot,
+        bonus: breakdown.bonus,
+        otherAllowance: breakdown.commission,
+        otherDeduction: breakdown.leaveDeduction,
+        ssoEmployeeMonthly: breakdown.socialSecurity,
+        pvdEmployeeMonthly: breakdown.pvd,
         taxMode: _backendTaxMode,
       );
 
@@ -552,9 +760,6 @@ class _PayrollAfterTaxPreviewScreenState
 
   @override
   Widget build(BuildContext context) {
-    final ssoInput = widget.ssoEmployeeMonthly;
-    final pvdInput = widget.pvdEmployeeMonthly;
-
     return Scaffold(
       appBar: AppBar(
         title: const Text('พรีวิวสลิปเงินเดือน'),
@@ -576,6 +781,8 @@ class _PayrollAfterTaxPreviewScreenState
                       builder: (context, c) {
                         final r = _vm!;
                         final month = _pickedCloseMonth;
+                        final breakdown = _buildBreakdown();
+                        final lineItems = _buildLineItems(breakdown);
 
                         return SingleChildScrollView(
                           padding: const EdgeInsets.all(16),
@@ -614,9 +821,8 @@ class _PayrollAfterTaxPreviewScreenState
                                                 Text(
                                                   'รูปแบบภาษี: ${_taxModeLabel(r.taxMode)}',
                                                   style: TextStyle(
-                                                    color: Colors.black.withOpacity(
-                                                      0.70,
-                                                    ),
+                                                    color: Colors.black
+                                                        .withOpacity(0.70),
                                                     fontWeight: FontWeight.w600,
                                                   ),
                                                 ),
@@ -625,7 +831,8 @@ class _PayrollAfterTaxPreviewScreenState
                                           ),
                                           OutlinedButton.icon(
                                             onPressed: _pickMonthBottomSheet,
-                                            icon: const Icon(Icons.calendar_month),
+                                            icon:
+                                                const Icon(Icons.calendar_month),
                                             label: const Text('เปลี่ยนเดือน'),
                                           ),
                                         ],
@@ -659,9 +866,15 @@ class _PayrollAfterTaxPreviewScreenState
                                             label: 'เดือนที่จะปิดงวด',
                                             value: month,
                                           ),
+                                          if (breakdown.otHours > 0)
+                                            _row(
+                                              label: 'ชั่วโมง OT',
+                                              value:
+                                                  '${breakdown.otHours.toStringAsFixed(2)} ชม.',
+                                            ),
                                           const Divider(height: 24),
                                           Text(
-                                            'รายได้ (Earnings)',
+                                            'สรุปรายการ',
                                             style: Theme.of(context)
                                                 .textTheme
                                                 .titleSmall
@@ -670,70 +883,26 @@ class _PayrollAfterTaxPreviewScreenState
                                                 ),
                                           ),
                                           const SizedBox(height: 6),
+                                          for (final item in lineItems)
+                                            if (item.amount > 0 ||
+                                                item.label == 'เงินเดือน')
+                                              _row(
+                                                label: item.label,
+                                                value:
+                                                    '${item.sign}${_money(item.amount)} บาท',
+                                              ),
+                                          const Divider(height: 24),
                                           _row(
-                                            label: 'Gross รายเดือน (ก่อนหัก)',
+                                            label: 'ยอดก่อนภาษี',
                                             value:
-                                                '${_money(r.grossMonthly)} บาท',
+                                                '${_money(breakdown.grossBeforeTax)} บาท',
                                             bold: true,
                                           ),
-                                          if (widget.otPay > 0)
-                                            _row(
-                                              label: 'OT (เป็นเงิน)',
-                                              value:
-                                                  '+${_money(widget.otPay)} บาท',
-                                            ),
-                                          if (widget.bonus > 0)
-                                            _row(
-                                              label: 'โบนัส',
-                                              value:
-                                                  '+${_money(widget.bonus)} บาท',
-                                            ),
-                                          if (widget.otherAllowance > 0)
-                                            _row(
-                                              label: 'รายได้อื่น',
-                                              value:
-                                                  '+${_money(widget.otherAllowance)} บาท',
-                                            ),
-                                          if (widget.otherDeduction > 0)
-                                            _row(
-                                              label: 'หักอื่น',
-                                              value:
-                                                  '-${_money(widget.otherDeduction)} บาท',
-                                            ),
-                                          const Divider(height: 24),
-                                          Text(
-                                            'รายการหัก (Deductions)',
-                                            style: Theme.of(context)
-                                                .textTheme
-                                                .titleSmall
-                                                ?.copyWith(
-                                                  fontWeight: FontWeight.bold,
-                                                ),
-                                          ),
-                                          const SizedBox(height: 6),
-                                          _row(
-                                            label: 'ประกันสังคม (พนักงาน)',
-                                            value: '-${_money(ssoInput)} บาท',
-                                          ),
-                                          if (pvdInput > 0)
-                                            _row(
-                                              label:
-                                                  'กองทุนสำรองเลี้ยงชีพ (PVD)',
-                                              value: '-${_money(pvdInput)} บาท',
-                                            ),
-                                          _row(
-                                            label: r.taxMode == 'none'
-                                                ? 'ภาษี'
-                                                : 'ภาษีหัก ณ ที่จ่าย',
-                                            value:
-                                                '-${_money(r.estimatedMonthlyTax)} บาท',
-                                          ),
-                                          const Divider(height: 24),
                                           _row(
                                             label:
-                                                'Net หลังหักภาษี (ยังไม่หัก SSO/PVD)',
+                                                'สุทธิหลังภาษี (ก่อนหัก SSO/PVD)',
                                             value:
-                                                '${_money(r.netAfterTaxMonthly)} บาท',
+                                                '${_money(breakdown.netAfterTaxBeforeSso)} บาท',
                                           ),
                                           const SizedBox(height: 6),
                                           Container(
@@ -741,18 +910,29 @@ class _PayrollAfterTaxPreviewScreenState
                                             decoration: BoxDecoration(
                                               borderRadius:
                                                   BorderRadius.circular(12),
-                                              color:
-                                                  Colors.green.withOpacity(0.10),
+                                              color: Colors.green
+                                                  .withOpacity(0.10),
                                             ),
                                             child: _row(
                                               label: 'เงินรับจริง (Net Pay)',
                                               value:
-                                                  '${_money(r.netAfterTaxAndSSOMonthly)} บาท',
+                                                  '${_money(breakdown.netPay)} บาท',
                                               bold: true,
                                               valueColor:
                                                   Colors.green.shade800,
                                             ),
                                           ),
+                                          if (breakdown.hasMismatch) ...[
+                                            const SizedBox(height: 10),
+                                            Text(
+                                              'ตรวจสอบ: ยอดรวมจากรายการ = ${_money(breakdown.recomputedNet)} บาท',
+                                              style: TextStyle(
+                                                fontSize: 12,
+                                                color: Colors.red.shade700,
+                                                fontWeight: FontWeight.w700,
+                                              ),
+                                            ),
+                                          ],
                                         ],
                                       ),
                                     ),
@@ -835,13 +1015,15 @@ class _PayrollAfterTaxPreviewScreenState
                                           ),
                                           const SizedBox(height: 12),
                                           Text(
-                                            r.taxMode == 'none'
-                                                ? 'โหมดนี้ไม่หักภาษี โดยสลิปและการปิดงวดจะแสดงภาษีเป็น 0 บาท'
-                                                : r.taxMode == 'withholding'
-                                                    ? 'โหมดนี้ใช้การหักภาษี ณ ที่จ่ายตามค่าที่ส่งมาจากหน้าเงินเดือน'
-                                                    : widget.allowSelfAnnualTaxEngine
-                                                        ? 'โหมดนี้ใช้การคำนวณภาษีทั้งปีแบบประมาณการจาก tax engine'
-                                                        : 'โหมด annual ในหน้านี้ถูกทำเป็น safe preview เพื่อกันไปคำนวณจาก tax profile ของคนล็อกอินผิดคน',
+                                            _hasDetailSnapshot
+                                                ? 'หน้านี้ใช้ breakdown ชุดเดียวจากหน้า detail และจะส่ง breakdown ชุดเดียวกันไปตอนปิดงวด'
+                                                : r.taxMode == 'none'
+                                                    ? 'โหมดนี้ไม่หักภาษี โดยสลิปและการปิดงวดจะแสดงภาษีเป็น 0 บาท'
+                                                    : r.taxMode == 'withholding'
+                                                        ? 'โหมดนี้ใช้การหักภาษี ณ ที่จ่ายตามค่าที่ส่งมาจากหน้าเงินเดือน'
+                                                        : widget.allowSelfAnnualTaxEngine
+                                                            ? 'โหมดนี้ใช้การคำนวณภาษีทั้งปีแบบประมาณการจาก tax engine'
+                                                            : 'โหมด annual ในหน้านี้ถูกทำเป็น safe preview เพื่อกันไปคำนวณจาก tax profile ของคนล็อกอินผิดคน',
                                             style: const TextStyle(
                                               fontSize: 12,
                                               color: Colors.black54,

@@ -15,6 +15,9 @@ class HomeTab extends StatelessWidget {
   final Widget? trustScoreCard;
   final Widget? marketCard;
 
+  // ✅ NEW: สำหรับ helper เลือกกะก่อนสแกน
+  final Widget? helperShiftCard;
+
   const HomeTab({
     super.key,
     required this.isAttendanceUser,
@@ -29,6 +32,7 @@ class HomeTab extends StatelessWidget {
     required this.urgentCard,
     this.trustScoreCard,
     this.marketCard,
+    this.helperShiftCard,
   });
 
   static const double _sectionGap = 10;
@@ -42,6 +46,12 @@ class HomeTab extends StatelessWidget {
     if (isAttendanceUser) {
       sections.add(premiumGateCard);
       sections.add(_gap());
+
+      // ✅ NEW: ถ้าเป็น helper และมีการ์ดเลือกกะ ให้แสดงก่อน attendance card
+      if (isHelper && helperShiftCard != null) {
+        sections.add(helperShiftCard!);
+        sections.add(_gap());
+      }
 
       sections.add(attendanceCard);
       sections.add(_gap());
