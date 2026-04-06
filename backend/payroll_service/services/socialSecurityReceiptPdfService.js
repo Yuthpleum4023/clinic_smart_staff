@@ -736,12 +736,13 @@ function drawPaymentMethodArea(doc, data, options = {}) {
       width: width - 16,
       lineGap: 1.2,
     });
-    textY += textHeight(doc, line, {
-      width: width - 16,
-      fontName: fontRegular,
-      fontSize: 8.7,
-      lineGap: 1.2,
-    }) + 3;
+    textY +=
+      textHeight(doc, line, {
+        width: width - 16,
+        fontName: fontRegular,
+        fontSize: 8.7,
+        lineGap: 1.2,
+      }) + 3;
   });
 
   return y + height;
@@ -837,10 +838,6 @@ async function createPdfFileFromReceipt(receipt, opts = {}) {
   const customerAddress = pickFirst(
     getValueDeep(data, "customerSnapshot.customerAddress"),
     getValueDeep(data, "customerAddress")
-  );
-  const customerTaxId = pickFirst(
-    getValueDeep(data, "customerSnapshot.customerTaxId"),
-    getValueDeep(data, "customerTaxId")
   );
 
   const storageRoot = getStorageRoot();
@@ -975,11 +972,7 @@ async function createPdfFileFromReceipt(receipt, opts = {}) {
         value: customerAddress || "-",
       },
       {
-        label: "เลขประจำตัวผู้เสียภาษี",
-        value: customerTaxId || "-",
-      },
-      {
-        label: "เลขประจำตัวผู้เสียภาษีผู้หัก ณ ที่จ่าย",
+        label: "เลขผู้เสียภาษีของผู้หัก ณ ที่จ่าย",
         value: withholderTaxId || "-",
       },
       {
@@ -1045,7 +1038,10 @@ async function createPdfFileFromReceipt(receipt, opts = {}) {
     }
   );
 
-  let footerStartY = Math.max(amountThaiBoxY + amountThaiBoxH + 8, summaryBottomY + 8);
+  let footerStartY = Math.max(
+    amountThaiBoxY + amountThaiBoxH + 8,
+    summaryBottomY + 8
+  );
 
   if (s(data.note)) {
     const noteHeight = Math.max(
