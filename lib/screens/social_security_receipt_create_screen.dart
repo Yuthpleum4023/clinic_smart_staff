@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -59,6 +60,8 @@ class _SocialSecurityReceiptCreateScreenState
 
   final ImagePicker _picker = ImagePicker();
 
+  Timer? _draftSaveDebounce;
+
   bool _submitting = false;
   bool _prefillingClinic = true;
   bool _uploadingLogo = false;
@@ -108,6 +111,9 @@ class _SocialSecurityReceiptCreateScreenState
     return options;
   }
 
+  bool get _isTransfer => _paymentMethod == 'transfer';
+  bool get _isCheque => _paymentMethod == 'cheque';
+
   @override
   void initState() {
     super.initState();
@@ -117,6 +123,8 @@ class _SocialSecurityReceiptCreateScreenState
 
   @override
   void dispose() {
+    _draftSaveDebounce?.cancel();
+
     _customerNameCtrl.dispose();
     _customerAddressCtrl.dispose();
     _serviceMonthCtrl.dispose();
@@ -162,7 +170,14 @@ class _SocialSecurityReceiptCreateScreenState
     }
   }
 
-  bool get _isTransfer => _paymentMethod == 'transfer';
+  void _queueSaveStableFields() {
+    _draftSaveDebounce?.cancel();
+    _draftSaveDebounce = Timer(const Duration(milliseconds: 400), () async {
+      try {
+        await _saveStableFields();
+      } catch (_) {}
+    });
+  }
 
   Future<void> _bootstrapClinicPrefill() async {
     try {
@@ -307,22 +322,98 @@ class _SocialSecurityReceiptCreateScreenState
       _profileKey(clinicId, 'paymentMethod'),
       _paymentMethod,
     );
-    await prefs.setString(
-      _profileKey(clinicId, 'bankName'),
-      _bankName.trim(),
-    );
-    await prefs.setString(
-      _profileKey(clinicId, 'bankAccountName'),
-      _bankAccountNameCtrl.text.trim(),
-    );
-    await prefs.setString(
-      _profileKey(clinicId, 'bankAccountNumber'),
-      _bankAccountNumberCtrl.text.trim(),
-    );
-    await prefs.setString(
-      _profileKey(clinicId, 'paymentReference'),
-      _paymentReferenceCtrl.text.trim(),
-    );
+
+    if (_isTransfer) {
+      await prefs.setString(
+        _profileKey(clinicId, 'bankName'),
+        _bankName.trim(),
+      );
+      await prefs.setString(
+        _profileKey(clinicId, 'bankAccountName'),
+        _bankAccountNameCtrl.text.trim(),
+      );
+      await prefs.setString(
+        _profileKey(clinicId, 'bankAccountNumber'),
+        _bankAccountNumberCtrl.text.trim(),
+      );
+      await prefs.setString(
+        _profileKey(clinicId, 'paymentReference'),
+        _paymentReferenceCtrl.text.trim(),
+      );
+    } else if (_isCheque) {
+      await prefs.setString(
+        _profileKey(clinicId, 'paymentReference'),
+        _paymentReferenceCtrl.text.trim(),
+      );
+    }
+  }
+
+  Future<void> _clearSavedPaymentFields() async {
+    final clinicId = widget.clinicId.trim();
+    if (clinicId.isEmpty) return;
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_profileKey(clinicId, 'paymentMethod'));
+    await prefs.remove(_profileKey(clinicId, 'bankName'));
+    await prefs.remove(_profileKey(clinicId, 'bankAccountName'));
+    await prefs.remove(_profileKey(clinicId, 'bankAccountNumber'));
+    await prefs.remove(_profileKey(clinicId, 'paymentReference'));
+
+    if (!mounted) return;
+    setState(() {
+      _paymentMethod = 'transfer';
+      _bankName = 'ธนาคารกสิกรไทย';
+      _bankAccountNameCtrl.clear();
+      _bankAccountNumberCtrl.clear();
+      _paymentReferenceCtrl.clear();
+    });
+  }
+
+  Future<void> _confirmClearSavedPaymentFields() async {
+    final confirmed = await showDialog<bool>(
+          context: context,
+          builder: (_) => AlertDialog(
+            title: const Text('ล้างข้อมูลการชำระเงินที่จำไว้'),
+            content: const Text(
+              'ระบบจะล้างวิธีชำระเงิน ธนาคาร ชื่อบัญชี เลขบัญชี และอ้างอิงที่เคยจำไว้ ต้องการดำเนินการหรือไม่',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(false),
+                child: const Text('ยกเลิก'),
+              ),
+              ElevatedButton(
+                onPressed: () => Navigator.of(context).pop(true),
+                child: const Text('ล้างข้อมูล'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+
+    if (!confirmed) return;
+
+    await _clearSavedPaymentFields();
+    _showSnack('ล้างข้อมูลการชำระเงินที่จำไว้แล้ว');
+  }
+
+  void _handlePaymentMethodChanged(String value) {
+    setState(() {
+      _paymentMethod = value;
+
+      if (_isTransfer) {
+        return;
+      }
+
+      _bankAccountNameCtrl.clear();
+      _bankAccountNumberCtrl.clear();
+
+      if (!_isCheque) {
+        _paymentReferenceCtrl.clear();
+      }
+    });
+
+    _queueSaveStableFields();
   }
 
   void _showSnack(String msg, {bool isError = false}) {
@@ -645,6 +736,7 @@ class _SocialSecurityReceiptCreateScreenState
     setState(() {
       _bankName = selected.trim();
     });
+    _queueSaveStableFields();
   }
 
   Future<void> _openPreview() async {
@@ -744,7 +836,8 @@ class _SocialSecurityReceiptCreateScreenState
         bankName: _isTransfer ? _bankName.trim() : '',
         accountName: _isTransfer ? _bankAccountNameCtrl.text.trim() : '',
         accountNumber: _isTransfer ? _bankAccountNumberCtrl.text.trim() : '',
-        paymentReference: _isTransfer ? _paymentReferenceCtrl.text.trim() : '',
+        paymentReference:
+            (_isTransfer || _isCheque) ? _paymentReferenceCtrl.text.trim() : '',
         clinicSnapshot: {
           'clinicName': _clinicNameCtrl.text.trim(),
           'clinicBranchName': _clinicBranchNameCtrl.text.trim(),
@@ -764,8 +857,7 @@ class _SocialSecurityReceiptCreateScreenState
           'accountName': _isTransfer ? _bankAccountNameCtrl.text.trim() : '',
           'accountNumber': _isTransfer ? _bankAccountNumberCtrl.text.trim() : '',
           'transferRef': _isTransfer ? _paymentReferenceCtrl.text.trim() : '',
-          'chequeNo':
-              _paymentMethod == 'cheque' ? _paymentReferenceCtrl.text.trim() : '',
+          'chequeNo': _isCheque ? _paymentReferenceCtrl.text.trim() : '',
         },
         items: items,
         withholdingTaxEnabled: withholdingTax > 0,
@@ -957,12 +1049,23 @@ class _SocialSecurityReceiptCreateScreenState
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              'วิธีการชำระเงิน',
-              style: TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w800,
-              ),
+            Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    'วิธีการชำระเงิน',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+                TextButton.icon(
+                  onPressed: _submitting ? null : _confirmClearSavedPaymentFields,
+                  icon: const Icon(Icons.cleaning_services_outlined, size: 18),
+                  label: const Text('ล้างค่าที่จำไว้'),
+                ),
+              ],
             ),
             const SizedBox(height: 12),
             ..._paymentMethods.map((method) {
@@ -973,9 +1076,7 @@ class _SocialSecurityReceiptCreateScreenState
                 groupValue: _paymentMethod,
                 onChanged: (value) {
                   if (value == null) return;
-                  setState(() {
-                    _paymentMethod = value;
-                  });
+                  _handlePaymentMethodChanged(value);
                 },
               );
             }),
@@ -986,25 +1087,29 @@ class _SocialSecurityReceiptCreateScreenState
                 controller: _bankAccountNameCtrl,
                 label: 'ชื่อบัญชี',
                 hintText: 'เช่น คลินิกทันตกรรมน้องปลื้ม',
+                onChanged: (_) => _queueSaveStableFields(),
               ),
               _buildTextField(
                 controller: _bankAccountNumberCtrl,
                 label: 'เลขบัญชี',
                 hintText: 'เช่น 123-4-56789-0',
                 keyboardType: TextInputType.number,
+                onChanged: (_) => _queueSaveStableFields(),
               ),
               _buildTextField(
                 controller: _paymentReferenceCtrl,
                 label: 'อ้างอิง',
                 hintText: 'เช่น เลขที่รายการ / หมายเลขอ้างอิง',
+                onChanged: (_) => _queueSaveStableFields(),
               ),
             ],
-            if (_paymentMethod == 'cheque') ...[
+            if (_isCheque) ...[
               const SizedBox(height: 8),
               _buildTextField(
                 controller: _paymentReferenceCtrl,
                 label: 'เลขที่เช็ค / อ้างอิง',
                 hintText: 'เช่น CHQ-0001',
+                onChanged: (_) => _queueSaveStableFields(),
               ),
             ],
           ],
@@ -1338,30 +1443,35 @@ class _SocialSecurityReceiptCreateScreenState
                       hintText: 'เช่น คลินิกของฉัน',
                       onChanged: (_) {
                         if (mounted) setState(() {});
+                        _queueSaveStableFields();
                       },
                     ),
                     _buildTextField(
                       controller: _clinicBranchNameCtrl,
                       label: 'สาขา',
                       hintText: 'เช่น สาขาภูเก็ต',
+                      onChanged: (_) => _queueSaveStableFields(),
                     ),
                     _buildTextField(
                       controller: _clinicAddressCtrl,
                       label: 'ที่อยู่คลินิก',
                       hintText: 'ถ้ามี',
                       maxLines: 2,
+                      onChanged: (_) => _queueSaveStableFields(),
                     ),
                     _buildTextField(
                       controller: _clinicPhoneCtrl,
                       label: 'เบอร์โทรคลินิก',
                       hintText: 'ถ้ามี',
                       keyboardType: TextInputType.phone,
+                      onChanged: (_) => _queueSaveStableFields(),
                     ),
                     _buildTextField(
                       controller: _clinicTaxIdCtrl,
                       label: 'เลขผู้เสียภาษีคลินิก',
                       hintText: 'ถ้ามี',
                       keyboardType: TextInputType.number,
+                      onChanged: (_) => _queueSaveStableFields(),
                     ),
                     _buildTextField(
                       controller: _withholderTaxIdCtrl,
@@ -1369,6 +1479,7 @@ class _SocialSecurityReceiptCreateScreenState
                           'เลขประจำตัวผู้เสียภาษีอากรของผู้มีหน้าที่หักภาษี ณ ที่จ่าย',
                       hintText: 'กรอกเลขผู้หักภาษี ณ ที่จ่าย',
                       keyboardType: TextInputType.number,
+                      onChanged: (_) => _queueSaveStableFields(),
                     ),
                     _buildLogoSection(),
                     Text(
