@@ -254,6 +254,103 @@ function safeUser(u) {
   };
 }
 
+async function buildMePayload(userLike) {
+  if (!userLike) return null;
+
+  const fixed = ensureRolesAndActive(
+    userLike,
+    userLike?.activeRole || userLike?.role
+  );
+
+  const normalized = {
+    ...userLike,
+    activeRole: fixed.activeRole,
+    role: fixed.legacyRole,
+    roles: fixed.roles,
+  };
+
+  const base = safeUser(normalized);
+  const mongoId =
+    normalized?._id?.toString?.() ||
+    (normalized?._id ? String(normalized._id) : "");
+
+  const clinicId = normStr(base?.clinicId);
+
+  let clinicObj = null;
+  let clinics = [];
+
+  if (clinicId) {
+    try {
+      const clinic = await Clinic.findOne({ clinicId }).lean();
+
+      if (clinic) {
+        clinicObj = {
+          id: normStr(clinic.clinicId) || clinicId,
+          _id: clinic?._id?.toString?.() || "",
+          clinicId: normStr(clinic.clinicId) || clinicId,
+          name: normStr(clinic.name),
+          phone: normStr(clinic.phone),
+        };
+      } else {
+        clinicObj = {
+          id: clinicId,
+          _id: "",
+          clinicId,
+          name: "",
+          phone: "",
+        };
+      }
+
+      clinics = clinicObj ? [clinicObj] : [];
+    } catch (_) {
+      clinicObj = {
+        id: clinicId,
+        _id: "",
+        clinicId,
+        name: "",
+        phone: "",
+      };
+      clinics = [clinicObj];
+    }
+  }
+
+  return {
+    userId: normStr(base?.userId),
+    id: mongoId || normStr(base?.userId),
+    _id: mongoId || normStr(base?.userId),
+
+    clinicId,
+    clinic: clinicObj,
+    clinics,
+
+    role: normStr(base?.role),
+    activeRole: normStr(base?.activeRole),
+    roles: Array.isArray(base?.roles) ? base.roles : [],
+
+    staffId: normStr(base?.staffId),
+    email: normStr(base?.email),
+    phone: normStr(base?.phone),
+    fullName: normStr(base?.fullName),
+    employeeCode: normStr(base?.employeeCode),
+    isActive: !!base?.isActive,
+    employeeProvisionStatus: normStr(base?.employeeProvisionStatus),
+
+    location: {
+      lat: base?.location?.lat ?? null,
+      lng: base?.location?.lng ?? null,
+      district: normStr(base?.location?.district),
+      province: normStr(base?.location?.province),
+      address: normStr(base?.location?.address),
+      label: normStr(base?.location?.label),
+      updatedAt: base?.location?.updatedAt || null,
+    },
+
+    plan: normStr(base?.plan) || "free",
+    premiumUntil: base?.premiumUntil || null,
+    isPremium: !!base?.isPremium,
+  };
+}
+
 function makeJwtPayload(user) {
   const mongoId =
     user?._id?.toString?.() || (user?._id ? String(user._id) : "");
@@ -581,7 +678,9 @@ async function login(req, res) {
       console.log("✅ skip ensureEmployeeForUser(login)", {
         userId: user.userId,
         role: normStr(user?.activeRole || user?.role),
-        reason: isEmployeeUser(user) ? "already_ready_or_missing_context" : "not_employee",
+        reason: isEmployeeUser(user)
+          ? "already_ready_or_missing_context"
+          : "not_employee",
         staffId: normStr(user?.staffId),
         clinicId: normStr(user?.clinicId),
         employeeProvisionStatus: normStr(user?.employeeProvisionStatus),
@@ -589,9 +688,10 @@ async function login(req, res) {
     }
 
     const token = signToken(makeJwtPayload(user));
+    const userPayload = await buildMePayload(user);
 
     console.log("✅ login success total ms=", Date.now() - t0);
-    return res.json({ user: safeUser(user), token });
+    return res.json({ user: userPayload, token });
   } catch (e) {
     console.error("❌ login failed", e, "ms=", Date.now() - t0);
     return res.status(500).json({
@@ -634,6 +734,35 @@ async function me(req, res) {
 
     user = await ensureStaffIdIfEmployee(user);
 
+    const requestedOrTokenRole =
+      req.user?.activeRole || req.user?.role || user?.activeRole || user?.role;
+
+    const fixed = ensureRolesAndActive(user, requestedOrTokenRole);
+
+    if (
+      user.activeRole !== fixed.activeRole ||
+      user.role !== fixed.legacyRole ||
+      JSON.stringify(normalizeRoles(user.roles)) !== JSON.stringify(fixed.roles)
+    ) {
+      await User.updateOne(
+        { userId: user.userId },
+        {
+          $set: {
+            activeRole: fixed.activeRole,
+            role: fixed.legacyRole,
+            roles: fixed.roles,
+          },
+        }
+      );
+    }
+
+    user = {
+      ...user,
+      activeRole: fixed.activeRole,
+      role: fixed.legacyRole,
+      roles: fixed.roles,
+    };
+
     if (shouldAttemptEnsureEmployee(user)) {
       const ensuredOnMe = await tryEnsureEmployeeProvision(user, "me");
       if (ensuredOnMe?.user) {
@@ -641,26 +770,27 @@ async function me(req, res) {
       }
     }
 
-    const payload = { user: safeUser(user) };
+    const userPayload = await buildMePayload(user);
 
     console.log(
       "📘 /me response body =",
       JSON.stringify(
         {
-          userId: payload.user?.userId || "",
-          role: payload.user?.role || "",
-          activeRole: payload.user?.activeRole || "",
-          clinicId: payload.user?.clinicId || "",
-          staffId: payload.user?.staffId || "",
-          roles: Array.isArray(payload.user?.roles) ? payload.user.roles : [],
-          employeeProvisionStatus: payload.user?.employeeProvisionStatus || "",
+          userId: userPayload?.userId || "",
+          id: userPayload?.id || "",
+          role: userPayload?.role || "",
+          activeRole: userPayload?.activeRole || "",
+          clinicId: userPayload?.clinicId || "",
+          staffId: userPayload?.staffId || "",
+          roles: Array.isArray(userPayload?.roles) ? userPayload.roles : [],
+          employeeProvisionStatus: userPayload?.employeeProvisionStatus || "",
         },
         null,
         2
       )
     );
 
-    return res.json(payload);
+    return res.json({ user: userPayload });
   } catch (e) {
     console.log("❌ /me failed:", e?.message || e);
     return res.status(500).json({
@@ -734,6 +864,7 @@ async function updateMyLocation(req, res) {
     });
   }
 }
+
 /* ======================================================
    SWITCH ROLE
 ====================================================== */
@@ -800,7 +931,9 @@ async function switchRole(req, res) {
     }
 
     const token = signToken(makeJwtPayload(user));
-    return res.json({ user: safeUser(user), token });
+    const userPayload = await buildMePayload(user);
+
+    return res.json({ user: userPayload, token });
   } catch (e) {
     return res.status(500).json({
       message: "switchRole failed",
@@ -860,10 +993,11 @@ async function registerClinicAdmin(req, res) {
 
     const plain = user.toObject ? user.toObject() : user;
     const token = signToken(makeJwtPayload(plain));
+    const userPayload = await buildMePayload(plain);
 
     return res.json({
       clinic: { clinicId: clinic.clinicId, name: clinic.name },
-      user: safeUser(plain),
+      user: userPayload,
       token,
     });
   } catch (e) {
@@ -993,9 +1127,10 @@ async function registerWithInvite(req, res) {
     await inv.save();
 
     const token = signToken(makeJwtPayload(userPlain));
+    const userPayload = await buildMePayload(userPlain);
 
     return res.json({
-      user: safeUser(userPlain),
+      user: userPayload,
       token,
     });
   } catch (e) {
@@ -1054,7 +1189,10 @@ async function reconcileEmployeeSelf(req, res) {
       clinicId,
     });
 
-    const ensured = await tryEnsureEmployeeProvision(user, "reconcileEmployeeSelf");
+    const ensured = await tryEnsureEmployeeProvision(
+      user,
+      "reconcileEmployeeSelf"
+    );
 
     if (ensured?.user) {
       user = ensured.user;
