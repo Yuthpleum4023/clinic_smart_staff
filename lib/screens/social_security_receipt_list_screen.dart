@@ -33,6 +33,32 @@ class _SocialSecurityReceiptListScreenState
     _loadInitial();
   }
 
+  String _normalizeError(Object e) {
+    var msg = e.toString().replaceFirst('Exception: ', '').trim();
+
+    if (msg.isEmpty) {
+      return 'เกิดข้อผิดพลาดในการโหลดข้อมูล';
+    }
+
+    final lower = msg.toLowerCase();
+
+    if (lower.contains('<!doctype html') ||
+        lower.contains('<html') ||
+        lower.contains('<head>') ||
+        lower.contains('<body>') ||
+        lower.contains('502 bad gateway') ||
+        lower.contains('503 service unavailable') ||
+        lower.contains('504 gateway timeout')) {
+      return 'เซิร์ฟเวอร์ใบเสร็จยังไม่พร้อมใช้งาน กรุณาลองใหม่อีกครั้ง';
+    }
+
+    if (msg.length > 220) {
+      return 'เกิดข้อผิดพลาดจากเซิร์ฟเวอร์ กรุณาลองใหม่อีกครั้ง';
+    }
+
+    return msg;
+  }
+
   Future<void> _loadInitial() async {
     setState(() {
       _loading = true;
@@ -62,7 +88,7 @@ class _SocialSecurityReceiptListScreenState
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = e.toString().replaceFirst('Exception: ', '');
+        _error = _normalizeError(e);
       });
     } finally {
       if (!mounted) return;
@@ -100,7 +126,7 @@ class _SocialSecurityReceiptListScreenState
     } catch (e) {
       if (!mounted) return;
       _showSnack(
-        e.toString().replaceFirst('Exception: ', ''),
+        _normalizeError(e),
         isError: true,
       );
     } finally {
@@ -124,7 +150,7 @@ class _SocialSecurityReceiptListScreenState
   }
 
   Future<void> _openDetail(Map<String, dynamic> item) async {
-    final id = (item['id'] ?? '').toString();
+    final id = (item['id'] ?? item['_id'] ?? '').toString().trim();
     if (id.isEmpty) return;
 
     await Navigator.of(context).push(
@@ -140,9 +166,17 @@ class _SocialSecurityReceiptListScreenState
   }
 
   void _showSnack(String msg, {bool isError = false}) {
+    if (!mounted) return;
+
+    final safeMsg = msg.trim().isEmpty ? 'เกิดข้อผิดพลาด' : msg.trim();
+
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(msg),
+        content: Text(
+          safeMsg,
+          maxLines: 3,
+          overflow: TextOverflow.ellipsis,
+        ),
         backgroundColor: isError ? Colors.red : null,
       ),
     );
@@ -279,6 +313,7 @@ class _SocialSecurityReceiptListScreenState
                       ),
                     ),
                   ),
+                  const SizedBox(width: 8),
                   _buildStatusChip(status),
                 ],
               ),
@@ -297,6 +332,33 @@ class _SocialSecurityReceiptListScreenState
     );
   }
 
+  Widget _buildErrorView() {
+    return RefreshIndicator(
+      onRefresh: _loadInitial,
+      child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.all(20),
+        children: [
+          const SizedBox(height: 80),
+          const Icon(Icons.receipt_long, size: 54, color: Colors.grey),
+          const SizedBox(height: 12),
+          Text(
+            _error,
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 15),
+          ),
+          const SizedBox(height: 16),
+          Center(
+            child: ElevatedButton(
+              onPressed: _loadInitial,
+              child: const Text('ลองใหม่'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildBody() {
     if (_loading) {
       return const Center(
@@ -305,28 +367,7 @@ class _SocialSecurityReceiptListScreenState
     }
 
     if (_error.isNotEmpty) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.receipt_long, size: 54, color: Colors.grey),
-              const SizedBox(height: 12),
-              Text(
-                _error,
-                textAlign: TextAlign.center,
-                style: const TextStyle(fontSize: 15),
-              ),
-              const SizedBox(height: 12),
-              ElevatedButton(
-                onPressed: _loadInitial,
-                child: const Text('ลองใหม่'),
-              ),
-            ],
-          ),
-        ),
-      );
+      return _buildErrorView();
     }
 
     if (_items.isEmpty) {
