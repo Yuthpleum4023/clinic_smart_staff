@@ -2565,7 +2565,8 @@ class _HomeScreenState extends State<HomeScreen> {
       },
     );
   }
-    Future<void> _showHelperShiftResolutionDialog({
+
+  Future<void> _showHelperShiftResolutionDialog({
     required String title,
     required String message,
   }) async {
@@ -2723,7 +2724,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     final message = _attPreviousPendingMessage.trim().isNotEmpty
         ? _attPreviousPendingMessage.trim()
-        : 'ยังมีรายการลงเวลาจากวันก่อนค้างอยู่ กรุณาแก้ไขและรออนุมัติก่อน';
+        : 'ยังมีรายการลงเวลาจากวันก่อนค้างอยู่ กรุณาแก้ไขและรอการอนุมัติก่อน';
 
     final submitted = await _openManualAttendanceRequest(
       manualRequestType: 'forgot_checkout',
@@ -3091,8 +3092,7 @@ class _HomeScreenState extends State<HomeScreen> {
           : 'วันนี้เช็คอินและเช็คเอาท์เรียบร้อยแล้ว';
     });
   }
-
-  Future<void> _refreshAttendanceToday({bool silent = false}) async {
+    Future<void> _refreshAttendanceToday({bool silent = false}) async {
     if (_ctxLoading) return;
     if (!_isAttendanceUser) return;
     if (!_attendancePremiumEnabled) return;
@@ -3185,9 +3185,6 @@ class _HomeScreenState extends State<HomeScreen> {
         final explicitCheckedOut =
             data['checkedOut'] == true || data['hasCheckOut'] == true;
 
-        bool checkedIn = explicitCheckedIn;
-        bool checkedOut = explicitCheckedOut;
-
         final attendanceAny = data['attendance'];
         final attendance = attendanceAny is Map
             ? Map<String, dynamic>.from(attendanceAny)
@@ -3229,8 +3226,13 @@ class _HomeScreenState extends State<HomeScreen> {
           }
         }
 
-        final hasTopLevelCheckIn = _hasValue(data['checkInAt']);
-        final hasTopLevelCheckOut = _hasValue(data['checkOutAt']);
+        final hasTopLevelCheckIn = _hasValue(
+          data['checkInAt'] ?? data['checkinAt'] ?? data['checkInTime'],
+        );
+        final hasTopLevelCheckOut = _hasValue(
+          data['checkOutAt'] ?? data['checkoutAt'] ?? data['checkOutTime'],
+        );
+
         final hasSummaryWorkedMinutes = data['summary'] is Map &&
             ((Map<String, dynamic>.from(data['summary'])['workedMinutes']
                     is num)
@@ -3239,30 +3241,40 @@ class _HomeScreenState extends State<HomeScreen> {
                         0
                 : false);
 
-        if (hasOpenSession || todayOpen != null) {
+        // ✅ FIX:
+        // ใช้หลักฐานการเช็คอิน/เช็คเอาท์เป็นตัวตัดสินก่อน
+        // เพื่อไม่ให้ pendingManualSession ไปทับสถานะที่เช็คอินจริงแล้ว
+        final hasAnyCheckInEvidence = explicitCheckedIn ||
+            hasTopLevelCheckIn ||
+            hasOpenSession ||
+            todayOpen != null ||
+            todayDone != null ||
+            hasSummaryWorkedMinutes;
+
+        final hasAnyCheckOutEvidence = explicitCheckedOut ||
+            hasTopLevelCheckOut ||
+            todayDone != null ||
+            (hasSummaryWorkedMinutes && !hasOpenSession && todayOpen == null);
+
+        bool checkedIn = false;
+        bool checkedOut = false;
+
+        if (hasAnyCheckInEvidence && !hasAnyCheckOutEvidence) {
           checkedIn = true;
           checkedOut = false;
-        } else if (todayDone != null) {
+        } else if (hasAnyCheckInEvidence && hasAnyCheckOutEvidence) {
           checkedIn = true;
           checkedOut = true;
         } else if (hasPendingManual) {
           checkedIn = false;
           checkedOut = false;
-        } else if (hasTopLevelCheckIn && !hasTopLevelCheckOut) {
-          checkedIn = true;
-          checkedOut = false;
-        } else if (hasTopLevelCheckIn && hasTopLevelCheckOut) {
-          checkedIn = true;
-          checkedOut = true;
-        } else if (hasSummaryWorkedMinutes) {
-          checkedIn = true;
-          checkedOut = true;
-        } else if (!checkedIn && !checkedOut) {
+        } else {
           checkedIn = false;
           checkedOut = false;
         }
 
         final msg = (data['message'] ?? '').toString().trim();
+
         String line = msg.isNotEmpty
             ? msg
             : hasPendingManual
@@ -3278,6 +3290,9 @@ class _HomeScreenState extends State<HomeScreen> {
             line = 'วันนี้ยังไม่พบกะงานสำหรับการสแกน';
           } else if (_selectedHelperShift == null) {
             line = 'กรุณาเลือกกะก่อนสแกนลายนิ้วมือ';
+          } else if (checkedIn && !checkedOut && hasPendingManual) {
+            line =
+                'เช็คอินแล้วสำหรับกะที่เลือก • ยังมีคำขอแก้ไขเวลารออนุมัติ • $_selectedHelperShiftLabel';
           } else if (hasPendingManual && !checkedIn && !checkedOut) {
             line = msg.isNotEmpty
                 ? msg
@@ -3289,11 +3304,28 @@ class _HomeScreenState extends State<HomeScreen> {
           } else if (checkedIn && checkedOut) {
             line = 'เช็คอินและเช็คเอาท์แล้วสำหรับกะที่เลือก';
           }
+        } else if (checkedIn && !checkedOut && hasPendingManual) {
+          line =
+              'วันนี้เช็คอินเรียบร้อยแล้ว (ยังไม่ได้เช็คเอาท์) • มีคำขอแก้ไขเวลารอการอนุมัติ';
         } else if (hasPendingManual && !checkedIn && !checkedOut) {
           line = msg.isNotEmpty ? msg : 'มีคำขอแก้ไขเวลารอการอนุมัติ';
         } else if (_attendanceNeedsLiveLocation && !checkedIn) {
           line = 'ยังไม่ได้เช็คอิน • ${_locationRuleText()}';
         }
+
+        print(
+          '[ATTENDANCE][REFRESH][PREVIEW] '
+          'explicitCheckedIn=$explicitCheckedIn '
+          'explicitCheckedOut=$explicitCheckedOut '
+          'hasOpenSession=$hasOpenSession '
+          'todayOpen=${todayOpen != null} '
+          'todayDone=${todayDone != null} '
+          'hasTopLevelCheckIn=$hasTopLevelCheckIn '
+          'hasTopLevelCheckOut=$hasTopLevelCheckOut '
+          'hasPendingManual=$hasPendingManual '
+          'hasSummaryWorkedMinutes=$hasSummaryWorkedMinutes '
+          '=> checkedIn=$checkedIn checkedOut=$checkedOut',
+        );
 
         if (!mounted || seq != _attRefreshSeq) return;
         setState(() {
@@ -3379,6 +3411,10 @@ class _HomeScreenState extends State<HomeScreen> {
           line = 'กรุณาเลือกกะก่อนสแกนลายนิ้วมือ';
         } else if (!checkedIn && !checkedOut) {
           line = 'พร้อมสแกนสำหรับกะที่เลือก • $_selectedHelperShiftLabel';
+        } else if (checkedIn && !checkedOut) {
+          line = 'เช็คอินแล้วสำหรับกะที่เลือก • $_selectedHelperShiftLabel';
+        } else if (checkedIn && checkedOut) {
+          line = 'เช็คอินและเช็คเอาท์แล้วสำหรับกะที่เลือก';
         }
       } else if (_attendanceNeedsLiveLocation && !checkedIn) {
         line = 'ยังไม่ได้เช็คอิน • ${_locationRuleText()}';
