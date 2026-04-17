@@ -40,6 +40,10 @@ class AttendanceCard extends StatelessWidget {
 
   bool get _isRefreshingOnly => loading && !posting && !bioLoading;
 
+  bool get _highlightCheckIn => !checkedIn && !checkedOut;
+
+  bool get _highlightCheckOut => checkedIn && !checkedOut;
+
   String get _helperText {
     if (bioLoading) return 'กำลังยืนยันลายนิ้วมือ...';
     if (posting) return 'กำลังบันทึกข้อมูล...';
@@ -222,8 +226,68 @@ class AttendanceCard extends StatelessWidget {
     );
   }
 
+  Widget _buildPrimaryButton({
+    required VoidCallback? onPressed,
+    required Widget icon,
+    required String label,
+  }) {
+    return Expanded(
+      child: ElevatedButton.icon(
+        onPressed: onPressed,
+        icon: icon,
+        label: Text(label),
+        style: ElevatedButton.styleFrom(
+          minimumSize: const Size.fromHeight(48),
+          elevation: 0,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(13),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSecondaryButton({
+    required VoidCallback? onPressed,
+    required Widget icon,
+    required String label,
+  }) {
+    return Expanded(
+      child: OutlinedButton.icon(
+        onPressed: onPressed,
+        icon: icon,
+        label: Text(label),
+        style: OutlinedButton.styleFrom(
+          minimumSize: const Size.fromHeight(48),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(13),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final checkInIcon = _isBusyAction
+        ? const SizedBox(
+            width: 18,
+            height: 18,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          )
+        : const Icon(Icons.login);
+
+    final checkOutIcon = _isBusyAction
+        ? const SizedBox(
+            width: 18,
+            height: 18,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          )
+        : const Icon(Icons.logout);
+
+    final checkInLabel = checkedIn || checkedOut ? 'เช็คอินแล้ว' : 'เช็คอิน';
+    final checkOutLabel = checkedOut ? 'เช็คเอาท์แล้ว' : 'เช็คเอาท์';
+
     return Card(
       elevation: 0.8,
       color: _cardBgColor(),
@@ -268,50 +332,43 @@ class AttendanceCard extends StatelessWidget {
             const SizedBox(height: 12),
             Row(
               children: [
-                Expanded(
-                  child: ElevatedButton.icon(
+                if (_highlightCheckIn) ...[
+                  _buildPrimaryButton(
                     onPressed: _canCheckIn ? onCheckIn : null,
-                    icon: _isBusyAction
-                        ? const SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.login),
-                    label: Text(
-                      checkedIn || checkedOut ? 'เช็คอินแล้ว' : 'เช็คอิน',
-                    ),
-                    style: ElevatedButton.styleFrom(
-                      minimumSize: const Size.fromHeight(48),
-                      elevation: 0,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(13),
-                      ),
-                    ),
+                    icon: checkInIcon,
+                    label: checkInLabel,
                   ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: OutlinedButton.icon(
+                  const SizedBox(width: 10),
+                  _buildSecondaryButton(
                     onPressed: _canCheckOut ? onCheckOut : null,
-                    icon: _isBusyAction
-                        ? const SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.logout),
-                    label: Text(
-                      checkedOut ? 'เช็คเอาท์แล้ว' : 'เช็คเอาท์',
-                    ),
-                    style: OutlinedButton.styleFrom(
-                      minimumSize: const Size.fromHeight(48),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(13),
-                      ),
-                    ),
+                    icon: checkOutIcon,
+                    label: checkOutLabel,
                   ),
-                ),
+                ] else if (_highlightCheckOut) ...[
+                  _buildSecondaryButton(
+                    onPressed: _canCheckIn ? onCheckIn : null,
+                    icon: checkInIcon,
+                    label: checkInLabel,
+                  ),
+                  const SizedBox(width: 10),
+                  _buildPrimaryButton(
+                    onPressed: _canCheckOut ? onCheckOut : null,
+                    icon: checkOutIcon,
+                    label: checkOutLabel,
+                  ),
+                ] else ...[
+                  _buildPrimaryButton(
+                    onPressed: _canCheckIn ? onCheckIn : null,
+                    icon: checkInIcon,
+                    label: checkInLabel,
+                  ),
+                  const SizedBox(width: 10),
+                  _buildSecondaryButton(
+                    onPressed: _canCheckOut ? onCheckOut : null,
+                    icon: checkOutIcon,
+                    label: checkOutLabel,
+                  ),
+                ],
               ],
             ),
             const SizedBox(height: 8),
