@@ -25,6 +25,25 @@ function isYmd(v) {
   return /^\d{4}-\d{2}-\d{2}$/.test(s(v));
 }
 
+function parseYmdParts(v) {
+  if (!isYmd(v)) return null;
+  const [year, month, day] = s(v)
+    .split("-")
+    .map((x) => Number(x));
+
+  if (
+    !Number.isInteger(year) ||
+    !Number.isInteger(month) ||
+    !Number.isInteger(day)
+  ) {
+    return null;
+  }
+
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+
+  return { year, month, day };
+}
+
 function clampMinutes(v) {
   const x = Math.floor(Number(v || 0));
   return Number.isFinite(x) ? Math.max(0, x) : 0;
@@ -948,7 +967,13 @@ function buildHumanReadablePolicy(policy) {
 }
 
 function getWeekdayKey(dateYmd) {
-  const d = new Date(`${dateYmd}T00:00:00+07:00`);
+  const parts = parseYmdParts(dateYmd);
+  if (!parts) return "monday";
+
+  const utcNoon = new Date(
+    Date.UTC(parts.year, parts.month - 1, parts.day, 12, 0, 0)
+  );
+
   return [
     "sunday",
     "monday",
@@ -957,7 +982,7 @@ function getWeekdayKey(dateYmd) {
     "thursday",
     "friday",
     "saturday",
-  ][d.getDay()];
+  ][utcNoon.getUTCDay()];
 }
 
 function getWeeklyDaySchedule(policy, workDate) {
@@ -3763,6 +3788,7 @@ async function ensureCanViewSession(req, session) {
 
   return { ok: true };
 }
+
 async function checkIn(req, res) {
   try {
     const mockErr = rejectIfMockLocationAnywhere(req);
@@ -4581,7 +4607,6 @@ async function checkOut(req, res) {
       .json({ ok: false, message: "check-out failed", error: e.message });
   }
 }
-
 async function submitManualRequest(req, res) {
   try {
     const { principalId } = getPrincipal(req);
@@ -4990,7 +5015,8 @@ async function submitManualRequest(req, res) {
         policy: buildPublicPolicy(policy, s(previousDaySession.workDate)),
       });
     }
-        if (manualRequestType === "check_in") {
+
+    if (manualRequestType === "check_in") {
       if (targetSession) {
         const hydratedTarget = await hydrateOneSessionDisplayField(targetSession);
 
