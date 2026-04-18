@@ -251,6 +251,13 @@ class _HomeScreenState extends State<HomeScreen> {
 
   String _norm(String s) => s.trim().toLowerCase();
 
+  bool _isTruthy(dynamic v) {
+    if (v is bool) return v;
+    if (v is num) return v != 0;
+    final s = (v ?? '').toString().trim().toLowerCase();
+    return s == 'true' || s == '1' || s == 'yes' || s == 'y';
+  }
+
   void _clearPreviousPendingBlock() {
     if (!mounted) return;
     setState(() {
@@ -1321,10 +1328,6 @@ class _HomeScreenState extends State<HomeScreen> {
       await _loadClinicPolicy();
       await _loadUrgentNeeds();
 
-      // ✅ ตัด self-service payslip ออกจาก Home / My
-      // - ไม่โหลด closed months ตอน bootstrap
-      // - เก็บ code ส่วนอื่นไว้ เผื่อใช้ภายหลัง
-
       if (_isHelper && _attendancePremiumEnabled) {
         await _loadHelperTodayShifts();
       }
@@ -1593,9 +1596,6 @@ class _HomeScreenState extends State<HomeScreen> {
       } else {
         await _loadClinicPolicy();
         await _loadUrgentNeeds();
-
-        // ✅ ตัด self-service payslip ออกจาก Home / My
-        // - ไม่ reload closed months ตอน active refresh
 
         if (_isHelper && _attendancePremiumEnabled) {
           await _loadHelperTodayShifts(silent: true);
@@ -2114,7 +2114,12 @@ class _HomeScreenState extends State<HomeScreen> {
         _hasValue(s['checkOutAt'] ?? s['checkoutAt'] ?? s['checkOutTime']);
 
     if (status == 'open') return true;
-    if (status == 'closed' || status == 'cancelled') return false;
+    if (status == 'working') return true;
+    if (status == 'checked_in') return true;
+    if (status == 'in_progress') return true;
+    if (status == 'closed' || status == 'cancelled' || status == 'completed') {
+      return false;
+    }
 
     return hasIn && !hasOut;
   }
@@ -2127,7 +2132,12 @@ class _HomeScreenState extends State<HomeScreen> {
         _hasValue(s['checkOutAt'] ?? s['checkoutAt'] ?? s['checkOutTime']);
 
     if (status == 'closed') return true;
-    if (status == 'open') return false;
+    if (status == 'completed') return true;
+    if (status == 'checked_out') return true;
+    if (status == 'done') return true;
+    if (status == 'open' || status == 'working' || status == 'checked_in') {
+      return false;
+    }
 
     return hasIn && hasOut;
   }
@@ -2166,6 +2176,16 @@ class _HomeScreenState extends State<HomeScreen> {
             .whereType<Map>()
             .map((e) => Map<String, dynamic>.from(e))
             .toList();
+      } else if (decoded['sessions'] is List) {
+        list = (decoded['sessions'] as List)
+            .whereType<Map>()
+            .map((e) => Map<String, dynamic>.from(e))
+            .toList();
+      } else if (decoded['rows'] is List) {
+        list = (decoded['rows'] as List)
+            .whereType<Map>()
+            .map((e) => Map<String, dynamic>.from(e))
+            .toList();
       }
     } else if (decoded is List) {
       list = decoded
@@ -2179,6 +2199,167 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     return list;
+  }
+
+  Map<String, dynamic>? _mapFromAny(dynamic v) {
+    if (v is Map) return Map<String, dynamic>.from(v);
+    return null;
+  }
+
+  Map<String, dynamic>? _pickFirstMap(List<dynamic> values) {
+    for (final v in values) {
+      final m = _mapFromAny(v);
+      if (m != null && m.isNotEmpty) return m;
+    }
+    return null;
+  }
+
+  bool _previewHasCheckInEvidence(Map<String, dynamic> data) {
+    final attendance = _mapFromAny(data['attendance']) ?? <String, dynamic>{};
+    final runtime = _mapFromAny(data['runtime']) ?? <String, dynamic>{};
+    final summary = _mapFromAny(data['summary']) ?? <String, dynamic>{};
+
+    final topSession = _pickFirstMap([
+      data['session'],
+      data['todaySession'],
+      data['currentSession'],
+      data['openSession'],
+      attendance['session'],
+      attendance['todaySession'],
+      attendance['currentSession'],
+      attendance['openSession'],
+      runtime['session'],
+      runtime['currentSession'],
+      runtime['openSession'],
+    ]);
+
+    final hasTopSessionCheckIn = topSession != null &&
+        (_hasValue(topSession['checkInAt']) ||
+            _hasValue(topSession['checkinAt']) ||
+            _hasValue(topSession['checkInTime']) ||
+            _sessionLooksOpen(topSession) ||
+            _sessionLooksClosed(topSession));
+
+    final workedMinutes = summary['workedMinutes'];
+    final workedMinutesPositive = workedMinutes is num && workedMinutes > 0;
+
+    return _isTruthy(data['checkedIn']) ||
+        _isTruthy(data['hasCheckIn']) ||
+        _isTruthy(data['isCheckedIn']) ||
+        _isTruthy(data['working']) ||
+        _isTruthy(attendance['checkedIn']) ||
+        _isTruthy(attendance['hasCheckIn']) ||
+        _isTruthy(attendance['isCheckedIn']) ||
+        _isTruthy(attendance['working']) ||
+        _hasValue(data['checkInAt']) ||
+        _hasValue(data['checkinAt']) ||
+        _hasValue(data['checkInTime']) ||
+        _hasValue(attendance['checkInAt']) ||
+        _hasValue(attendance['checkinAt']) ||
+        _hasValue(attendance['checkInTime']) ||
+        hasTopSessionCheckIn ||
+        workedMinutesPositive;
+  }
+
+  bool _previewHasCheckOutEvidence(Map<String, dynamic> data) {
+    final attendance = _mapFromAny(data['attendance']) ?? <String, dynamic>{};
+    final runtime = _mapFromAny(data['runtime']) ?? <String, dynamic>{};
+    final summary = _mapFromAny(data['summary']) ?? <String, dynamic>{};
+
+    final topSession = _pickFirstMap([
+      data['session'],
+      data['todaySession'],
+      data['currentSession'],
+      data['openSession'],
+      attendance['session'],
+      attendance['todaySession'],
+      attendance['currentSession'],
+      attendance['openSession'],
+      runtime['session'],
+      runtime['currentSession'],
+      runtime['openSession'],
+    ]);
+
+    final hasTopSessionCheckOut = topSession != null &&
+        (_hasValue(topSession['checkOutAt']) ||
+            _hasValue(topSession['checkoutAt']) ||
+            _hasValue(topSession['checkOutTime']) ||
+            _sessionLooksClosed(topSession));
+
+    final workedMinutes = summary['workedMinutes'];
+    final workedMinutesPositive = workedMinutes is num && workedMinutes > 0;
+
+    return _isTruthy(data['checkedOut']) ||
+        _isTruthy(data['hasCheckOut']) ||
+        _isTruthy(data['isCheckedOut']) ||
+        _isTruthy(attendance['checkedOut']) ||
+        _isTruthy(attendance['hasCheckOut']) ||
+        _isTruthy(attendance['isCheckedOut']) ||
+        _hasValue(data['checkOutAt']) ||
+        _hasValue(data['checkoutAt']) ||
+        _hasValue(data['checkOutTime']) ||
+        _hasValue(attendance['checkOutAt']) ||
+        _hasValue(attendance['checkoutAt']) ||
+        _hasValue(attendance['checkOutTime']) ||
+        hasTopSessionCheckOut ||
+        (_isTruthy(data['completed']) || _isTruthy(attendance['completed'])) ||
+        (workedMinutesPositive &&
+            !_isTruthy(data['working']) &&
+            !_isTruthy(attendance['working']) &&
+            !_hasValue(data['checkOutBlockedReason']));
+  }
+
+  String _buildAttendanceStatusLine({
+    required bool checkedIn,
+    required bool checkedOut,
+    required bool hasPendingManual,
+    String message = '',
+  }) {
+    String line = message.trim();
+
+    if (line.isEmpty) {
+      if (hasPendingManual && !checkedIn && !checkedOut) {
+        line = 'วันนี้มีคำขอแก้ไขเวลารอการอนุมัติ';
+      } else if (checkedIn && checkedOut) {
+        line = 'วันนี้เช็คอินและเช็คเอาท์เรียบร้อยแล้ว';
+      } else if (checkedIn && !checkedOut) {
+        line = 'วันนี้เช็คอินเรียบร้อยแล้ว (ยังไม่ได้เช็คเอาท์)';
+      } else {
+        line = 'วันนี้ยังไม่ได้เช็คอิน';
+      }
+    }
+
+    if (_isHelper) {
+      if (_helperTodayShifts.isEmpty) {
+        return 'วันนี้ยังไม่พบกะงานสำหรับการสแกน';
+      }
+      if (_selectedHelperShift == null) {
+        return 'กรุณาเลือกกะก่อนสแกนลายนิ้วมือ';
+      }
+      if (checkedIn && checkedOut) {
+        return 'เช็คอินและเช็คเอาท์แล้วสำหรับกะที่เลือก';
+      }
+      if (checkedIn && !checkedOut && hasPendingManual) {
+        return 'เช็คอินแล้วสำหรับกะที่เลือก • ยังไม่ได้เช็คเอาท์ • $_selectedHelperShiftLabel';
+      }
+      if (checkedIn && !checkedOut) {
+        return 'เช็คอินแล้วสำหรับกะที่เลือก • $_selectedHelperShiftLabel';
+      }
+      if (hasPendingManual) {
+        return 'มีคำขอแก้ไขเวลารออนุมัติสำหรับกะที่เลือก • $_selectedHelperShiftLabel';
+      }
+      return 'พร้อมสแกนสำหรับกะที่เลือก • $_selectedHelperShiftLabel';
+    }
+
+    if (checkedIn && !checkedOut && hasPendingManual) {
+      return 'วันนี้เช็คอินเรียบร้อยแล้ว (ยังไม่ได้เช็คเอาท์) • มีคำขอแก้ไขเวลารอการอนุมัติ';
+    }
+
+    if (_attendanceNeedsLiveLocation && !checkedIn) {
+      return 'ยังไม่ได้เช็คอิน • ${_locationRuleText()}';
+    }
+
+    return line;
   }
 
   bool _canOpenManualRequest({
@@ -3092,7 +3273,8 @@ class _HomeScreenState extends State<HomeScreen> {
           : 'วันนี้เช็คอินและเช็คเอาท์เรียบร้อยแล้ว';
     });
   }
-    Future<void> _refreshAttendanceToday({bool silent = false}) async {
+
+  Future<void> _refreshAttendanceToday({bool silent = false}) async {
     if (_ctxLoading) return;
     if (!_isAttendanceUser) return;
     if (!_attendancePremiumEnabled) return;
@@ -3165,9 +3347,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
           if (runtime['shift'] is Map) {
             final runtimeShift = Map<String, dynamic>.from(runtime['shift']);
-            final mode = (runtime['shiftSelectionMode'] ?? '')
-                .toString()
-                .trim();
+            final mode =
+                (runtime['shiftSelectionMode'] ?? '').toString().trim();
 
             if (_selectedHelperShift == null ||
                 !_helperShiftTouchedByUser ||
@@ -3180,20 +3361,7 @@ class _HomeScreenState extends State<HomeScreen> {
           }
         }
 
-        final explicitCheckedIn =
-            data['checkedIn'] == true || data['hasCheckIn'] == true;
-        final explicitCheckedOut =
-            data['checkedOut'] == true || data['hasCheckOut'] == true;
-
-        final attendanceAny = data['attendance'];
-        final attendance = attendanceAny is Map
-            ? Map<String, dynamic>.from(attendanceAny)
-            : <String, dynamic>{};
-
-        final openSessionAny = attendance['openSession'];
-        final hasOpenSession = openSessionAny is Map &&
-            Map<String, dynamic>.from(openSessionAny).isNotEmpty;
-
+        final attendance = _mapFromAny(data['attendance']) ?? <String, dynamic>{};
         final pendingManualAny = attendance['pendingManualSession'];
         final hasPendingManual = pendingManualAny is Map &&
             Map<String, dynamic>.from(pendingManualAny).isNotEmpty;
@@ -3201,6 +3369,11 @@ class _HomeScreenState extends State<HomeScreen> {
         List<Map<String, dynamic>> sessions = <Map<String, dynamic>>[];
         if (data['sessions'] is List) {
           sessions = (data['sessions'] as List)
+              .whereType<Map>()
+              .map((e) => Map<String, dynamic>.from(e))
+              .toList();
+        } else if (attendance['sessions'] is List) {
+          sessions = (attendance['sessions'] as List)
               .whereType<Map>()
               .map((e) => Map<String, dynamic>.from(e))
               .toList();
@@ -3226,104 +3399,27 @@ class _HomeScreenState extends State<HomeScreen> {
           }
         }
 
-        final hasTopLevelCheckIn = _hasValue(
-          data['checkInAt'] ?? data['checkinAt'] ?? data['checkInTime'],
-        );
-        final hasTopLevelCheckOut = _hasValue(
-          data['checkOutAt'] ?? data['checkoutAt'] ?? data['checkOutTime'],
-        );
+        final previewHasCheckIn = _previewHasCheckInEvidence(data);
+        final previewHasCheckOut = _previewHasCheckOutEvidence(data);
 
-        final hasSummaryWorkedMinutes = data['summary'] is Map &&
-            ((Map<String, dynamic>.from(data['summary'])['workedMinutes']
-                    is num)
-                ? (Map<String, dynamic>.from(
-                            data['summary'])['workedMinutes'] as num) >
-                        0
-                : false);
-
-        // ✅ FIX:
-        // ใช้หลักฐานการเช็คอิน/เช็คเอาท์เป็นตัวตัดสินก่อน
-        // เพื่อไม่ให้ pendingManualSession ไปทับสถานะที่เช็คอินจริงแล้ว
-        final hasAnyCheckInEvidence = explicitCheckedIn ||
-            hasTopLevelCheckIn ||
-            hasOpenSession ||
-            todayOpen != null ||
-            todayDone != null ||
-            hasSummaryWorkedMinutes;
-
-        final hasAnyCheckOutEvidence = explicitCheckedOut ||
-            hasTopLevelCheckOut ||
-            todayDone != null ||
-            (hasSummaryWorkedMinutes && !hasOpenSession && todayOpen == null);
-
-        bool checkedIn = false;
-        bool checkedOut = false;
-
-        if (hasAnyCheckInEvidence && !hasAnyCheckOutEvidence) {
-          checkedIn = true;
-          checkedOut = false;
-        } else if (hasAnyCheckInEvidence && hasAnyCheckOutEvidence) {
-          checkedIn = true;
-          checkedOut = true;
-        } else if (hasPendingManual) {
-          checkedIn = false;
-          checkedOut = false;
-        } else {
-          checkedIn = false;
-          checkedOut = false;
-        }
+        final checkedIn = previewHasCheckIn || todayOpen != null || todayDone != null;
+        final checkedOut = previewHasCheckOut || todayDone != null;
 
         final msg = (data['message'] ?? '').toString().trim();
-
-        String line = msg.isNotEmpty
-            ? msg
-            : hasPendingManual
-                ? 'วันนี้มีคำขอแก้ไขเวลารอการอนุมัติ'
-                : checkedIn
-                    ? (checkedOut
-                        ? 'วันนี้เช็คอินและเช็คเอาท์เรียบร้อยแล้ว'
-                        : 'วันนี้เช็คอินเรียบร้อยแล้ว (ยังไม่ได้เช็คเอาท์)')
-                    : 'วันนี้ยังไม่ได้เช็คอิน';
-
-        if (_isHelper) {
-          if (_helperTodayShifts.isEmpty) {
-            line = 'วันนี้ยังไม่พบกะงานสำหรับการสแกน';
-          } else if (_selectedHelperShift == null) {
-            line = 'กรุณาเลือกกะก่อนสแกนลายนิ้วมือ';
-          } else if (checkedIn && !checkedOut && hasPendingManual) {
-            line =
-                'เช็คอินแล้วสำหรับกะที่เลือก • ยังมีคำขอแก้ไขเวลารออนุมัติ • $_selectedHelperShiftLabel';
-          } else if (hasPendingManual && !checkedIn && !checkedOut) {
-            line = msg.isNotEmpty
-                ? msg
-                : 'มีคำขอแก้ไขเวลารออนุมัติสำหรับกะที่เลือก • $_selectedHelperShiftLabel';
-          } else if (!checkedIn && !checkedOut) {
-            line = 'พร้อมสแกนสำหรับกะที่เลือก • $_selectedHelperShiftLabel';
-          } else if (checkedIn && !checkedOut) {
-            line = 'เช็คอินแล้วสำหรับกะที่เลือก • $_selectedHelperShiftLabel';
-          } else if (checkedIn && checkedOut) {
-            line = 'เช็คอินและเช็คเอาท์แล้วสำหรับกะที่เลือก';
-          }
-        } else if (checkedIn && !checkedOut && hasPendingManual) {
-          line =
-              'วันนี้เช็คอินเรียบร้อยแล้ว (ยังไม่ได้เช็คเอาท์) • มีคำขอแก้ไขเวลารอการอนุมัติ';
-        } else if (hasPendingManual && !checkedIn && !checkedOut) {
-          line = msg.isNotEmpty ? msg : 'มีคำขอแก้ไขเวลารอการอนุมัติ';
-        } else if (_attendanceNeedsLiveLocation && !checkedIn) {
-          line = 'ยังไม่ได้เช็คอิน • ${_locationRuleText()}';
-        }
+        final line = _buildAttendanceStatusLine(
+          checkedIn: checkedIn,
+          checkedOut: checkedOut,
+          hasPendingManual: hasPendingManual,
+          message: msg,
+        );
 
         print(
           '[ATTENDANCE][REFRESH][PREVIEW] '
-          'explicitCheckedIn=$explicitCheckedIn '
-          'explicitCheckedOut=$explicitCheckedOut '
-          'hasOpenSession=$hasOpenSession '
+          'previewHasCheckIn=$previewHasCheckIn '
+          'previewHasCheckOut=$previewHasCheckOut '
           'todayOpen=${todayOpen != null} '
           'todayDone=${todayDone != null} '
-          'hasTopLevelCheckIn=$hasTopLevelCheckIn '
-          'hasTopLevelCheckOut=$hasTopLevelCheckOut '
           'hasPendingManual=$hasPendingManual '
-          'hasSummaryWorkedMinutes=$hasSummaryWorkedMinutes '
           '=> checkedIn=$checkedIn checkedOut=$checkedOut',
         );
 
@@ -3396,29 +3492,14 @@ class _HomeScreenState extends State<HomeScreen> {
       }
 
       final checkedIn = todayOpen != null || todayDone != null;
-      final checkedOut = todayOpen == null && todayDone != null;
+      final checkedOut = todayDone != null;
 
-      String line = checkedIn
-          ? (checkedOut
-              ? 'วันนี้เช็คอินและเช็คเอาท์เรียบร้อยแล้ว'
-              : 'วันนี้เช็คอินเรียบร้อยแล้ว (ยังไม่ได้เช็คเอาท์)')
-          : 'วันนี้ยังไม่ได้เช็คอิน';
-
-      if (_isHelper) {
-        if (_helperTodayShifts.isEmpty) {
-          line = 'วันนี้ยังไม่พบกะงานสำหรับการสแกน';
-        } else if (_selectedHelperShift == null) {
-          line = 'กรุณาเลือกกะก่อนสแกนลายนิ้วมือ';
-        } else if (!checkedIn && !checkedOut) {
-          line = 'พร้อมสแกนสำหรับกะที่เลือก • $_selectedHelperShiftLabel';
-        } else if (checkedIn && !checkedOut) {
-          line = 'เช็คอินแล้วสำหรับกะที่เลือก • $_selectedHelperShiftLabel';
-        } else if (checkedIn && checkedOut) {
-          line = 'เช็คอินและเช็คเอาท์แล้วสำหรับกะที่เลือก';
-        }
-      } else if (_attendanceNeedsLiveLocation && !checkedIn) {
-        line = 'ยังไม่ได้เช็คอิน • ${_locationRuleText()}';
-      }
+      final line = _buildAttendanceStatusLine(
+        checkedIn: checkedIn,
+        checkedOut: checkedOut,
+        hasPendingManual: false,
+        message: '',
+      );
 
       if (!mounted || seq != _attRefreshSeq) return;
       setState(() {
@@ -3770,8 +3851,7 @@ class _HomeScreenState extends State<HomeScreen> {
       print('[ATTENDANCE][CHECKIN] FINALLY');
     }
   }
-
-  Future<void> _scanAndCheckOut() async {
+    Future<void> _scanAndCheckOut() async {
     _tapLog('SCAN_CHECKOUT');
     print('[ATTENDANCE] ROLE=$_role clinicId=$_clinicId staffId=$_staffId');
 
@@ -4637,10 +4717,7 @@ class _HomeScreenState extends State<HomeScreen> {
         header: _isHelper ? 'บันทึกเวลาทำงาน (ผู้ช่วย)' : 'บันทึกเวลาทำงาน',
       ),
       policyCard: _policyCard(),
-
-      // ✅ ตัด self-service payslip card ออกจากหน้าแรก
       payslipCard: const SizedBox.shrink(),
-
       urgentCard: _urgentCardCompact(),
       trustScoreCard: trustScoreCard,
       marketCard: marketCard,
@@ -4830,8 +4907,6 @@ class _HomeScreenState extends State<HomeScreen> {
                           ? _showManualRequestMenu
                           : null),
                 ),
-
-                // ✅ ตัดเมนู “สลิปเงินเดือน” ออกจาก My tab
               ],
             ),
           )
