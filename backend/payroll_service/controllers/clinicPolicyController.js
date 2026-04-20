@@ -4,6 +4,7 @@ const ClinicPolicy = require("../models/ClinicPolicy");
 const ATTENDANCE_TIMEZONE = "Asia/Bangkok";
 const ENFORCED_REQUIRE_LOCATION = true;
 const ENFORCED_GEO_RADIUS_METERS = 200;
+const DEFAULT_EARLY_CHECKIN_MINUTES = 30;
 
 function normStr(v) {
   return String(v || "").trim();
@@ -62,6 +63,12 @@ function normalizeOtRounding(v) {
   const s = normStr(v).toUpperCase();
   const allowed = ["NONE", "15MIN", "30MIN", "HOUR"];
   return allowed.includes(s) ? s : "15MIN";
+}
+
+function normalizeEarlyCheckInMinutes(v, fallback = DEFAULT_EARLY_CHECKIN_MINUTES) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.floor(n));
 }
 
 const ALLOWED_FEATURE_KEYS = [
@@ -304,6 +311,7 @@ function defaultPolicy(clinicId, updatedByUserId = "") {
     clinicLocation: ref.clinicLocation,
 
     graceLateMinutes: 10,
+    earlyCheckInMinutes: DEFAULT_EARLY_CHECKIN_MINUTES,
 
     otRule: "AFTER_CLOCK_TIME",
     regularHoursPerDay: 8,
@@ -400,6 +408,10 @@ function normalizePolicyShape(raw, clinicId, updatedByUserId = "") {
     clinicLocation: ref.clinicLocation,
 
     graceLateMinutes: toNum(src.graceLateMinutes, defaults.graceLateMinutes),
+    earlyCheckInMinutes: normalizeEarlyCheckInMinutes(
+      src.earlyCheckInMinutes,
+      defaults.earlyCheckInMinutes
+    ),
 
     otRule: normalizeOtRule(src.otRule || defaults.otRule),
     regularHoursPerDay: toNum(
@@ -541,6 +553,10 @@ function applyPolicyToDoc(doc, normalized, updatedByUserId = "") {
   doc.clinicLocation = ref.clinicLocation;
 
   doc.graceLateMinutes = Number(normalized.graceLateMinutes);
+  doc.earlyCheckInMinutes = normalizeEarlyCheckInMinutes(
+    normalized.earlyCheckInMinutes,
+    DEFAULT_EARLY_CHECKIN_MINUTES
+  );
 
   doc.otRule = normalizeOtRule(normalized.otRule);
   doc.regularHoursPerDay = Number(normalized.regularHoursPerDay);
@@ -649,6 +665,15 @@ function validatePolicy(p) {
   const grace = toNum(p.graceLateMinutes, NaN);
   if (!Number.isFinite(grace) || grace < 0 || grace > 180) {
     return "graceLateMinutes must be 0..180";
+  }
+
+  const earlyCheckInMinutes = toNum(p.earlyCheckInMinutes, NaN);
+  if (
+    !Number.isFinite(earlyCheckInMinutes) ||
+    earlyCheckInMinutes < 0 ||
+    earlyCheckInMinutes > 180
+  ) {
+    return "earlyCheckInMinutes must be 0..180";
   }
 
   const otStartAfter = toNum(p.otStartAfterMinutes, NaN);
@@ -806,6 +831,7 @@ async function getMyClinicPolicy(req, res) {
       referenceLng: normalizedPolicy.referenceLng,
       location: normalizedPolicy.location,
       clinicLocation: normalizedPolicy.clinicLocation,
+      earlyCheckInMinutes: normalizedPolicy.earlyCheckInMinutes,
     });
 
     return res.json({ ok: true, policy: normalizedPolicy });
@@ -845,6 +871,7 @@ async function updateMyClinicPolicy(req, res) {
       referenceLng: base.referenceLng,
       location: base.location,
       clinicLocation: base.clinicLocation,
+      earlyCheckInMinutes: base.earlyCheckInMinutes,
     });
 
     const next = normalizePolicyShape(
@@ -859,6 +886,8 @@ async function updateMyClinicPolicy(req, res) {
           body.attendanceApprovalRoles ?? base.attendanceApprovalRoles,
         otApprovalRoles: body.otApprovalRoles ?? base.otApprovalRoles,
         weeklySchedule: body.weeklySchedule ?? base.weeklySchedule,
+        earlyCheckInMinutes:
+          body.earlyCheckInMinutes ?? base.earlyCheckInMinutes,
         location: body.location ?? body.clinicLocation ?? base.location,
         clinicLocation:
           body.clinicLocation ?? body.location ?? base.clinicLocation,
@@ -899,6 +928,7 @@ async function updateMyClinicPolicy(req, res) {
       referenceLng: next.referenceLng,
       location: next.location,
       clinicLocation: next.clinicLocation,
+      earlyCheckInMinutes: next.earlyCheckInMinutes,
     });
 
     const err = validatePolicy(next);
@@ -918,6 +948,7 @@ async function updateMyClinicPolicy(req, res) {
       referenceLng: policyDoc.referenceLng,
       location: policyDoc.location,
       clinicLocation: policyDoc.clinicLocation,
+      earlyCheckInMinutes: policyDoc.earlyCheckInMinutes,
       version: policyDoc.version,
     });
 
@@ -933,6 +964,7 @@ async function updateMyClinicPolicy(req, res) {
       referenceLng: saved?.referenceLng,
       location: saved?.location,
       clinicLocation: saved?.clinicLocation,
+      earlyCheckInMinutes: saved?.earlyCheckInMinutes,
       version: saved?.version,
     });
 

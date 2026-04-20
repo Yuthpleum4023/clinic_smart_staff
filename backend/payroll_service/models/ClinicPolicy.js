@@ -156,6 +156,10 @@ const ClinicPolicySchema = new mongoose.Schema(
     // ======================================================
     graceLateMinutes: { type: Number, default: 10 },
 
+    // ✅ NEW: allow check-in before clinic open / shift start
+    // e.g. 30 = can check in 30 minutes earlier
+    earlyCheckInMinutes: { type: Number, default: 30 },
+
     // เวลาตัดรอบของ workDate นั้น ๆ เช่น workDate 2026-03-10 cutoff 03:00
     // จะหมายถึง check-out ปกติได้ถึง 2026-03-11 03:00
     cutoffTime: { type: String, default: "03:00" },

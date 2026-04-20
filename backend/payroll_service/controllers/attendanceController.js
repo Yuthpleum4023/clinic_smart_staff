@@ -781,6 +781,7 @@ function logAttendanceDebug(label, payload) {
 
 const ATTENDANCE_TIMEZONE = "Asia/Bangkok";
 const ENFORCED_GEOFENCE_RADIUS_METERS = 200;
+const DEFAULT_EARLY_CHECKIN_MINUTES = 30;
 
 function getScoreServiceBaseUrl() {
   return s(process.env.SCORE_SERVICE_URL).replace(/\/+$/, "");
@@ -900,12 +901,21 @@ function mustRespectClinicHours(role) {
   return r === "employee" || r === "staff" || r === "helper";
 }
 
+function getEarlyCheckInMinutes(policy) {
+  const value = Number(
+    policy?.earlyCheckInMinutes ?? DEFAULT_EARLY_CHECKIN_MINUTES
+  );
+  if (!Number.isFinite(value)) return DEFAULT_EARLY_CHECKIN_MINUTES;
+  return Math.max(0, Math.floor(value));
+}
+
 function attendanceRuleDefaults(policy) {
   return {
     cutoffTime: isHHmm(policy?.cutoffTime) ? s(policy.cutoffTime) : "03:00",
     minMinutesBeforeCheckout: clampMinutes(
       policy?.minMinutesBeforeCheckout || 1
     ),
+    earlyCheckInMinutes: getEarlyCheckInMinutes(policy),
     blockNewCheckInIfPreviousOpen:
       policy?.blockNewCheckInIfPreviousOpen === undefined
         ? true
@@ -929,11 +939,20 @@ function buildHumanReadablePolicy(policy) {
   const lines = [];
   const requireLocation = shouldRequireLocationForAttendance(policy);
   const radius = getEnforcedGeoRadius(policy);
+  const earlyCheckInMinutes = getEarlyCheckInMinutes(policy);
 
   if (requireLocation) {
     lines.push(`การสแกนลงเวลาต้องอยู่ในรัศมี ${radius} เมตรจากคลินิก`);
   } else {
     lines.push("การสแกนลงเวลาไม่บังคับการยืนยันพิกัด GPS");
+  }
+
+  if (earlyCheckInMinutes > 0) {
+    lines.push(
+      `อนุญาตให้เช็กอินก่อนเวลาเปิดงานได้ ${earlyCheckInMinutes} นาที`
+    );
+  } else {
+    lines.push("อนุญาตให้เช็กอินได้ตั้งแต่เวลาเปิดงานเท่านั้น");
   }
 
   if (policy?.realTimeAttendanceOnly) {
@@ -1044,6 +1063,19 @@ function getClinicCloseDateTime(workDate, policy) {
   return endAt;
 }
 
+function getAllowedCheckInStartDateTime({ role, policy, shift, workDate }) {
+  const earlyMinutes = getEarlyCheckInMinutes(policy);
+
+  if (s(role).toLowerCase() === "helper") {
+    const shiftStartAt = getShiftStartDateTime(shift);
+    if (!shiftStartAt) return null;
+    return new Date(shiftStartAt.getTime() - earlyMinutes * 60000);
+  }
+
+  const clinicOpenAt = getClinicOpenDateTime(workDate, policy);
+  return new Date(clinicOpenAt.getTime() - earlyMinutes * 60000);
+}
+
 function getReferenceCoordinateCandidates(shift, policy, session = null) {
   const candidates = [
     [shift?.clinicLat, shift?.clinicLng],
@@ -1152,6 +1184,7 @@ function buildPublicPolicy(policy, workDate = "") {
 
     cutoffTime: rules.cutoffTime,
     minMinutesBeforeCheckout: rules.minMinutesBeforeCheckout,
+    earlyCheckInMinutes: rules.earlyCheckInMinutes,
     blockNewCheckInIfPreviousOpen: rules.blockNewCheckInIfPreviousOpen,
     forgotCheckoutManualOnly: rules.forgotCheckoutManualOnly,
     requireReasonForEarlyCheckIn: rules.requireReasonForEarlyCheckIn,
@@ -1179,6 +1212,7 @@ function buildPublicPolicy(policy, workDate = "") {
       geoRadiusMeters: enforcedRadius,
       timezone,
       features,
+      earlyCheckInMinutes: rules.earlyCheckInMinutes,
     }),
   };
 }
@@ -1196,6 +1230,7 @@ async function getOrCreatePolicy(clinicId, userId) {
       geoRadiusMeters: ENFORCED_GEOFENCE_RADIUS_METERS,
 
       graceLateMinutes: 10,
+      earlyCheckInMinutes: DEFAULT_EARLY_CHECKIN_MINUTES,
 
       cutoffTime: "03:00",
       minMinutesBeforeCheckout: 1,
@@ -1274,6 +1309,11 @@ async function getOrCreatePolicy(clinicId, userId) {
 
     if (Number(p.geoRadiusMeters) !== ENFORCED_GEOFENCE_RADIUS_METERS) {
       p.geoRadiusMeters = ENFORCED_GEOFENCE_RADIUS_METERS;
+      changed = true;
+    }
+
+    if (!Number.isFinite(Number(p.earlyCheckInMinutes))) {
+      p.earlyCheckInMinutes = DEFAULT_EARLY_CHECKIN_MINUTES;
       changed = true;
     }
 
@@ -2562,18 +2602,17 @@ function buildHelperShiftMissingTimeError(shift, workDate) {
   );
 }
 
-function buildHelperShiftNotStartedError(shift, workDate) {
+function buildHelperShiftNotStartedError(shift, workDate, allowedFromTime = "") {
   return buildCodeResponse(
     409,
     "SHIFT_NOT_STARTED",
-    "ยังไม่ถึงเวลาเริ่มกะงานนี้ จึงยังไม่สามารถดำเนินรายการได้",
+    "ยังไม่ถึงเวลาที่อนุญาตให้เช็กอินสำหรับกะงานนี้",
     {
       workDate,
       shiftId: s(shift?._id),
       shiftStart: s(shift?.start),
       shiftEnd: s(shift?.end),
-      clinicId: s(shift?.clinicId),
-      clinicName: s(shift?.clinicName),
+      allowedCheckInFrom: allowedFromTime || "",
     }
   );
 }
@@ -2714,25 +2753,22 @@ function getHelperPreviewStatus(shift, now = new Date()) {
     };
   }
 
-  if (timing.state === "before_start") {
-    return {
-      status: "before_start",
-      message: `กะนี้จะเริ่มเวลา ${s(shift.start)} น. ยังไม่พร้อมสแกน`,
-    };
-  }
-
-  if (timing.state === "ended") {
-    return {
-      status: "ended",
-      message: `กะนี้สิ้นสุดเวลา ${s(shift.end)} น. แล้ว`,
-    };
-  }
-
   return {
-    status: "active",
-    message: `พร้อมสแกนสำหรับกะ ${s(
-      shift.clinicName || shift.title || shift._id
-    )}`,
+    status:
+      now.getTime() < getAllowedCheckInStartDateTime({
+        role: "helper",
+        policy: { earlyCheckInMinutes: DEFAULT_EARLY_CHECKIN_MINUTES },
+        shift,
+        workDate: s(shift.date),
+      }).getTime()
+        ? "before_start"
+        : timing.state === "ended"
+        ? "ended"
+        : "active",
+    message:
+      timing.state === "ended"
+        ? `กะนี้สิ้นสุดเวลา ${s(shift.end)} น. แล้ว`
+        : `พร้อมสแกนสำหรับกะ ${s(shift.clinicName || shift.title || shift._id)}`,
   };
 }
 
@@ -2767,25 +2803,24 @@ function validateAttendanceCheckInTime({
       return buildHelperShiftEndedError(shift, workDate, checkInAt);
     }
 
-    if (checkInAt.getTime() < shiftStartAt.getTime()) {
-      if (rules.requireReasonForEarlyCheckIn) {
-        return buildCodeResponse(
-          409,
-          "MANUAL_REQUIRED_EARLY_CHECKIN",
-          "มาก่อนเวลาเริ่มกะงาน กรุณาส่งคำขอแก้ไขเวลาแทน",
-          {
-            workDate,
-            shiftId: s(shift?._id),
-            shiftStart: s(shift?.start),
-            shiftEnd: s(shift?.end),
-            clinicId: s(shift?.clinicId),
-            clinicName: s(shift?.clinicName),
-            action: "MANUAL_REQUEST_REQUIRED",
-          }
-        );
-      }
+    const allowedCheckInFromAt = getAllowedCheckInStartDateTime({
+      role: normalizedRole,
+      policy,
+      shift,
+      workDate,
+    });
 
-      return buildHelperShiftNotStartedError(shift, workDate);
+    if (
+      allowedCheckInFromAt &&
+      checkInAt.getTime() < allowedCheckInFromAt.getTime()
+    ) {
+      return buildHelperShiftNotStartedError(
+        shift,
+        workDate,
+        s(shift?.start)
+          ? `${s(shift.start)} -${rules.earlyCheckInMinutes} นาที`
+          : ""
+      );
     }
 
     return null;
@@ -2794,15 +2829,25 @@ function validateAttendanceCheckInTime({
   if (mustRespectClinicHours(normalizedRole)) {
     const clinicOpenAt = getClinicOpenDateTime(workDate, policy);
     const clinicCloseAt = getClinicCloseDateTime(workDate, policy);
+    const allowedCheckInFromAt = getAllowedCheckInStartDateTime({
+      role: normalizedRole,
+      policy,
+      shift,
+      workDate,
+    });
 
-    if (checkInAt.getTime() < clinicOpenAt.getTime()) {
+    if (
+      allowedCheckInFromAt &&
+      checkInAt.getTime() < allowedCheckInFromAt.getTime()
+    ) {
       return buildCodeResponse(
         409,
-        "CLINIC_NOT_OPEN",
-        "คลินิกยังไม่เปิด",
+        "CLINIC_NOT_OPEN_YET",
+        "ยังไม่ถึงเวลาที่อนุญาตให้เช็กอิน",
         {
           workDate,
           openTime: pickClinicOpenTime(policy, workDate),
+          earlyCheckInMinutes: rules.earlyCheckInMinutes,
         }
       );
     }
@@ -2817,6 +2862,13 @@ function validateAttendanceCheckInTime({
           closeTime: pickClinicCloseTime(policy, workDate),
         }
       );
+    }
+
+    if (
+      checkInAt.getTime() < clinicOpenAt.getTime() &&
+      rules.earlyCheckInMinutes > 0
+    ) {
+      return null;
     }
   }
 
@@ -3102,13 +3154,15 @@ function detectEarlyCheckIn({ policy, shift, checkInAt, role, workDate }) {
   const rules = attendanceRuleDefaults(policy);
   if (!rules.requireReasonForEarlyCheckIn) return false;
 
-  if (s(role) === "helper") {
-    const startAt = getShiftStartDateTime(shift);
-    if (!startAt) return false;
-    return checkInAt.getTime() < startAt.getTime();
-  }
+  const allowedCheckInFromAt = getAllowedCheckInStartDateTime({
+    role,
+    policy,
+    shift,
+    workDate,
+  });
 
-  return checkInAt.getTime() < getClinicOpenDateTime(workDate, policy).getTime();
+  if (!allowedCheckInFromAt) return false;
+  return checkInAt.getTime() < allowedCheckInFromAt.getTime();
 }
 
 function detectEarlyCheckOut({ policy, shift, checkOutAt, role, workDate }) {
@@ -3234,6 +3288,7 @@ function getScheduleSnapshot({ policy, shift, workDate }) {
     otWindowEnd: s(policy?.otWindowEnd),
     cutoffTime: rules.cutoffTime,
     graceMinutes: clampMinutes(policy?.graceLateMinutes || 0),
+    earlyCheckInMinutes: rules.earlyCheckInMinutes,
     leaveEarlyToleranceMinutes: clampMinutes(
       policy?.leaveEarlyToleranceMinutes || 0
     ),
@@ -3788,7 +3843,6 @@ async function ensureCanViewSession(req, session) {
 
   return { ok: true };
 }
-
 async function checkIn(req, res) {
   try {
     const mockErr = rejectIfMockLocationAnywhere(req);
@@ -4607,6 +4661,7 @@ async function checkOut(req, res) {
       .json({ ok: false, message: "check-out failed", error: e.message });
   }
 }
+
 async function submitManualRequest(req, res) {
   try {
     const { principalId } = getPrincipal(req);
