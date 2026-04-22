@@ -3008,10 +3008,19 @@ function computeWindowOverlapMinutes(
   return clampMinutes(minutesDiff(startAt, endAt));
 }
 
-function computeOtMinutes(policy, shift, checkInAt, checkOutAt) {
+// ✅ FIXED:
+// - รองรับกรณี shift = null โดย fallback ไปใช้ workDate ของ session
+// - ไม่ round OT รายวันอีกแล้ว เพื่อให้ไปรวมเป็น "นาทีทั้งเดือน" ได้
+function computeOtMinutes(policy, shift, checkInAt, checkOutAt, workDate = "") {
   if (!checkInAt || !checkOutAt) return 0;
 
-  const rule = s(policy.otRule);
+  const rule = s(policy?.otRule);
+
+  const resolvedWorkDate = isYmd(workDate)
+    ? s(workDate)
+    : isYmd(shift?.date)
+    ? s(shift.date)
+    : "";
 
   if (rule === "AFTER_SHIFT_END") {
     if (!shift || !isYmd(shift.date) || !isHHmm(shift.end)) return 0;
@@ -3026,54 +3035,49 @@ function computeOtMinutes(policy, shift, checkInAt, checkOutAt) {
     }
 
     const otStartAt = new Date(
-      endLocal.getTime() + clampMinutes(policy.otStartAfterMinutes) * 60000
+      endLocal.getTime() + clampMinutes(policy?.otStartAfterMinutes) * 60000
     );
 
-    return roundOtMinutes(
-      Math.max(0, minutesDiff(otStartAt, checkOutAt)),
-      policy.otRounding
-    );
+    return clampMinutes(Math.max(0, minutesDiff(otStartAt, checkOutAt)));
   }
 
   if (rule === "AFTER_CLOCK_TIME") {
-    const baseDate = shift?.date && isYmd(shift.date) ? shift.date : null;
-    if (!baseDate) return 0;
+    if (!resolvedWorkDate) return 0;
 
-    if (isHHmm(policy.otWindowStart) && isHHmm(policy.otWindowEnd)) {
-      let windowStartAt = makeLocalDateTime(baseDate, policy.otWindowStart);
-      let windowEndAt = makeLocalDateTime(baseDate, policy.otWindowEnd);
+    if (isHHmm(policy?.otWindowStart) && isHHmm(policy?.otWindowEnd)) {
+      let windowStartAt = makeLocalDateTime(
+        resolvedWorkDate,
+        policy.otWindowStart
+      );
+      let windowEndAt = makeLocalDateTime(resolvedWorkDate, policy.otWindowEnd);
 
       if (windowEndAt.getTime() <= windowStartAt.getTime()) {
         windowEndAt = new Date(windowEndAt.getTime() + 24 * 60 * 60000);
       }
 
-      return roundOtMinutes(
+      return clampMinutes(
         computeWindowOverlapMinutes(
           windowStartAt,
           windowEndAt,
           checkInAt,
           checkOutAt
-        ),
-        policy.otRounding
+        )
       );
     }
 
-    const clock = isHHmm(policy.otClockTime) ? policy.otClockTime : "18:00";
-    const clockAt = makeLocalDateTime(baseDate, clock);
+    const clock = isHHmm(policy?.otClockTime) ? policy.otClockTime : "18:00";
+    const clockAt = makeLocalDateTime(resolvedWorkDate, clock);
     const otStartAt = new Date(
-      clockAt.getTime() + clampMinutes(policy.otStartAfterMinutes) * 60000
+      clockAt.getTime() + clampMinutes(policy?.otStartAfterMinutes) * 60000
     );
 
-    return roundOtMinutes(
-      Math.max(0, minutesDiff(otStartAt, checkOutAt)),
-      policy.otRounding
-    );
+    return clampMinutes(Math.max(0, minutesDiff(otStartAt, checkOutAt)));
   }
 
   if (rule === "AFTER_DAILY_HOURS") {
     const worked = computeWorkedMinutes(checkInAt, checkOutAt);
-    const regular = clampMinutes(Number(policy.regularHoursPerDay || 8) * 60);
-    return roundOtMinutes(Math.max(0, worked - regular), policy.otRounding);
+    const regular = clampMinutes(Number(policy?.regularHoursPerDay || 8) * 60);
+    return clampMinutes(Math.max(0, worked - regular));
   }
 
   return 0;
@@ -3510,7 +3514,8 @@ async function syncOvertimeForSession({ session, policy, shift }) {
         policyForOt,
         shift,
         session.checkInAt,
-        session.checkOutAt
+        session.checkOutAt,
+        s(session.workDate)
       );
     }
 
@@ -3550,6 +3555,9 @@ async function syncOvertimeForSession({ session, policy, shift }) {
             workDate,
             monthKey,
             minutes: clampMinutes(session.otMinutes),
+            approvedMinutes: policy.requireOtApproval
+              ? 0
+              : clampMinutes(session.otMinutes),
             multiplier: mul,
             status: policy.requireOtApproval ? "pending" : "approved",
             source: "attendance",
