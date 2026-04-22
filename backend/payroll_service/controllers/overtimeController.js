@@ -60,6 +60,20 @@ function withFeatureDefaults(features) {
 }
 
 /**
+ * ✅ Normalize role name for policy comparison
+ * - admin => clinic_admin
+ * - clinicadmin => clinic_admin
+ * - keep others as lowercase trimmed
+ */
+function normalizeRoleForPolicy(role) {
+  const r = s(role).toLowerCase();
+  if (!r) return "";
+  if (r === "admin") return "clinic_admin";
+  if (r === "clinicadmin") return "clinic_admin";
+  return r;
+}
+
+/**
  * ✅ PRINCIPAL (รองรับทั้ง req.user และ req.userCtx)
  */
 function getPrincipal(req) {
@@ -136,10 +150,13 @@ async function getOrCreatePolicy(clinicId, userId) {
 }
 
 function canApproveOtByRole(policy, role) {
+  const actorRole = normalizeRoleForPolicy(role);
+
   const allowed = normalizeStringArray(policy?.otApprovalRoles, [
     "clinic_admin",
-  ]);
-  return allowed.includes(s(role));
+  ]).map(normalizeRoleForPolicy);
+
+  return !!actorRole && allowed.includes(actorRole);
 }
 
 // helper
@@ -430,7 +447,6 @@ async function requestOt(req, res) {
     const policy = await getOrCreatePolicy(clinicId, userId || principalId);
     const features = withFeatureDefaults(policy.features || {});
 
-    // standard/manual OT flow only
     if (features.autoOtCalculation) {
       return res.status(409).json({
         ok: false,
@@ -439,7 +455,6 @@ async function requestOt(req, res) {
       });
     }
 
-    // ✅ policy-based guard for helper
     if (policy.employeeOnlyOt && role === "helper") {
       return res.status(403).json({
         ok: false,
@@ -474,7 +489,6 @@ async function requestOt(req, res) {
         .json({ ok: false, message: "OT reason is required" });
     }
 
-    // ✅ กัน request ซ้ำวันเดิมในคลินิกเดิม
     const duplicate = await Overtime.findOne({
       clinicId,
       workDate,
