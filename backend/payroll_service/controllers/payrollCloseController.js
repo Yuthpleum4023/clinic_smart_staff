@@ -346,6 +346,7 @@ async function getApprovedOtSummaryForMonth({ clinicId, monthKey, employeeId }) 
     .select({
       workDate: 1,
       minutes: 1,
+      approvedMinutes: 1,
       multiplier: 1,
       status: 1,
       source: 1,
@@ -356,12 +357,12 @@ async function getApprovedOtSummaryForMonth({ clinicId, monthKey, employeeId }) 
     .lean();
 
   const approvedMinutes = rows.reduce(
-    (a, x) => a + Math.max(0, Math.floor(Number(x.minutes || 0))),
+    (a, x) => a + Math.max(0, Math.floor(Number(x.approvedMinutes || 0))),
     0
   );
 
   const approvedWeightedHours = rows.reduce((a, x) => {
-    const mins = Math.max(0, Math.floor(Number(x.minutes || 0)));
+    const mins = Math.max(0, Math.floor(Number(x.approvedMinutes || 0)));
     const mul = Number(x.multiplier);
     const m = Number.isFinite(mul) && mul > 0 ? mul : 1.5;
     return a + (mins / 60) * m;
