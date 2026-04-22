@@ -831,13 +831,15 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
 
       for (final r in parsed) {
         final st = (r['status'] ?? '').toString().trim().toLowerCase();
-        if (st != 'approved') continue;
+        if (st != 'approved' && st != 'locked') continue;
 
         final approvedAny = r['approvedMinutes'];
-        final m = (approvedAny is num)
+        final minutesAny = r['minutes'];
+
+        final m = approvedAny is num
             ? approvedAny.toInt()
-            : int.tryParse('${approvedAny ?? r['minutes']}') ??
-                (r['minutes'] is num ? (r['minutes'] as num).toInt() : 0);
+            : int.tryParse('${approvedAny ?? minutesAny}') ??
+                (minutesAny is num ? minutesAny.toInt() : 0);
 
         final mul = (r['multiplier'] is num)
             ? (r['multiplier'] as num).toDouble()
@@ -2157,6 +2159,8 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
 
     final ok = await _approveOtViaApi(id);
     if (ok) {
+      if (!mounted || _disposed) return;
+      setState(() => _backendOtStatus = 'approved');
       _snack('อนุมัติแล้ว ✅');
       await _loadBackendOtForSelectedMonth();
       return;
@@ -2181,6 +2185,8 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
 
     final ok = await _rejectOtViaApi(id);
     if (ok) {
+      if (!mounted || _disposed) return;
+      setState(() => _backendOtStatus = 'rejected');
       _snack('ปฏิเสธแล้ว ✅');
       await _loadBackendOtForSelectedMonth();
       return;
@@ -2222,22 +2228,23 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
   }
 
   int _rowMinutes(Map<String, dynamic> r) {
-    final st = _rowStatus(r);
-    final approvedAny = r['approvedMinutes'];
-    final minutesAny = r['minutes'];
+    final status = _safeS(r['status']).toLowerCase();
 
-    if (st == 'approved') {
-      if (approvedAny is num) return approvedAny.toInt();
-      final parsedApproved = int.tryParse('${approvedAny ?? ''}');
-      if (parsedApproved != null) return parsedApproved;
+    final approvedRaw = r['approvedMinutes'];
+    final approvedMinutes = approvedRaw is num
+        ? approvedRaw.toInt()
+        : int.tryParse('${approvedRaw ?? ''}');
+
+    final minutesRaw = r['minutes'];
+    final minutes = minutesRaw is num
+        ? minutesRaw.toInt()
+        : int.tryParse('${minutesRaw ?? ''}') ?? 0;
+
+    if (status == 'approved' || status == 'locked') {
+      return approvedMinutes ?? minutes;
     }
 
-    if (minutesAny is num) return minutesAny.toInt();
-    final parsedMinutes = int.tryParse('${minutesAny ?? ''}');
-    if (parsedMinutes != null) return parsedMinutes;
-
-    if (approvedAny is num) return approvedAny.toInt();
-    return int.tryParse('${approvedAny ?? ''}') ?? 0;
+    return minutes;
   }
 
   String _rowWorkDate(Map<String, dynamic> r) {
@@ -2383,8 +2390,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     final totalMonthPayParttime =
         isParttime ? (normalPay + otPay + emp.bonus) : 0.0;
 
-    final grossMonthlyForTax =
-        isParttime ? normalPay : grossBaseFulltime;
+    final grossMonthlyForTax = isParttime ? normalPay : grossBaseFulltime;
 
     final ssoForTax = ssoAmount;
 
