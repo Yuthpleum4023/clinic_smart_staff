@@ -709,6 +709,44 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     }
   }
 
+  List<Map<String, dynamic>> _extractOtRowsFromResponseBody(dynamic decoded) {
+    dynamic data = decoded;
+    if (decoded is Map && decoded['data'] != null) {
+      data = decoded['data'];
+    }
+
+    List rows = [];
+    if (data is List) {
+      rows = data;
+    } else if (data is Map) {
+      if (data['rows'] is List) {
+        rows = data['rows'];
+      } else if (data['items'] is List) {
+        rows = data['items'];
+      } else if (data['data'] is List) {
+        rows = data['data'];
+      }
+    } else if (decoded is Map) {
+      if (decoded['rows'] is List) {
+        rows = decoded['rows'];
+      } else if (decoded['items'] is List) {
+        rows = decoded['items'];
+      }
+    }
+
+    final parsed = <Map<String, dynamic>>[];
+    for (final r in rows) {
+      if (r is Map) {
+        parsed.add(
+          Map<String, dynamic>.from(
+            r.map((k, v) => MapEntry(k.toString(), v)),
+          ),
+        );
+      }
+    }
+    return parsed;
+  }
+
   Future<void> _loadBackendOtForSelectedMonth() async {
     if (!mounted || _disposed) return;
 
@@ -735,76 +773,57 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
               : '&status=${Uri.encodeQueryComponent(_backendOtStatus)}';
 
       final candidates = <String>[
+        if (staffId.isNotEmpty)
+          '/overtime?month=$monthKey&principalId=$staffId$statusParam',
+        if (staffId.isNotEmpty)
+          '/overtime?month=$monthKey&staffId=$staffId$statusParam',
         if (linkedUserId.isNotEmpty)
           '/overtime?month=$monthKey&linkedUserId=$linkedUserId$statusParam',
         if (linkedUserId.isNotEmpty)
           '/overtime?month=$monthKey&employeeUserId=$linkedUserId$statusParam',
         if (linkedUserId.isNotEmpty)
           '/overtime?month=$monthKey&userId=$linkedUserId$statusParam',
-        if (staffId.isNotEmpty)
-          '/overtime?month=$monthKey&principalId=$staffId$statusParam',
-        if (staffId.isNotEmpty)
-          '/overtime?month=$monthKey&staffId=$staffId$statusParam',
         '/overtime/my?month=$monthKey${statusParam.isEmpty ? '' : statusParam.replaceFirst('&', '&')}',
+        if (staffId.isNotEmpty)
+          '/api/overtime?month=$monthKey&principalId=$staffId$statusParam',
+        if (staffId.isNotEmpty)
+          '/api/overtime?month=$monthKey&staffId=$staffId$statusParam',
         if (linkedUserId.isNotEmpty)
           '/api/overtime?month=$monthKey&linkedUserId=$linkedUserId$statusParam',
         if (linkedUserId.isNotEmpty)
           '/api/overtime?month=$monthKey&employeeUserId=$linkedUserId$statusParam',
         if (linkedUserId.isNotEmpty)
           '/api/overtime?month=$monthKey&userId=$linkedUserId$statusParam',
-        if (staffId.isNotEmpty)
-          '/api/overtime?month=$monthKey&principalId=$staffId$statusParam',
-        if (staffId.isNotEmpty)
-          '/api/overtime?month=$monthKey&staffId=$staffId$statusParam',
         '/api/overtime/my?month=$monthKey${statusParam.isEmpty ? '' : statusParam.replaceFirst('&', '&')}',
       ];
 
-      http.Response? okRes;
+      http.Response? chosenRes;
+      List<Map<String, dynamic>> chosenRows = [];
 
       for (final path in candidates) {
         final res = await http.get(_uri(path), headers: _headers(token));
-        if (res.statusCode == 200) {
-          okRes = res;
-          break;
+        if (res.statusCode != 200) continue;
+
+        try {
+          final decoded = jsonDecode(res.body);
+          final rows = _extractOtRowsFromResponseBody(decoded);
+
+          if (rows.isNotEmpty) {
+            chosenRes = res;
+            chosenRows = rows;
+            break;
+          }
+
+          chosenRes ??= res;
+          chosenRows = rows;
+        } catch (_) {
+          chosenRes ??= res;
         }
       }
 
-      if (okRes == null) throw Exception('NO_OK_RESPONSE');
+      if (chosenRes == null) throw Exception('NO_OK_RESPONSE');
 
-      final decoded = jsonDecode(okRes.body);
-
-      dynamic data = decoded;
-      if (decoded is Map && decoded['data'] != null) data = decoded['data'];
-
-      List rows = [];
-      if (data is List) {
-        rows = data;
-      } else if (data is Map) {
-        if (data['rows'] is List) {
-          rows = data['rows'];
-        } else if (data['items'] is List) {
-          rows = data['items'];
-        } else if (data['data'] is List) {
-          rows = data['data'];
-        }
-      } else if (decoded is Map) {
-        if (decoded['rows'] is List) {
-          rows = decoded['rows'];
-        } else if (decoded['items'] is List) {
-          rows = decoded['items'];
-        }
-      }
-
-      final parsed = <Map<String, dynamic>>[];
-      for (final r in rows) {
-        if (r is Map) {
-          parsed.add(
-            Map<String, dynamic>.from(
-              r.map((k, v) => MapEntry(k.toString(), v)),
-            ),
-          );
-        }
-      }
+      final parsed = chosenRows;
 
       int minutes = 0;
       double weightedHours = 0.0;
@@ -2203,12 +2222,22 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
   }
 
   int _rowMinutes(Map<String, dynamic> r) {
-    final approved = r['approvedMinutes'];
-    if (approved is num) return approved.toInt();
+    final st = _rowStatus(r);
+    final approvedAny = r['approvedMinutes'];
+    final minutesAny = r['minutes'];
 
-    final m = r['minutes'];
-    if (m is num) return m.toInt();
-    return int.tryParse('$m') ?? 0;
+    if (st == 'approved') {
+      if (approvedAny is num) return approvedAny.toInt();
+      final parsedApproved = int.tryParse('${approvedAny ?? ''}');
+      if (parsedApproved != null) return parsedApproved;
+    }
+
+    if (minutesAny is num) return minutesAny.toInt();
+    final parsedMinutes = int.tryParse('${minutesAny ?? ''}');
+    if (parsedMinutes != null) return parsedMinutes;
+
+    if (approvedAny is num) return approvedAny.toInt();
+    return int.tryParse('${approvedAny ?? ''}') ?? 0;
   }
 
   String _rowWorkDate(Map<String, dynamic> r) {
@@ -2337,18 +2366,14 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
 
     final normalPay = isParttime ? (totalWorkHours * hourlyWage) : 0.0;
 
-    // ✅ FULL-TIME: ฐานเงินเดือนล้วนสำหรับคิด SSO
     final grossBaseFulltime = isParttime ? 0.0 : emp.baseSalary;
 
-    // ✅ หลังหัก SSO + หลังหักลา/ขาด แต่ยังไม่รวม OT/โบนัส
     final afterSsoAndLeaveNoOtFulltime = isParttime
         ? 0.0
         : (grossBaseFulltime - ssoAmount - absentDeduction)
             .clamp(0.0, double.infinity)
             .toDouble();
 
-    // ✅ ยอดก่อนภาษีของเดือนนี้ตามสูตรธุรกิจ:
-    // เงินเดือน - SSO - หักลา/ขาด + OT + bonus
     final totalMonthPayFulltime = isParttime
         ? 0.0
         : (grossBaseFulltime - ssoAmount - absentDeduction + otPay + emp.bonus)
@@ -2358,7 +2383,6 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     final totalMonthPayParttime =
         isParttime ? (normalPay + otPay + emp.bonus) : 0.0;
 
-    // ✅ ส่งฐานเงินเดือนจริงให้ preview/backend
     final grossMonthlyForTax =
         isParttime ? normalPay : grossBaseFulltime;
 
