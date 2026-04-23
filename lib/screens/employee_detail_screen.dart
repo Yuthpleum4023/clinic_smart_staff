@@ -173,6 +173,11 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
   String _backendOtError = '';
   List<Map<String, dynamic>> _backendOtRows = [];
 
+  bool _loadingClosedPayroll = false;
+  String _closedPayrollError = '';
+  Map<String, dynamic>? _closedPayrollRow;
+  Map<String, dynamic>? _closedPayslipSummary;
+
   String _backendOtStatus = 'approved';
 
   int _backendApprovedMinutes = 0;
@@ -248,6 +253,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     _loadClinicOtPolicy();
     _loadClinicPayrollConfig();
     _loadBackendOtForSelectedMonth();
+    _loadClosedPayrollForSelectedMonth();
   }
 
   @override
@@ -440,6 +446,20 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer $token',
       };
+
+  Map<String, dynamic> _asMap(dynamic v) {
+    if (v is Map) {
+      return Map<String, dynamic>.from(
+        v.map((k, val) => MapEntry(k.toString(), val)),
+      );
+    }
+    return <String, dynamic>{};
+  }
+
+  double _readNum(dynamic v) {
+    if (v is num) return v.toDouble();
+    return double.tryParse('${v ?? ''}') ?? 0.0;
+  }
 
   Map<String, dynamic> _appendEmployeeIdentityToBody(
     Map<String, dynamic> body, {
@@ -634,6 +654,87 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     }
   }
 
+  Future<void> _loadClosedPayrollForSelectedMonth() async {
+    if (!mounted || _disposed) return;
+
+    setState(() {
+      _loadingClosedPayroll = true;
+      _closedPayrollError = '';
+      _closedPayrollRow = null;
+      _closedPayslipSummary = null;
+    });
+
+    try {
+      final token = await _getToken();
+      if (token == null || token.trim().isEmpty) {
+        throw Exception('NO_TOKEN');
+      }
+
+      final employeeId = _resolveStaffIdForPayroll();
+      if (employeeId.isEmpty) {
+        throw Exception('NO_EMPLOYEE_ID');
+      }
+
+      final monthKey = _fmtMonth(selectedMonth);
+
+      final candidates = <String>[
+        '/payroll-close/close-month/$employeeId/$monthKey',
+        '/api/payroll-close/close-month/$employeeId/$monthKey',
+      ];
+
+      http.Response? okRes;
+
+      for (final p in candidates) {
+        final res = await http.get(_uri(p), headers: _headers(token));
+
+        if (res.statusCode == 200) {
+          okRes = res;
+          break;
+        }
+
+        if (res.statusCode == 404) {
+          okRes = res;
+          break;
+        }
+      }
+
+      if (okRes == null) {
+        throw Exception('NO_RESPONSE');
+      }
+
+      if (okRes.statusCode == 404) {
+        if (!mounted || _disposed) return;
+        setState(() {
+          _loadingClosedPayroll = false;
+          _closedPayrollError = '';
+          _closedPayrollRow = null;
+          _closedPayslipSummary = null;
+        });
+        return;
+      }
+
+      final decoded = jsonDecode(okRes.body);
+      final row = _asMap(decoded['row']);
+      final payslipSummary = _asMap(decoded['payslipSummary']);
+
+      if (!mounted || _disposed) return;
+      setState(() {
+        _loadingClosedPayroll = false;
+        _closedPayrollError = '';
+        _closedPayrollRow = row;
+        _closedPayslipSummary = payslipSummary;
+      });
+    } catch (_) {
+      if (!mounted || _disposed) return;
+      setState(() {
+        _loadingClosedPayroll = false;
+        _closedPayrollError = 'โหลด payroll ปิดงวดไม่สำเร็จ';
+        _closedPayrollRow = null;
+        _closedPayslipSummary = null;
+      });
+    }
+  }
+
   List<DateTime> _buildMonthList({int back = 24, int forward = 6}) {
     final now = DateTime.now();
     final base = DateTime(now.year, now.month, 1);
@@ -699,6 +800,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
 
     await _loadWorkEntriesIfNeeded();
     await _loadBackendOtForSelectedMonth();
+    await _loadClosedPayrollForSelectedMonth();
 
     if (_scrollCtrl.hasClients) {
       _scrollCtrl.animateTo(
@@ -1111,6 +1213,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       await _loadClinicOtPolicy();
       await _loadClinicPayrollConfig();
       await _loadBackendOtForSelectedMonth();
+      await _loadClosedPayrollForSelectedMonth();
       await _initTaxSettingsFromPrefs();
     }
   }
@@ -1453,6 +1556,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     required double totalMonthPayBeforeTax,
     required double withholdingAmount,
     required double netAfterTax,
+    required bool hasClosedPayroll,
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1478,19 +1582,21 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
               child: Text('หักภาษี ณ ที่จ่าย'),
             ),
           ],
-          onChanged: !_isEditUnlocked
+          onChanged: hasClosedPayroll
               ? null
-              : (v) {
-                  if (v == null) return;
-                  if (!mounted || _disposed) return;
-                  setState(() => _taxMode = v);
-                },
+              : !_isEditUnlocked
+                  ? null
+                  : (v) {
+                      if (v == null) return;
+                      if (!mounted || _disposed) return;
+                      setState(() => _taxMode = v);
+                    },
         ),
         const SizedBox(height: 10),
         if (_taxMode == _EmployeeTaxMode.withholding) ...[
           TextField(
             controller: withholdingPercentCtrl,
-            enabled: _isEditUnlocked && !_savingTax,
+            enabled: !hasClosedPayroll && _isEditUnlocked && !_savingTax,
             keyboardType: const TextInputType.numberWithOptions(decimal: true),
             inputFormatters: [_decimalFormatter],
             decoration: const InputDecoration(
@@ -1504,7 +1610,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
         SizedBox(
           width: double.infinity,
           child: ElevatedButton(
-            onPressed: _savingTax ? null : _saveTaxSettingsFromUI,
+            onPressed: hasClosedPayroll || _savingTax ? null : _saveTaxSettingsFromUI,
             child: Text(_savingTax ? 'กำลังบันทึก...' : 'บันทึกรูปแบบภาษี'),
           ),
         ),
@@ -1529,7 +1635,15 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
             color: Colors.grey.shade700,
           ),
         ),
-        if (!_isEditUnlocked)
+        if (hasClosedPayroll)
+          const Padding(
+            padding: EdgeInsets.only(top: 8),
+            child: Text(
+              'เดือนนี้ปิดงวดแล้ว ค่าในส่วนภาษีจะแสดงจาก backend',
+              style: TextStyle(fontSize: 12),
+            ),
+          )
+        else if (!_isEditUnlocked)
           const Padding(
             padding: EdgeInsets.only(top: 8),
             child: Text(
@@ -2054,6 +2168,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
 
         _snack('ส่งคำขอ OT แล้ว (รออนุมัติ) ⏳');
         await _loadBackendOtForSelectedMonth();
+        await _loadClosedPayrollForSelectedMonth();
         return;
       }
     } else {
@@ -2068,6 +2183,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
 
       _snack('บันทึก OT เข้าระบบแล้ว ✅');
       await _loadBackendOtForSelectedMonth();
+      await _loadClosedPayrollForSelectedMonth();
       return;
     }
 
@@ -2137,6 +2253,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     if (ok) {
       _snack('ลบ OT ออกจากระบบแล้ว ✅');
       await _loadBackendOtForSelectedMonth();
+      await _loadClosedPayrollForSelectedMonth();
       return;
     }
 
@@ -2163,6 +2280,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       setState(() => _backendOtStatus = 'approved');
       _snack('อนุมัติแล้ว ✅');
       await _loadBackendOtForSelectedMonth();
+      await _loadClosedPayrollForSelectedMonth();
       return;
     }
 
@@ -2189,6 +2307,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       setState(() => _backendOtStatus = 'rejected');
       _snack('ปฏิเสธแล้ว ✅');
       await _loadBackendOtForSelectedMonth();
+      await _loadClosedPayrollForSelectedMonth();
       return;
     }
 
@@ -2213,6 +2332,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       _snack('อนุมัติทั้งเดือนแล้ว ✅');
       setState(() => _backendOtStatus = 'approved');
       await _loadBackendOtForSelectedMonth();
+      await _loadClosedPayrollForSelectedMonth();
       return;
     }
 
@@ -2357,51 +2477,96 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
         emp.totalOtAmountOfMonth(selectedMonth.year, selectedMonth.month);
 
     final backendTotalOtHours = _backendApprovedMinutes / 60.0;
-    final backendOtPay = _backendApprovedWeightedHours * hourlyWage;
+    final backendOtPayEstimate = _backendApprovedWeightedHours * hourlyWage;
 
-    final totalOtHours = (_loadingBackendOt || _backendOtError.isNotEmpty)
+    final closedRow = _closedPayrollRow ?? <String, dynamic>{};
+    final closedAmounts = _asMap(_closedPayslipSummary?['amounts']);
+    final hasClosedPayroll =
+        _closedPayslipSummary != null && closedAmounts.isNotEmpty;
+
+    final closedSalary = _readNum(closedAmounts['salary']);
+    final closedSso = _readNum(closedAmounts['socialSecurity']);
+    final closedOt = _readNum(closedAmounts['ot']);
+    final closedBonus = _readNum(closedAmounts['bonus']);
+    final closedLeaveDeduction = _readNum(closedAmounts['leaveDeduction']);
+    final closedTax = _readNum(closedAmounts['tax']);
+    final closedNetPay = _readNum(closedAmounts['netPay']);
+    final closedOtHours = _readNum(closedRow['displayOtHours']);
+    final closedGrossBeforeTax = _readNum(closedRow['displayGrossBeforeTax']);
+
+    final fallbackTotalOtHours = (_loadingBackendOt || _backendOtError.isNotEmpty)
         ? localTotalOtHours
         : (_backendApprovedCount > 0 ? backendTotalOtHours : localTotalOtHours);
 
-    final otPay = (_loadingBackendOt || _backendOtError.isNotEmpty)
+    final fallbackOtPay = (_loadingBackendOt || _backendOtError.isNotEmpty)
         ? localTotalOtAmount
-        : (_backendApprovedCount > 0 ? backendOtPay : localTotalOtAmount);
+        : (_backendApprovedCount > 0 ? backendOtPayEstimate : localTotalOtAmount);
 
-    final ssoAmount =
+    final fallbackSsoAmount =
         isParttime ? 0.0 : _computeSsoFromClinicConfig(emp.baseSalary);
-    final absentDeduction = isParttime ? 0.0 : emp.absentDeduction();
+    final fallbackAbsentDeduction = isParttime ? 0.0 : emp.absentDeduction();
 
     final normalPay = isParttime ? (totalWorkHours * hourlyWage) : 0.0;
-
     final grossBaseFulltime = isParttime ? 0.0 : emp.baseSalary;
 
-    final afterSsoAndLeaveNoOtFulltime = isParttime
+    final fallbackAfterSsoAndLeaveNoOtFulltime = isParttime
         ? 0.0
-        : (grossBaseFulltime - ssoAmount - absentDeduction)
+        : (grossBaseFulltime - fallbackSsoAmount - fallbackAbsentDeduction)
             .clamp(0.0, double.infinity)
             .toDouble();
 
-    final totalMonthPayFulltime = isParttime
+    final fallbackTotalMonthPayFulltime = isParttime
         ? 0.0
-        : (grossBaseFulltime - ssoAmount - absentDeduction + otPay + emp.bonus)
+        : (grossBaseFulltime -
+                fallbackSsoAmount -
+                fallbackAbsentDeduction +
+                fallbackOtPay +
+                emp.bonus)
             .clamp(0.0, double.infinity)
             .toDouble();
+
+    final fallbackTotalMonthPayParttime =
+        isParttime ? (normalPay + fallbackOtPay + emp.bonus) : 0.0;
+
+    final fallbackGrossMonthlyForTax = isParttime ? normalPay : grossBaseFulltime;
+    final fallbackSsoForTax = fallbackSsoAmount;
+    final fallbackTotalMonthPayBeforeTax =
+        isParttime ? fallbackTotalMonthPayParttime : fallbackTotalMonthPayFulltime;
+
+    final fallbackWithholdingPercent = _getWithholdingPercent();
+    final fallbackWithholdingAmount = _taxMode == _EmployeeTaxMode.withholding
+        ? fallbackTotalMonthPayBeforeTax * (fallbackWithholdingPercent / 100.0)
+        : 0.0;
+    final fallbackNetAfterTax =
+        fallbackTotalMonthPayBeforeTax - fallbackWithholdingAmount;
+
+    final totalOtHours = hasClosedPayroll ? closedOtHours : fallbackTotalOtHours;
+    final otPay = hasClosedPayroll ? closedOt : fallbackOtPay;
+    final ssoAmount = hasClosedPayroll ? closedSso : fallbackSsoAmount;
+    final absentDeduction =
+        hasClosedPayroll ? closedLeaveDeduction : fallbackAbsentDeduction;
+    final shownBonus = hasClosedPayroll ? closedBonus : emp.bonus;
+    final grossMonthlyForTax =
+        hasClosedPayroll ? closedSalary : fallbackGrossMonthlyForTax;
+    final ssoForTax = hasClosedPayroll ? closedSso : fallbackSsoForTax;
+    final totalMonthPayBeforeTax =
+        hasClosedPayroll ? closedGrossBeforeTax : fallbackTotalMonthPayBeforeTax;
+    final withholdingPercent = fallbackWithholdingPercent;
+    final withholdingAmount =
+        hasClosedPayroll ? closedTax : fallbackWithholdingAmount;
+    final netAfterTax = hasClosedPayroll ? closedNetPay : fallbackNetAfterTax;
+
+    final afterSsoAndLeaveNoOtFulltime = hasClosedPayroll
+        ? (closedSalary - closedSso - closedLeaveDeduction)
+            .clamp(0.0, double.infinity)
+            .toDouble()
+        : fallbackAfterSsoAndLeaveNoOtFulltime;
+
+    final totalMonthPayFulltime =
+        hasClosedPayroll ? closedGrossBeforeTax : fallbackTotalMonthPayFulltime;
 
     final totalMonthPayParttime =
-        isParttime ? (normalPay + otPay + emp.bonus) : 0.0;
-
-    final grossMonthlyForTax = isParttime ? normalPay : grossBaseFulltime;
-
-    final ssoForTax = ssoAmount;
-
-    final totalMonthPayBeforeTax =
-        isParttime ? totalMonthPayParttime : totalMonthPayFulltime;
-
-    final withholdingPercent = _getWithholdingPercent();
-    final withholdingAmount = _taxMode == _EmployeeTaxMode.withholding
-        ? totalMonthPayBeforeTax * (withholdingPercent / 100.0)
-        : 0.0;
-    final netAfterTax = totalMonthPayBeforeTax - withholdingAmount;
+        hasClosedPayroll ? closedGrossBeforeTax : fallbackTotalMonthPayParttime;
 
     final monthOtEntries = emp.otEntries
         .where((e) => e.isInMonth(selectedMonth.year, selectedMonth.month))
@@ -2572,9 +2737,10 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                           Text(
                             ' • ชั่วโมงถ่วงน้ำหนัก: ${_backendApprovedWeightedHours.toStringAsFixed(2)} ชม.',
                           ),
-                          Text(
-                            ' • ประมาณการค่า OT: ${backendOtPay.toStringAsFixed(2)} บาท',
-                          ),
+                          if (!hasClosedPayroll)
+                            Text(
+                              ' • ประมาณการค่า OT: ${backendOtPayEstimate.toStringAsFixed(2)} บาท',
+                            ),
                         ],
                       ],
                     ),
@@ -2591,6 +2757,35 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                           'สรุปเดือน ${_fmtMonth(selectedMonth)}',
                           style: const TextStyle(fontWeight: FontWeight.bold),
                         ),
+                        const SizedBox(height: 8),
+                        if (_loadingClosedPayroll)
+                          const LinearProgressIndicator(minHeight: 3)
+                        else if (_closedPayrollError.isNotEmpty)
+                          Text(
+                            _closedPayrollError,
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: Colors.orange,
+                            ),
+                          )
+                        else if (hasClosedPayroll)
+                          Text(
+                            'เดือนนี้แสดงผลจาก payroll ที่ปิดงวดแล้ว',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.green.shade700,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          )
+                        else
+                          Text(
+                            'เดือนนี้ยังไม่ปิดงวด — ตัวเลขด้านล่างเป็นค่าประมาณ',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.orange.shade700,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
                         const SizedBox(height: 10),
                         if (!isParttime) ...[
                           const Text('ประเภท: Full-time'),
@@ -2618,7 +2813,8 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                             children: [
                               TextField(
                                 controller: ssoPercentCtrl,
-                                enabled: _isEditUnlocked &&
+                                enabled: !hasClosedPayroll &&
+                                    _isEditUnlocked &&
                                     !_savingSso &&
                                     !_loadingClinicPayrollConfig,
                                 keyboardType:
@@ -2635,17 +2831,17 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                               ),
                               const SizedBox(height: 8),
                               ElevatedButton(
-                                onPressed:
-                                    (_savingSso || _loadingClinicPayrollConfig)
-                                        ? null
-                                        : _saveSsoPercentFromUI,
+                                onPressed: hasClosedPayroll ||
+                                        (_savingSso || _loadingClinicPayrollConfig)
+                                    ? null
+                                    : _saveSsoPercentFromUI,
                                 child: Text(_savingSso ? 'กำลังบันทึก...' : 'บันทึก'),
                               ),
                             ],
                           ),
                           const SizedBox(height: 10),
                           Text(
-                            'เงินเดือนฐาน: ${grossBaseFulltime.toStringAsFixed(2)} บาท',
+                            'เงินเดือนฐาน: ${grossMonthlyForTax.toStringAsFixed(2)} บาท',
                           ),
                           Text(
                             'หักประกันสังคม: -${ssoAmount.toStringAsFixed(2)} บาท',
@@ -2658,7 +2854,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                             'ชั่วโมง OT รวม: ${totalOtHours.toStringAsFixed(2)} ชม.',
                           ),
                           Text('ค่า OT รวม: ${otPay.toStringAsFixed(2)} บาท'),
-                          Text('โบนัส: ${emp.bonus.toStringAsFixed(2)} บาท'),
+                          Text('โบนัส: ${shownBonus.toStringAsFixed(2)} บาท'),
                           const SizedBox(height: 10),
                           Text(
                             'ยอดหลังหักประกันสังคมและหักลา/ขาด (ไม่รวม OT/โบนัส): ${afterSsoAndLeaveNoOtFulltime.toStringAsFixed(2)} บาท',
@@ -2693,7 +2889,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                             'ชั่วโมง OT รวม: ${totalOtHours.toStringAsFixed(2)} ชม.',
                           ),
                           Text('ค่า OT รวม: ${otPay.toStringAsFixed(2)} บาท'),
-                          Text('โบนัส: ${emp.bonus.toStringAsFixed(2)} บาท'),
+                          Text('โบนัส: ${shownBonus.toStringAsFixed(2)} บาท'),
                           const Divider(height: 18),
                           Text(
                             'รวมทั้งเดือน (ก่อนหักภาษี): ${totalMonthPayParttime.toStringAsFixed(2)} บาท',
@@ -2708,6 +2904,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                           totalMonthPayBeforeTax: totalMonthPayBeforeTax,
                           withholdingAmount: withholdingAmount,
                           netAfterTax: netAfterTax,
+                          hasClosedPayroll: hasClosedPayroll,
                         ),
                         const SizedBox(height: 14),
                         SizedBox(
