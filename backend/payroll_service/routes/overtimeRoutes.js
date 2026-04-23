@@ -12,40 +12,35 @@ const {
   bulkApproveDay,
   removeOne,
 
-  // ✅ NEW: Standard user request OT
+  // ✅ Standard user request OT
   requestOt,
 } = require("../controllers/overtimeController");
 
 // ======================================================
-// ✅ STAFF / EMPLOYEE / HELPER (+ ADMIN self-view)
+// Roles
+// ======================================================
+
+const SELF_ROLES = ["employee", "helper", "staff", "admin", "clinic_admin"];
+const ADMIN_ROLES = ["admin", "clinic_admin"];
+
+// ======================================================
+// SELF VIEW / SELF REQUEST
 // ======================================================
 
 // ------------------------------------------------------
-// 1️⃣ ดู OT ของตัวเอง
+// 1) ดู OT ของตัวเอง
 // GET /overtime/my?month=yyyy-MM&status=...
 // ------------------------------------------------------
-router.get(
-  "/my",
-  auth,
-  // ✅ FIX: allow admin (self-view) to avoid 403 when token role=admin
-  requireRole(["employee", "helper", "staff", "admin"]),
-  listMy
-);
+router.get("/my", auth, requireRole(SELF_ROLES), listMy);
 
 // ------------------------------------------------------
-// 2️⃣ NEW: STANDARD USER ส่ง OT เอง (status=pending)
+// 2) STANDARD USER ส่ง OT เอง (status=pending)
 // POST /overtime/request
 // ------------------------------------------------------
-router.post(
-  "/request",
-  auth,
-  // ✅ same: allow admin (optional) if admin needs to test/request
-  requireRole(["employee", "helper", "staff", "admin"]),
-  requestOt
-);
+router.post("/request", auth, requireRole(SELF_ROLES), requestOt);
 
 // ======================================================
-// ✅ ADMIN ONLY
+// ADMIN / CLINIC ADMIN
 // ======================================================
 
 // ------------------------------------------------------
@@ -53,33 +48,44 @@ router.post(
 // GET /overtime?month=yyyy-MM&principalId=...&status=...
 // or legacy: &staffId=...
 // ------------------------------------------------------
-router.get("/", auth, requireRole(["admin"]), listForStaff);
+router.get("/", auth, requireRole(ADMIN_ROLES), listForStaff);
 
 // ------------------------------------------------------
 // CREATE MANUAL (admin creates OT for someone)
 // ------------------------------------------------------
-router.post("/manual", auth, requireRole(["admin"]), createManual);
+router.post("/manual", auth, requireRole(ADMIN_ROLES), createManual);
 
 // ------------------------------------------------------
 // BULK APPROVE
 // ------------------------------------------------------
-router.patch("/bulk-approve/month", auth, requireRole(["admin"]), bulkApproveMonth);
-router.patch("/bulk-approve/day", auth, requireRole(["admin"]), bulkApproveDay);
+router.patch(
+  "/bulk-approve/month",
+  auth,
+  requireRole(ADMIN_ROLES),
+  bulkApproveMonth
+);
+
+router.patch(
+  "/bulk-approve/day",
+  auth,
+  requireRole(ADMIN_ROLES),
+  bulkApproveDay
+);
 
 // ------------------------------------------------------
 // UPDATE ONE
 // ------------------------------------------------------
-router.patch("/:id", auth, requireRole(["admin"]), updateOne);
+router.patch("/:id", auth, requireRole(ADMIN_ROLES), updateOne);
 
 // ------------------------------------------------------
 // APPROVE / REJECT
 // ------------------------------------------------------
-router.patch("/:id/approve", auth, requireRole(["admin"]), approveOne);
-router.patch("/:id/reject", auth, requireRole(["admin"]), rejectOne);
+router.patch("/:id/approve", auth, requireRole(ADMIN_ROLES), approveOne);
+router.patch("/:id/reject", auth, requireRole(ADMIN_ROLES), rejectOne);
 
 // ------------------------------------------------------
 // DELETE
 // ------------------------------------------------------
-router.delete("/:id", auth, requireRole(["admin"]), removeOne);
+router.delete("/:id", auth, requireRole(ADMIN_ROLES), removeOne);
 
 module.exports = router;

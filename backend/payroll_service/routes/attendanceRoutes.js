@@ -13,7 +13,10 @@ const analytics = require("../controllers/attendanceAnalyticsController");
 // Roles
 // ======================================
 
-const SELF_ROLES = ["employee", "helper"];
+// ✅ production-safe:
+// attendanceController รองรับ employee / staff / helper
+// route จึงควรปล่อย staff ผ่านด้วย
+const SELF_ROLES = ["employee", "staff", "helper"];
 const ADMIN_ROLES = ["admin", "clinic_admin"];
 
 // ======================================
@@ -66,7 +69,7 @@ const rejectManualRequest =
     : notImplemented("rejectManualRequest/approveManualRequest");
 
 // =====================================================
-// SELF ATTENDANCE (employee + helper)
+// SELF ATTENDANCE (employee + staff + helper)
 // =====================================================
 
 // CHECK-IN
