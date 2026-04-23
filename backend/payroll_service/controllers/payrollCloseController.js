@@ -52,6 +52,11 @@
 // - ใช้ approvedMinutes เป็นหลัก เพื่อสะท้อนนาทีที่ admin approve จริง
 // - ไม่มีการ round รายวันใน payroll close
 //
+// ✅ UPDATED FOR EMPLOYMENT TYPE OT RESOLUTION:
+// - full-time  => backend ใช้ grossBase / 30 / 8
+// - part-time  => backend อ่าน hourlyRate/hourlyWage จาก staff_service
+// - frontend ไม่จำเป็นต้องส่ง baseHourly แล้ว
+//
 
 const axios = require("axios");
 const PayrollClose = require("../models/PayrollClose");
@@ -99,6 +104,74 @@ function absDiff(a, b) {
   return Math.abs(toNumber(a) - toNumber(b));
 }
 
+function normalizeEmploymentType(v) {
+  const t = safeStr(v).toLowerCase();
+  if (t === "parttime" || t === "part-time" || t === "part_time") {
+    return "parttime";
+  }
+  if (t === "fulltime" || t === "full-time" || t === "full_time") {
+    return "fulltime";
+  }
+  return "fulltime";
+}
+
+function resolvePartTimeHourlyFromEmployee(emp) {
+  const candidates = [
+    emp?.hourlyRate,
+    emp?.hourlyWage,
+    emp?.hourly_salary,
+    emp?.hourly_salary_rate,
+  ];
+
+  for (const v of candidates) {
+    const n = toNumber(v);
+    if (n > 0) return round2(n);
+  }
+  return 0;
+}
+
+function computeFullTimeOtBaseHourly(grossBase) {
+  const salaryBase = round2(clampMin0(grossBase));
+  if (salaryBase <= 0) return 0;
+  return round2(salaryBase / 30 / 8);
+}
+
+async function resolveOtBaseHourly({ employeeId, grossBase, authHeader }) {
+  let employee = null;
+  let staffLookupError = "";
+
+  try {
+    employee = await getEmployeeByStaffId(employeeId, authHeader);
+  } catch (e) {
+    staffLookupError = e?.message || "staff lookup failed";
+    console.log("⚠️ resolveOtBaseHourly staff lookup failed:", staffLookupError);
+  }
+
+  const employmentType = normalizeEmploymentType(
+    employee?.employmentType || employee?.employeeType || employee?.workType
+  );
+
+  let otBaseHourly = 0;
+  let source = "";
+
+  if (employmentType === "parttime") {
+    otBaseHourly = resolvePartTimeHourlyFromEmployee(employee);
+    source =
+      otBaseHourly > 0 ? "staff_service.hourlyRate" : "missing_parttime_hourly";
+  } else {
+    otBaseHourly = computeFullTimeOtBaseHourly(grossBase);
+    source = otBaseHourly > 0 ? "grossBase/30/8" : "missing_fulltime_grossBase";
+  }
+
+  return {
+    employee,
+    employmentType,
+    otBaseHourly: round2(otBaseHourly),
+    source,
+    staffLookupError,
+  };
+}
+
 // ================= GROSS BASE MODE =================
 function normalizeGrossBaseMode(v) {
   const s = safeStr(v).toUpperCase();
@@ -129,12 +202,12 @@ function pickExpectedGrossBeforeTax(body) {
  * PRE_DEDUCTION:
  *   grossBase = เงินเดือนฐานก่อนหักลา/ขาด
  *   ssoBase   = grossBase
- *   netBeforeTaxAndPvd = grossBase - sso - otherDeduction + otPay + bonus + otherAllowance
+ *   netBeforeTaxAndPvd = grossBase - otherDeduction + otPay + bonus + otherAllowance
  *
  * POST_DEDUCTION:
  *   grossBase = เงินเดือนฐานหลังหักลา/ขาดแล้ว
  *   ssoBase   = grossBase + otherDeduction   (reconstruct salary base for SSO)
- *   netBeforeTaxAndPvd = grossBase - sso + otPay + bonus + otherAllowance
+ *   netBeforeTaxAndPvd = grossBase + otPay + bonus + otherAllowance
  *
  * AUTO:
  *   เลือกสูตรที่ใกล้ expectedGrossBeforeTax มากกว่า
@@ -530,10 +603,6 @@ function buildDisplaySnapshot({
 }
 
 // ================= PAYSLIP SUMMARY (NEW SINGLE CONTRACT) =================
-// ✅ IMPORTANT:
-// summary ตัวนี้ใช้ "แสดงผล" อย่างเดียว
-// ดังนั้นต้อง map จากค่าที่ lock ลง PayrollClose ตรง ๆ
-// ไม่ต้อง derive salary จาก snapshot หลังหักอะไรแล้ว
 function buildPayslipSummary(row) {
   const salary = round2(clampMin0(row?.grossBase));
   const socialSecurity = round2(clampMin0(row?.ssoEmployeeMonthly));
@@ -582,7 +651,6 @@ async function closeMonth(req, res) {
     const otherDeduction = toNumber(body.otherDeduction);
     const ssoEmployeeMonthly = toNumber(body.ssoEmployeeMonthly);
     const pvdEmployeeMonthly = toNumber(body.pvdEmployeeMonthly);
-    const baseHourly = body.baseHourly;
     const employeeUserIdFromBody = safeStr(body.employeeUserId);
     const taxModeRaw = body.taxMode;
     const grossBaseModeRaw = body.grossBaseMode;
@@ -642,19 +710,42 @@ async function closeMonth(req, res) {
       employeeId: safeStr(employeeId),
     });
 
-    let otPayFinal = clampMin0(otPay);
-    const bh = toNumber(baseHourly);
-    if (otPayFinal <= 0 && Number.isFinite(bh) && bh > 0) {
-      otPayFinal = Math.max(0, otSummary.approvedWeightedHours * bh);
-    }
-    otPayFinal = round2(otPayFinal);
-
-    const taxYear = monthToTaxYear(month);
-
     const grossBaseFinal = round2(clampMin0(grossBase));
     const bonusFinal = round2(clampMin0(bonus));
     const otherAllowanceFinal = round2(clampMin0(otherAllowance));
     const otherDeductionFinal = round2(clampMin0(otherDeduction));
+
+    const otRateResolved = await resolveOtBaseHourly({
+      employeeId: safeStr(employeeId),
+      grossBase: grossBaseFinal,
+      authHeader: req.headers.authorization,
+    });
+
+    let otPayFinal = clampMin0(otPay);
+
+    if (otPayFinal <= 0 && otRateResolved.otBaseHourly > 0) {
+      otPayFinal = Math.max(
+        0,
+        otSummary.approvedWeightedHours * otRateResolved.otBaseHourly
+      );
+    }
+    otPayFinal = round2(otPayFinal);
+
+    console.log("[PAYROLL_CLOSE][OT_CALC]", {
+      clinicId: clinicIdFromToken,
+      employeeId: safeStr(employeeId),
+      month: safeStr(month),
+      employmentType: otRateResolved.employmentType,
+      otBaseHourly: otRateResolved.otBaseHourly,
+      otBaseHourlySource: otRateResolved.source,
+      staffLookupError: otRateResolved.staffLookupError || "",
+      approvedMinutes: otSummary.approvedMinutes,
+      approvedWeightedHours: otSummary.approvedWeightedHours,
+      otPayInput: round2(clampMin0(otPay)),
+      otPayFinal,
+    });
+
+    const taxYear = monthToTaxYear(month);
 
     const payrollResolved = resolvePayrollComputation({
       body,
@@ -833,6 +924,10 @@ async function closeMonth(req, res) {
         salaryBaseAfterLeave,
         leaveDeduction,
         otPayUsed: otPayFinal,
+        employmentTypeResolved: otRateResolved.employmentType,
+        otBaseHourlyResolved: otRateResolved.otBaseHourly,
+        otBaseHourlySource: otRateResolved.source,
+        staffLookupError: otRateResolved.staffLookupError || "",
         bonusUsed: bonusFinal,
         otherAllowanceUsed: otherAllowanceFinal,
         netBeforeTaxAndPvd,
