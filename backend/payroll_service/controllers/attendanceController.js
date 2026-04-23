@@ -2755,7 +2755,8 @@ function getHelperPreviewStatus(shift, now = new Date()) {
 
   return {
     status:
-      now.getTime() < getAllowedCheckInStartDateTime({
+      now.getTime() <
+      getAllowedCheckInStartDateTime({
         role: "helper",
         policy: { earlyCheckInMinutes: DEFAULT_EARLY_CHECKIN_MINUTES },
         shift,
@@ -3477,6 +3478,43 @@ function determineRejectedStatus(session) {
   return "open";
 }
 
+function shouldComputeOtFromAttendance(session, policy) {
+  const features = withFeatureDefaults(policy?.features || {});
+  if (!features.autoOtCalculation) return false;
+
+  const source = s(session?.source).toLowerCase();
+  const checkInMethod = s(session?.checkInMethod).toLowerCase();
+  const checkOutMethod = s(session?.checkOutMethod).toLowerCase();
+
+  const hasClosedWindow = !!session?.checkInAt && !!session?.checkOutAt;
+  if (!hasClosedWindow) return false;
+
+  // ✅ biometric attendance path
+  if (
+    source === "fingerprint" &&
+    checkInMethod === "biometric" &&
+    checkOutMethod === "biometric"
+  ) {
+    return true;
+  }
+
+  // ✅ manual/admin approved path still kept as fallback
+  if (
+    source === "manual" ||
+    checkInMethod === "manual" ||
+    checkOutMethod === "manual"
+  ) {
+    return true;
+  }
+
+  // ✅ manual request that was approved and became a real closed session
+  if (s(session?.approvalStatus) === "approved") {
+    return true;
+  }
+
+  return false;
+}
+
 async function syncOvertimeForSession({ session, policy, shift }) {
   try {
     const ownerUserId = s(session.userId);
@@ -3499,17 +3537,11 @@ async function syncOvertimeForSession({ session, policy, shift }) {
       otClockTime: selectedClock,
     };
 
-    const allowOtCalc = !!withFeatureDefaults(policy.features || {})
-      .autoOtCalculation;
     const allowOtForThisUser = isEmployeeEligibleForOt(role, empType, policy);
+    const allowOtCalc = shouldComputeOtFromAttendance(session, policyForOt);
 
     let otMinutes = 0;
-    if (
-      session.checkInAt &&
-      session.checkOutAt &&
-      allowOtCalc &&
-      allowOtForThisUser
-    ) {
+    if (allowOtCalc && allowOtForThisUser) {
       otMinutes = computeOtMinutes(
         policyForOt,
         shift,
@@ -3519,6 +3551,7 @@ async function syncOvertimeForSession({ session, policy, shift }) {
       );
     }
 
+    // ✅ เก็บเป็น “นาทีจริง” ไม่มีการ round รายวัน
     session.otMinutes = clampMinutes(otMinutes);
 
     const clinicIdOfSession = s(session.clinicId);
@@ -3580,7 +3613,8 @@ async function syncOvertimeForSession({ session, policy, shift }) {
       rule: s(policyForOt.otRule),
       otMinutes: clampMinutes(session.otMinutes),
       eligibleForOt: allowOtForThisUser,
-      requireApproval: !!policy.requireOtApproval,
+      requireApproval: !!policy?.requireOtApproval,
+      computedFromAttendance: allowOtCalc,
     };
   } catch (e) {
     console.log("❌ Overtime sync failed:", e.message);
@@ -3591,6 +3625,7 @@ async function syncOvertimeForSession({ session, policy, shift }) {
       otMinutes: clampMinutes(session.otMinutes),
       eligibleForOt: false,
       requireApproval: !!policy?.requireOtApproval,
+      computedFromAttendance: false,
     };
   }
 }
@@ -3656,7 +3691,6 @@ async function recalcSessionByTimes({ session, policy, shift }) {
   session.policyVersion = Number(policy.version || session.policyVersion || 0);
   session.riskScore = clampRisk(session.riskScore);
 }
-
 function buildRuntimeSessionQuery({
   clinicId,
   principalId,
@@ -3851,6 +3885,7 @@ async function ensureCanViewSession(req, session) {
 
   return { ok: true };
 }
+
 async function checkIn(req, res) {
   try {
     const mockErr = rejectIfMockLocationAnywhere(req);

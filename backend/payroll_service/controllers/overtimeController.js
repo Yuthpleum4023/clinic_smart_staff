@@ -96,13 +96,15 @@ function getPrincipal(req) {
 
 async function getOrCreatePolicy(clinicId, userId) {
   let p = await ClinicPolicy.findOne({ clinicId });
+
   if (!p) {
     p = await ClinicPolicy.create({
       clinicId,
       timezone: "Asia/Bangkok",
 
       requireBiometric: true,
-      requireLocation: false,
+      // ✅ ให้ default ตรงกับ attendanceController.js
+      requireLocation: true,
       geoRadiusMeters: 200,
       graceLateMinutes: 10,
 
@@ -146,6 +148,7 @@ async function getOrCreatePolicy(clinicId, userId) {
       updatedBy: s(userId),
     });
   }
+
   return p;
 }
 

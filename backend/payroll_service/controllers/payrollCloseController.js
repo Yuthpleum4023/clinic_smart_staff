@@ -46,6 +46,12 @@
 // - ✅ รองรับ route ใหม่:
 //   POST /payroll-close/close-month/:employeeId/:month
 //
+// ✅ UPDATED FOR BIOMETRIC/ATTENDANCE OT FLOW:
+// - Payroll close จะรวม OT จาก Overtime ที่ status=approved เท่านั้น
+// - รองรับทั้ง record ที่ match ด้วย staffId และ principalId
+// - ใช้ approvedMinutes เป็นหลัก เพื่อสะท้อนนาทีที่ admin approve จริง
+// - ไม่มีการ round รายวันใน payroll close
+//
 
 const axios = require("axios");
 const PayrollClose = require("../models/PayrollClose");
@@ -340,7 +346,12 @@ async function getApprovedOtSummaryForMonth({ clinicId, monthKey, employeeId }) 
     };
   }
 
-  const q = { clinicId: cId, monthKey: mKey, status: "approved", staffId };
+  const q = {
+    clinicId: cId,
+    monthKey: mKey,
+    status: "approved",
+    $or: [{ staffId }, { principalId: staffId }],
+  };
 
   const rows = await Overtime.find(q)
     .select({
@@ -352,14 +363,16 @@ async function getApprovedOtSummaryForMonth({ clinicId, monthKey, employeeId }) 
       source: 1,
       note: 1,
       userId: 1,
+      principalId: 1,
+      staffId: 1,
       createdAt: 1,
     })
     .lean();
 
-  const approvedMinutes = rows.reduce(
-    (a, x) => a + Math.max(0, Math.floor(Number(x.approvedMinutes || 0))),
-    0
-  );
+  const approvedMinutes = rows.reduce((a, x) => {
+    const mins = Math.max(0, Math.floor(Number(x.approvedMinutes || 0)));
+    return a + mins;
+  }, 0);
 
   const approvedWeightedHours = rows.reduce((a, x) => {
     const mins = Math.max(0, Math.floor(Number(x.approvedMinutes || 0)));
@@ -371,7 +384,7 @@ async function getApprovedOtSummaryForMonth({ clinicId, monthKey, employeeId }) 
   return {
     monthKey: mKey,
     approvedMinutes,
-    approvedWeightedHours,
+    approvedWeightedHours: round2(approvedWeightedHours),
     count: rows.length,
     records: rows,
   };
