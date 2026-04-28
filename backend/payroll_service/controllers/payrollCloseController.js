@@ -1,39 +1,38 @@
 //
 // payroll_service/controllers/payrollCloseController.js
 //
-// ✅ FULL FILE — Payroll Close Controller
-// ✅ UPDATED TO MATCH BUSINESS FORMULA:
+// ✅ PRODUCTION — Backend-only Payroll Calculator
 //
-//   SSO = min(ฐานเงินเดือนที่ใช้คิด SSO, maxWageBase) * employeeRate
+// GOAL:
+// - Flutter ส่งเฉพาะ input / intent
+// - Backend เป็นผู้คำนวณยอดเงินจริงทั้งหมด
 //
-//   Net ก่อนภาษี/PVD = เงินเดือนฐาน
-//                     - SSO
-//                     - หักลา/ขาด
-//                     + OT
-//                     + bonus
-//                     + otherAllowance
+// Flutter ส่งได้:
+// - clinicId, employeeId, month
+// - bonus, otherAllowance, otherDeduction
+// - pvdEmployeeMonthly
+// - taxMode
+// - employeeUserId
+// - regularWorkHours / regularWorkMinutes / workItems สำหรับ part-time ถ้ามี
+// - grossBase เฉพาะ fallback compatibility ระหว่าง migration เท่านั้น
 //
-//   Net สุดท้าย = Net ก่อนภาษี/PVD - ภาษี - PVD
+// Backend คำนวณเอง:
+// - salary/grossBase จาก staff_service เป็นหลัก
+// - OT จาก Overtime status=approved เท่านั้น
+// - SSO จาก Clinic.socialSecurity
+// - Tax/YTD จาก auth internal tax service
+// - gross/net/display snapshot
 //
-// ✅ IMPORTANT:
-// - SSO คิดจาก "ฐานเงินเดือน" เท่านั้น
-// - SSO ไม่เอา OT / bonus / otherAllowance ไปคิด
-// - otherDeduction ใน flow นี้ใช้เป็น "หักลา/ขาด" หลัก
-// - otherAllowance ใช้เป็น commission/allowance bucket ได้
+// Backend จะไม่เชื่อค่าคำนวณจาก Flutter:
+// - otPay จาก client ถูก ignore โดย default
+// - ssoEmployeeMonthly จาก client ถูก ignore โดย default
+// - grossMonthly/netPay/withheldTaxMonthly จาก client ไม่ถูกใช้
 //
-// ✅ UPDATED:
-// - รวม OT จาก Overtime status=approved เท่านั้น
-// - ใช้ approvedMinutes เป็นหลัก
-// - full-time  => grossBase / 30 / 8
-// - part-time  => hourlyRate/hourlyWage จาก staff_service
-//
-// ✅ NEW PRODUCTION:
-// - เพิ่ม recalculateClosedMonth()
-// - ใช้สำหรับ admin คำนวณงวดที่ปิดแล้วใหม่
-// - rollback TaxYTD จาก PayrollClose เดิมก่อน
-// - ลบ PayrollClose เดิม
-// - เรียก closeMonth ใหม่จากข้อมูลล่าสุด
-// - กัน YTD บวกซ้ำ
+// ✅ Includes:
+// - closeMonth()
+// - previewMonth() สำหรับ Flutter แสดงผลจาก backend
+// - recalculateClosedMonth()
+// - closed month readers
 //
 
 const axios = require("axios");
@@ -43,6 +42,19 @@ const Overtime = require("../models/Overtime");
 const Clinic = require("../models/Clinic");
 
 const { getEmployeeByStaffId } = require("../utils/staffClient");
+
+// ================= errors =================
+class HttpError extends Error {
+  constructor(status, message, details = null) {
+    super(message);
+    this.status = status;
+    this.details = details;
+  }
+}
+
+function throwHttp(status, message, details = null) {
+  throw new HttpError(status, message, details);
+}
 
 // ================= helpers =================
 function toNumber(v) {
@@ -87,18 +99,34 @@ function postJson(url, body, headers) {
   });
 }
 
-function absDiff(a, b) {
-  return Math.abs(toNumber(a) - toNumber(b));
+function pickFirstPositiveNumber(obj, keys) {
+  for (const k of keys) {
+    const n = toNumber(obj?.[k]);
+    if (n > 0) return round2(n);
+  }
+  return 0;
 }
 
 function normalizeEmploymentType(v) {
   const t = safeStr(v).toLowerCase();
 
-  if (t === "parttime" || t === "part-time" || t === "part_time") {
+  if (
+    t === "parttime" ||
+    t === "part-time" ||
+    t === "part_time" ||
+    t === "part time" ||
+    t === "hourly"
+  ) {
     return "parttime";
   }
 
-  if (t === "fulltime" || t === "full-time" || t === "full_time") {
+  if (
+    t === "fulltime" ||
+    t === "full-time" ||
+    t === "full_time" ||
+    t === "full time" ||
+    t === "monthly"
+  ) {
     return "fulltime";
   }
 
@@ -106,19 +134,27 @@ function normalizeEmploymentType(v) {
 }
 
 function resolvePartTimeHourlyFromEmployee(emp) {
-  const candidates = [
-    emp?.hourlyRate,
-    emp?.hourlyWage,
-    emp?.hourly_salary,
-    emp?.hourly_salary_rate,
-  ];
+  return pickFirstPositiveNumber(emp || {}, [
+    "hourlyRate",
+    "hourlyWage",
+    "hourly_salary",
+    "hourly_salary_rate",
+    "wagePerHour",
+    "ratePerHour",
+  ]);
+}
 
-  for (const v of candidates) {
-    const n = toNumber(v);
-    if (n > 0) return round2(n);
-  }
-
-  return 0;
+function resolveMonthlySalaryFromEmployee(emp) {
+  return pickFirstPositiveNumber(emp || {}, [
+    "baseSalary",
+    "salary",
+    "monthlySalary",
+    "monthlyWage",
+    "grossBase",
+    "grossMonthly",
+    "fixedSalary",
+    "defaultSalary",
+  ]);
 }
 
 function computeFullTimeOtBaseHourly(grossBase) {
@@ -127,7 +163,131 @@ function computeFullTimeOtBaseHourly(grossBase) {
   return round2(salaryBase / 30 / 8);
 }
 
-async function resolveOtBaseHourly({ employeeId, grossBase, authHeader }) {
+function parseHHmm(v) {
+  const s = safeStr(v);
+  const parts = s.split(":");
+  if (parts.length !== 2) return null;
+
+  const h = Number(parts[0]);
+  const m = Number(parts[1]);
+
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+  if (h < 0 || h > 23) return null;
+  if (m < 0 || m > 59) return null;
+
+  return { h, m };
+}
+
+function minutesBetween(startHHmm, endHHmm, breakMinutes = 0) {
+  const s = parseHHmm(startHHmm);
+  const e = parseHHmm(endHHmm);
+  if (!s || !e) return 0;
+
+  let startMin = s.h * 60 + s.m;
+  let endMin = e.h * 60 + e.m;
+
+  if (endMin < startMin) endMin += 24 * 60;
+
+  const total = endMin - startMin - Math.max(0, Math.floor(toNumber(breakMinutes)));
+  return total > 0 ? total : 0;
+}
+
+function extractRegularWorkMinutesFromItem(item) {
+  if (!item || typeof item !== "object") return 0;
+
+  const candidates = [
+    item.regularWorkMinutes,
+    item.workMinutes,
+    item.minutes,
+    item.totalMinutes,
+  ];
+
+  for (const v of candidates) {
+    const n = Math.floor(toNumber(v));
+    if (n > 0) return n;
+  }
+
+  const hoursCandidates = [
+    item.regularWorkHours,
+    item.workHours,
+    item.hours,
+    item.totalHours,
+  ];
+
+  for (const v of hoursCandidates) {
+    const n = toNumber(v);
+    if (n > 0) return Math.floor(n * 60);
+  }
+
+  const start = item.start || item.startTime || item.clockIn || item.checkIn;
+  const end = item.end || item.endTime || item.clockOut || item.checkOut;
+  const breakMinutes = item.breakMinutes || item.break_minutes || 0;
+
+  return minutesBetween(start, end, breakMinutes);
+}
+
+function extractRegularWorkSummary(body) {
+  const b = body || {};
+
+  const minuteCandidates = [
+    b.regularWorkMinutes,
+    b.normalWorkMinutes,
+    b.workMinutes,
+    b.totalWorkMinutes,
+  ];
+
+  for (const v of minuteCandidates) {
+    const n = Math.floor(toNumber(v));
+    if (n > 0) {
+      return {
+        minutes: n,
+        hours: round2(n / 60),
+        source: "body.regularWorkMinutes",
+      };
+    }
+  }
+
+  const hourCandidates = [
+    b.regularWorkHours,
+    b.normalWorkHours,
+    b.workHours,
+    b.totalWorkHours,
+  ];
+
+  for (const v of hourCandidates) {
+    const n = toNumber(v);
+    if (n > 0) {
+      return {
+        minutes: Math.floor(n * 60),
+        hours: round2(n),
+        source: "body.regularWorkHours",
+      };
+    }
+  }
+
+  const arrays = [b.workItems, b.workEntries, b.regularWorkItems, b.regularWorkEntries];
+
+  for (const arr of arrays) {
+    if (!Array.isArray(arr) || arr.length === 0) continue;
+
+    const minutes = arr.reduce((sum, x) => sum + extractRegularWorkMinutesFromItem(x), 0);
+    if (minutes > 0) {
+      return {
+        minutes,
+        hours: round2(minutes / 60),
+        source: "body.workItems",
+      };
+    }
+  }
+
+  return {
+    minutes: 0,
+    hours: 0,
+    source: "none",
+  };
+}
+
+async function fetchEmployeeForPayroll(employeeId, authHeader) {
   let employee = null;
   let staffLookupError = "";
 
@@ -135,173 +295,89 @@ async function resolveOtBaseHourly({ employeeId, grossBase, authHeader }) {
     employee = await getEmployeeByStaffId(employeeId, authHeader);
   } catch (e) {
     staffLookupError = e?.message || "staff lookup failed";
-    console.log("⚠️ resolveOtBaseHourly staff lookup failed:", staffLookupError);
+    console.log("⚠️ fetchEmployeeForPayroll failed:", staffLookupError);
   }
 
+  return { employee, staffLookupError };
+}
+
+function resolveSalaryBaseFromBackend({ employee, body }) {
   const employmentType = normalizeEmploymentType(
     employee?.employmentType || employee?.employeeType || employee?.workType
   );
 
-  let otBaseHourly = 0;
-  let source = "";
+  const monthlyFromStaff = resolveMonthlySalaryFromEmployee(employee);
+  const hourlyFromStaff = resolvePartTimeHourlyFromEmployee(employee);
+  const regularWork = extractRegularWorkSummary(body);
+
+  let grossBase = 0;
+  let grossBaseSource = "missing";
 
   if (employmentType === "parttime") {
-    otBaseHourly = resolvePartTimeHourlyFromEmployee(employee);
-    source =
-      otBaseHourly > 0 ? "staff_service.hourlyRate" : "missing_parttime_hourly";
+    if (regularWork.hours > 0 && hourlyFromStaff > 0) {
+      grossBase = round2(regularWork.hours * hourlyFromStaff);
+      grossBaseSource = `${regularWork.source}*staff_service.hourlyRate`;
+    } else if (monthlyFromStaff > 0) {
+      grossBase = monthlyFromStaff;
+      grossBaseSource = "staff_service.monthlySalary";
+    } else if (clampMin0(body?.grossBase) > 0) {
+      // Compatibility during migration only: Flutter should later send raw hours, not computed amount.
+      grossBase = round2(clampMin0(body.grossBase));
+      grossBaseSource = "body.grossBase_fallback_migration";
+    }
   } else {
-    otBaseHourly = computeFullTimeOtBaseHourly(grossBase);
-    source = otBaseHourly > 0 ? "grossBase/30/8" : "missing_fulltime_grossBase";
+    if (monthlyFromStaff > 0) {
+      grossBase = monthlyFromStaff;
+      grossBaseSource = "staff_service.monthlySalary";
+    } else if (clampMin0(body?.grossBase) > 0) {
+      // Compatibility during migration only.
+      grossBase = round2(clampMin0(body.grossBase));
+      grossBaseSource = "body.grossBase_fallback_migration";
+    }
   }
 
   return {
-    employee,
     employmentType,
-    otBaseHourly: round2(otBaseHourly),
-    source,
-    staffLookupError,
+    grossBase: round2(grossBase),
+    grossBaseSource,
+    hourlyRate: round2(hourlyFromStaff),
+    monthlySalaryFromStaff: round2(monthlyFromStaff),
+    regularWork,
   };
 }
 
-// ================= GROSS BASE MODE =================
+function resolveOtBaseHourlyFromProfile({ employmentType, grossBase, hourlyRate }) {
+  if (employmentType === "parttime") {
+    return {
+      otBaseHourly: round2(clampMin0(hourlyRate)),
+      source: hourlyRate > 0 ? "staff_service.hourlyRate" : "missing_parttime_hourly",
+    };
+  }
+
+  const otBaseHourly = computeFullTimeOtBaseHourly(grossBase);
+  return {
+    otBaseHourly,
+    source: otBaseHourly > 0 ? "grossBase/30/8" : "missing_fulltime_grossBase",
+  };
+}
+
+// ================= TAX / SSO =================
+const DEFAULT_SSO_EMPLOYEE_RATE = 0.05;
+const DEFAULT_SSO_MAX_WAGE_BASE = 17500;
+
+function normalizeTaxMode(v) {
+  const s = safeStr(v).toUpperCase();
+  if (s === "NO_WITHHOLDING") return "NO_WITHHOLDING";
+  if (s === "NONE") return "NO_WITHHOLDING";
+  if (s === "NO_TAX") return "NO_WITHHOLDING";
+  return "WITHHOLDING";
+}
+
 function normalizeGrossBaseMode(v) {
   const s = safeStr(v).toUpperCase();
   if (s === "POST_DEDUCTION") return "POST_DEDUCTION";
   if (s === "AUTO") return "AUTO";
   return "PRE_DEDUCTION";
-}
-
-function pickExpectedGrossBeforeTax(body) {
-  const candidates = [
-    body.expectedGrossBeforeTax,
-    body.previewGrossBeforeTax,
-    body.grossMonthlyExpected,
-    body.displayGrossBeforeTax,
-    body.detailGrossBeforeTax,
-  ];
-
-  for (const v of candidates) {
-    const n = toNumber(v);
-    if (n > 0) return round2(n);
-  }
-
-  return 0;
-}
-
-function resolvePayrollComputation({
-  body,
-  grossBase,
-  otPay,
-  bonus,
-  otherAllowance,
-  otherDeduction,
-}) {
-  const requestedMode = normalizeGrossBaseMode(body.grossBaseMode);
-  const expectedGrossBeforeTax = pickExpectedGrossBeforeTax(body);
-
-  const salaryBasePreDeduction = round2(clampMin0(grossBase));
-  const leaveDeduction = round2(clampMin0(otherDeduction));
-  const otPayFinal = round2(clampMin0(otPay));
-  const bonusFinal = round2(clampMin0(bonus));
-  const allowanceFinal = round2(clampMin0(otherAllowance));
-
-  const preDeductionSalaryBaseForSso = salaryBasePreDeduction;
-  const preDeductionNetBeforeTax = round2(
-    Math.max(
-      0,
-      salaryBasePreDeduction -
-        leaveDeduction +
-        otPayFinal +
-        bonusFinal +
-        allowanceFinal
-    )
-  );
-
-  const postDeductionSalaryBaseAfterLeave = salaryBasePreDeduction;
-  const postDeductionSalaryBaseForSso = round2(
-    salaryBasePreDeduction + leaveDeduction
-  );
-  const postDeductionNetBeforeTax = round2(
-    Math.max(
-      0,
-      postDeductionSalaryBaseAfterLeave +
-        otPayFinal +
-        bonusFinal +
-        allowanceFinal
-    )
-  );
-
-  const buildResult = (mode) => {
-    if (mode === "POST_DEDUCTION") {
-      return {
-        appliedMode: "POST_DEDUCTION",
-        expectedGrossBeforeTax,
-
-        salaryBaseForSso: postDeductionSalaryBaseForSso,
-        salaryBaseAfterLeave: postDeductionSalaryBaseAfterLeave,
-        leaveDeduction,
-        otPay: otPayFinal,
-        bonus: bonusFinal,
-        otherAllowance: allowanceFinal,
-
-        netBeforeTaxAndPvd: postDeductionNetBeforeTax,
-
-        preDeductionNetBeforeTax,
-        postDeductionNetBeforeTax,
-      };
-    }
-
-    return {
-      appliedMode: "PRE_DEDUCTION",
-      expectedGrossBeforeTax,
-
-      salaryBaseForSso: preDeductionSalaryBaseForSso,
-      salaryBaseAfterLeave: round2(
-        Math.max(0, salaryBasePreDeduction - leaveDeduction)
-      ),
-      leaveDeduction,
-      otPay: otPayFinal,
-      bonus: bonusFinal,
-      otherAllowance: allowanceFinal,
-
-      netBeforeTaxAndPvd: preDeductionNetBeforeTax,
-
-      preDeductionNetBeforeTax,
-      postDeductionNetBeforeTax,
-    };
-  };
-
-  if (requestedMode === "PRE_DEDUCTION") {
-    return buildResult("PRE_DEDUCTION");
-  }
-
-  if (requestedMode === "POST_DEDUCTION") {
-    return buildResult("POST_DEDUCTION");
-  }
-
-  if (expectedGrossBeforeTax > 0) {
-    const preDiff = absDiff(preDeductionNetBeforeTax, expectedGrossBeforeTax);
-    const postDiff = absDiff(postDeductionNetBeforeTax, expectedGrossBeforeTax);
-
-    return buildResult(postDiff < preDiff ? "POST_DEDUCTION" : "PRE_DEDUCTION");
-  }
-
-  return buildResult("PRE_DEDUCTION");
-}
-
-// ================= SSO DEFAULTS =================
-const DEFAULT_SSO_EMPLOYEE_RATE = 0.05;
-const DEFAULT_SSO_MAX_WAGE_BASE = 17500;
-
-// ================= TAX MODE =================
-function normalizeTaxMode(v) {
-  const s = safeStr(v).toUpperCase();
-  if (s === "NO_WITHHOLDING") return "NO_WITHHOLDING";
-  return "WITHHOLDING";
-}
-
-function normalizeSsoEmployeeMonthly(v, maxEmployeeMonthly) {
-  return round2(clamp(clampMin0(v), 0, clampMin0(maxEmployeeMonthly)));
 }
 
 function resolveClinicSsoConfig(clinicRow) {
@@ -324,6 +400,10 @@ function resolveClinicSsoConfig(clinicRow) {
     maxWageBase,
     maxEmployeeMonthly,
   };
+}
+
+function normalizeSsoEmployeeMonthly(v, maxEmployeeMonthly) {
+  return round2(clamp(clampMin0(v), 0, clampMin0(maxEmployeeMonthly)));
 }
 
 function computeSsoEmployeeMonthlyFromClinicConfig(salaryBaseForSso, ssoConfig) {
@@ -352,6 +432,16 @@ function pickAuth(req) {
   );
 
   return { role, clinicId, userId, staffId };
+}
+
+function assertAdminContext(req) {
+  const { clinicId, userId, role } = pickAuth(req);
+
+  if (!clinicId) throwHttp(401, "Missing clinicId in token");
+  if (!userId) throwHttp(401, "Missing userId in token");
+  if (role !== "admin") throwHttp(403, "Forbidden (admin only)");
+
+  return { clinicId, userId, role };
 }
 
 // ================= ACCESS GUARD =================
@@ -418,12 +508,22 @@ async function getApprovedOtSummaryForMonth({ clinicId, monthKey, employeeId }) 
     .lean();
 
   const approvedMinutes = rows.reduce((a, x) => {
-    const mins = Math.max(0, Math.floor(Number(x.approvedMinutes || 0)));
+    const rawApproved = x.approvedMinutes;
+    const rawMinutes = x.minutes;
+    const mins = Math.max(
+      0,
+      Math.floor(Number(rawApproved !== undefined && rawApproved !== null ? rawApproved : rawMinutes || 0))
+    );
     return a + mins;
   }, 0);
 
   const approvedWeightedHours = rows.reduce((a, x) => {
-    const mins = Math.max(0, Math.floor(Number(x.approvedMinutes || 0)));
+    const rawApproved = x.approvedMinutes;
+    const rawMinutes = x.minutes;
+    const mins = Math.max(
+      0,
+      Math.floor(Number(rawApproved !== undefined && rawApproved !== null ? rawApproved : rawMinutes || 0))
+    );
     const mul = Number(x.multiplier);
     const m = Number.isFinite(mul) && mul > 0 ? mul : 1.5;
     return a + (mins / 60) * m;
@@ -446,18 +546,24 @@ async function resolveEmployeeUserId({
   bodyEmployeeUserId,
   adminUserId,
   token,
+  employee,
 }) {
   const fromBody = safeStr(bodyEmployeeUserId);
   if (fromBody) {
     return { employeeUserId: fromBody, source: "body" };
   }
 
+  const fromEmployee = safeStr(employee?.userId || employee?.linkedUserId || employee?.linked_user_id);
+  if (fromEmployee) {
+    return { employeeUserId: fromEmployee, source: "staff_service" };
+  }
+
   try {
     const emp = await getEmployeeByStaffId(staffId, token);
-    const u = safeStr(emp?.userId);
-    if (u) return { employeeUserId: u, source: "staff_service" };
+    const u = safeStr(emp?.userId || emp?.linkedUserId || emp?.linked_user_id);
+    if (u) return { employeeUserId: u, source: "staff_service_lookup" };
   } catch (e) {
-    console.log("⚠️ staff_service lookup failed:", e.message);
+    console.log("⚠️ staff_service userId lookup failed:", e.message);
   }
 
   const row = await Overtime.findOne({
@@ -589,6 +695,7 @@ function buildPayslipSummary(row) {
   const bonus = round2(clampMin0(row?.bonus));
   const leaveDeduction = round2(clampMin0(row?.otherDeduction));
   const tax = round2(clampMin0(row?.withheldTaxMonthly));
+  const pvd = round2(clampMin0(row?.pvdEmployeeMonthly));
   const netPay = round2(clampMin0(row?.netPay));
 
   return {
@@ -603,14 +710,544 @@ function buildPayslipSummary(row) {
       bonus,
       leaveDeduction,
       tax,
+      pvd,
       netPay,
+      grossBeforeTax: round2(clampMin0(row?.displayGrossBeforeTax || row?.grossMonthly)),
     },
     meta: {
       source: "backend_final",
       isClosedPayroll: true,
       grossBaseModeApplied: safeStr(row?.snapshot?.grossBaseModeApplied),
+      payrollCalculator: safeStr(row?.snapshot?.payrollCalculator || "backend_only"),
     },
   };
+}
+
+function buildPayslipSummaryFromComputed(c) {
+  return {
+    employeeId: c.employeeId,
+    clinicId: c.clinicId,
+    month: c.month,
+    amounts: {
+      salary: c.grossBaseFinal,
+      socialSecurity: c.ssoM,
+      ot: c.otPayFinal,
+      commission: c.otherAllowanceFinal,
+      bonus: c.bonusFinal,
+      leaveDeduction: c.leaveDeduction,
+      tax: c.withheldTaxMonthly,
+      pvd: c.pvdM,
+      netPay: c.netPay,
+      grossBeforeTax: c.display.displayGrossBeforeTax,
+    },
+    meta: {
+      source: "backend_preview",
+      isClosedPayroll: false,
+      grossBaseModeApplied: c.payrollResolved.appliedMode,
+      payrollCalculator: "backend_only",
+    },
+  };
+}
+
+// ================= PAYROLL COMPUTATION CORE =================
+function resolvePayrollComputationBackendOnly({
+  grossBase,
+  otPay,
+  bonus,
+  otherAllowance,
+  otherDeduction,
+  grossBaseMode,
+}) {
+  const requestedMode = normalizeGrossBaseMode(grossBaseMode);
+
+  const salaryBasePreDeduction = round2(clampMin0(grossBase));
+  const leaveDeduction = round2(clampMin0(otherDeduction));
+  const otPayFinal = round2(clampMin0(otPay));
+  const bonusFinal = round2(clampMin0(bonus));
+  const allowanceFinal = round2(clampMin0(otherAllowance));
+
+  const buildPre = () => ({
+    appliedMode: "PRE_DEDUCTION",
+    expectedGrossBeforeTax: 0,
+    salaryBaseForSso: salaryBasePreDeduction,
+    salaryBaseAfterLeave: round2(Math.max(0, salaryBasePreDeduction - leaveDeduction)),
+    leaveDeduction,
+    otPay: otPayFinal,
+    bonus: bonusFinal,
+    otherAllowance: allowanceFinal,
+    netBeforeTaxAndPvd: round2(
+      Math.max(0, salaryBasePreDeduction - leaveDeduction + otPayFinal + bonusFinal + allowanceFinal)
+    ),
+    preDeductionNetBeforeTax: round2(
+      Math.max(0, salaryBasePreDeduction - leaveDeduction + otPayFinal + bonusFinal + allowanceFinal)
+    ),
+    postDeductionNetBeforeTax: round2(
+      Math.max(0, salaryBasePreDeduction + otPayFinal + bonusFinal + allowanceFinal)
+    ),
+  });
+
+  const buildPost = () => ({
+    appliedMode: "POST_DEDUCTION",
+    expectedGrossBeforeTax: 0,
+    salaryBaseForSso: round2(salaryBasePreDeduction + leaveDeduction),
+    salaryBaseAfterLeave: salaryBasePreDeduction,
+    leaveDeduction,
+    otPay: otPayFinal,
+    bonus: bonusFinal,
+    otherAllowance: allowanceFinal,
+    netBeforeTaxAndPvd: round2(
+      Math.max(0, salaryBasePreDeduction + otPayFinal + bonusFinal + allowanceFinal)
+    ),
+    preDeductionNetBeforeTax: round2(
+      Math.max(0, salaryBasePreDeduction - leaveDeduction + otPayFinal + bonusFinal + allowanceFinal)
+    ),
+    postDeductionNetBeforeTax: round2(
+      Math.max(0, salaryBasePreDeduction + otPayFinal + bonusFinal + allowanceFinal)
+    ),
+  });
+
+  if (requestedMode === "POST_DEDUCTION") return buildPost();
+
+  // AUTO no longer uses Flutter expectedGrossBeforeTax.
+  // Backend-only default is PRE_DEDUCTION for safest salary base accounting.
+  return buildPre();
+}
+
+async function computePayrollForMonth({
+  req,
+  clinicId,
+  employeeId,
+  month,
+  body,
+  existingYtdOverride = null,
+}) {
+  const b = body || {};
+  const taxMode = normalizeTaxMode(b.taxMode);
+  const grossBaseMode = normalizeGrossBaseMode(b.grossBaseMode);
+  const taxYear = monthToTaxYear(month);
+
+  const { clinicId: clinicIdFromToken, userId: adminUserId } = assertAdminContext(req);
+
+  if (safeStr(clinicId) !== clinicIdFromToken) {
+    throwHttp(403, "Forbidden (clinic mismatch)");
+  }
+
+  const clinicRow = await Clinic.findOne({ clinicId: clinicIdFromToken }).lean();
+  const ssoConfig = resolveClinicSsoConfig(clinicRow);
+
+  const { employee, staffLookupError } = await fetchEmployeeForPayroll(
+    employeeId,
+    req.headers.authorization
+  );
+
+  const salaryProfile = resolveSalaryBaseFromBackend({ employee, body: b });
+
+  const grossBaseFinal = round2(clampMin0(salaryProfile.grossBase));
+  const bonusFinal = round2(clampMin0(b.bonus));
+  const otherAllowanceFinal = round2(clampMin0(b.otherAllowance));
+  const otherDeductionFinal = round2(clampMin0(b.otherDeduction));
+  const pvdM = round2(clampMin0(b.pvdEmployeeMonthly));
+
+  const otSummary = await getApprovedOtSummaryForMonth({
+    clinicId: clinicIdFromToken,
+    monthKey: month,
+    employeeId,
+  });
+
+  const otRateResolved = resolveOtBaseHourlyFromProfile({
+    employmentType: salaryProfile.employmentType,
+    grossBase: grossBaseFinal,
+    hourlyRate: salaryProfile.hourlyRate,
+  });
+
+  const calculatedOtPay =
+    otRateResolved.otBaseHourly > 0
+      ? round2(otSummary.approvedWeightedHours * otRateResolved.otBaseHourly)
+      : 0;
+
+  const allowManualOtPayOverride = b.allowManualOtPayOverride === true;
+  const otPayFromClient = round2(clampMin0(b.otPay));
+  const otPayFinal = allowManualOtPayOverride && otPayFromClient > 0
+    ? otPayFromClient
+    : calculatedOtPay;
+
+  const payrollResolved = resolvePayrollComputationBackendOnly({
+    grossBase: grossBaseFinal,
+    otPay: otPayFinal,
+    bonus: bonusFinal,
+    otherAllowance: otherAllowanceFinal,
+    otherDeduction: otherDeductionFinal,
+    grossBaseMode,
+  });
+
+  const salaryBaseForSso = round2(payrollResolved.salaryBaseForSso);
+  const salaryBaseAfterLeave = round2(payrollResolved.salaryBaseAfterLeave);
+  const leaveDeduction = round2(payrollResolved.leaveDeduction);
+
+  const ssoM = computeSsoEmployeeMonthlyFromClinicConfig(salaryBaseForSso, ssoConfig);
+
+  const netBeforeTaxAndPvd = round2(
+    Math.max(
+      0,
+      salaryBaseForSso -
+        ssoM -
+        leaveDeduction +
+        otPayFinal +
+        bonusFinal +
+        otherAllowanceFinal
+    )
+  );
+
+  let ytd = existingYtdOverride;
+  if (!ytd) {
+    ytd = await TaxYTD.findOne({ employeeId, taxYear }).lean();
+  }
+
+  const ytdBefore = {
+    incomeYTD: round2(clampMin0(ytd?.incomeYTD)),
+    ssoYTD: round2(clampMin0(ytd?.ssoYTD)),
+    pvdYTD: round2(clampMin0(ytd?.pvdYTD)),
+    taxPaidYTD: round2(clampMin0(ytd?.taxPaidYTD)),
+  };
+
+  const incomeYTD_after = round2(ytdBefore.incomeYTD + netBeforeTaxAndPvd);
+  const ssoYTD_after = round2(ytdBefore.ssoYTD + ssoM);
+  const pvdYTD_after = round2(ytdBefore.pvdYTD + pvdM);
+
+  let resolved = null;
+  let taxCalc = null;
+  let withheldTaxMonthly = 0;
+  let warning = null;
+
+  if (taxMode === "WITHHOLDING") {
+    resolved = await resolveEmployeeUserId({
+      clinicId: clinicIdFromToken,
+      monthKey: month,
+      staffId: employeeId,
+      bodyEmployeeUserId: safeStr(b.employeeUserId),
+      adminUserId,
+      token: req.headers.authorization,
+      employee,
+    });
+
+    taxCalc = await calcWithheldByYTDFromAuth({
+      userId: resolved.employeeUserId,
+      taxYear,
+      incomeYTD: incomeYTD_after,
+      ssoYTD: ssoYTD_after,
+      pvdYTD: pvdYTD_after,
+      taxPaidYTD: ytdBefore.taxPaidYTD,
+    });
+
+    withheldTaxMonthly = round2(clampMin0(taxCalc?.withheldThisMonth));
+
+    warning =
+      resolved.source === "admin_fallback"
+        ? "employeeUserId not found (body/staff_service/overtime). Tax calc fell back to admin userId. Please send employeeUserId from client for accuracy."
+        : null;
+  } else {
+    withheldTaxMonthly = 0;
+    taxCalc = {
+      taxMode: "NO_WITHHOLDING",
+      withheldThisMonth: 0,
+      note: "Skipped tax withholding by taxMode=NO_WITHHOLDING",
+    };
+  }
+
+  const netPay = round2(Math.max(0, netBeforeTaxAndPvd - withheldTaxMonthly - pvdM));
+  const grossMonthly = netBeforeTaxAndPvd;
+
+  const display = buildDisplaySnapshot({
+    salaryBaseForSso,
+    salaryBaseAfterLeave,
+    leaveDeduction,
+    otSummary,
+    otPayFinal,
+    bonusFinal,
+    otherAllowanceFinal,
+    withheldTaxMonthly,
+    ssoM,
+    pvdM,
+    netPay,
+  });
+
+  const ignoredClientInputs = {
+    grossBaseInput: round2(clampMin0(b.grossBase)),
+    otPayInput: round2(clampMin0(b.otPay)),
+    ssoEmployeeMonthlyInput: normalizeSsoEmployeeMonthly(
+      b.ssoEmployeeMonthly,
+      ssoConfig.maxEmployeeMonthly
+    ),
+    grossMonthlyInput: round2(clampMin0(b.grossMonthly)),
+    netPayInput: round2(clampMin0(b.netPay)),
+    withheldTaxMonthlyInput: round2(clampMin0(b.withheldTaxMonthly)),
+  };
+
+  console.log("[PAYROLL_COMPUTE][BACKEND_ONLY]", {
+    clinicId: clinicIdFromToken,
+    employeeId,
+    month,
+    employmentType: salaryProfile.employmentType,
+    grossBaseFinal,
+    grossBaseSource: salaryProfile.grossBaseSource,
+    hourlyRate: salaryProfile.hourlyRate,
+    regularWork: salaryProfile.regularWork,
+    staffLookupError,
+    approvedMinutes: otSummary.approvedMinutes,
+    approvedWeightedHours: otSummary.approvedWeightedHours,
+    otBaseHourly: otRateResolved.otBaseHourly,
+    otBaseHourlySource: otRateResolved.source,
+    calculatedOtPay,
+    allowManualOtPayOverride,
+    otPayFinal,
+    ignoredClientInputs,
+  });
+
+  return {
+    clinicId: clinicIdFromToken,
+    employeeId,
+    month,
+    taxYear,
+    adminUserId,
+
+    employee,
+    staffLookupError,
+    salaryProfile,
+    ssoConfig,
+    otSummary,
+    otRateResolved,
+    payrollResolved,
+    display,
+
+    grossBaseFinal,
+    bonusFinal,
+    otherAllowanceFinal,
+    otherDeductionFinal,
+    salaryBaseForSso,
+    salaryBaseAfterLeave,
+    leaveDeduction,
+    otPayFinal,
+    calculatedOtPay,
+    ssoM,
+    pvdM,
+    netBeforeTaxAndPvd,
+    grossMonthly,
+    withheldTaxMonthly,
+    netPay,
+    taxMode,
+    taxCalc,
+    resolved,
+    warning,
+    ytdBefore,
+    incomeYTD_after,
+    ssoYTD_after,
+    pvdYTD_after,
+    ignoredClientInputs,
+  };
+}
+
+function buildPayrollClosePayload(c) {
+  return {
+    clinicId: c.clinicId,
+    employeeId: c.employeeId,
+    month: c.month,
+
+    grossMonthly: c.grossMonthly,
+    withheldTaxMonthly: c.withheldTaxMonthly,
+    netPay: c.netPay,
+
+    grossBase: c.grossBaseFinal,
+    otPay: c.otPayFinal,
+    bonus: c.bonusFinal,
+    otherAllowance: c.otherAllowanceFinal,
+    otherDeduction: c.otherDeductionFinal,
+
+    ssoEmployeeMonthly: c.ssoM,
+    pvdEmployeeMonthly: c.pvdM,
+
+    otApprovedMinutes: Math.max(0, Math.floor(Number(c.otSummary.approvedMinutes || 0))),
+    otApprovedWeightedHours: round2(clampMin0(c.otSummary.approvedWeightedHours)),
+    otApprovedCount: Math.max(0, Math.floor(Number(c.otSummary.count || 0))),
+
+    displayNetBeforeOt: c.display.displayNetBeforeOt,
+    displayLeaveDeduction: c.display.displayLeaveDeduction,
+    displayOtHours: c.display.displayOtHours,
+    displayOtAmount: c.display.displayOtAmount,
+    displayGrossBeforeTax: c.display.displayGrossBeforeTax,
+    displayTaxAmount: c.display.displayTaxAmount,
+    displaySsoAmount: c.display.displaySsoAmount,
+    displayNetPay: c.display.displayNetPay,
+
+    locked: true,
+    closedBy: c.adminUserId,
+    taxMode: c.taxMode,
+
+    snapshot: {
+      payrollCalculator: "backend_only",
+      taxYear: c.taxYear,
+      allowanceTotalAnnual: 0,
+      incomeYTD_after: c.incomeYTD_after,
+      ssoYTD_after: c.ssoYTD_after,
+      pvdYTD_after: c.pvdYTD_after,
+      taxableYTD: round2(clampMin0(c.taxCalc?.taxableYTD)),
+      taxDueYTD: round2(clampMin0(c.taxCalc?.taxDueYTD)),
+      taxPaidYTD_before: c.ytdBefore.taxPaidYTD,
+      taxPaidYTD_after:
+        c.taxMode === "WITHHOLDING"
+          ? round2(c.ytdBefore.taxPaidYTD + c.withheldTaxMonthly)
+          : round2(c.ytdBefore.taxPaidYTD),
+
+      grossBaseModeRequested: normalizeGrossBaseMode(c.payrollResolved.appliedMode),
+      grossBaseModeApplied: c.payrollResolved.appliedMode,
+      expectedGrossBeforeTax: 0,
+      preDeductionNetBeforeTax: c.payrollResolved.preDeductionNetBeforeTax,
+      postDeductionNetBeforeTax: c.payrollResolved.postDeductionNetBeforeTax,
+
+      grossBaseSource: c.salaryProfile.grossBaseSource,
+      employmentTypeResolved: c.salaryProfile.employmentType,
+      hourlyRateResolved: c.salaryProfile.hourlyRate,
+      monthlySalaryFromStaff: c.salaryProfile.monthlySalaryFromStaff,
+      regularWorkMinutes: c.salaryProfile.regularWork.minutes,
+      regularWorkHours: c.salaryProfile.regularWork.hours,
+      regularWorkSource: c.salaryProfile.regularWork.source,
+
+      ssoBaseUsed: c.salaryBaseForSso,
+      salaryBaseAfterLeave: c.salaryBaseAfterLeave,
+      leaveDeduction: c.leaveDeduction,
+      otPayUsed: c.otPayFinal,
+      calculatedOtPay: c.calculatedOtPay,
+      otBaseHourlyResolved: c.otRateResolved.otBaseHourly,
+      otBaseHourlySource: c.otRateResolved.source,
+      staffLookupError: c.staffLookupError || "",
+      bonusUsed: c.bonusFinal,
+      otherAllowanceUsed: c.otherAllowanceFinal,
+      netBeforeTaxAndPvd: c.netBeforeTaxAndPvd,
+
+      ssoEnabled: c.ssoConfig.enabled,
+      ssoRate: c.ssoConfig.employeeRate,
+      ssoMaxWageBase: c.ssoConfig.maxWageBase,
+      ssoMaxEmployeeMonthly: c.ssoConfig.maxEmployeeMonthly,
+      ssoEmployeeMonthlyInput: c.ignoredClientInputs.ssoEmployeeMonthlyInput,
+      ssoEmployeeMonthlyApplied: c.ssoM,
+
+      ignoredClientInputs: c.ignoredClientInputs,
+    },
+  };
+}
+
+function buildResponsePayload({ c, payrollClose = null, ytd = null, isPreview = false }) {
+  const rowLike = payrollClose || buildPayrollClosePayload(c);
+
+  return {
+    ok: true,
+    preview: isPreview,
+    backendOnly: true,
+    payslipSummary: payrollClose
+      ? buildPayslipSummary(payrollClose)
+      : buildPayslipSummaryFromComputed(c),
+    payrollClose,
+    ytd,
+    taxCalc: c.taxCalc,
+    taxMode: c.taxMode,
+    taxUserId: c.resolved?.employeeUserId || "",
+    taxUserIdSource: c.resolved?.source || "skipped",
+    warning: c.warning,
+    ssoPolicy: {
+      enabled: c.ssoConfig.enabled,
+      employeeRate: c.ssoConfig.employeeRate,
+      maxWageBase: c.ssoConfig.maxWageBase,
+      maxEmployeeMonthly: c.ssoConfig.maxEmployeeMonthly,
+    },
+    otSummary: {
+      monthKey: c.otSummary.monthKey,
+      approvedMinutes: c.otSummary.approvedMinutes,
+      approvedWeightedHours: c.otSummary.approvedWeightedHours,
+      count: c.otSummary.count,
+      records: c.otSummary.records,
+    },
+    displaySnapshot: {
+      netBeforeOt: c.display.displayNetBeforeOt,
+      leaveDeduction: c.display.displayLeaveDeduction,
+      otHours: c.display.displayOtHours,
+      otAmount: c.display.displayOtAmount,
+      grossBeforeTax: c.display.displayGrossBeforeTax,
+      taxAmount: c.display.displayTaxAmount,
+      ssoAmount: c.display.displaySsoAmount,
+      pvdAmount: c.display.displayPvdAmount,
+      netPay: c.display.displayNetPay,
+      salaryBaseForSso: c.display.displaySalaryBaseForSso,
+    },
+    grossBaseMode: {
+      requested: normalizeGrossBaseMode(c.payrollResolved.appliedMode),
+      applied: c.payrollResolved.appliedMode,
+      expectedGrossBeforeTax: 0,
+      preDeductionNetBeforeTax: c.payrollResolved.preDeductionNetBeforeTax,
+      postDeductionNetBeforeTax: c.payrollResolved.postDeductionNetBeforeTax,
+    },
+    payrollInputsResolved: {
+      employeeId: c.employeeId,
+      clinicId: c.clinicId,
+      month: c.month,
+      grossBase: c.grossBaseFinal,
+      grossBaseSource: c.salaryProfile.grossBaseSource,
+      employmentType: c.salaryProfile.employmentType,
+      hourlyRate: c.salaryProfile.hourlyRate,
+      monthlySalaryFromStaff: c.salaryProfile.monthlySalaryFromStaff,
+      regularWork: c.salaryProfile.regularWork,
+      ignoredClientInputs: c.ignoredClientInputs,
+    },
+    row: rowLike,
+  };
+}
+
+function handleControllerError(res, err, label) {
+  if (err instanceof HttpError) {
+    return res.status(err.status).json({
+      ok: false,
+      message: err.message,
+      details: err.details,
+    });
+  }
+
+  console.error(`${label} error:`, err);
+  return res.status(500).json({
+    ok: false,
+    message: `${label} failed`,
+    error: err.message,
+  });
+}
+
+// ================= PREVIEW MONTH =================
+// ✅ POST /payroll-close/preview/:employeeId/:month
+async function previewMonth(req, res) {
+  try {
+    const body = req.body || {};
+    const { clinicId: clinicIdFromToken } = assertAdminContext(req);
+
+    const clinicId = safeStr(body.clinicId || clinicIdFromToken);
+    const employeeId = safeStr(body.employeeId || req.params.employeeId);
+    const month = safeStr(body.month || req.params.month);
+
+    if (!clinicId || !employeeId || !month) {
+      return res.status(400).json({ message: "clinicId, employeeId, month is required" });
+    }
+
+    if (!isYm(month)) {
+      return res.status(400).json({ message: "month must be yyyy-MM" });
+    }
+
+    const c = await computePayrollForMonth({
+      req,
+      clinicId,
+      employeeId,
+      month,
+      body,
+    });
+
+    return res.json(buildResponsePayload({ c, isPreview: true }));
+  } catch (err) {
+    return handleControllerError(res, err, "previewMonth");
+  }
 }
 
 // ================= CLOSE MONTH =================
@@ -622,152 +1259,44 @@ async function closeMonth(req, res) {
     const employeeId = safeStr(body.employeeId || req.params.employeeId);
     const month = safeStr(body.month || req.params.month);
 
-    const grossBase = toNumber(body.grossBase);
-    const otPay = toNumber(body.otPay);
-    const bonus = toNumber(body.bonus);
-    const otherAllowance = toNumber(body.otherAllowance);
-    const otherDeduction = toNumber(body.otherDeduction);
-    const ssoEmployeeMonthly = toNumber(body.ssoEmployeeMonthly);
-    const pvdEmployeeMonthly = toNumber(body.pvdEmployeeMonthly);
-    const employeeUserIdFromBody = safeStr(body.employeeUserId);
-    const taxModeRaw = body.taxMode;
-    const grossBaseModeRaw = body.grossBaseMode;
-
     if (!clinicId || !employeeId || !month) {
-      return res
-        .status(400)
-        .json({ message: "clinicId, employeeId, month is required" });
+      return res.status(400).json({ message: "clinicId, employeeId, month is required" });
     }
 
     if (!isYm(month)) {
       return res.status(400).json({ message: "month must be yyyy-MM" });
     }
 
-    const taxMode = normalizeTaxMode(taxModeRaw);
-
-    const {
-      clinicId: clinicIdFromToken,
-      userId: adminUserId,
-      role,
-    } = pickAuth(req);
-
-    if (!clinicIdFromToken) {
-      return res.status(401).json({ message: "Missing clinicId in token" });
-    }
+    const { clinicId: clinicIdFromToken } = assertAdminContext(req);
 
     if (safeStr(clinicId) !== clinicIdFromToken) {
       return res.status(403).json({ message: "Forbidden (clinic mismatch)" });
     }
 
-    if (!adminUserId) {
-      return res.status(401).json({ message: "Missing userId in token" });
-    }
-
-    if (role !== "admin") {
-      return res.status(403).json({ message: "Forbidden (admin only)" });
-    }
-
     const existed = await PayrollClose.findOne({
       clinicId: clinicIdFromToken,
-      employeeId: safeStr(employeeId),
-      month: safeStr(month),
+      employeeId,
+      month,
     }).lean();
 
     if (existed) {
       return res.status(409).json({ message: "Month already closed" });
     }
 
-    const clinicRow = await Clinic.findOne({
+    const c = await computePayrollForMonth({
+      req,
       clinicId: clinicIdFromToken,
-    }).lean();
-
-    const ssoConfig = resolveClinicSsoConfig(clinicRow);
-
-    const otSummary = await getApprovedOtSummaryForMonth({
-      clinicId: clinicIdFromToken,
-      monthKey: safeStr(month),
-      employeeId: safeStr(employeeId),
-    });
-
-    const grossBaseFinal = round2(clampMin0(grossBase));
-    const bonusFinal = round2(clampMin0(bonus));
-    const otherAllowanceFinal = round2(clampMin0(otherAllowance));
-    const otherDeductionFinal = round2(clampMin0(otherDeduction));
-
-    const otRateResolved = await resolveOtBaseHourly({
-      employeeId: safeStr(employeeId),
-      grossBase: grossBaseFinal,
-      authHeader: req.headers.authorization,
-    });
-
-    let otPayFinal = clampMin0(otPay);
-
-    if (otPayFinal <= 0 && otRateResolved.otBaseHourly > 0) {
-      otPayFinal = Math.max(
-        0,
-        otSummary.approvedWeightedHours * otRateResolved.otBaseHourly
-      );
-    }
-
-    otPayFinal = round2(otPayFinal);
-
-    console.log("[PAYROLL_CLOSE][OT_CALC]", {
-      clinicId: clinicIdFromToken,
-      employeeId: safeStr(employeeId),
-      month: safeStr(month),
-      employmentType: otRateResolved.employmentType,
-      otBaseHourly: otRateResolved.otBaseHourly,
-      otBaseHourlySource: otRateResolved.source,
-      staffLookupError: otRateResolved.staffLookupError || "",
-      approvedMinutes: otSummary.approvedMinutes,
-      approvedWeightedHours: otSummary.approvedWeightedHours,
-      otPayInput: round2(clampMin0(otPay)),
-      otPayFinal,
-    });
-
-    const taxYear = monthToTaxYear(month);
-
-    const payrollResolved = resolvePayrollComputation({
+      employeeId,
+      month,
       body,
-      grossBase: grossBaseFinal,
-      otPay: otPayFinal,
-      bonus: bonusFinal,
-      otherAllowance: otherAllowanceFinal,
-      otherDeduction: otherDeductionFinal,
     });
 
-    const salaryBaseForSso = round2(payrollResolved.salaryBaseForSso);
-    const salaryBaseAfterLeave = round2(payrollResolved.salaryBaseAfterLeave);
-    const leaveDeduction = round2(payrollResolved.leaveDeduction);
-
-    const ssoM = computeSsoEmployeeMonthlyFromClinicConfig(
-      salaryBaseForSso,
-      ssoConfig
-    );
-
-    const pvdM = round2(clampMin0(pvdEmployeeMonthly));
-
-    const netBeforeTaxAndPvd = round2(
-      Math.max(
-        0,
-        salaryBaseForSso -
-          ssoM -
-          leaveDeduction +
-          otPayFinal +
-          bonusFinal +
-          otherAllowanceFinal
-      )
-    );
-
-    let ytd = await TaxYTD.findOne({
-      employeeId: safeStr(employeeId),
-      taxYear,
-    });
+    let ytd = await TaxYTD.findOne({ employeeId, taxYear: c.taxYear });
 
     if (!ytd) {
       ytd = await TaxYTD.create({
-        employeeId: safeStr(employeeId),
-        taxYear,
+        employeeId,
+        taxYear: c.taxYear,
         incomeYTD: 0,
         ssoYTD: 0,
         pvdYTD: 0,
@@ -775,217 +1304,24 @@ async function closeMonth(req, res) {
       });
     }
 
-    const incomeYTD_after = round2(
-      clampMin0(ytd.incomeYTD) + netBeforeTaxAndPvd
-    );
-    const ssoYTD_after = round2(clampMin0(ytd.ssoYTD) + ssoM);
-    const pvdYTD_after = round2(clampMin0(ytd.pvdYTD) + pvdM);
-
-    let resolved = null;
-    let taxCalc = null;
-    let withheldTaxMonthly = 0;
-    let warning = null;
-
-    if (taxMode === "WITHHOLDING") {
-      resolved = await resolveEmployeeUserId({
-        clinicId: clinicIdFromToken,
-        monthKey: safeStr(month),
-        staffId: safeStr(employeeId),
-        bodyEmployeeUserId: employeeUserIdFromBody,
-        adminUserId,
-        token: req.headers.authorization,
-      });
-
-      taxCalc = await calcWithheldByYTDFromAuth({
-        userId: resolved.employeeUserId,
-        taxYear,
-        incomeYTD: incomeYTD_after,
-        ssoYTD: ssoYTD_after,
-        pvdYTD: pvdYTD_after,
-        taxPaidYTD: clampMin0(ytd.taxPaidYTD),
-      });
-
-      withheldTaxMonthly = round2(clampMin0(taxCalc?.withheldThisMonth));
-
-      warning =
-        resolved.source === "admin_fallback"
-          ? "employeeUserId not found (body/staff_service/overtime). Tax calc fell back to admin userId. Please send employeeUserId from client for accuracy."
-          : null;
-    } else {
-      withheldTaxMonthly = 0;
-      taxCalc = {
-        taxMode: "NO_WITHHOLDING",
-        withheldThisMonth: 0,
-        note: "Skipped tax withholding by taxMode=NO_WITHHOLDING",
-      };
-    }
-
-    const netPay = round2(
-      Math.max(0, netBeforeTaxAndPvd - withheldTaxMonthly - pvdM)
-    );
-
-    const grossMonthly = netBeforeTaxAndPvd;
-
-    const display = buildDisplaySnapshot({
-      salaryBaseForSso,
-      salaryBaseAfterLeave,
-      leaveDeduction,
-      otSummary,
-      otPayFinal,
-      bonusFinal,
-      otherAllowanceFinal,
-      withheldTaxMonthly,
-      ssoM,
-      pvdM,
-      netPay,
-    });
-
-    const payrollClosePayload = {
-      clinicId: clinicIdFromToken,
-      employeeId: safeStr(employeeId),
-      month: safeStr(month),
-
-      grossMonthly,
-      withheldTaxMonthly,
-      netPay,
-
-      grossBase: grossBaseFinal,
-      otPay: otPayFinal,
-      bonus: bonusFinal,
-      otherAllowance: otherAllowanceFinal,
-      otherDeduction: otherDeductionFinal,
-
-      ssoEmployeeMonthly: ssoM,
-      pvdEmployeeMonthly: pvdM,
-
-      otApprovedMinutes: Math.max(
-        0,
-        Math.floor(Number(otSummary.approvedMinutes || 0))
-      ),
-      otApprovedWeightedHours: round2(
-        clampMin0(otSummary.approvedWeightedHours)
-      ),
-      otApprovedCount: Math.max(0, Math.floor(Number(otSummary.count || 0))),
-
-      displayNetBeforeOt: display.displayNetBeforeOt,
-      displayLeaveDeduction: display.displayLeaveDeduction,
-      displayOtHours: display.displayOtHours,
-      displayOtAmount: display.displayOtAmount,
-      displayGrossBeforeTax: display.displayGrossBeforeTax,
-      displayTaxAmount: display.displayTaxAmount,
-      displaySsoAmount: display.displaySsoAmount,
-      displayNetPay: display.displayNetPay,
-
-      locked: true,
-      closedBy: adminUserId,
-      taxMode,
-
-      snapshot: {
-        taxYear,
-        allowanceTotalAnnual: 0,
-        incomeYTD_after,
-        ssoYTD_after,
-        pvdYTD_after,
-        taxableYTD: round2(clampMin0(taxCalc?.taxableYTD)),
-        taxDueYTD: round2(clampMin0(taxCalc?.taxDueYTD)),
-        taxPaidYTD_before: round2(clampMin0(ytd.taxPaidYTD)),
-        taxPaidYTD_after:
-          taxMode === "WITHHOLDING"
-            ? round2(clampMin0(ytd.taxPaidYTD) + withheldTaxMonthly)
-            : round2(clampMin0(ytd.taxPaidYTD)),
-
-        grossBaseModeRequested: normalizeGrossBaseMode(grossBaseModeRaw),
-        grossBaseModeApplied: payrollResolved.appliedMode,
-        expectedGrossBeforeTax: payrollResolved.expectedGrossBeforeTax,
-        preDeductionNetBeforeTax: payrollResolved.preDeductionNetBeforeTax,
-        postDeductionNetBeforeTax: payrollResolved.postDeductionNetBeforeTax,
-
-        ssoBaseUsed: salaryBaseForSso,
-        salaryBaseAfterLeave,
-        leaveDeduction,
-        otPayUsed: otPayFinal,
-        employmentTypeResolved: otRateResolved.employmentType,
-        otBaseHourlyResolved: otRateResolved.otBaseHourly,
-        otBaseHourlySource: otRateResolved.source,
-        staffLookupError: otRateResolved.staffLookupError || "",
-        bonusUsed: bonusFinal,
-        otherAllowanceUsed: otherAllowanceFinal,
-        netBeforeTaxAndPvd,
-
-        ssoEnabled: ssoConfig.enabled,
-        ssoRate: ssoConfig.employeeRate,
-        ssoMaxWageBase: ssoConfig.maxWageBase,
-        ssoMaxEmployeeMonthly: ssoConfig.maxEmployeeMonthly,
-        ssoEmployeeMonthlyInput: normalizeSsoEmployeeMonthly(
-          ssoEmployeeMonthly,
-          ssoConfig.maxEmployeeMonthly
-        ),
-        ssoEmployeeMonthlyApplied: ssoM,
-      },
-    };
-
+    const payrollClosePayload = buildPayrollClosePayload(c);
     const payrollClose = await PayrollClose.create(payrollClosePayload);
-    const payslipSummary = buildPayslipSummary(payrollClose);
 
-    ytd.incomeYTD = incomeYTD_after;
-    ytd.ssoYTD = ssoYTD_after;
-    ytd.pvdYTD = pvdYTD_after;
+    ytd.incomeYTD = c.incomeYTD_after;
+    ytd.ssoYTD = c.ssoYTD_after;
+    ytd.pvdYTD = c.pvdYTD_after;
 
-    if (taxMode === "WITHHOLDING") {
-      ytd.taxPaidYTD = round2(clampMin0(ytd.taxPaidYTD) + withheldTaxMonthly);
+    if (c.taxMode === "WITHHOLDING") {
+      ytd.taxPaidYTD = round2(c.ytdBefore.taxPaidYTD + c.withheldTaxMonthly);
     } else {
-      ytd.taxPaidYTD = round2(clampMin0(ytd.taxPaidYTD));
+      ytd.taxPaidYTD = round2(c.ytdBefore.taxPaidYTD);
     }
 
     await ytd.save();
 
-    return res.json({
-      ok: true,
-      payslipSummary,
-      payrollClose,
-      ytd,
-      taxCalc,
-      taxMode,
-      taxUserId: resolved?.employeeUserId || "",
-      taxUserIdSource: resolved?.source || "skipped",
-      warning,
-      ssoPolicy: {
-        enabled: ssoConfig.enabled,
-        employeeRate: ssoConfig.employeeRate,
-        maxWageBase: ssoConfig.maxWageBase,
-        maxEmployeeMonthly: ssoConfig.maxEmployeeMonthly,
-      },
-      otSummary: {
-        monthKey: otSummary.monthKey,
-        approvedMinutes: otSummary.approvedMinutes,
-        approvedWeightedHours: otSummary.approvedWeightedHours,
-        count: otSummary.count,
-        records: otSummary.records,
-      },
-      displaySnapshot: {
-        netBeforeOt: display.displayNetBeforeOt,
-        leaveDeduction: display.displayLeaveDeduction,
-        otHours: display.displayOtHours,
-        otAmount: display.displayOtAmount,
-        grossBeforeTax: display.displayGrossBeforeTax,
-        taxAmount: display.displayTaxAmount,
-        ssoAmount: display.displaySsoAmount,
-        netPay: display.displayNetPay,
-        salaryBaseForSso: display.displaySalaryBaseForSso,
-      },
-      grossBaseMode: {
-        requested: normalizeGrossBaseMode(grossBaseModeRaw),
-        applied: payrollResolved.appliedMode,
-        expectedGrossBeforeTax: payrollResolved.expectedGrossBeforeTax,
-        preDeductionNetBeforeTax: payrollResolved.preDeductionNetBeforeTax,
-        postDeductionNetBeforeTax: payrollResolved.postDeductionNetBeforeTax,
-      },
-    });
+    return res.json(buildResponsePayload({ c, payrollClose, ytd, isPreview: false }));
   } catch (err) {
-    console.error("closeMonth error:", err);
-    return res
-      .status(500)
-      .json({ message: "closeMonth failed", error: err.message });
+    return handleControllerError(res, err, "closeMonth");
   }
 }
 
@@ -1035,10 +1371,7 @@ async function rollbackTaxYtdFromClosedPayroll(row) {
     };
   }
 
-  const ytd = await TaxYTD.findOne({
-    employeeId,
-    taxYear: c.taxYear,
-  });
+  const ytd = await TaxYTD.findOne({ employeeId, taxYear: c.taxYear });
 
   if (!ytd) {
     return {
@@ -1052,9 +1385,7 @@ async function rollbackTaxYtdFromClosedPayroll(row) {
   ytd.incomeYTD = round2(Math.max(0, clampMin0(ytd.incomeYTD) - c.income));
   ytd.ssoYTD = round2(Math.max(0, clampMin0(ytd.ssoYTD) - c.sso));
   ytd.pvdYTD = round2(Math.max(0, clampMin0(ytd.pvdYTD) - c.pvd));
-  ytd.taxPaidYTD = round2(
-    Math.max(0, clampMin0(ytd.taxPaidYTD) - c.taxPaid)
-  );
+  ytd.taxPaidYTD = round2(Math.max(0, clampMin0(ytd.taxPaidYTD) - c.taxPaid));
 
   await ytd.save();
 
@@ -1084,10 +1415,7 @@ async function applyTaxYtdFromClosedPayroll(row) {
     };
   }
 
-  let ytd = await TaxYTD.findOne({
-    employeeId,
-    taxYear: c.taxYear,
-  });
+  let ytd = await TaxYTD.findOne({ employeeId, taxYear: c.taxYear });
 
   if (!ytd) {
     ytd = await TaxYTD.create({
@@ -1132,36 +1460,34 @@ function buildRecalculateBody({ req, oldRow, clinicId, employeeId, month }) {
     employeeId,
     month,
 
-    grossBase:
-      body.grossBase !== undefined ? body.grossBase : oldRow?.grossBase ?? 0,
-
+    // Keep accounting inputs from latest request or old row.
+    // grossBase is only fallback; backend will prefer staff_service.
+    grossBase: body.grossBase !== undefined ? body.grossBase : oldRow?.grossBase ?? 0,
     bonus: body.bonus !== undefined ? body.bonus : oldRow?.bonus ?? 0,
-
     otherAllowance:
       body.otherAllowance !== undefined
         ? body.otherAllowance
         : oldRow?.otherAllowance ?? 0,
-
     otherDeduction:
       body.otherDeduction !== undefined
         ? body.otherDeduction
         : oldRow?.otherDeduction ?? 0,
-
     pvdEmployeeMonthly:
       body.pvdEmployeeMonthly !== undefined
         ? body.pvdEmployeeMonthly
         : oldRow?.pvdEmployeeMonthly ?? 0,
 
+    // Force backend OT calculation from latest approved OT unless explicit override.
+    otPay: body.otPay !== undefined ? body.otPay : 0,
+    allowManualOtPayOverride: body.allowManualOtPayOverride === true,
+
+    // ssoEmployeeMonthly is ignored by backend, kept only as input audit.
     ssoEmployeeMonthly:
       body.ssoEmployeeMonthly !== undefined
         ? body.ssoEmployeeMonthly
         : oldRow?.ssoEmployeeMonthly ?? 0,
 
-    // ถ้า admin ไม่ส่ง otPay มา ให้ closeMonth คำนวณจาก approved OT ล่าสุด
-    otPay: body.otPay !== undefined ? body.otPay : 0,
-
     taxMode: body.taxMode || oldRow?.taxMode || "WITHHOLDING",
-
     grossBaseMode:
       body.grossBaseMode ||
       oldRow?.snapshot?.grossBaseModeRequested ||
@@ -1172,9 +1498,7 @@ function buildRecalculateBody({ req, oldRow, clinicId, employeeId, month }) {
 
 // ✅ POST /payroll-close/recalculate/:employeeId/:month
 async function recalculateClosedMonth(req, res) {
-  const { clinicId: clinicIdFromToken, userId: adminUserId, role } = pickAuth(
-    req
-  );
+  const { clinicId: clinicIdFromToken, userId: adminUserId, role } = pickAuth(req);
 
   try {
     if (!clinicIdFromToken) {
@@ -1261,6 +1585,7 @@ async function recalculateClosedMonth(req, res) {
       return res.status(200).json({
         ok: true,
         recalculated: true,
+        backendOnly: true,
         message: "Payroll month recalculated successfully",
         oldPayrollCloseId: String(oldRow._id),
         rollbackResult,
@@ -1407,6 +1732,7 @@ async function getClosedMonthByEmployeeAndMonth(req, res) {
 
 module.exports = {
   guardPayslipAccess,
+  previewMonth,
   closeMonth,
   recalculateClosedMonth,
   getClosedMonthsByEmployee,

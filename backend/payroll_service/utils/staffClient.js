@@ -16,6 +16,14 @@
 // - FIX: dropdown cache key safer per bearer token key
 // - FIX: user/staff lookup cache key now separated by bearer token key
 // - FIX: extractEmployee supports array/list fallback better
+//
+// ✅ UPDATED FOR BACKEND-ONLY PAYROLL:
+// - normalizeEmployee() now exposes stable payroll fields:
+//   baseSalary / salary / monthlySalary / monthlyWage
+//   hourlyRate / hourlyWage
+//   employmentType / employeeType / workType
+//   linkedUserId / userId
+//
 
 function s(v) {
   return String(v || "").trim();
@@ -50,6 +58,7 @@ function buildHeaders(bearerToken = "") {
   const internalKey = s(
     process.env.STAFF_SERVICE_INTERNAL_KEY || process.env.INTERNAL_SERVICE_KEY
   );
+
   if (internalKey) {
     headers["x-internal-key"] = internalKey;
   }
@@ -215,28 +224,82 @@ function extractList(payload) {
 function normalizeEmployee(employee) {
   if (!employee || typeof employee !== "object") return null;
 
+  const monthlySalary = n(
+    employee.baseSalary ??
+      employee.salary ??
+      employee.monthlySalary ??
+      employee.monthlyWage ??
+      employee.grossBase ??
+      employee.grossMonthly ??
+      employee.fixedSalary ??
+      employee.defaultSalary ??
+      employee.payroll?.baseSalary ??
+      employee.payroll?.monthlySalary ??
+      employee.payroll?.salary ??
+      0
+  );
+
+  const hourlyRate = n(
+    employee.hourlyRate ??
+      employee.hourlyWage ??
+      employee.hourly_salary ??
+      employee.hourly_salary_rate ??
+      employee.wagePerHour ??
+      employee.ratePerHour ??
+      employee.payroll?.hourlyRate ??
+      employee.payroll?.hourlyWage ??
+      0
+  );
+
+  const employmentType = s(
+    employee.employmentType ||
+      employee.employeeType ||
+      employee.workType ||
+      employee.payroll?.employmentType ||
+      ""
+  );
+
+  const userId = s(
+    employee.userId ||
+      employee.linkedUserId ||
+      employee.linked_user_id ||
+      employee.accountUserId ||
+      employee.user?._id ||
+      employee.user?.id ||
+      ""
+  );
+
+  const staffId = s(
+    employee.staffId ||
+      employee.employeeCode ||
+      employee.code ||
+      employee._id ||
+      employee.id ||
+      ""
+  );
+
   return {
     ...employee,
-    _id: s(employee._id || employee.id || employee.staffId || ""),
-    id: s(employee.id || employee._id || employee.staffId || ""),
-    staffId: s(
-      employee.staffId ||
-        employee.employeeCode ||
-        employee.code ||
-        employee._id ||
-        employee.id ||
-        ""
-    ),
-    userId: s(
-      employee.userId ||
-        employee.linkedUserId ||
+
+    _id: s(employee._id || employee.id || staffId || ""),
+    id: s(employee.id || employee._id || staffId || ""),
+
+    staffId,
+
+    userId,
+    linkedUserId: s(
+      employee.linkedUserId ||
+        employee.linked_user_id ||
+        userId ||
         employee.accountUserId ||
         employee.user?._id ||
         employee.user?.id ||
         ""
     ),
+
     fullName: s(employee.fullName || employee.name || ""),
     name: s(employee.name || employee.fullName || ""),
+
     clinicId: s(
       employee.clinicId ||
         employee.clinic?._id ||
@@ -244,7 +307,20 @@ function normalizeEmployee(employee) {
         employee.clinic?.clinicId ||
         ""
     ),
-    employmentType: s(employee.employmentType || ""),
+
+    employmentType,
+    employeeType: s(employee.employeeType || employmentType),
+    workType: s(employee.workType || employmentType),
+
+    // ✅ Stable payroll fields for payroll_service
+    baseSalary: monthlySalary,
+    salary: monthlySalary,
+    monthlySalary,
+    monthlyWage: monthlySalary,
+
+    hourlyRate,
+    hourlyWage: hourlyRate,
+
     status: s(employee.status || employee.employeeStatus || ""),
   };
 }
@@ -433,6 +509,7 @@ async function getEmployeeByUserId(userId, bearerToken = "") {
     if (employee.staffId) {
       setCache(`staff:${employee.staffId}:${tokenPart}`, employee, DEFAULT_TTL_MS);
     }
+
     if (employee.userId) {
       setCache(`user:${employee.userId}:${tokenPart}`, employee, DEFAULT_TTL_MS);
     }
@@ -492,6 +569,7 @@ async function getEmployeeByStaffId(staffId, bearerToken = "") {
     if (employee.staffId) {
       setCache(`staff:${employee.staffId}:${tokenPart}`, employee, DEFAULT_TTL_MS);
     }
+
     if (employee.userId) {
       setCache(`user:${employee.userId}:${tokenPart}`, employee, DEFAULT_TTL_MS);
     }
@@ -539,18 +617,29 @@ async function listEmployeesDropdown(bearerToken = "") {
 
         const deleted =
           !!e.deleted || !!e.isDeleted || !!e.archived || !!e.isArchived;
+
         const inactive =
           activeFlag === false ||
           ["inactive", "terminated", "deleted", "archived"].includes(status);
 
         return !deleted && !inactive;
       })
-      .map((e) => ({
-        staffId: s(e.staffId || e._id || e.id),
-        fullName: s(e.fullName || e.name),
-        employmentType: s(e.employmentType),
-        userId: s(e.userId || e.linkedUserId),
-      }))
+      .map((e) => {
+        const emp = normalizeEmployee(e);
+
+        return {
+          staffId: s(emp?.staffId || emp?._id || emp?.id),
+          fullName: s(emp?.fullName || emp?.name),
+          employmentType: s(emp?.employmentType),
+          userId: s(emp?.userId || emp?.linkedUserId),
+
+          // ✅ optional payroll fields for dropdown consumers
+          baseSalary: n(emp?.baseSalary),
+          monthlySalary: n(emp?.monthlySalary),
+          hourlyRate: n(emp?.hourlyRate),
+          hourlyWage: n(emp?.hourlyWage),
+        };
+      })
       .filter((x) => x.staffId);
 
     setCache(cacheKey, normalized, DEFAULT_TTL_MS);
