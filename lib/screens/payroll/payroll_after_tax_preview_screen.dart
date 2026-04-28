@@ -1,20 +1,50 @@
+// lib/screens/payroll/payroll_after_tax_preview_screen.dart
+//
+// ✅ PRODUCTION — Backend-only Payroll Preview Screen
+//
+// หลักการ:
+// - Flutter ส่ง input / intent เท่านั้น
+// - Backend คำนวณเงินเดือน / OT / SSO / ภาษี / Net Pay ทั้งหมด
+// - หน้านี้แสดงผลจาก backend preview เท่านั้น
+//
+// ส่งเข้า backend ได้:
+// - clinicId, employeeId, month
+// - bonus
+// - otherAllowance / commission
+// - otherDeduction / รายการหัก
+// - pvdEmployeeMonthly
+// - taxMode
+// - employeeUserId
+// - grossMonthly เป็น fallback ชั่วคราว หาก staff_service ยังไม่มี salary
+//
+// ไม่ใช้ Flutter คำนวณยอดจริง:
+// - OT amount
+// - SSO amount
+// - grossBeforeTax
+// - tax
+// - netPay
+//
+
 import 'package:flutter/material.dart';
 
-import '../../api/payroll_tax_api.dart';
 import '../../api/payroll_close_api.dart';
-import '../../models/payroll_tax_result.dart';
 
 class PayrollAfterTaxPreviewScreen extends StatefulWidget {
+  /// เดิมใช้เป็น grossMonthly จากหน้า employee detail
+  /// ตอนนี้ใช้เป็น fallback ให้ backend เท่านั้น หาก staff_service ยังไม่มี salary
   final double grossMonthly;
+
+  /// compatibility only — ไม่ใช้เป็นยอดจริงแล้ว
   final double ssoEmployeeMonthly;
+
   final int? year;
 
   // required for Close Payroll
   final String clinicId;
   final String employeeId; // ใช้ staffId จริงจาก backend
 
-  // optional components
-  final double otPay;
+  // compatibility/input components
+  final double otPay; // ignored as computed value
   final double bonus;
   final double otherAllowance;
   final double otherDeduction;
@@ -25,24 +55,32 @@ class PayrollAfterTaxPreviewScreen extends StatefulWidget {
 
   // none = ไม่หักภาษี
   // withholding = หักภาษี ณ ที่จ่าย
-  // annual = ใช้ tax engine แบบทั้งปี
+  // annual = backend withholding flow
   final String taxMode;
-  final double withholdingPercent;
-  final double? withholdingAmount;
+  final double withholdingPercent; // compatibility display only
+  final double? withholdingAmount; // ignored as computed value
 
-  // false = ห้ามใช้ self annual tax engine
-  // true  = อนุญาตใช้ self annual tax engine
+  // compatibility only
   final bool allowSelfAnnualTaxEngine;
 
-  // detail snapshot จากหน้า employee detail
-  final double detailNetBeforeOt; // ฐานเงินเดือน / ฐานก่อน OT
+  // detail snapshot จากหน้า employee detail — compatibility only
+  // หน้านี้จะไม่เอา snapshot พวกนี้มาคำนวณยอดจริง
+  final double detailNetBeforeOt;
   final double detailLeaveDeduction;
   final double detailOtAmount;
-  final double detailGrossBeforeTax; // ยอดก่อนภาษี
+  final double detailGrossBeforeTax;
   final double detailSsoAmount;
   final double detailTaxAmount;
   final double detailNetPay;
   final double detailOtHours;
+
+  // optional: userId ของพนักงานจริง ถ้าหน้า detail ส่งมาได้
+  final String? employeeUserId;
+
+  // optional: สำหรับ part-time ในอนาคต ถ้าหน้า detail ส่งชั่วโมงดิบมา
+  final double? regularWorkHours;
+  final int? regularWorkMinutes;
+  final List<Map<String, dynamic>>? workItems;
 
   const PayrollAfterTaxPreviewScreen({
     super.key,
@@ -69,144 +107,15 @@ class PayrollAfterTaxPreviewScreen extends StatefulWidget {
     this.detailTaxAmount = 0,
     this.detailNetPay = 0,
     this.detailOtHours = 0,
+    this.employeeUserId,
+    this.regularWorkHours,
+    this.regularWorkMinutes,
+    this.workItems,
   });
 
   @override
   State<PayrollAfterTaxPreviewScreen> createState() =>
       _PayrollAfterTaxPreviewScreenState();
-}
-
-class _PreviewTaxVM {
-  final int taxYear;
-  final String taxMode;
-
-  final double grossMonthly;
-  final double estimatedMonthlyTax;
-  final double netAfterTaxMonthly;
-  final double netAfterTaxAndSSOMonthly;
-
-  final double projectedAnnualIncome;
-  final double allowanceTotal;
-  final double projectedAnnualTaxable;
-  final double projectedAnnualTax;
-
-  final String sourceLabel;
-
-  const _PreviewTaxVM({
-    required this.taxYear,
-    required this.taxMode,
-    required this.grossMonthly,
-    required this.estimatedMonthlyTax,
-    required this.netAfterTaxMonthly,
-    required this.netAfterTaxAndSSOMonthly,
-    required this.projectedAnnualIncome,
-    required this.allowanceTotal,
-    required this.projectedAnnualTaxable,
-    required this.projectedAnnualTax,
-    required this.sourceLabel,
-  });
-
-  factory _PreviewTaxVM.fromAnnualResult(
-    PayrollTaxResult r, {
-    required String taxMode,
-  }) {
-    return _PreviewTaxVM(
-      taxYear: r.taxYear,
-      taxMode: taxMode,
-      grossMonthly: r.grossMonthly,
-      estimatedMonthlyTax: r.estimatedMonthlyTax,
-      netAfterTaxMonthly: r.netAfterTaxMonthly,
-      netAfterTaxAndSSOMonthly: r.netAfterTaxAndSSOMonthly,
-      projectedAnnualIncome: r.projectedAnnualIncome,
-      allowanceTotal: r.allowanceTotal,
-      projectedAnnualTaxable: r.projectedAnnualTaxable,
-      projectedAnnualTax: r.projectedAnnualTax,
-      sourceLabel: 'คำนวณภาษีทั้งปี',
-    );
-  }
-
-  factory _PreviewTaxVM.manual({
-    required int taxYear,
-    required String taxMode,
-    required double grossMonthly,
-    required double monthlyTax,
-    required double ssoEmployeeMonthly,
-    required double pvdEmployeeMonthly,
-    required String sourceLabel,
-  }) {
-    final safeGross = grossMonthly < 0 ? 0.0 : grossMonthly;
-    final safeTax = monthlyTax < 0 ? 0.0 : monthlyTax;
-    final safeSso = ssoEmployeeMonthly < 0 ? 0.0 : ssoEmployeeMonthly;
-    final safePvd = pvdEmployeeMonthly < 0 ? 0.0 : pvdEmployeeMonthly;
-
-    final netAfterTax = (safeGross - safeTax).clamp(0.0, double.infinity);
-    final netAfterTaxAndSSO =
-        (safeGross - safeTax - safeSso - safePvd).clamp(0.0, double.infinity);
-
-    final projectedAnnualIncome = safeGross * 12.0;
-    final projectedAnnualTax = safeTax * 12.0;
-    final projectedAnnualTaxable =
-        (projectedAnnualIncome - projectedAnnualTax).clamp(
-      0.0,
-      double.infinity,
-    );
-
-    return _PreviewTaxVM(
-      taxYear: taxYear,
-      taxMode: taxMode,
-      grossMonthly: safeGross,
-      estimatedMonthlyTax: safeTax,
-      netAfterTaxMonthly: netAfterTax,
-      netAfterTaxAndSSOMonthly: netAfterTaxAndSSO,
-      projectedAnnualIncome: projectedAnnualIncome,
-      allowanceTotal: 0.0,
-      projectedAnnualTaxable: projectedAnnualTaxable,
-      projectedAnnualTax: projectedAnnualTax,
-      sourceLabel: sourceLabel,
-    );
-  }
-}
-
-class _PayslipBreakdown {
-  final double salary;
-  final double socialSecurity;
-  final double ot;
-  final double commission;
-  final double bonus;
-  final double leaveDeduction;
-  final double tax;
-  final double pvd;
-  final double grossBeforeTax;
-  final double netAfterTaxBeforeSso;
-  final double netPay;
-  final double otHours;
-
-  const _PayslipBreakdown({
-    required this.salary,
-    required this.socialSecurity,
-    required this.ot,
-    required this.commission,
-    required this.bonus,
-    required this.leaveDeduction,
-    required this.tax,
-    required this.pvd,
-    required this.grossBeforeTax,
-    required this.netAfterTaxBeforeSso,
-    required this.netPay,
-    required this.otHours,
-  });
-
-  double get recomputedNet =>
-      salary -
-      socialSecurity +
-      ot +
-      commission +
-      bonus -
-      leaveDeduction -
-      tax -
-      pvd;
-
-  bool get hasMismatch => (recomputedNet - netPay).abs() >= 0.01;
 }
 
 class _LineItem {
@@ -221,24 +130,134 @@ class _LineItem {
   });
 }
 
+class _BackendPayrollPreview {
+  final Map<String, dynamic> raw;
+  final Map<String, dynamic> payslipSummary;
+  final Map<String, dynamic> amounts;
+  final Map<String, dynamic> displaySnapshot;
+  final Map<String, dynamic> otSummary;
+  final Map<String, dynamic> payrollInputsResolved;
+  final Map<String, dynamic> row;
+  final Map<String, dynamic> snapshot;
+
+  const _BackendPayrollPreview({
+    required this.raw,
+    required this.payslipSummary,
+    required this.amounts,
+    required this.displaySnapshot,
+    required this.otSummary,
+    required this.payrollInputsResolved,
+    required this.row,
+    required this.snapshot,
+  });
+
+  static Map<String, dynamic> _asMap(dynamic v) {
+    if (v is Map<String, dynamic>) return v;
+    if (v is Map) {
+      return Map<String, dynamic>.from(
+        v.map((k, val) => MapEntry(k.toString(), val)),
+      );
+    }
+    return <String, dynamic>{};
+  }
+
+  static double _readNum(dynamic v) {
+    if (v is num) return v.toDouble();
+    return double.tryParse('${v ?? ''}') ?? 0.0;
+  }
+
+  static String _readStr(dynamic v) => (v ?? '').toString().trim();
+
+  factory _BackendPayrollPreview.fromMap(Map<String, dynamic> m) {
+    final payslipSummary = _asMap(m['payslipSummary']);
+    final amounts = _asMap(payslipSummary['amounts']);
+    final displaySnapshot = _asMap(m['displaySnapshot']);
+    final otSummary = _asMap(m['otSummary']);
+    final payrollInputsResolved = _asMap(m['payrollInputsResolved']);
+    final row = _asMap(m['row']);
+    final snapshot = _asMap(row['snapshot']);
+
+    return _BackendPayrollPreview(
+      raw: m,
+      payslipSummary: payslipSummary,
+      amounts: amounts,
+      displaySnapshot: displaySnapshot,
+      otSummary: otSummary,
+      payrollInputsResolved: payrollInputsResolved,
+      row: row,
+      snapshot: snapshot,
+    );
+  }
+
+  bool get backendOnly => raw['backendOnly'] == true;
+
+  String get sourceLabel {
+    final meta = _asMap(payslipSummary['meta']);
+    final source = _readStr(meta['source']);
+    if (backendOnly) return 'คำนวณจาก backend';
+    if (source.isNotEmpty) return source;
+    return 'backend preview';
+  }
+
+  int get taxYear {
+    final y = _readNum(snapshot['taxYear']).toInt();
+    if (y > 0) return y;
+    return DateTime.now().year;
+  }
+
+  String get taxMode => _readStr(raw['taxMode']);
+
+  String get grossBaseSource =>
+      _readStr(payrollInputsResolved['grossBaseSource']);
+
+  String get employmentType =>
+      _readStr(payrollInputsResolved['employmentType']);
+
+  double get salary => _readNum(amounts['salary']);
+  double get socialSecurity => _readNum(amounts['socialSecurity']);
+  double get ot => _readNum(amounts['ot']);
+  double get commission => _readNum(amounts['commission']);
+  double get bonus => _readNum(amounts['bonus']);
+  double get leaveDeduction => _readNum(amounts['leaveDeduction']);
+  double get tax => _readNum(amounts['tax']);
+  double get pvd => _readNum(amounts['pvd']);
+  double get netPay => _readNum(amounts['netPay']);
+
+  double get grossBeforeTax {
+    final fromAmounts = _readNum(amounts['grossBeforeTax']);
+    if (fromAmounts > 0) return fromAmounts;
+    return _readNum(displaySnapshot['grossBeforeTax']);
+  }
+
+  double get netBeforeOt => _readNum(displaySnapshot['netBeforeOt']);
+  double get otHours => _readNum(displaySnapshot['otHours']);
+
+  int get approvedMinutes => _readNum(otSummary['approvedMinutes']).toInt();
+  int get approvedCount => _readNum(otSummary['count']).toInt();
+  double get approvedWeightedHours =>
+      _readNum(otSummary['approvedWeightedHours']);
+
+  double get projectedAnnualIncome => grossBeforeTax * 12.0;
+  double get projectedAnnualTax => tax * 12.0;
+}
+
 class _PayrollAfterTaxPreviewScreenState
     extends State<PayrollAfterTaxPreviewScreen> {
-  late int _year;
   bool _loading = true;
-  _PreviewTaxVM? _vm;
   String? _error;
 
   bool _closing = false;
   late String _pickedCloseMonth;
+
+  _BackendPayrollPreview? _preview;
 
   @override
   void initState() {
     super.initState();
 
     final now = DateTime.now();
-    _year = widget.year ?? now.year;
-
     final cm = (widget.closeMonth ?? '').trim();
+
     _pickedCloseMonth = cm.isNotEmpty
         ? cm
         : '${now.year}-${now.month.toString().padLeft(2, '0')}';
@@ -247,8 +266,6 @@ class _PayrollAfterTaxPreviewScreenState
   }
 
   String _money(num n) => n.toStringAsFixed(2);
-
-  double _round2(double v) => double.parse(v.toStringAsFixed(2));
 
   void _snack(String msg) {
     if (!mounted) return;
@@ -261,7 +278,7 @@ class _PayrollAfterTaxPreviewScreenState
 
   String get _safeTaxMode {
     final v = widget.taxMode.trim().toLowerCase();
-    if (v == 'none') return 'none';
+    if (v == 'none' || v == 'no_withholding') return 'none';
     if (v == 'withholding') return 'withholding';
     return 'annual';
   }
@@ -271,257 +288,111 @@ class _PayrollAfterTaxPreviewScreenState
   }
 
   String _taxModeLabel(String mode) {
-    switch (mode) {
-      case 'none':
-        return 'ไม่หักภาษี';
-      case 'withholding':
-        return 'หักภาษี ณ ที่จ่าย';
-      default:
-        return 'คำนวณภาษีทั้งปี';
-    }
-  }
+    final m = mode.trim().toUpperCase();
 
-  PayrollTaxResult _ensureResult(dynamic raw) {
-    if (raw is PayrollTaxResult) return raw;
-
-    if (raw is Map<String, dynamic>) {
-      return PayrollTaxResult.fromMap(raw);
+    if (m == 'NO_WITHHOLDING' || mode == 'none') {
+      return 'ไม่หักภาษี';
     }
 
-    if (raw is Map) {
-      return PayrollTaxResult.fromMap(Map<String, dynamic>.from(raw));
+    if (mode == 'withholding' || m == 'WITHHOLDING') {
+      return 'หักภาษี ณ ที่จ่าย';
     }
 
-    throw Exception(
-      'รูปแบบผลลัพธ์ไม่ถูกต้องจาก calcMyTax(): ${raw.runtimeType}',
-    );
+    return 'คำนวณภาษีตาม backend';
   }
 
-  double _safeNonNegative(double v) => v < 0 ? 0.0 : v;
-
-  bool get _hasDetailSnapshot {
-    return widget.detailGrossBeforeTax > 0 ||
-        widget.detailNetBeforeOt > 0 ||
-        widget.detailNetPay > 0 ||
-        widget.detailOtAmount > 0 ||
-        widget.detailLeaveDeduction > 0 ||
-        widget.detailSsoAmount > 0 ||
-        widget.detailTaxAmount > 0;
-  }
-
-  double _resolveWithholdingAmount() {
-    final explicit = widget.withholdingAmount;
-    if (explicit != null && explicit >= 0) return _round2(explicit);
-
-    if (widget.detailTaxAmount > 0) return _round2(widget.detailTaxAmount);
-
-    final pct = widget.withholdingPercent;
-    if (pct <= 0) return 0.0;
-
-    final base = widget.detailGrossBeforeTax > 0
-        ? widget.detailGrossBeforeTax
-        : widget.grossMonthly;
-
-    return _round2(_safeNonNegative(base) * (pct / 100.0));
-  }
-
-  _PayslipBreakdown _buildBreakdown() {
-    final salary = _round2(
-      _safeNonNegative(
-        _hasDetailSnapshot && widget.detailNetBeforeOt > 0
-            ? widget.detailNetBeforeOt
-            : widget.grossMonthly,
-      ),
-    );
-
-    final socialSecurity = _round2(
-      _safeNonNegative(
-        widget.detailSsoAmount > 0
-            ? widget.detailSsoAmount
-            : widget.ssoEmployeeMonthly,
-      ),
-    );
-
-    final ot = _round2(
-      _safeNonNegative(
-        widget.detailOtAmount > 0 ? widget.detailOtAmount : widget.otPay,
-      ),
-    );
-
-    final commission = _round2(_safeNonNegative(widget.otherAllowance));
-    final bonus = _round2(_safeNonNegative(widget.bonus));
-
-    final leaveDeduction = _round2(
-      _safeNonNegative(
-        widget.detailLeaveDeduction > 0
-            ? widget.detailLeaveDeduction
-            : widget.otherDeduction,
-      ),
-    );
-
-    final pvd = _round2(_safeNonNegative(widget.pvdEmployeeMonthly));
-
-    double tax;
-    if (_safeTaxMode == 'none') {
-      tax = 0.0;
-    } else if (_safeTaxMode == 'withholding') {
-      tax = _round2(_resolveWithholdingAmount());
-    } else if (widget.detailTaxAmount > 0) {
-      tax = _round2(widget.detailTaxAmount);
-    } else {
-      tax = 0.0;
-    }
-
-    final grossBeforeTax = _round2(
-      (salary - leaveDeduction + ot + commission + bonus)
-          .clamp(0.0, double.infinity)
-          .toDouble(),
-    );
-
-    final netAfterTaxBeforeSso = _round2(
-      (grossBeforeTax - tax).clamp(0.0, double.infinity).toDouble(),
-    );
-
-    final fallbackNet = _round2(
-      (salary -
-              socialSecurity +
-              ot +
-              commission +
-              bonus -
-              leaveDeduction -
-              tax -
-              pvd)
-          .clamp(0.0, double.infinity)
-          .toDouble(),
-    );
-
-    final netPay = _round2(
-      widget.detailNetPay > 0 ? widget.detailNetPay : fallbackNet,
-    );
-
-    return _PayslipBreakdown(
-      salary: salary,
-      socialSecurity: socialSecurity,
-      ot: ot,
-      commission: commission,
-      bonus: bonus,
-      leaveDeduction: leaveDeduction,
-      tax: tax,
-      pvd: pvd,
-      grossBeforeTax: grossBeforeTax,
-      netAfterTaxBeforeSso: netAfterTaxBeforeSso,
-      netPay: netPay,
-      otHours: _round2(_safeNonNegative(widget.detailOtHours)),
-    );
-  }
-
-  List<_LineItem> _buildLineItems(_PayslipBreakdown b) {
+  List<_LineItem> _buildLineItems(_BackendPayrollPreview p) {
     return [
-      _LineItem(label: 'เงินเดือน', sign: '', amount: b.salary),
-      _LineItem(label: 'ประกันสังคม', sign: '-', amount: b.socialSecurity),
-      _LineItem(label: 'OT', sign: '+', amount: b.ot),
-      _LineItem(label: 'Commission / รายได้อื่น', sign: '+', amount: b.commission),
-      _LineItem(label: 'โบนัส', sign: '+', amount: b.bonus),
-      _LineItem(label: 'หักวันลา/ขาด', sign: '-', amount: b.leaveDeduction),
-      _LineItem(label: 'ภาษี', sign: '-', amount: b.tax),
-      _LineItem(label: 'PVD', sign: '-', amount: b.pvd),
+      _LineItem(label: 'เงินเดือน', sign: '', amount: p.salary),
+      _LineItem(label: 'ประกันสังคม', sign: '-', amount: p.socialSecurity),
+      _LineItem(label: 'OT', sign: '+', amount: p.ot),
+      _LineItem(
+        label: 'Commission / รายได้อื่น',
+        sign: '+',
+        amount: p.commission,
+      ),
+      _LineItem(label: 'โบนัส', sign: '+', amount: p.bonus),
+      _LineItem(label: 'หักวันลา/ขาด', sign: '-', amount: p.leaveDeduction),
+      _LineItem(label: 'ภาษี', sign: '-', amount: p.tax),
+      _LineItem(label: 'PVD', sign: '-', amount: p.pvd),
     ];
   }
 
   Future<void> _load() async {
     if (!mounted) return;
 
+    final clinicId = widget.clinicId.trim();
+    final staffId = widget.employeeId.trim();
+    final month = _pickedCloseMonth.trim();
+
+    if (clinicId.isEmpty) {
+      setState(() {
+        _loading = false;
+        _error = 'ไม่พบ clinicId';
+      });
+      return;
+    }
+
+    if (!_isValidStaffId(staffId)) {
+      setState(() {
+        _loading = false;
+        _error = 'ไม่พบ employeeId/staffId';
+      });
+      return;
+    }
+
+    if (!_isYm(month)) {
+      setState(() {
+        _loading = false;
+        _error = 'เดือนไม่ถูกต้อง ต้องเป็น yyyy-MM';
+      });
+      return;
+    }
+
     setState(() {
       _loading = true;
       _error = null;
+      _preview = null;
     });
 
     try {
-      final mode = _safeTaxMode;
-      final breakdown = _buildBreakdown();
+      final res = await PayrollCloseApi.previewMonth(
+        clinicId: clinicId,
+        employeeId: staffId,
+        month: month,
 
-      if (_hasDetailSnapshot) {
-        final vm = _PreviewTaxVM.manual(
-          taxYear: _year,
-          taxMode: mode,
-          grossMonthly: breakdown.grossBeforeTax,
-          monthlyTax: breakdown.tax,
-          ssoEmployeeMonthly: breakdown.socialSecurity,
-          pvdEmployeeMonthly: breakdown.pvd,
-          sourceLabel: 'ใช้เลขจากหน้า detail',
-        );
+        // fallback only: backend จะใช้ staff_service ก่อน
+        grossBase: widget.grossMonthly,
 
-        if (!mounted) return;
-        setState(() => _vm = vm);
-        return;
-      }
+        // accounting inputs
+        bonus: widget.bonus,
+        otherAllowance: widget.otherAllowance,
+        otherDeduction: widget.otherDeduction,
+        pvdEmployeeMonthly: widget.pvdEmployeeMonthly,
 
-      if (mode == 'none') {
-        final vm = _PreviewTaxVM.manual(
-          taxYear: _year,
-          taxMode: mode,
-          grossMonthly: breakdown.grossBeforeTax,
-          monthlyTax: 0.0,
-          ssoEmployeeMonthly: breakdown.socialSecurity,
-          pvdEmployeeMonthly: breakdown.pvd,
-          sourceLabel: 'ตามโหมดไม่หักภาษี',
-        );
+        // tax
+        taxMode: _backendTaxMode,
+        grossBaseMode: 'PRE_DEDUCTION',
+        employeeUserId: widget.employeeUserId,
 
-        if (!mounted) return;
-        setState(() => _vm = vm);
-        return;
-      }
-
-      if (mode == 'withholding') {
-        final vm = _PreviewTaxVM.manual(
-          taxYear: _year,
-          taxMode: mode,
-          grossMonthly: breakdown.grossBeforeTax,
-          monthlyTax: breakdown.tax,
-          ssoEmployeeMonthly: breakdown.socialSecurity,
-          pvdEmployeeMonthly: breakdown.pvd,
-          sourceLabel: widget.withholdingPercent > 0
-              ? 'ตามอัตราหักภาษี ${widget.withholdingPercent.toStringAsFixed(2)}%'
-              : 'ตามยอดภาษีหัก ณ ที่จ่าย',
-        );
-
-        if (!mounted) return;
-        setState(() => _vm = vm);
-        return;
-      }
-
-      if (!widget.allowSelfAnnualTaxEngine) {
-        final vm = _PreviewTaxVM.manual(
-          taxYear: _year,
-          taxMode: mode,
-          grossMonthly: breakdown.grossBeforeTax,
-          monthlyTax: 0.0,
-          ssoEmployeeMonthly: breakdown.socialSecurity,
-          pvdEmployeeMonthly: breakdown.pvd,
-          sourceLabel: 'annual preview แบบปลอดภัย',
-        );
-
-        if (!mounted) return;
-        setState(() => _vm = vm);
-        return;
-      }
-
-      final raw = await PayrollTaxApi.calcMyTax(
-        year: _year,
-        grossMonthly: breakdown.grossBeforeTax,
-        ssoEmployeeMonthly: breakdown.socialSecurity,
-        pvdEmployeeMonthly: breakdown.pvd,
+        // part-time raw input in future
+        regularWorkHours: widget.regularWorkHours,
+        regularWorkMinutes: widget.regularWorkMinutes,
+        workItems: widget.workItems,
       );
 
-      final r = _ensureResult(raw);
-
       if (!mounted) return;
+
       setState(() {
-        _vm = _PreviewTaxVM.fromAnnualResult(r, taxMode: mode);
+        _preview = _BackendPayrollPreview.fromMap(res);
+        _error = null;
       });
     } catch (e) {
       if (!mounted) return;
-      setState(() => _error = e.toString());
+      setState(() {
+        _preview = null;
+        _error = e.toString();
+      });
     } finally {
       if (!mounted) return;
       setState(() => _loading = false);
@@ -536,6 +407,7 @@ class _PayrollAfterTaxPreviewScreenState
       final d = DateTime(now.year, now.month - i, 1);
       out.add('${d.year}-${d.month.toString().padLeft(2, '0')}');
     }
+
     return out;
   }
 
@@ -569,6 +441,7 @@ class _PayrollAfterTaxPreviewScreenState
                     itemBuilder: (_, i) {
                       final m = options[i];
                       final selected = (m == current);
+
                       return ListTile(
                         title: Text(m),
                         trailing: selected
@@ -595,11 +468,7 @@ class _PayrollAfterTaxPreviewScreenState
     final v = picked.trim();
     if (v.isEmpty || !_isYm(v)) return;
 
-    setState(() {
-      _pickedCloseMonth = v;
-      final yy = int.tryParse(v.split('-').first);
-      if (yy != null) _year = yy;
-    });
+    setState(() => _pickedCloseMonth = v);
 
     await _load();
   }
@@ -607,8 +476,9 @@ class _PayrollAfterTaxPreviewScreenState
   Future<void> _closePayroll() async {
     if (_closing || _loading) return;
 
-    if (_vm == null) {
-      _snack('ยังไม่มีข้อมูลคำนวณ กรุณาโหลดใหม่');
+    final p = _preview;
+    if (p == null) {
+      _snack('ยังไม่มีข้อมูลจาก backend กรุณาโหลดใหม่');
       return;
     }
 
@@ -624,19 +494,20 @@ class _PayrollAfterTaxPreviewScreenState
       return;
     }
 
-    final breakdown = _buildBreakdown();
-
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
         title: const Text('ยืนยันการปิดงวดเงินจริง'),
         content: Text(
           'เดือน: $month\n\n'
-          'รูปแบบภาษี: ${_taxModeLabel(_safeTaxMode)}\n'
-          'เงินเดือน: ${_money(breakdown.salary)} บาท\n'
-          'ประกันสังคม: ${_money(breakdown.socialSecurity)} บาท\n'
-          'ภาษี: ${_money(breakdown.tax)} บาท\n'
-          '\nการปิดงวดจะ “ล็อกข้อมูล” และไม่สามารถแก้ไขย้อนหลังได้\n'
+          'รูปแบบภาษี: ${_taxModeLabel(p.taxMode)}\n'
+          'เงินเดือน: ${_money(p.salary)} บาท\n'
+          'OT: ${_money(p.ot)} บาท\n'
+          'ประกันสังคม: ${_money(p.socialSecurity)} บาท\n'
+          'ภาษี: ${_money(p.tax)} บาท\n'
+          'เงินรับจริง: ${_money(p.netPay)} บาท\n\n'
+          'ยอดทั้งหมดคำนวณจาก backend\n'
+          'การปิดงวดจะ “ล็อกข้อมูล” และไม่สามารถแก้ไขย้อนหลังได้\n'
           'คุณแน่ใจหรือไม่?',
         ),
         actions: [
@@ -662,14 +533,25 @@ class _PayrollAfterTaxPreviewScreenState
         clinicId: widget.clinicId,
         employeeId: staffId,
         month: month,
-        grossBase: breakdown.salary,
-        otPay: breakdown.ot,
-        bonus: breakdown.bonus,
-        otherAllowance: breakdown.commission,
-        otherDeduction: breakdown.leaveDeduction,
-        ssoEmployeeMonthly: breakdown.socialSecurity,
-        pvdEmployeeMonthly: breakdown.pvd,
+
+        // fallback only: backend จะใช้ staff_service ก่อน
+        grossBase: widget.grossMonthly,
+
+        // accounting inputs
+        bonus: widget.bonus,
+        otherAllowance: widget.otherAllowance,
+        otherDeduction: widget.otherDeduction,
+        pvdEmployeeMonthly: widget.pvdEmployeeMonthly,
+
+        // tax
         taxMode: _backendTaxMode,
+        grossBaseMode: 'PRE_DEDUCTION',
+        employeeUserId: widget.employeeUserId,
+
+        // part-time raw input in future
+        regularWorkHours: widget.regularWorkHours,
+        regularWorkMinutes: widget.regularWorkMinutes,
+        workItems: widget.workItems,
       );
 
       if (!mounted) return;
@@ -758,8 +640,130 @@ class _PayrollAfterTaxPreviewScreenState
     );
   }
 
+  Widget _summaryCard(_BackendPayrollPreview p) {
+    final lineItems = _buildLineItems(p);
+
+    return Card(
+      elevation: 2,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'สรุปสลิป (${p.sourceLabel})',
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+            ),
+            const SizedBox(height: 8),
+            _row(label: 'ปีภาษี', value: '${p.taxYear}'),
+            _row(label: 'เดือนที่จะปิดงวด', value: _pickedCloseMonth),
+            _row(label: 'รูปแบบภาษี', value: _taxModeLabel(p.taxMode)),
+            if (p.employmentType.isNotEmpty)
+              _row(label: 'ประเภทพนักงาน', value: p.employmentType),
+            if (p.grossBaseSource.isNotEmpty)
+              _row(label: 'แหล่งฐานเงินเดือน', value: p.grossBaseSource),
+            const Divider(height: 24),
+            Text(
+              'OT จากระบบ',
+              style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+            ),
+            const SizedBox(height: 6),
+            _row(label: 'รายการ OT ที่อนุมัติ', value: '${p.approvedCount} รายการ'),
+            _row(label: 'นาที OT ที่อนุมัติ', value: '${p.approvedMinutes} นาที'),
+            _row(
+              label: 'ชั่วโมงถ่วงน้ำหนัก',
+              value: '${p.approvedWeightedHours.toStringAsFixed(2)} ชม.',
+            ),
+            const Divider(height: 24),
+            Text(
+              'สรุปรายการ',
+              style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+            ),
+            const SizedBox(height: 6),
+            for (final item in lineItems)
+              if (item.amount > 0 || item.label == 'เงินเดือน')
+                _row(
+                  label: item.label,
+                  value: '${item.sign}${_money(item.amount)} บาท',
+                ),
+            const Divider(height: 24),
+            _row(
+              label: 'ยอดก่อนภาษี',
+              value: '${_money(p.grossBeforeTax)} บาท',
+              bold: true,
+            ),
+            const SizedBox(height: 6),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(12),
+                color: Colors.green.withOpacity(0.10),
+              ),
+              child: _row(
+                label: 'เงินรับจริง (Net Pay)',
+                value: '${_money(p.netPay)} บาท',
+                bold: true,
+                valueColor: Colors.green.shade800,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _backendInfoCard(_BackendPayrollPreview p) {
+    return Card(
+      elevation: 1,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'รายละเอียดจาก backend',
+              style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+            ),
+            const SizedBox(height: 10),
+            _row(
+              label: 'รายได้ทั้งปี (ประมาณจาก backend)',
+              value: '${_money(p.projectedAnnualIncome)} บาท',
+            ),
+            _row(
+              label: 'ภาษีทั้งปี (ประมาณจาก backend)',
+              value: '${_money(p.projectedAnnualTax)} บาท',
+            ),
+            if (widget.withholdingPercent > 0 && _safeTaxMode == 'withholding')
+              _row(
+                label: 'อัตราหักภาษีที่เลือกไว้',
+                value: '${widget.withholdingPercent.toStringAsFixed(2)}%',
+              ),
+            const SizedBox(height: 12),
+            const Text(
+              'หมายเหตุ: หน้านี้ไม่คำนวณยอดเงินเดือนเองแล้ว ตัวเลขเงินเดือน OT ประกันสังคม ภาษี และยอดสุทธิทั้งหมดมาจาก backend',
+              style: TextStyle(
+                fontSize: 12,
+                color: Colors.black54,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final preview = _preview;
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('พรีวิวสลิปเงินเดือน'),
@@ -775,270 +779,95 @@ class _PayrollAfterTaxPreviewScreenState
           ? const Center(child: CircularProgressIndicator())
           : _error != null
               ? _errorView()
-              : _vm == null
-                  ? const Center(child: Text('ไม่มีข้อมูล'))
-                  : LayoutBuilder(
-                      builder: (context, c) {
-                        final r = _vm!;
-                        final month = _pickedCloseMonth;
-                        final breakdown = _buildBreakdown();
-                        final lineItems = _buildLineItems(breakdown);
-
-                        return SingleChildScrollView(
-                          padding: const EdgeInsets.all(16),
-                          child: Center(
-                            child: ConstrainedBox(
-                              constraints: const BoxConstraints(maxWidth: 520),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.stretch,
-                                children: [
-                                  Card(
-                                    elevation: 1,
-                                    child: Padding(
-                                      padding: const EdgeInsets.all(14),
-                                      child: Row(
-                                        children: [
-                                          Expanded(
-                                            child: Column(
-                                              crossAxisAlignment:
-                                                  CrossAxisAlignment.start,
-                                              children: [
-                                                const Text(
-                                                  'เดือนที่เลือก',
-                                                  style: TextStyle(
-                                                    fontWeight: FontWeight.w800,
-                                                  ),
-                                                ),
-                                                const SizedBox(height: 4),
-                                                Text(
-                                                  month,
-                                                  style: const TextStyle(
-                                                    fontSize: 18,
-                                                    fontWeight: FontWeight.w900,
-                                                  ),
-                                                ),
-                                                const SizedBox(height: 6),
-                                                Text(
-                                                  'รูปแบบภาษี: ${_taxModeLabel(r.taxMode)}',
-                                                  style: TextStyle(
-                                                    color: Colors.black
-                                                        .withOpacity(0.70),
-                                                    fontWeight: FontWeight.w600,
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                          ),
-                                          OutlinedButton.icon(
-                                            onPressed: _pickMonthBottomSheet,
-                                            icon:
-                                                const Icon(Icons.calendar_month),
-                                            label: const Text('เปลี่ยนเดือน'),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
-                                  const SizedBox(height: 12),
-                                  Card(
-                                    elevation: 2,
-                                    child: Padding(
-                                      padding: const EdgeInsets.all(16),
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            'สรุปสลิป (${r.sourceLabel})',
-                                            style: Theme.of(context)
-                                                .textTheme
-                                                .titleMedium
-                                                ?.copyWith(
-                                                  fontWeight: FontWeight.bold,
-                                                ),
-                                          ),
-                                          const SizedBox(height: 8),
-                                          _row(
-                                            label: 'ปีภาษี',
-                                            value: '${r.taxYear}',
-                                          ),
-                                          _row(
-                                            label: 'เดือนที่จะปิดงวด',
-                                            value: month,
-                                          ),
-                                          if (breakdown.otHours > 0)
-                                            _row(
-                                              label: 'ชั่วโมง OT',
-                                              value:
-                                                  '${breakdown.otHours.toStringAsFixed(2)} ชม.',
-                                            ),
-                                          const Divider(height: 24),
-                                          Text(
-                                            'สรุปรายการ',
-                                            style: Theme.of(context)
-                                                .textTheme
-                                                .titleSmall
-                                                ?.copyWith(
-                                                  fontWeight: FontWeight.bold,
-                                                ),
-                                          ),
-                                          const SizedBox(height: 6),
-                                          for (final item in lineItems)
-                                            if (item.amount > 0 ||
-                                                item.label == 'เงินเดือน')
-                                              _row(
-                                                label: item.label,
-                                                value:
-                                                    '${item.sign}${_money(item.amount)} บาท',
-                                              ),
-                                          const Divider(height: 24),
-                                          _row(
-                                            label: 'ยอดก่อนภาษี',
-                                            value:
-                                                '${_money(breakdown.grossBeforeTax)} บาท',
-                                            bold: true,
-                                          ),
-                                          _row(
-                                            label:
-                                                'สุทธิหลังภาษี (ก่อนหัก SSO/PVD)',
-                                            value:
-                                                '${_money(breakdown.netAfterTaxBeforeSso)} บาท',
-                                          ),
-                                          const SizedBox(height: 6),
-                                          Container(
-                                            padding: const EdgeInsets.all(12),
-                                            decoration: BoxDecoration(
-                                              borderRadius:
-                                                  BorderRadius.circular(12),
-                                              color: Colors.green
-                                                  .withOpacity(0.10),
-                                            ),
-                                            child: _row(
-                                              label: 'เงินรับจริง (Net Pay)',
-                                              value:
-                                                  '${_money(breakdown.netPay)} บาท',
-                                              bold: true,
-                                              valueColor:
-                                                  Colors.green.shade800,
-                                            ),
-                                          ),
-                                          if (breakdown.hasMismatch) ...[
-                                            const SizedBox(height: 10),
-                                            Text(
-                                              'ตรวจสอบ: ยอดรวมจากรายการ = ${_money(breakdown.recomputedNet)} บาท',
+              : preview == null
+                  ? const Center(child: Text('ไม่มีข้อมูลจาก backend'))
+                  : SingleChildScrollView(
+                      padding: const EdgeInsets.all(16),
+                      child: Center(
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(maxWidth: 520),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Card(
+                                elevation: 1,
+                                child: Padding(
+                                  padding: const EdgeInsets.all(14),
+                                  child: Row(
+                                    children: [
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            const Text(
+                                              'เดือนที่เลือก',
                                               style: TextStyle(
-                                                fontSize: 12,
-                                                color: Colors.red.shade700,
-                                                fontWeight: FontWeight.w700,
+                                                fontWeight: FontWeight.w800,
+                                              ),
+                                            ),
+                                            const SizedBox(height: 4),
+                                            Text(
+                                              _pickedCloseMonth,
+                                              style: const TextStyle(
+                                                fontSize: 18,
+                                                fontWeight: FontWeight.w900,
+                                              ),
+                                            ),
+                                            const SizedBox(height: 6),
+                                            Text(
+                                              'รูปแบบภาษี: ${_taxModeLabel(preview.taxMode)}',
+                                              style: TextStyle(
+                                                color: Colors.black
+                                                    .withOpacity(0.70),
+                                                fontWeight: FontWeight.w600,
                                               ),
                                             ),
                                           ],
-                                        ],
+                                        ),
                                       ),
-                                    ),
-                                  ),
-                                  const SizedBox(height: 16),
-                                  ElevatedButton.icon(
-                                    onPressed: (_closing || _loading)
-                                        ? null
-                                        : _closePayroll,
-                                    icon: _closing
-                                        ? const SizedBox(
-                                            width: 18,
-                                            height: 18,
-                                            child: CircularProgressIndicator(
-                                              strokeWidth: 2,
-                                            ),
-                                          )
-                                        : const Icon(Icons.lock),
-                                    label: Text(
-                                      _closing
-                                          ? 'กำลังปิดงวด...'
-                                          : 'ปิดงวดเงินจริง (ล็อกเดือน $month)',
-                                    ),
-                                    style: ElevatedButton.styleFrom(
-                                      backgroundColor: Colors.redAccent,
-                                      padding: const EdgeInsets.symmetric(
-                                        vertical: 14,
+                                      OutlinedButton.icon(
+                                        onPressed: _pickMonthBottomSheet,
+                                        icon: const Icon(Icons.calendar_month),
+                                        label: const Text('เปลี่ยนเดือน'),
                                       ),
-                                    ),
+                                    ],
                                   ),
-                                  const SizedBox(height: 16),
-                                  Card(
-                                    elevation: 1,
-                                    child: Padding(
-                                      padding: const EdgeInsets.all(16),
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            r.taxMode == 'annual'
-                                                ? 'รายละเอียดการคำนวณ (ทั้งปีแบบประมาณ)'
-                                                : 'รายละเอียดการคำนวณ',
-                                            style: Theme.of(context)
-                                                .textTheme
-                                                .titleSmall
-                                                ?.copyWith(
-                                                  fontWeight: FontWeight.bold,
-                                                ),
-                                          ),
-                                          const SizedBox(height: 10),
-                                          _row(
-                                            label: 'รายได้ทั้งปี (ประมาณ)',
-                                            value:
-                                                '${_money(r.projectedAnnualIncome)} บาท',
-                                          ),
-                                          if (r.taxMode == 'withholding')
-                                            _row(
-                                              label: 'อัตราหักภาษี',
-                                              value:
-                                                  '${widget.withholdingPercent.toStringAsFixed(2)}%',
-                                            ),
-                                          if (r.taxMode == 'annual')
-                                            _row(
-                                              label:
-                                                  'ลดหย่อนรวม (Tax Profile)',
-                                              value:
-                                                  '${_money(r.allowanceTotal)} บาท',
-                                            ),
-                                          _row(
-                                            label: 'ฐานภาษีทั้งปี',
-                                            value:
-                                                '${_money(r.projectedAnnualTaxable)} บาท',
-                                          ),
-                                          _row(
-                                            label: 'ภาษีทั้งปี',
-                                            value:
-                                                '${_money(r.projectedAnnualTax)} บาท',
-                                            bold: true,
-                                          ),
-                                          const SizedBox(height: 12),
-                                          Text(
-                                            _hasDetailSnapshot
-                                                ? 'หน้านี้ใช้ breakdown ชุดเดียวจากหน้า detail และจะส่ง breakdown ชุดเดียวกันไปตอนปิดงวด'
-                                                : r.taxMode == 'none'
-                                                    ? 'โหมดนี้ไม่หักภาษี โดยสลิปและการปิดงวดจะแสดงภาษีเป็น 0 บาท'
-                                                    : r.taxMode == 'withholding'
-                                                        ? 'โหมดนี้ใช้การหักภาษี ณ ที่จ่ายตามค่าที่ส่งมาจากหน้าเงินเดือน'
-                                                        : widget.allowSelfAnnualTaxEngine
-                                                            ? 'โหมดนี้ใช้การคำนวณภาษีทั้งปีแบบประมาณการจาก tax engine'
-                                                            : 'โหมด annual ในหน้านี้ถูกทำเป็น safe preview เพื่อกันไปคำนวณจาก tax profile ของคนล็อกอินผิดคน',
-                                            style: const TextStyle(
-                                              fontSize: 12,
-                                              color: Colors.black54,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
-                                ],
+                                ),
                               ),
-                            ),
+                              const SizedBox(height: 12),
+                              _summaryCard(preview),
+                              const SizedBox(height: 16),
+                              ElevatedButton.icon(
+                                onPressed:
+                                    (_closing || _loading) ? null : _closePayroll,
+                                icon: _closing
+                                    ? const SizedBox(
+                                        width: 18,
+                                        height: 18,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                        ),
+                                      )
+                                    : const Icon(Icons.lock),
+                                label: Text(
+                                  _closing
+                                      ? 'กำลังปิดงวด...'
+                                      : 'ปิดงวดเงินจริง (ล็อกเดือน $_pickedCloseMonth)',
+                                ),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.redAccent,
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 14,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 16),
+                              _backendInfoCard(preview),
+                            ],
                           ),
-                        );
-                      },
+                        ),
+                      ),
                     ),
     );
   }
