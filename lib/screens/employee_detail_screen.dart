@@ -9,6 +9,7 @@ import 'package:clinic_smart_staff/models/employee_model.dart';
 import 'package:clinic_smart_staff/services/storage_service.dart';
 
 import 'package:clinic_smart_staff/api/api_config.dart';
+import 'package:clinic_smart_staff/api/payroll_close_api.dart';
 import 'package:clinic_smart_staff/services/auth_storage.dart';
 
 import 'package:clinic_smart_staff/screens/payroll/payroll_after_tax_preview_screen.dart';
@@ -177,6 +178,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
   String _closedPayrollError = '';
   Map<String, dynamic>? _closedPayrollRow;
   Map<String, dynamic>? _closedPayslipSummary;
+  bool _recalculatingClosedPayroll = false;
 
   String _backendOtStatus = 'approved';
 
@@ -420,7 +422,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
   String _fmtTOD(TimeOfDay t) => '${_two(t.hour)}:${_two(t.minute)}';
 
   Uri _uri(String path) {
-    final base = ApiConfig.payrollBaseUrl.replaceAll(RegExp(r'\/+$'), '');
+    final base = ApiConfig.payrollBaseUrl.replaceAll(RegExp(r'\/+\$'), '');
     final p = path.startsWith('/') ? path : '/$path';
     return Uri.parse('$base$p');
   }
@@ -732,6 +734,88 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
         _closedPayrollRow = null;
         _closedPayslipSummary = null;
       });
+    }
+  }
+
+  Future<void> _recalculateClosedPayrollForSelectedMonth() async {
+    if (_recalculatingClosedPayroll) return;
+
+    final employeeId = _resolveStaffIdForPayroll();
+    final monthKey = _fmtMonth(selectedMonth);
+
+    if (employeeId.isEmpty) {
+      _snack('ไม่พบ staffId ของพนักงานคนนี้');
+      return;
+    }
+
+    if (_closedPayrollRow == null || _closedPayslipSummary == null) {
+      _snack('ยังไม่พบงวดที่ปิดแล้วสำหรับเดือนนี้');
+      return;
+    }
+
+    if (!_isEditUnlocked) {
+      _snack('ต้องปลดล็อกโหมดแก้ไขก่อน');
+      return;
+    }
+
+    final ok = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('คำนวณงวดนี้ใหม่?'),
+        content: Text(
+          'งวด $monthKey ถูกปิดแล้ว\n\n'
+          'หากมีการสแกนเวลา OT หรือข้อมูลเงินเดือนเปลี่ยนหลังปิดงวด '
+          'ระบบจะ rollback ยอดเดิม แล้วคำนวณงวดนี้ใหม่จากข้อมูลล่าสุด\n\n'
+          'ต้องการดำเนินการหรือไม่?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('ยกเลิก'),
+          ),
+          ElevatedButton.icon(
+            icon: const Icon(Icons.refresh),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            label: const Text('คำนวณใหม่'),
+          ),
+        ],
+      ),
+    );
+
+    if (ok != true) return;
+    if (!mounted || _disposed) return;
+
+    setState(() => _recalculatingClosedPayroll = true);
+
+    try {
+      await PayrollCloseApi.recalculateClosedMonth(
+        employeeId: employeeId,
+        month: monthKey,
+        employeeUserId: _resolveLinkedUserId(),
+      );
+
+      if (!mounted || _disposed) return;
+      _snack('คำนวณงวด $monthKey ใหม่สำเร็จ ✅');
+
+      await _loadBackendOtForSelectedMonth();
+      await _loadClosedPayrollForSelectedMonth();
+    } catch (e) {
+      if (!mounted || _disposed) return;
+
+      final msg = e.toString();
+      if (msg.contains('404')) {
+        _snack('ไม่พบงวดเงินเดือนที่ปิดแล้ว');
+      } else if (msg.contains('401')) {
+        _snack('สิทธิ์หมดอายุ กรุณาออกจากระบบแล้วเข้าใหม่');
+      } else if (msg.contains('403')) {
+        _snack('ไม่มีสิทธิ์คำนวณงวดใหม่');
+      } else {
+        _snack('คำนวณงวดใหม่ไม่สำเร็จ');
+      }
+    } finally {
+      if (!mounted || _disposed) return;
+      setState(() => _recalculatingClosedPayroll = false);
     }
   }
 
@@ -1610,7 +1694,8 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
         SizedBox(
           width: double.infinity,
           child: ElevatedButton(
-            onPressed: hasClosedPayroll || _savingTax ? null : _saveTaxSettingsFromUI,
+            onPressed:
+                hasClosedPayroll || _savingTax ? null : _saveTaxSettingsFromUI,
             child: Text(_savingTax ? 'กำลังบันทึก...' : 'บันทึกรูปแบบภาษี'),
           ),
         ),
@@ -1729,10 +1814,9 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
         return;
       }
 
-      final withholdingAmount =
-          _taxMode == _EmployeeTaxMode.withholding
-              ? totalMonthPayBeforeTax * (_getWithholdingPercent() / 100.0)
-              : 0.0;
+      final withholdingAmount = _taxMode == _EmployeeTaxMode.withholding
+          ? totalMonthPayBeforeTax * (_getWithholdingPercent() / 100.0)
+          : 0.0;
 
       final detailNetBeforeOt = isParttime ? normalPay : grossMonthlyForTax;
       final detailLeaveDeduction = isParttime ? 0.0 : absentDeduction;
@@ -1760,14 +1844,13 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
             otherDeduction: detailLeaveDeduction,
             pvdEmployeeMonthly: 0,
             closeMonth: _fmtCloseMonth(selectedMonth),
-            taxMode:
-                _taxMode == _EmployeeTaxMode.withholding ? 'withholding' : 'none',
-            withholdingPercent: _taxMode == _EmployeeTaxMode.withholding
-                ? _getWithholdingPercent()
-                : 0,
-            withholdingAmount: _taxMode == _EmployeeTaxMode.withholding
-                ? withholdingAmount
-                : 0,
+            taxMode: _taxMode == _EmployeeTaxMode.withholding
+                ? 'withholding'
+                : 'none',
+            withholdingPercent:
+                _taxMode == _EmployeeTaxMode.withholding ? _getWithholdingPercent() : 0,
+            withholdingAmount:
+                _taxMode == _EmployeeTaxMode.withholding ? withholdingAmount : 0,
             detailNetBeforeOt: detailNetBeforeOt,
             detailLeaveDeduction: detailLeaveDeduction,
             detailOtAmount: detailOtAmount,
@@ -2551,7 +2634,6 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     final ssoForTax = hasClosedPayroll ? closedSso : fallbackSsoForTax;
     final totalMonthPayBeforeTax =
         hasClosedPayroll ? closedGrossBeforeTax : fallbackTotalMonthPayBeforeTax;
-    final withholdingPercent = fallbackWithholdingPercent;
     final withholdingAmount =
         hasClosedPayroll ? closedTax : fallbackWithholdingAmount;
     final netAfterTax = hasClosedPayroll ? closedNetPay : fallbackNetAfterTax;
@@ -2932,6 +3014,41 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                             },
                           ),
                         ),
+                        if (hasClosedPayroll) ...[
+                          const SizedBox(height: 10),
+                          SizedBox(
+                            width: double.infinity,
+                            child: OutlinedButton.icon(
+                              icon: _recalculatingClosedPayroll
+                                  ? const SizedBox(
+                                      width: 18,
+                                      height: 18,
+                                      child: CircularProgressIndicator(strokeWidth: 2),
+                                    )
+                                  : const Icon(Icons.restart_alt),
+                              label: Text(
+                                _recalculatingClosedPayroll
+                                    ? 'กำลังคำนวณงวดใหม่...'
+                                    : 'คำนวณงวดนี้ใหม่',
+                              ),
+                              onPressed: _recalculatingClosedPayroll
+                                  ? null
+                                  : _recalculateClosedPayrollForSelectedMonth,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            _isEditUnlocked
+                                ? 'ใช้เมื่อมีการสแกนเวลา/OT/ข้อมูลเงินเดือนเปลี่ยนหลังปิดงวด'
+                                : 'ต้องปลดล็อกโหมดแก้ไขก่อนจึงจะคำนวณงวดใหม่ได้',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: _isEditUnlocked
+                                  ? Colors.grey.shade700
+                                  : Colors.orange.shade700,
+                            ),
+                          ),
+                        ],
                       ],
                     ),
                   ),
