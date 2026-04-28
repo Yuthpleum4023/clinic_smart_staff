@@ -11,7 +11,7 @@
 //                     - หักลา/ขาด
 //                     + OT
 //                     + bonus
-//                     + otherAllowance (ใช้เป็น commission/allowance bucket ได้)
+//                     + otherAllowance
 //
 //   Net สุดท้าย = Net ก่อนภาษี/PVD - ภาษี - PVD
 //
@@ -21,41 +21,19 @@
 // - otherDeduction ใน flow นี้ใช้เป็น "หักลา/ขาด" หลัก
 // - otherAllowance ใช้เป็น commission/allowance bucket ได้
 //
-// ✅ SAFE AGAINST DOUBLE-DEDUCTION:
-// - PRE_DEDUCTION  = grossBase คือเงินเดือนฐานก่อนหักลา/ขาด
-// - POST_DEDUCTION = grossBase คือเงินเดือนฐานหลังหักลา/ขาดแล้ว
-// - AUTO           = ถ้ามี expected gross จาก client จะเลือกสูตรที่ใกล้ที่สุด
+// ✅ UPDATED:
+// - รวม OT จาก Overtime status=approved เท่านั้น
+// - ใช้ approvedMinutes เป็นหลัก
+// - full-time  => grossBase / 30 / 8
+// - part-time  => hourlyRate/hourlyWage จาก staff_service
 //
-// ✅ TAX MODE:
-// - WITHHOLDING
-// - NO_WITHHOLDING
-//
-// ✅ SSO POLICY:
-// - อ่านจาก Clinic.socialSecurity เป็นหลัก
-// - fallback default:
-//   - employeeRate = 0.05
-//   - maxWageBase = 17500
-//
-// ✅ SNAPSHOT:
-// - บันทึก display* fields ลง PayrollClose
-// - บันทึก ssoBaseUsed และ policy ที่ใช้จริงลง snapshot
-//
-// ✅ NEW:
-// - เพิ่ม payslipSummary เป็น contract กลางสำหรับ frontend/PDF
-// - frontend สามารถใช้ payslipSummary.amounts ทางเดียวได้
-// - ✅ รองรับ route ใหม่:
-//   POST /payroll-close/close-month/:employeeId/:month
-//
-// ✅ UPDATED FOR BIOMETRIC/ATTENDANCE OT FLOW:
-// - Payroll close จะรวม OT จาก Overtime ที่ status=approved เท่านั้น
-// - รองรับทั้ง record ที่ match ด้วย staffId และ principalId
-// - ใช้ approvedMinutes เป็นหลัก เพื่อสะท้อนนาทีที่ admin approve จริง
-// - ไม่มีการ round รายวันใน payroll close
-//
-// ✅ UPDATED FOR EMPLOYMENT TYPE OT RESOLUTION:
-// - full-time  => backend ใช้ grossBase / 30 / 8
-// - part-time  => backend อ่าน hourlyRate/hourlyWage จาก staff_service
-// - frontend ไม่จำเป็นต้องส่ง baseHourly แล้ว
+// ✅ NEW PRODUCTION:
+// - เพิ่ม recalculateClosedMonth()
+// - ใช้สำหรับ admin คำนวณงวดที่ปิดแล้วใหม่
+// - rollback TaxYTD จาก PayrollClose เดิมก่อน
+// - ลบ PayrollClose เดิม
+// - เรียก closeMonth ใหม่จากข้อมูลล่าสุด
+// - กัน YTD บวกซ้ำ
 //
 
 const axios = require("axios");
@@ -71,28 +49,36 @@ function toNumber(v) {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
 }
+
 function clamp(n, a, b) {
   return Math.max(a, Math.min(b, n));
 }
+
 function clampMin0(v) {
   return Math.max(0, toNumber(v));
 }
+
 function safeStr(v) {
   return String(v || "").trim();
 }
+
 function baseUrlNoSlash(url) {
   return safeStr(url).replace(/\/$/, "");
 }
+
 function isYm(v) {
   return /^\d{4}-\d{2}$/.test(String(v || "").trim());
 }
+
 function monthToTaxYear(monthStr) {
   const y = Number(String(monthStr || "").slice(0, 4));
   return Number.isFinite(y) ? y : new Date().getFullYear();
 }
+
 function round2(v) {
   return Number(toNumber(v).toFixed(2));
 }
+
 function postJson(url, body, headers) {
   return axios.post(url, body, {
     headers,
@@ -100,18 +86,22 @@ function postJson(url, body, headers) {
     validateStatus: () => true,
   });
 }
+
 function absDiff(a, b) {
   return Math.abs(toNumber(a) - toNumber(b));
 }
 
 function normalizeEmploymentType(v) {
   const t = safeStr(v).toLowerCase();
+
   if (t === "parttime" || t === "part-time" || t === "part_time") {
     return "parttime";
   }
+
   if (t === "fulltime" || t === "full-time" || t === "full_time") {
     return "fulltime";
   }
+
   return "fulltime";
 }
 
@@ -127,6 +117,7 @@ function resolvePartTimeHourlyFromEmployee(emp) {
     const n = toNumber(v);
     if (n > 0) return round2(n);
   }
+
   return 0;
 }
 
@@ -193,25 +184,10 @@ function pickExpectedGrossBeforeTax(body) {
     const n = toNumber(v);
     if (n > 0) return round2(n);
   }
+
   return 0;
 }
 
-/**
- * BUSINESS FORMULA
- *
- * PRE_DEDUCTION:
- *   grossBase = เงินเดือนฐานก่อนหักลา/ขาด
- *   ssoBase   = grossBase
- *   netBeforeTaxAndPvd = grossBase - otherDeduction + otPay + bonus + otherAllowance
- *
- * POST_DEDUCTION:
- *   grossBase = เงินเดือนฐานหลังหักลา/ขาดแล้ว
- *   ssoBase   = grossBase + otherDeduction   (reconstruct salary base for SSO)
- *   netBeforeTaxAndPvd = grossBase + otPay + bonus + otherAllowance
- *
- * AUTO:
- *   เลือกสูตรที่ใกล้ expectedGrossBeforeTax มากกว่า
- */
 function resolvePayrollComputation({
   body,
   grossBase,
@@ -324,12 +300,10 @@ function normalizeTaxMode(v) {
   return "WITHHOLDING";
 }
 
-// เก็บไว้เผื่อ compatibility / debug
 function normalizeSsoEmployeeMonthly(v, maxEmployeeMonthly) {
   return round2(clamp(clampMin0(v), 0, clampMin0(maxEmployeeMonthly)));
 }
 
-// ✅ อ่าน config SSO จาก clinic
 function resolveClinicSsoConfig(clinicRow) {
   const enabled = clinicRow?.socialSecurity?.enabled !== false;
 
@@ -352,7 +326,6 @@ function resolveClinicSsoConfig(clinicRow) {
   };
 }
 
-// ✅ SSO คิดจาก "ฐานเงินเดือนที่ใช้คิด SSO" เท่านั้น
 function computeSsoEmployeeMonthlyFromClinicConfig(salaryBaseForSso, ssoConfig) {
   if (!ssoConfig?.enabled) return 0;
 
@@ -364,7 +337,7 @@ function computeSsoEmployeeMonthlyFromClinicConfig(salaryBaseForSso, ssoConfig) 
   return round2(contributableBase * clampMin0(ssoConfig.employeeRate));
 }
 
-// ================= AUTH PICKER (ROBUST) =================
+// ================= AUTH PICKER =================
 function pickAuth(req) {
   const u = req.user || {};
   const uc = req.userCtx || {};
@@ -394,9 +367,11 @@ function guardPayslipAccess(req, res, next) {
     if (!employeeId || !staffIdInToken) {
       return res.status(400).json({ message: "Missing employeeId/staffId" });
     }
+
     if (employeeId !== staffIdInToken) {
       return res.status(403).json({ message: "Forbidden" });
     }
+
     return next();
   }
 
@@ -543,10 +518,12 @@ async function calcWithheldByYTDFromAuth({
   };
 
   let lastErr = null;
+
   for (const url of candidates) {
     try {
       const res = await postJson(url, body, headers);
       if (res.status === 200) return res.data;
+
       lastErr = new Error(
         `AUTH_INTERNAL not 200: ${res.status} ${JSON.stringify(res.data)}`
       );
@@ -554,6 +531,7 @@ async function calcWithheldByYTDFromAuth({
       lastErr = e;
     }
   }
+
   throw lastErr || new Error("AUTH_INTERNAL call failed");
 }
 
@@ -602,7 +580,7 @@ function buildDisplaySnapshot({
   };
 }
 
-// ================= PAYSLIP SUMMARY (NEW SINGLE CONTRACT) =================
+// ================= PAYSLIP SUMMARY =================
 function buildPayslipSummary(row) {
   const salary = round2(clampMin0(row?.grossBase));
   const socialSecurity = round2(clampMin0(row?.ssoEmployeeMonthly));
@@ -660,6 +638,7 @@ async function closeMonth(req, res) {
         .status(400)
         .json({ message: "clinicId, employeeId, month is required" });
     }
+
     if (!isYm(month)) {
       return res.status(400).json({ message: "month must be yyyy-MM" });
     }
@@ -729,6 +708,7 @@ async function closeMonth(req, res) {
         otSummary.approvedWeightedHours * otRateResolved.otBaseHourly
       );
     }
+
     otPayFinal = round2(otPayFinal);
 
     console.log("[PAYROLL_CLOSE][OT_CALC]", {
@@ -1009,15 +989,355 @@ async function closeMonth(req, res) {
   }
 }
 
+// ================= RECALCULATE / RE-CLOSE MONTH =================
+function makeCaptureRes() {
+  return {
+    statusCode: 200,
+    payload: null,
+    sent: false,
+
+    status(code) {
+      this.statusCode = code;
+      return this;
+    },
+
+    json(data) {
+      this.payload = data;
+      this.sent = true;
+      return this;
+    },
+  };
+}
+
+function getClosedPayrollContributions(row) {
+  const taxMode = normalizeTaxMode(row?.taxMode);
+
+  return {
+    taxYear: Number(row?.snapshot?.taxYear) || monthToTaxYear(row?.month),
+    income: round2(clampMin0(row?.grossMonthly)),
+    sso: round2(clampMin0(row?.ssoEmployeeMonthly)),
+    pvd: round2(clampMin0(row?.pvdEmployeeMonthly)),
+    taxPaid:
+      taxMode === "WITHHOLDING"
+        ? round2(clampMin0(row?.withheldTaxMonthly))
+        : 0,
+  };
+}
+
+async function rollbackTaxYtdFromClosedPayroll(row) {
+  const employeeId = safeStr(row?.employeeId);
+  const c = getClosedPayrollContributions(row);
+
+  if (!employeeId || !c.taxYear) {
+    return {
+      ok: false,
+      reason: "missing_employee_or_tax_year",
+    };
+  }
+
+  const ytd = await TaxYTD.findOne({
+    employeeId,
+    taxYear: c.taxYear,
+  });
+
+  if (!ytd) {
+    return {
+      ok: true,
+      reason: "tax_ytd_not_found_skip_rollback",
+      employeeId,
+      taxYear: c.taxYear,
+    };
+  }
+
+  ytd.incomeYTD = round2(Math.max(0, clampMin0(ytd.incomeYTD) - c.income));
+  ytd.ssoYTD = round2(Math.max(0, clampMin0(ytd.ssoYTD) - c.sso));
+  ytd.pvdYTD = round2(Math.max(0, clampMin0(ytd.pvdYTD) - c.pvd));
+  ytd.taxPaidYTD = round2(
+    Math.max(0, clampMin0(ytd.taxPaidYTD) - c.taxPaid)
+  );
+
+  await ytd.save();
+
+  return {
+    ok: true,
+    action: "rollback",
+    employeeId,
+    taxYear: c.taxYear,
+    subtracted: c,
+    ytd: {
+      incomeYTD: ytd.incomeYTD,
+      ssoYTD: ytd.ssoYTD,
+      pvdYTD: ytd.pvdYTD,
+      taxPaidYTD: ytd.taxPaidYTD,
+    },
+  };
+}
+
+async function applyTaxYtdFromClosedPayroll(row) {
+  const employeeId = safeStr(row?.employeeId);
+  const c = getClosedPayrollContributions(row);
+
+  if (!employeeId || !c.taxYear) {
+    return {
+      ok: false,
+      reason: "missing_employee_or_tax_year",
+    };
+  }
+
+  let ytd = await TaxYTD.findOne({
+    employeeId,
+    taxYear: c.taxYear,
+  });
+
+  if (!ytd) {
+    ytd = await TaxYTD.create({
+      employeeId,
+      taxYear: c.taxYear,
+      incomeYTD: 0,
+      ssoYTD: 0,
+      pvdYTD: 0,
+      taxPaidYTD: 0,
+    });
+  }
+
+  ytd.incomeYTD = round2(clampMin0(ytd.incomeYTD) + c.income);
+  ytd.ssoYTD = round2(clampMin0(ytd.ssoYTD) + c.sso);
+  ytd.pvdYTD = round2(clampMin0(ytd.pvdYTD) + c.pvd);
+  ytd.taxPaidYTD = round2(clampMin0(ytd.taxPaidYTD) + c.taxPaid);
+
+  await ytd.save();
+
+  return {
+    ok: true,
+    action: "restore_apply",
+    employeeId,
+    taxYear: c.taxYear,
+    added: c,
+    ytd: {
+      incomeYTD: ytd.incomeYTD,
+      ssoYTD: ytd.ssoYTD,
+      pvdYTD: ytd.pvdYTD,
+      taxPaidYTD: ytd.taxPaidYTD,
+    },
+  };
+}
+
+function buildRecalculateBody({ req, oldRow, clinicId, employeeId, month }) {
+  const body = req.body || {};
+
+  return {
+    ...body,
+
+    clinicId,
+    employeeId,
+    month,
+
+    grossBase:
+      body.grossBase !== undefined ? body.grossBase : oldRow?.grossBase ?? 0,
+
+    bonus: body.bonus !== undefined ? body.bonus : oldRow?.bonus ?? 0,
+
+    otherAllowance:
+      body.otherAllowance !== undefined
+        ? body.otherAllowance
+        : oldRow?.otherAllowance ?? 0,
+
+    otherDeduction:
+      body.otherDeduction !== undefined
+        ? body.otherDeduction
+        : oldRow?.otherDeduction ?? 0,
+
+    pvdEmployeeMonthly:
+      body.pvdEmployeeMonthly !== undefined
+        ? body.pvdEmployeeMonthly
+        : oldRow?.pvdEmployeeMonthly ?? 0,
+
+    ssoEmployeeMonthly:
+      body.ssoEmployeeMonthly !== undefined
+        ? body.ssoEmployeeMonthly
+        : oldRow?.ssoEmployeeMonthly ?? 0,
+
+    // ถ้า admin ไม่ส่ง otPay มา ให้ closeMonth คำนวณจาก approved OT ล่าสุด
+    otPay: body.otPay !== undefined ? body.otPay : 0,
+
+    taxMode: body.taxMode || oldRow?.taxMode || "WITHHOLDING",
+
+    grossBaseMode:
+      body.grossBaseMode ||
+      oldRow?.snapshot?.grossBaseModeRequested ||
+      oldRow?.snapshot?.grossBaseModeApplied ||
+      "PRE_DEDUCTION",
+  };
+}
+
+// ✅ POST /payroll-close/recalculate/:employeeId/:month
+async function recalculateClosedMonth(req, res) {
+  const { clinicId: clinicIdFromToken, userId: adminUserId, role } = pickAuth(
+    req
+  );
+
+  try {
+    if (!clinicIdFromToken) {
+      return res.status(401).json({ message: "Missing clinicId in token" });
+    }
+
+    if (!adminUserId) {
+      return res.status(401).json({ message: "Missing userId in token" });
+    }
+
+    if (role !== "admin") {
+      return res.status(403).json({ message: "Forbidden (admin only)" });
+    }
+
+    const employeeId = safeStr(req.params.employeeId || req.body?.employeeId);
+    const month = safeStr(req.params.month || req.body?.month);
+
+    if (!employeeId) {
+      return res.status(400).json({ message: "employeeId required" });
+    }
+
+    if (!isYm(month)) {
+      return res.status(400).json({ message: "month must be yyyy-MM" });
+    }
+
+    const oldRow = await PayrollClose.findOne({
+      clinicId: clinicIdFromToken,
+      employeeId,
+      month,
+    }).lean();
+
+    if (!oldRow) {
+      return res.status(404).json({
+        message: "Closed payroll not found",
+        employeeId,
+        month,
+      });
+    }
+
+    console.log("[PAYROLL_RECALCULATE][START]", {
+      clinicId: clinicIdFromToken,
+      employeeId,
+      month,
+      oldPayrollCloseId: String(oldRow._id),
+      adminUserId,
+    });
+
+    const rollbackResult = await rollbackTaxYtdFromClosedPayroll(oldRow);
+
+    await PayrollClose.deleteOne({ _id: oldRow._id });
+
+    const originalBody = req.body;
+    const originalParams = req.params;
+
+    req.body = buildRecalculateBody({
+      req,
+      oldRow,
+      clinicId: clinicIdFromToken,
+      employeeId,
+      month,
+    });
+
+    req.params = {
+      ...originalParams,
+      employeeId,
+      month,
+    };
+
+    const captureRes = makeCaptureRes();
+    await closeMonth(req, captureRes);
+
+    req.body = originalBody;
+    req.params = originalParams;
+
+    if (captureRes.statusCode >= 200 && captureRes.statusCode < 300) {
+      console.log("[PAYROLL_RECALCULATE][SUCCESS]", {
+        clinicId: clinicIdFromToken,
+        employeeId,
+        month,
+        oldPayrollCloseId: String(oldRow._id),
+        newPayrollCloseId: String(captureRes.payload?.payrollClose?._id || ""),
+      });
+
+      return res.status(200).json({
+        ok: true,
+        recalculated: true,
+        message: "Payroll month recalculated successfully",
+        oldPayrollCloseId: String(oldRow._id),
+        rollbackResult,
+        result: captureRes.payload,
+      });
+    }
+
+    let restoreResult = null;
+    let ytdRestoreResult = null;
+
+    try {
+      const current = await PayrollClose.findOne({
+        clinicId: clinicIdFromToken,
+        employeeId,
+        month,
+      }).lean();
+
+      if (!current) {
+        await PayrollClose.create(oldRow);
+        ytdRestoreResult = await applyTaxYtdFromClosedPayroll(oldRow);
+        restoreResult = { ok: true, action: "old_payroll_restored" };
+      } else {
+        restoreResult = {
+          ok: false,
+          reason: "new_payroll_exists_after_failed_close",
+          currentPayrollCloseId: String(current._id),
+        };
+      }
+    } catch (restoreErr) {
+      restoreResult = {
+        ok: false,
+        reason: "restore_failed",
+        error: restoreErr.message,
+      };
+    }
+
+    console.error("[PAYROLL_RECALCULATE][FAILED]", {
+      clinicId: clinicIdFromToken,
+      employeeId,
+      month,
+      closeStatus: captureRes.statusCode,
+      closePayload: captureRes.payload,
+      restoreResult,
+      ytdRestoreResult,
+    });
+
+    return res.status(captureRes.statusCode || 500).json({
+      ok: false,
+      message: "Recalculate failed",
+      oldPayrollCloseId: String(oldRow._id),
+      rollbackResult,
+      restoreResult,
+      ytdRestoreResult,
+      closeMonthResponse: captureRes.payload,
+    });
+  } catch (err) {
+    console.error("recalculateClosedMonth error:", err);
+
+    return res.status(500).json({
+      ok: false,
+      message: "recalculateClosedMonth failed",
+      error: err.message,
+    });
+  }
+}
+
 // ✅ GET /payroll-close/close-months/:employeeId
 async function getClosedMonthsByEmployee(req, res) {
   try {
     const { clinicId } = pickAuth(req);
+
     if (!clinicId) {
       return res.status(401).json({ message: "Missing clinicId in token" });
     }
 
     const employeeId = safeStr(req.params.employeeId);
+
     if (!employeeId) {
       return res.status(400).json({ message: "employeeId required" });
     }
@@ -1044,6 +1364,7 @@ async function getClosedMonthsByEmployee(req, res) {
 async function getClosedMonthByEmployeeAndMonth(req, res) {
   try {
     const { clinicId } = pickAuth(req);
+
     if (!clinicId) {
       return res.status(401).json({ message: "Missing clinicId in token" });
     }
@@ -1054,6 +1375,7 @@ async function getClosedMonthByEmployeeAndMonth(req, res) {
     if (!employeeId) {
       return res.status(400).json({ message: "employeeId required" });
     }
+
     if (!isYm(month)) {
       return res.status(400).json({ message: "month must be yyyy-MM" });
     }
@@ -1086,6 +1408,7 @@ async function getClosedMonthByEmployeeAndMonth(req, res) {
 module.exports = {
   guardPayslipAccess,
   closeMonth,
+  recalculateClosedMonth,
   getClosedMonthsByEmployee,
   getClosedMonthByEmployeeAndMonth,
 };
