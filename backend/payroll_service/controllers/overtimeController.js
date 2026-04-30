@@ -1,4 +1,23 @@
 // backend/payroll_service/controllers/overtimeController.js
+//
+// ✅ PRODUCTION OVERTIME CONTROLLER
+// ------------------------------------------------------
+// ✅ Supports:
+// - Auto OT from attendance source="attendance"
+// - Admin manual OT source="manual"
+// - Employee/user request OT source="manual_user"
+//
+// ✅ Important production fix:
+// - Admin manual OT is saved as REAL backend Overtime record
+// - Admin manual OT defaults to status="approved"
+// - approvedMinutes is set immediately
+// - Payroll close can include it even when staff cannot scan fingerprint
+//
+// ✅ Why:
+// - policy.requireOtApproval=true should affect employee/user requests,
+//   not block admin manual input from payroll.
+// ------------------------------------------------------
+
 const mongoose = require("mongoose");
 const Overtime = require("../models/Overtime");
 const ClinicPolicy = require("../models/ClinicPolicy");
@@ -74,7 +93,8 @@ function normalizeRoleForPolicy(role) {
 }
 
 /**
- * ✅ PRINCIPAL (รองรับทั้ง req.user และ req.userCtx)
+ * ✅ PRINCIPAL
+ * รองรับทั้ง req.user และ req.userCtx
  */
 function getPrincipal(req) {
   const u = req.user || {};
@@ -103,7 +123,6 @@ async function getOrCreatePolicy(clinicId, userId) {
       timezone: "Asia/Bangkok",
 
       requireBiometric: true,
-      // ✅ ให้ default ตรงกับ attendanceController.js
       requireLocation: true,
       geoRadiusMeters: 200,
       graceLateMinutes: 10,
@@ -162,7 +181,6 @@ function canApproveOtByRole(policy, role) {
   return !!actorRole && allowed.includes(actorRole);
 }
 
-// helper
 function buildPrincipalQueryFromInput({ staffId, principalId }) {
   const sid = s(staffId);
   const pid = s(principalId);
@@ -172,9 +190,11 @@ function buildPrincipalQueryFromInput({ staffId, principalId }) {
       $or: [{ principalId: pid }, { staffId: sid }, { principalId: sid }],
     };
   }
+
   if (pid) {
     return { $or: [{ principalId: pid }, { staffId: pid }] };
   }
+
   if (sid) {
     return { $or: [{ principalId: sid }, { staffId: sid }] };
   }
@@ -212,10 +232,19 @@ function computeMinutesFromStartEnd(startHHmm, endHHmm) {
   return diff;
 }
 
+function readStartTime(body) {
+  return s(body?.start || body?.startTime || body?.fromTime);
+}
+
+function readEndTime(body) {
+  return s(body?.end || body?.endTime || body?.toTime);
+}
+
 // ===================== SUMMARY HELPERS =====================
 
 async function sumApprovedMinutesForMonth({ clinicId, principalId, monthKey }) {
   const pid = s(principalId);
+
   const rows = await Overtime.find({
     clinicId,
     monthKey,
@@ -237,6 +266,7 @@ async function sumApprovedMinutesForMonth({ clinicId, principalId, monthKey }) {
 
 async function sumApprovedMinutesForDay({ clinicId, principalId, workDate }) {
   const pid = s(principalId);
+
   const rows = await Overtime.find({
     clinicId,
     workDate,
@@ -313,6 +343,7 @@ async function listMy(req, res) {
           message: "staffId/principalId required",
         });
       }
+
       q = { ...q, ...pQuery };
     } else {
       const selfPid = s(principalId);
@@ -395,8 +426,7 @@ async function listForStaff(req, res) {
       s(req.body?.staffId) ||
       s(req.body?.employeeId);
 
-    const principalId =
-      s(req.query?.principalId) || s(req.body?.principalId);
+    const principalId = s(req.query?.principalId) || s(req.body?.principalId);
 
     const pQuery = buildPrincipalQueryFromInput({ staffId, principalId });
     if (!pQuery) {
@@ -425,7 +455,8 @@ async function listForStaff(req, res) {
 }
 
 // ======================================================
-// ✅ STANDARD USER REQUEST (PENDING) - employee/helper/staff
+// ✅ STANDARD USER REQUEST (PENDING)
+// employee/helper/staff
 // ======================================================
 async function requestOt(req, res) {
   try {
@@ -466,10 +497,10 @@ async function requestOt(req, res) {
       });
     }
 
-    const workDate = s(req.body?.workDate);
-    const start = s(req.body?.start);
-    const end = s(req.body?.end);
-    const note = s(req.body?.note);
+    const workDate = s(req.body?.workDate || req.body?.date);
+    const start = readStartTime(req.body);
+    const end = readEndTime(req.body);
+    const note = s(req.body?.note || req.body?.reason);
 
     if (!isYmd(workDate)) {
       return res.status(400).json({ ok: false, message: "Invalid workDate" });
@@ -521,14 +552,18 @@ async function requestOt(req, res) {
       principalType,
       staffId: staffId || "",
       userId: userId || "",
+
       workDate,
       monthKey: toMonthKey(workDate),
+
       minutes: computed,
       approvedMinutes: 0,
       multiplier: mul,
+
       status: "pending",
       source: "manual_user",
       note,
+
       approvedBy: "",
       approvedAt: null,
       rejectedBy: "",
@@ -546,7 +581,17 @@ async function requestOt(req, res) {
 }
 
 // ======================================================
-// ✅ ADMIN CREATE MANUAL OT
+// ✅ ADMIN CREATE / UPSERT MANUAL OT
+// ======================================================
+// ✅ PRODUCTION RULE:
+// - Admin manual OT is a real backend Overtime record
+// - Default status = approved because admin is the approver
+// - approvedMinutes is set immediately
+// - Payroll close can include it immediately
+// - Idempotent per clinic/principal/workDate/source=manual
+//
+// ✅ If you ever want admin to create pending OT instead:
+// - send { asPending: true }
 // ======================================================
 async function createManual(req, res) {
   try {
@@ -557,26 +602,31 @@ async function createManual(req, res) {
     }
 
     const policy = await getOrCreatePolicy(clinicId, userId);
+
     if (!canApproveOtByRole(policy, role)) {
       return res.status(403).json({ ok: false, message: "Admin only" });
     }
 
-    const workDate = s(req.body?.workDate);
+    const workDate = s(req.body?.workDate || req.body?.date);
     if (!isYmd(workDate)) {
       return res.status(400).json({ ok: false, message: "Invalid workDate" });
     }
 
     const staffId = s(req.body?.staffId || req.body?.employeeId);
     const explicitUserId = s(req.body?.userId);
-    const principalId = s(req.body?.principalId) || staffId || explicitUserId;
+
+    const principalId =
+      s(req.body?.principalId) || staffId || explicitUserId;
 
     if (!principalId) {
-      return res
-        .status(400)
-        .json({ ok: false, message: "staffId/principalId/userId required" });
+      return res.status(400).json({
+        ok: false,
+        message: "staffId/principalId/userId required",
+      });
     }
 
     const principalTypeInput = s(req.body?.principalType).toLowerCase();
+
     const principalType =
       principalTypeInput === "user" || principalTypeInput === "staff"
         ? principalTypeInput
@@ -584,16 +634,25 @@ async function createManual(req, res) {
         ? "staff"
         : "user";
 
-    let minutes = clampMinutes(req.body?.minutes);
+    let minutes = clampMinutes(
+      req.body?.minutes ??
+        req.body?.approvedMinutes ??
+        req.body?.approvedOtMinutes ??
+        req.body?.otMinutes
+    );
+
     if (!minutes) {
-      const start = s(req.body?.start);
-      const end = s(req.body?.end);
+      const start = readStartTime(req.body);
+      const end = readEndTime(req.body);
       const computed = computeMinutesFromStartEnd(start, end);
+
       if (computed == null) {
-        return res
-          .status(400)
-          .json({ ok: false, message: "Invalid time format" });
+        return res.status(400).json({
+          ok: false,
+          message: "Invalid time format",
+        });
       }
+
       minutes = computed;
     }
 
@@ -601,16 +660,58 @@ async function createManual(req, res) {
       return res.status(400).json({ ok: false, message: "OT must be > 0" });
     }
 
-    const multiplier = Number(req.body?.multiplier);
-    const mul =
-      Number.isFinite(multiplier) && multiplier > 0
-        ? multiplier
+    let requestedApprovedMinutes =
+      req.body?.approvedMinutes != null
+        ? clampMinutes(req.body.approvedMinutes)
+        : minutes;
+
+    if (requestedApprovedMinutes <= 0) {
+      requestedApprovedMinutes = minutes;
+    }
+
+    if (requestedApprovedMinutes > minutes) {
+      return res.status(400).json({
+        ok: false,
+        message: "approvedMinutes cannot exceed minutes",
+      });
+    }
+
+    const multiplierInput = Number(req.body?.multiplier);
+    const multiplier =
+      Number.isFinite(multiplierInput) && multiplierInput > 0
+        ? multiplierInput
         : Number(policy.otMultiplier || 1.5);
 
-    const status = policy.requireOtApproval ? "pending" : "approved";
-    const now = new Date();
+    if (!Number.isFinite(multiplier) || multiplier <= 0) {
+      return res.status(400).json({
+        ok: false,
+        message: "Invalid multiplier",
+      });
+    }
 
-    const created = await Overtime.create({
+    const note = s(req.body?.note || req.body?.reason);
+
+    // ✅ สำคัญมาก:
+    // admin manual OT ต้อง approved ทันทีเพื่อให้ payroll close เอาไปคำนวณได้
+    // policy.requireOtApproval ยังใช้กับ manual_user request ได้ แต่ไม่ควร block admin input
+    const asPending =
+      req.body?.asPending === true || s(req.body?.status) === "pending";
+
+    const status = asPending ? "pending" : "approved";
+    const approvedMinutes = status === "approved" ? requestedApprovedMinutes : 0;
+
+    const now = new Date();
+    const actor = s(userId) || "admin";
+
+    const filter = {
+      clinicId,
+      principalId,
+      workDate,
+      source: "manual",
+      status: { $in: ["pending", "approved"] },
+    };
+
+    const patch = {
       clinicId,
       principalId,
       principalType,
@@ -619,22 +720,53 @@ async function createManual(req, res) {
 
       workDate,
       monthKey: toMonthKey(workDate),
+
       minutes,
-      approvedMinutes: status === "approved" ? minutes : 0,
-      multiplier: mul,
+      approvedMinutes,
+      multiplier,
+
       status,
       source: "manual",
-      note: s(req.body?.note),
-      createdBy: userId || "admin",
-      approvedBy: status === "approved" ? userId || "" : "",
+
+      note,
+      createdBy: actor,
+
+      approvedBy: status === "approved" ? actor : "",
       approvedAt: status === "approved" ? now : null,
+
       rejectedBy: "",
       rejectedAt: null,
       rejectReason: "",
-    });
+    };
 
-    return res.status(201).json({ ok: true, overtime: created });
+    const overtime = await Overtime.findOneAndUpdate(
+      filter,
+      { $set: patch },
+      {
+        new: true,
+        upsert: true,
+        setDefaultsOnInsert: true,
+      }
+    ).lean();
+
+    return res.status(201).json({
+      ok: true,
+      message:
+        status === "approved"
+          ? "Manual OT saved and approved"
+          : "Manual OT saved as pending",
+      overtime,
+    });
   } catch (e) {
+    if (e && e.code === 11000) {
+      return res.status(409).json({
+        ok: false,
+        code: "MANUAL_OT_ALREADY_EXISTS_OR_LOCKED",
+        message:
+          "Manual OT already exists for this staff/date or is locked by payroll. Please update/recalculate through the correct flow.",
+      });
+    }
+
     return res.status(500).json({ ok: false, error: e.message });
   }
 }
@@ -671,20 +803,23 @@ async function updateOne(req, res) {
 
     const patch = {};
 
-    if (req.body?.minutes != null) {
-      const m = clampMinutes(req.body.minutes);
+    if (req.body?.minutes != null || req.body?.otMinutes != null) {
+      const m = clampMinutes(req.body.minutes ?? req.body.otMinutes);
       if (m <= 0) {
         return res
           .status(400)
           .json({ ok: false, message: "minutes must be > 0" });
       }
+
       patch.minutes = m;
+
       if (s(ot.status) === "approved") {
         patch.approvedMinutes = m;
       }
     } else {
-      const start = s(req.body?.start);
-      const end = s(req.body?.end);
+      const start = readStartTime(req.body);
+      const end = readEndTime(req.body);
+
       if (start && end) {
         const computed = computeMinutesFromStartEnd(start, end);
         if (computed == null) {
@@ -692,10 +827,13 @@ async function updateOne(req, res) {
             .status(400)
             .json({ ok: false, message: "Invalid time format" });
         }
+
         if (computed <= 0) {
           return res.status(400).json({ ok: false, message: "OT must be > 0" });
         }
+
         patch.minutes = computed;
+
         if (s(ot.status) === "approved") {
           patch.approvedMinutes = computed;
         }
@@ -704,14 +842,14 @@ async function updateOne(req, res) {
 
     if (req.body?.approvedMinutes != null) {
       const approvedMinutes = clampMinutes(req.body.approvedMinutes);
-      if (
-        approvedMinutes < 0 ||
-        approvedMinutes > clampMinutes(patch.minutes ?? ot.minutes)
-      ) {
+      const maxMinutes = clampMinutes(patch.minutes ?? ot.minutes);
+
+      if (approvedMinutes < 0 || approvedMinutes > maxMinutes) {
         return res
           .status(400)
           .json({ ok: false, message: "Invalid approvedMinutes" });
       }
+
       patch.approvedMinutes = approvedMinutes;
     }
 
@@ -722,10 +860,13 @@ async function updateOne(req, res) {
           .status(400)
           .json({ ok: false, message: "Invalid multiplier" });
       }
+
       patch.multiplier = multiplier;
     }
 
-    if (req.body?.note != null) patch.note = s(req.body.note);
+    if (req.body?.note != null || req.body?.reason != null) {
+      patch.note = s(req.body.note || req.body.reason);
+    }
 
     if (Object.keys(patch).length === 0) {
       return res.json({ ok: true, overtime: ot });
@@ -741,7 +882,7 @@ async function updateOne(req, res) {
 }
 
 // ======================================================
-// ✅ ADMIN APPROVE / REJECT
+// ✅ ADMIN APPROVE
 // ======================================================
 async function approveOne(req, res) {
   try {
@@ -790,7 +931,7 @@ async function approveOne(req, res) {
           status: "approved",
           approvedMinutes,
           approvedAt: new Date(),
-          approvedBy: s(userId),
+          approvedBy: s(userId) || "admin",
           rejectedAt: null,
           rejectedBy: "",
           rejectReason: "",
@@ -805,6 +946,9 @@ async function approveOne(req, res) {
   }
 }
 
+// ======================================================
+// ✅ ADMIN REJECT
+// ======================================================
 async function rejectOne(req, res) {
   try {
     const { clinicId, role, userId } = getPrincipal(req);
@@ -839,8 +983,8 @@ async function rejectOne(req, res) {
           status: "rejected",
           approvedMinutes: 0,
           rejectedAt: new Date(),
-          rejectedBy: s(userId),
-          rejectReason: s(req.body?.note),
+          rejectedBy: s(userId) || "admin",
+          rejectReason: s(req.body?.note || req.body?.reason),
         },
       }
     );
@@ -853,7 +997,7 @@ async function rejectOne(req, res) {
 }
 
 // ======================================================
-// ✅ BULK APPROVE (MONTH / DAY) - admin
+// ✅ BULK APPROVE MONTH
 // ======================================================
 async function bulkApproveMonth(req, res) {
   try {
@@ -881,6 +1025,7 @@ async function bulkApproveMonth(req, res) {
         req.query?.staffId ||
         req.query?.employeeId
     );
+
     const principalId =
       s(req.body?.principalId || req.query?.principalId) || staffId;
 
@@ -917,42 +1062,39 @@ async function bulkApproveMonth(req, res) {
       });
     }
 
-    const ids = pendingRows.map((x) => x._id);
     const approvedAt = new Date();
-
-    const r = await Overtime.updateMany(
-      { _id: { $in: ids } },
-      {
-        $set: {
-          status: "approved",
-          approvedAt,
-          approvedBy: s(userId),
-        },
-      }
-    );
+    let modified = 0;
 
     for (const row of pendingRows) {
-      await Overtime.updateOne(
+      const r = await Overtime.updateOne(
         { _id: row._id },
         {
           $set: {
+            status: "approved",
+            approvedAt,
+            approvedBy: s(userId) || "admin",
             approvedMinutes: clampMinutes(row.minutes),
           },
         }
       );
+
+      modified += r.modifiedCount ?? r.nModified ?? 0;
     }
 
     return res.json({
       ok: true,
       month: monthKey,
-      matched: r.matchedCount ?? r.n ?? 0,
-      modified: r.modifiedCount ?? r.nModified ?? 0,
+      matched: pendingRows.length,
+      modified,
     });
   } catch (e) {
     return res.status(500).json({ ok: false, error: e.message });
   }
 }
 
+// ======================================================
+// ✅ BULK APPROVE DAY
+// ======================================================
 async function bulkApproveDay(req, res) {
   try {
     const { clinicId, role, userId } = getPrincipal(req);
@@ -980,6 +1122,7 @@ async function bulkApproveDay(req, res) {
         req.query?.staffId ||
         req.query?.employeeId
     );
+
     const principalId =
       s(req.body?.principalId || req.query?.principalId) || staffId;
 
@@ -1016,36 +1159,30 @@ async function bulkApproveDay(req, res) {
       });
     }
 
-    const ids = pendingRows.map((x) => x._id);
     const approvedAt = new Date();
-
-    const r = await Overtime.updateMany(
-      { _id: { $in: ids } },
-      {
-        $set: {
-          status: "approved",
-          approvedAt,
-          approvedBy: s(userId),
-        },
-      }
-    );
+    let modified = 0;
 
     for (const row of pendingRows) {
-      await Overtime.updateOne(
+      const r = await Overtime.updateOne(
         { _id: row._id },
         {
           $set: {
+            status: "approved",
+            approvedAt,
+            approvedBy: s(userId) || "admin",
             approvedMinutes: clampMinutes(row.minutes),
           },
         }
       );
+
+      modified += r.modifiedCount ?? r.nModified ?? 0;
     }
 
     return res.json({
       ok: true,
       workDate,
-      matched: r.matchedCount ?? r.n ?? 0,
-      modified: r.modifiedCount ?? r.nModified ?? 0,
+      matched: pendingRows.length,
+      modified,
     });
   } catch (e) {
     return res.status(500).json({ ok: false, error: e.message });
@@ -1053,7 +1190,9 @@ async function bulkApproveDay(req, res) {
 }
 
 // ======================================================
-// ✅ DELETE (รองรับ manual_user ด้วย)
+// ✅ DELETE
+// รองรับ manual และ manual_user
+// ไม่ให้ลบ auto attendance OT
 // ======================================================
 async function removeOne(req, res) {
   try {

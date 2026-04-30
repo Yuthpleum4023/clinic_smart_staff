@@ -18,7 +18,11 @@
 //
 // Backend คำนวณเอง:
 // - salary/grossBase จาก staff_service เป็นหลัก
-// - OT จาก Overtime status=approved เท่านั้น
+// - OT จาก Overtime status=approved/locked เท่านั้น
+// - OT รวมทุก source ที่ใช้คิดเงินเดือนได้:
+//   attendance  = OT จากสแกน / check-in checkout
+//   manual      = OT ที่ admin input เอง
+//   manual_user = OT ที่ user ขอและ admin อนุมัติ
 // - SSO จาก Clinic.socialSecurity
 // - Tax/YTD จาก auth internal tax service
 // - gross/net/display snapshot
@@ -29,12 +33,11 @@
 // - grossMonthly/netPay/withheldTaxMonthly จาก client ไม่ถูกใช้
 //
 // ✅ Production patch:
-// - recalculateClosedMonth() ไม่ fallback ค่า bonus/หัก/allowance ไป old PayrollClose ทันที
-// - ตอนคำนวณใหม่ ใช้ลำดับ:
-//   1) body ล่าสุดจาก Flutter
-//   2) staff_service ล่าสุด
-//   3) old PayrollClose เป็น fallback ชั้นสุดท้าย
-// - OT ยังบังคับคำนวณจาก approved OT ล่าสุดเหมือนเดิม
+// - explicit include OT sources: attendance/manual/manual_user
+// - include approved + locked OT records for recalculation safety
+// - add OT breakdown by source for debugging
+// - lock OT records after payroll close to prevent accidental mutation
+// - recalculateClosedMonth() recalculates from latest approved/locked OT
 //
 // ✅ Includes:
 // - closeMonth()
@@ -50,6 +53,10 @@ const Overtime = require("../models/Overtime");
 const Clinic = require("../models/Clinic");
 
 const { getEmployeeByStaffId } = require("../utils/staffClient");
+
+// ================= constants =================
+const PAYROLL_OT_SOURCES = ["attendance", "manual", "manual_user"];
+const PAYROLL_OT_STATUSES = ["approved", "locked"];
 
 // ================= errors =================
 class HttpError extends Error {
@@ -126,6 +133,17 @@ function pickFirstDefinedNumber(obj, keys) {
     if (Number.isFinite(n)) return round2(n);
   }
   return null;
+}
+
+function normalizeRole(v) {
+  const r = safeStr(v).toLowerCase();
+  if (r === "clinicadmin") return "clinic_admin";
+  return r;
+}
+
+function isAdminRole(role) {
+  const r = normalizeRole(role);
+  return r === "admin" || r === "clinic_admin";
 }
 
 function resolveMoneyInput({
@@ -225,13 +243,14 @@ function minutesBetween(startHHmm, endHHmm, breakMinutes = 0) {
   const e = parseHHmm(endHHmm);
   if (!s || !e) return 0;
 
-  let startMin = s.h * 60 + s.m;
+  const startMin = s.h * 60 + s.m;
   let endMin = e.h * 60 + e.m;
 
   if (endMin < startMin) endMin += 24 * 60;
 
   const total =
     endMin - startMin - Math.max(0, Math.floor(toNumber(breakMinutes)));
+
   return total > 0 ? total : 0;
 }
 
@@ -465,7 +484,11 @@ function resolveLeaveDeductionBackendOnly({
   };
 }
 
-function resolveOtBaseHourlyFromProfile({ employmentType, grossBase, hourlyRate }) {
+function resolveOtBaseHourlyFromProfile({
+  employmentType,
+  grossBase,
+  hourlyRate,
+}) {
   if (employmentType === "parttime") {
     return {
       otBaseHourly: round2(clampMin0(hourlyRate)),
@@ -559,7 +582,7 @@ function assertAdminContext(req) {
 
   if (!clinicId) throwHttp(401, "Missing clinicId in token");
   if (!userId) throwHttp(401, "Missing userId in token");
-  if (role !== "admin") throwHttp(403, "Forbidden (admin only)");
+  if (!isAdminRole(role)) throwHttp(403, "Forbidden (admin only)");
 
   return { clinicId, userId, role };
 }
@@ -571,7 +594,7 @@ function guardPayslipAccess(req, res, next) {
 
   if (!role) return res.status(401).json({ message: "Unauthorized" });
 
-  if (role === "admin") return next();
+  if (isAdminRole(role)) return next();
 
   if (role === "employee" || role === "staff") {
     if (!employeeId || !staffIdInToken) {
@@ -589,6 +612,29 @@ function guardPayslipAccess(req, res, next) {
 }
 
 // ================= OT helpers =================
+function getOtMinutesForPayroll(row) {
+  const rawApproved = row?.approvedMinutes;
+  const rawMinutes = row?.minutes;
+
+  const mins = Math.max(
+    0,
+    Math.floor(
+      Number(
+        rawApproved !== undefined && rawApproved !== null
+          ? rawApproved
+          : rawMinutes || 0
+      )
+    )
+  );
+
+  return Number.isFinite(mins) ? mins : 0;
+}
+
+function getOtMultiplierForPayroll(row) {
+  const mul = Number(row?.multiplier);
+  return Number.isFinite(mul) && mul > 0 ? mul : 1.5;
+}
+
 async function getApprovedOtSummaryForMonth({ clinicId, monthKey, employeeId }) {
   const cId = safeStr(clinicId);
   const mKey = safeStr(monthKey);
@@ -601,19 +647,40 @@ async function getApprovedOtSummaryForMonth({ clinicId, monthKey, employeeId }) 
       approvedWeightedHours: 0,
       records: [],
       count: 0,
+      bySource: {},
     };
   }
 
+  // ✅ PRODUCTION:
+  // - attendance   = OT จากการสแกน/check-in checkout
+  // - manual       = OT ที่ admin input กรณี scan ไม่ได้
+  // - manual_user  = OT ที่ user ขอและ admin อนุมัติ
+  // - approved     = พร้อมใช้คิดเงินเดือน
+  // - locked       = เคยถูกใช้ปิดงวดแล้ว แต่ต้องรวมในการ recalculate ได้
+  // - legacy source ว่าง/ไม่มีค่า ให้ถือเป็น attendance เพื่อไม่หลุดย้อนหลัง
   const q = {
     clinicId: cId,
     monthKey: mKey,
-    status: "approved",
-    $or: [{ staffId }, { principalId: staffId }],
+    status: { $in: PAYROLL_OT_STATUSES },
+    $and: [
+      {
+        $or: [{ staffId }, { principalId: staffId }],
+      },
+      {
+        $or: [
+          { source: { $in: PAYROLL_OT_SOURCES } },
+          { source: { $exists: false } },
+          { source: "" },
+          { source: null },
+        ],
+      },
+    ],
   };
 
   const rows = await Overtime.find(q)
     .select({
       workDate: 1,
+      monthKey: 1,
       minutes: 1,
       approvedMinutes: 1,
       multiplier: 1,
@@ -623,51 +690,135 @@ async function getApprovedOtSummaryForMonth({ clinicId, monthKey, employeeId }) 
       userId: 1,
       principalId: 1,
       staffId: 1,
+      attendanceSessionId: 1,
+      lockedBy: 1,
+      lockedAt: 1,
+      lockedMonth: 1,
       createdAt: 1,
+      updatedAt: 1,
     })
+    .sort({ workDate: 1, createdAt: 1 })
     .lean();
 
-  const approvedMinutes = rows.reduce((a, x) => {
-    const rawApproved = x.approvedMinutes;
-    const rawMinutes = x.minutes;
-    const mins = Math.max(
-      0,
-      Math.floor(
-        Number(
-          rawApproved !== undefined && rawApproved !== null
-            ? rawApproved
-            : rawMinutes || 0
-        )
-      )
-    );
-    return a + mins;
-  }, 0);
+  let approvedMinutes = 0;
+  let approvedWeightedHours = 0;
+  const bySource = {};
 
-  const approvedWeightedHours = rows.reduce((a, x) => {
-    const rawApproved = x.approvedMinutes;
-    const rawMinutes = x.minutes;
-    const mins = Math.max(
-      0,
-      Math.floor(
-        Number(
-          rawApproved !== undefined && rawApproved !== null
-            ? rawApproved
-            : rawMinutes || 0
-        )
-      )
-    );
-    const mul = Number(x.multiplier);
-    const m = Number.isFinite(mul) && mul > 0 ? mul : 1.5;
-    return a + (mins / 60) * m;
-  }, 0);
+  for (const row of rows) {
+    const mins = getOtMinutesForPayroll(row);
+    const multiplier = getOtMultiplierForPayroll(row);
+    const weightedHours = (mins / 60) * multiplier;
 
-  return {
+    approvedMinutes += mins;
+    approvedWeightedHours += weightedHours;
+
+    const sourceKey = safeStr(row.source) || "attendance_legacy";
+
+    if (!bySource[sourceKey]) {
+      bySource[sourceKey] = {
+        count: 0,
+        approvedMinutes: 0,
+        approvedWeightedHours: 0,
+      };
+    }
+
+    bySource[sourceKey].count += 1;
+    bySource[sourceKey].approvedMinutes += mins;
+    bySource[sourceKey].approvedWeightedHours = round2(
+      bySource[sourceKey].approvedWeightedHours + weightedHours
+    );
+  }
+
+  const summary = {
     monthKey: mKey,
     approvedMinutes,
     approvedWeightedHours: round2(approvedWeightedHours),
     count: rows.length,
     records: rows,
+    bySource,
   };
+
+  console.log("[PAYROLL_OT_SUMMARY]", {
+    clinicId: cId,
+    employeeId: staffId,
+    monthKey: mKey,
+    count: summary.count,
+    approvedMinutes: summary.approvedMinutes,
+    approvedWeightedHours: summary.approvedWeightedHours,
+    bySource: summary.bySource,
+  });
+
+  return summary;
+}
+
+async function lockOtRowsForPayrollClose({ c, payrollClose }) {
+  const records = Array.isArray(c?.otSummary?.records)
+    ? c.otSummary.records
+    : [];
+
+  const ids = records.map((x) => x?._id).filter(Boolean);
+
+  if (!ids.length) {
+    return {
+      ok: true,
+      matched: 0,
+      modified: 0,
+      reason: "no_ot_records",
+      payrollCloseId: String(payrollClose?._id || ""),
+    };
+  }
+
+  try {
+    const r = await Overtime.updateMany(
+      {
+        _id: { $in: ids },
+        clinicId: c.clinicId,
+        monthKey: c.month,
+        status: { $in: PAYROLL_OT_STATUSES },
+      },
+      {
+        $set: {
+          status: "locked",
+          lockedBy: c.adminUserId,
+          lockedAt: new Date(),
+          lockedMonth: c.month,
+        },
+      }
+    );
+
+    const result = {
+      ok: true,
+      matched: r.matchedCount ?? r.n ?? 0,
+      modified: r.modifiedCount ?? r.nModified ?? 0,
+      payrollCloseId: String(payrollClose?._id || ""),
+    };
+
+    console.log("[PAYROLL_OT_LOCK]", {
+      clinicId: c.clinicId,
+      employeeId: c.employeeId,
+      month: c.month,
+      ...result,
+    });
+
+    return result;
+  } catch (e) {
+    const result = {
+      ok: false,
+      matched: 0,
+      modified: 0,
+      error: e.message,
+      payrollCloseId: String(payrollClose?._id || ""),
+    };
+
+    console.error("[PAYROLL_OT_LOCK][FAILED]", {
+      clinicId: c.clinicId,
+      employeeId: c.employeeId,
+      month: c.month,
+      ...result,
+    });
+
+    return result;
+  }
 }
 
 // ================= EMPLOYEE userId resolver =================
@@ -1059,9 +1210,7 @@ async function computePayrollForMonth({
     employmentType: salaryProfile.employmentType,
   });
 
-  const otherDeductionFinal = round2(
-    clampMin0(leaveDeductionResolved.amount)
-  );
+  const otherDeductionFinal = round2(clampMin0(leaveDeductionResolved.amount));
 
   const pvdM = resolveMoneyInput({
     body: b,
@@ -1231,6 +1380,7 @@ async function computePayrollForMonth({
     pvdM,
     approvedMinutes: otSummary.approvedMinutes,
     approvedWeightedHours: otSummary.approvedWeightedHours,
+    otBySource: otSummary.bySource,
     otBaseHourly: otRateResolved.otBaseHourly,
     otBaseHourlySource: otRateResolved.source,
     calculatedOtPay,
@@ -1285,6 +1435,10 @@ async function computePayrollForMonth({
 }
 
 function buildPayrollClosePayload(c) {
+  const otRecordIds = Array.isArray(c.otSummary?.records)
+    ? c.otSummary.records.map((x) => String(x?._id || "")).filter(Boolean)
+    : [];
+
   return {
     clinicId: c.clinicId,
     employeeId: c.employeeId,
@@ -1364,6 +1518,12 @@ function buildPayrollClosePayload(c) {
       calculatedOtPay: c.calculatedOtPay,
       otBaseHourlyResolved: c.otRateResolved.otBaseHourly,
       otBaseHourlySource: c.otRateResolved.source,
+      otApprovedMinutes: c.otSummary.approvedMinutes,
+      otApprovedWeightedHours: c.otSummary.approvedWeightedHours,
+      otApprovedCount: c.otSummary.count,
+      otBreakdownBySource: c.otSummary.bySource || {},
+      otRecordIds,
+
       staffLookupError: c.staffLookupError || "",
       bonusUsed: c.bonusFinal,
       otherAllowanceUsed: c.otherAllowanceFinal,
@@ -1387,6 +1547,7 @@ function buildResponsePayload({
   payrollClose = null,
   ytd = null,
   isPreview = false,
+  otLockResult = null,
 }) {
   const rowLike = payrollClose || buildPayrollClosePayload(c);
 
@@ -1404,6 +1565,7 @@ function buildResponsePayload({
     taxUserId: c.resolved?.employeeUserId || "",
     taxUserIdSource: c.resolved?.source || "skipped",
     warning: c.warning,
+    otLockResult,
     ssoPolicy: {
       enabled: c.ssoConfig.enabled,
       employeeRate: c.ssoConfig.employeeRate,
@@ -1415,6 +1577,7 @@ function buildResponsePayload({
       approvedMinutes: c.otSummary.approvedMinutes,
       approvedWeightedHours: c.otSummary.approvedWeightedHours,
       count: c.otSummary.count,
+      bySource: c.otSummary.bySource || {},
       records: c.otSummary.records,
     },
     displaySnapshot: {
@@ -1580,8 +1743,22 @@ async function closeMonth(req, res) {
 
     await ytd.save();
 
+    // ✅ Lock OT records after successful payroll close/YTD update.
+    // ไม่ fail payroll close ถ้า lock fail แต่จะ log และส่งกลับใน response
+    // เพื่อให้ admin/debug ตรวจสอบได้
+    const otLockResult = await lockOtRowsForPayrollClose({
+      c,
+      payrollClose,
+    });
+
     return res.json(
-      buildResponsePayload({ c, payrollClose, ytd, isPreview: false })
+      buildResponsePayload({
+        c,
+        payrollClose,
+        ytd,
+        isPreview: false,
+        otLockResult,
+      })
     );
   } catch (err) {
     return handleControllerError(res, err, "closeMonth");
@@ -1716,7 +1893,7 @@ async function applyTaxYtdFromClosedPayroll(row) {
 function buildRecalculateBody({ req, oldRow, clinicId, employeeId, month }) {
   const body = req.body || {};
 
-  const out = {
+  return {
     ...body,
 
     clinicId,
@@ -1740,6 +1917,8 @@ function buildRecalculateBody({ req, oldRow, clinicId, employeeId, month }) {
     grossBase:
       body.grossBase !== undefined ? body.grossBase : oldRow?.grossBase ?? 0,
 
+    // ✅ OT must be recalculated from Overtime rows again.
+    // client otPay remains ignored unless explicit override is sent.
     otPay: body.otPay !== undefined ? body.otPay : 0,
     allowManualOtPayOverride: body.allowManualOtPayOverride === true,
 
@@ -1756,8 +1935,6 @@ function buildRecalculateBody({ req, oldRow, clinicId, employeeId, month }) {
       oldRow?.snapshot?.grossBaseModeApplied ||
       "PRE_DEDUCTION",
   };
-
-  return out;
 }
 
 // ✅ POST /payroll-close/recalculate/:employeeId/:month
@@ -1774,7 +1951,7 @@ async function recalculateClosedMonth(req, res) {
       return res.status(401).json({ message: "Missing userId in token" });
     }
 
-    if (role !== "admin") {
+    if (!isAdminRole(role)) {
       return res.status(403).json({ message: "Forbidden (admin only)" });
     }
 
@@ -1845,6 +2022,7 @@ async function recalculateClosedMonth(req, res) {
         month,
         oldPayrollCloseId: String(oldRow._id),
         newPayrollCloseId: String(captureRes.payload?.payrollClose?._id || ""),
+        otLockResult: captureRes.payload?.otLockResult || null,
       });
 
       return res.status(200).json({
