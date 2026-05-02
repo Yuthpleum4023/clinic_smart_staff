@@ -1783,7 +1783,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text(
-                    'กรุณากรอก PIN ของคลินิกเพื่อเข้าดูคะแนนความน่าเชื่อถือ',
+                    'กรุณากรอก PIN ของคลินิกเพื่อดูคะแนนผู้ช่วย',
                   ),
                   const SizedBox(height: 10),
                   TextField(
@@ -3361,7 +3361,8 @@ class _HomeScreenState extends State<HomeScreen> {
           }
         }
 
-        final attendance = _mapFromAny(data['attendance']) ?? <String, dynamic>{};
+        final attendance =
+            _mapFromAny(data['attendance']) ?? <String, dynamic>{};
         final pendingManualAny = attendance['pendingManualSession'];
         final hasPendingManual = pendingManualAny is Map &&
             Map<String, dynamic>.from(pendingManualAny).isNotEmpty;
@@ -3402,7 +3403,8 @@ class _HomeScreenState extends State<HomeScreen> {
         final previewHasCheckIn = _previewHasCheckInEvidence(data);
         final previewHasCheckOut = _previewHasCheckOutEvidence(data);
 
-        final checkedIn = previewHasCheckIn || todayOpen != null || todayDone != null;
+        final checkedIn =
+            previewHasCheckIn || todayOpen != null || todayDone != null;
         final checkedOut = previewHasCheckOut || todayDone != null;
 
         final msg = (data['message'] ?? '').toString().trim();
@@ -3825,8 +3827,7 @@ class _HomeScreenState extends State<HomeScreen> {
         await _refreshAttendanceToday(silent: true);
       } else if (result == _AttendanceSubmitResult.manualRequired) {
         await _refreshAttendanceToday(silent: true);
-      } else if (result ==
-          _AttendanceSubmitResult.previousAttendancePending) {
+      } else if (result == _AttendanceSubmitResult.previousAttendancePending) {
         await _refreshAttendanceToday(silent: true);
       } else if (result == _AttendanceSubmitResult.shiftSelectionRequired) {
         await _loadHelperTodayShifts(silent: true);
@@ -3982,8 +3983,7 @@ class _HomeScreenState extends State<HomeScreen> {
         await _refreshAttendanceToday(silent: true);
       } else if (result == _AttendanceSubmitResult.manualRequired) {
         await _refreshAttendanceToday(silent: true);
-      } else if (result ==
-          _AttendanceSubmitResult.previousAttendancePending) {
+      } else if (result == _AttendanceSubmitResult.previousAttendancePending) {
         await _refreshAttendanceToday(silent: true);
       } else if (result == _AttendanceSubmitResult.earlyCheckoutReasonRequired) {
         _resetAttendanceUiPhase();
@@ -4035,8 +4035,7 @@ class _HomeScreenState extends State<HomeScreen> {
           await _refreshAttendanceToday(silent: true);
         } else if (retry == _AttendanceSubmitResult.manualRequired) {
           await _refreshAttendanceToday(silent: true);
-        } else if (retry ==
-            _AttendanceSubmitResult.previousAttendancePending) {
+        } else if (retry == _AttendanceSubmitResult.previousAttendancePending) {
           await _refreshAttendanceToday(silent: true);
         } else if (retry == _AttendanceSubmitResult.shiftSelectionRequired) {
           await _loadHelperTodayShifts(silent: true);
@@ -4646,7 +4645,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   const SizedBox(height: 6),
                   Text(
-                    'คลินิกสามารถเปิด Helper Marketplace เพื่อเลือกผู้ช่วย แล้วไปดูคะแนนความน่าเชื่อถือได้ โดยต้องยืนยัน PIN ของคลินิกก่อน',
+                    'ตรวจสอบคะแนน ประวัติ และความน่าเชื่อถือของผู้ช่วยก่อนยืนยันการจ้างงาน',
                     style: TextStyle(color: Colors.grey.shade700),
                   ),
                   const SizedBox(height: 10),
@@ -4655,7 +4654,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     child: ElevatedButton.icon(
                       onPressed: _openTrustScoreFromHome,
                       icon: const Icon(Icons.verified),
-                      label: const Text('ดูคะแนนความน่าเชื่อถือ'),
+                      label: const Text('ดูคะแนนผู้ช่วย'),
                     ),
                   ),
                   const SizedBox(height: 8),
@@ -4663,8 +4662,8 @@ class _HomeScreenState extends State<HomeScreen> {
                     width: double.infinity,
                     child: OutlinedButton.icon(
                       onPressed: _openHelperMarketplaceForClinicTrustScore,
-                      icon: const Icon(Icons.storefront_outlined),
-                      label: const Text('เลือกผู้ช่วย'),
+                      icon: const Icon(Icons.search),
+                      label: const Text('ค้นหาผู้ช่วย'),
                     ),
                   ),
                 ],
@@ -4688,16 +4687,17 @@ class _HomeScreenState extends State<HomeScreen> {
                   ListTile(
                     contentPadding: EdgeInsets.zero,
                     leading: const Icon(Icons.local_hospital_outlined),
-                    title: const Text('สำหรับคลินิก'),
-                    subtitle: const Text('ดูประกาศงานและจัดการงานของคลินิก'),
+                    title: const Text('ประกาศงานของคลินิก'),
+                    subtitle:
+                        const Text('สร้าง ดู และจัดการประกาศงานของคลินิก'),
                     onTap: _openClinicNeedsMarket,
                   ),
                   const Divider(height: 1),
                   ListTile(
                     contentPadding: EdgeInsets.zero,
                     leading: const Icon(Icons.badge_outlined),
-                    title: const Text('สำหรับผู้ช่วย'),
-                    subtitle: const Text('ดูงานว่างและสมัครงาน'),
+                    title: const Text('งานว่างสำหรับผู้ช่วย'),
+                    subtitle: const Text('ดูงานที่เปิดรับและสมัครงาน'),
                     onTap: _openHelperOpenNeeds,
                   ),
                 ],
@@ -4755,22 +4755,25 @@ class _HomeScreenState extends State<HomeScreen> {
                 const Divider(height: 1),
                 ListTile(
                   leading: const Icon(Icons.verified_outlined),
-                  title: const Text('คะแนนความน่าเชื่อถือ'),
+                  title: const Text('ดูคะแนนผู้ช่วย'),
+                  subtitle: const Text('ตรวจสอบประวัติและคะแนนก่อนจ้างงาน'),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: _openTrustScoreFromHome,
                 ),
                 const Divider(height: 1),
                 ListTile(
-                  leading: const Icon(Icons.storefront_outlined),
-                  title: const Text('เลือกผู้ช่วย'),
-                  subtitle: const Text('เลือกผู้ช่วยเพื่อดูคะแนนความน่าเชื่อถือ'),
+                  leading: const Icon(Icons.search),
+                  title: const Text('ค้นหาผู้ช่วย'),
+                  subtitle:
+                      const Text('ค้นหาและเลือกผู้ช่วยเพื่อดูคะแนนก่อนจ้างงาน'),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: _openHelperMarketplaceForClinicTrustScore,
                 ),
                 const Divider(height: 1),
                 ListTile(
                   leading: const Icon(Icons.payments_outlined),
-                  title: const Text('คำนวณเงินเดือน (ในเครื่อง)'),
+                  title: const Text('พรีวิวเงินเดือน'),
+                  subtitle: const Text('ตรวจสอบยอดเงินเดือนก่อนปิดงวดจริง'),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () async {
                     _tapLog('OPEN_LOCAL_PAYROLL');
@@ -4884,10 +4887,10 @@ class _HomeScreenState extends State<HomeScreen> {
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
                       : const Icon(Icons.chevron_right),
-                  onTap: (_attendancePremiumEnabled &&
-                          !_checkingAttendanceLocation)
-                      ? _checkAttendanceLocationNow
-                      : null,
+                  onTap:
+                      (_attendancePremiumEnabled && !_checkingAttendanceLocation)
+                          ? _checkAttendanceLocationNow
+                          : null,
                 ),
                 const Divider(height: 1),
                 ListTile(
@@ -5414,7 +5417,7 @@ class _LocalPayrollScreenState extends State<LocalPayrollScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('คำนวณเงินเดือน (ในเครื่อง)'),
+        title: const Text('พรีวิวเงินเดือน'),
         actions: [
           IconButton(
             tooltip: 'เพิ่มพนักงาน',
