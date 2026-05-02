@@ -16,10 +16,7 @@ import 'package:clinic_smart_staff/screens/payroll/payroll_after_tax_preview_scr
 import 'package:clinic_smart_staff/screens/clinic/clinic_home_screen.dart';
 import 'package:clinic_smart_staff/screens/edit_employee_screen.dart';
 
-enum _EmployeeTaxMode {
-  none,
-  withholding,
-}
+enum _EmployeeTaxMode { none, withholding }
 
 class WorkHourEntry {
   final String date;
@@ -57,11 +54,11 @@ class WorkTimeEntry {
   });
 
   Map<String, dynamic> toMap() => {
-        'date': date,
-        'start': start,
-        'end': end,
-        'breakMinutes': breakMinutes,
-      };
+    'date': date,
+    'start': start,
+    'end': end,
+    'breakMinutes': breakMinutes,
+  };
 
   factory WorkTimeEntry.fromMap(Map<String, dynamic> map) {
     return WorkTimeEntry(
@@ -150,8 +147,11 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
 
   final ScrollController _scrollCtrl = ScrollController();
 
-  DateTime selectedMonth =
-      DateTime(DateTime.now().year, DateTime.now().month, 1);
+  DateTime selectedMonth = DateTime(
+    DateTime.now().year,
+    DateTime.now().month,
+    1,
+  );
 
   late final TextEditingController ssoPercentCtrl;
   late final TextEditingController withholdingPercentCtrl;
@@ -245,8 +245,9 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
 
   double _computeSsoFromClinicConfig(double salaryBase) {
     if (!_effectiveClinicSsoEnabled) return 0.0;
-    final contributableBase =
-        salaryBase.clamp(0.0, _effectiveClinicSsoMaxWageBase).toDouble();
+    final contributableBase = salaryBase
+        .clamp(0.0, _effectiveClinicSsoMaxWageBase)
+        .toDouble();
     return contributableBase * _effectiveClinicSsoRate;
   }
 
@@ -502,9 +503,9 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
   }
 
   Map<String, String> _headers(String token) => {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer $token',
-      };
+    'Content-Type': 'application/json',
+    'Authorization': 'Bearer $token',
+  };
 
   Map<String, dynamic> _asMap(dynamic v) {
     if (v is Map) {
@@ -560,10 +561,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
         throw Exception('NO_TOKEN');
       }
 
-      final candidates = <String>[
-        '/clinic-policy/me',
-        '/api/clinic-policy/me',
-      ];
+      final candidates = <String>['/clinic-policy/me', '/api/clinic-policy/me'];
 
       http.Response? okRes;
 
@@ -607,8 +605,9 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       if (!mounted || _disposed) return;
 
       setState(() {
-        _policyOtMultiplier =
-            (otMul != null && otMul > 0) ? otMul : _defaultOtNormalMultiplier;
+        _policyOtMultiplier = (otMul != null && otMul > 0)
+            ? otMul
+            : _defaultOtNormalMultiplier;
         _policyHolidayMultiplier = (holidayMul != null && holidayMul > 0)
             ? holidayMul
             : _defaultOtHolidayMultiplier;
@@ -622,7 +621,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
         _policyOtMultiplier = _defaultOtNormalMultiplier;
         _policyHolidayMultiplier = _defaultOtHolidayMultiplier;
         _loadingOtPolicy = false;
-        _otPolicyError = 'โหลดตัวคูณ OT จาก policy ไม่สำเร็จ';
+        _otPolicyError = 'โหลดเงื่อนไข OT ไม่สำเร็จ ระบบใช้ค่าเริ่มต้นชั่วคราว';
       });
     }
   }
@@ -703,11 +702,12 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       setState(() {
         _clinicSsoEnabled = enabled;
         _clinicSsoEmployeeRate = (rate != null && rate >= 0) ? rate : 0.05;
-        _clinicSsoMaxWageBase =
-            (maxWageBase != null && maxWageBase > 0) ? maxWageBase : 17500.0;
+        _clinicSsoMaxWageBase = (maxWageBase != null && maxWageBase > 0)
+            ? maxWageBase
+            : 17500.0;
 
-        ssoPercentCtrl.text =
-            ((_clinicSsoEmployeeRate ?? 0.05) * 100).toStringAsFixed(2);
+        ssoPercentCtrl.text = ((_clinicSsoEmployeeRate ?? 0.05) * 100)
+            .toStringAsFixed(2);
 
         _loadingClinicPayrollConfig = false;
         _clinicPayrollConfigError = '';
@@ -717,7 +717,8 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
 
       setState(() {
         _loadingClinicPayrollConfig = false;
-        _clinicPayrollConfigError = 'โหลดค่า SSO ของคลินิกไม่สำเร็จ';
+        _clinicPayrollConfigError =
+            'โหลดค่าประกันสังคมของคลินิกไม่สำเร็จ ระบบใช้ค่าเริ่มต้นชั่วคราว';
       });
     }
   }
@@ -800,7 +801,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
 
       setState(() {
         _loadingClosedPayroll = false;
-        _closedPayrollError = 'โหลด payroll ปิดงวดไม่สำเร็จ';
+        _closedPayrollError = 'โหลดข้อมูลงวดเงินเดือนไม่สำเร็จ';
         _closedPayrollRow = null;
         _closedPayslipSummary = null;
       });
@@ -814,7 +815,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     final monthKey = _fmtMonth(selectedMonth);
 
     if (employeeId.isEmpty) {
-      _snack('ไม่พบ staffId ของพนักงานคนนี้');
+      _snack('ไม่พบข้อมูลพนักงานสำหรับคำนวณเงินเดือน');
       return;
     }
 
@@ -836,7 +837,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
         content: Text(
           'งวด $monthKey ถูกปิดแล้ว\n\n'
           'หากมีการสแกนเวลา OT หรือข้อมูลเงินเดือนเปลี่ยนหลังปิดงวด '
-          'ระบบจะ rollback ยอดเดิม แล้วคำนวณงวดนี้ใหม่จากข้อมูลล่าสุด\n\n'
+          'ระบบจะยกเลิกยอดเดิมและคำนวณงวดนี้ใหม่จากข้อมูลล่าสุด\n\n'
           'ต้องการดำเนินการหรือไม่?',
         ),
         actions: [
@@ -859,7 +860,8 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     final monthWorkEntries = _monthWorkEntries(selectedMonth);
     final monthWorkTimeEntries = _monthWorkTimeEntries(selectedMonth);
     final totalWorkHours =
-        _sumWorkHours(monthWorkEntries) + _sumWorkTimeHours(monthWorkTimeEntries);
+        _sumWorkHours(monthWorkEntries) +
+        _sumWorkTimeHours(monthWorkTimeEntries);
 
     final linkedUserId = _resolveLinkedUserId();
 
@@ -879,8 +881,9 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
             : 'NO_WITHHOLDING',
         employeeUserId: linkedUserId.isEmpty ? null : linkedUserId,
         regularWorkHours: emp.isPartTime ? totalWorkHours : null,
-        regularWorkMinutes:
-            emp.isPartTime ? (totalWorkHours * 60).round() : null,
+        regularWorkMinutes: emp.isPartTime
+            ? (totalWorkHours * 60).round()
+            : null,
       );
 
       if (!mounted || _disposed) return;
@@ -1025,9 +1028,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     for (final r in rows) {
       if (r is Map) {
         parsed.add(
-          Map<String, dynamic>.from(
-            r.map((k, v) => MapEntry(k.toString(), v)),
-          ),
+          Map<String, dynamic>.from(r.map((k, v) => MapEntry(k.toString(), v))),
         );
       }
     }
@@ -1058,8 +1059,8 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
 
       final statusParam =
           (_backendOtStatus.trim().isEmpty || _backendOtStatus == 'all')
-              ? ''
-              : '&status=${Uri.encodeQueryComponent(_backendOtStatus)}';
+          ? ''
+          : '&status=${Uri.encodeQueryComponent(_backendOtStatus)}';
 
       final candidates = <String>[
         '/overtime?month=$monthKey&principalId=$staffId$statusParam',
@@ -1111,7 +1112,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
         final m = approvedAny is num
             ? approvedAny.toInt()
             : int.tryParse('${approvedAny ?? minutesAny}') ??
-                (minutesAny is num ? minutesAny.toInt() : 0);
+                  (minutesAny is num ? minutesAny.toInt() : 0);
 
         final mul = (r['multiplier'] is num)
             ? (r['multiplier'] as num).toDouble()
@@ -1140,10 +1141,10 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       setState(() {
         _loadingBackendOt = false;
         _backendOtError = e.toString().contains('NO_TOKEN')
-            ? 'ไม่พบสิทธิ์เข้าใช้งาน (ลองออก/เข้าใหม่)'
+            ? 'ไม่พบสิทธิ์เข้าใช้งาน กรุณาออกจากระบบแล้วเข้าใหม่'
             : e.toString().contains('NO_STAFF_ID')
-                ? 'ไม่พบ staffId ของพนักงาน'
-                : 'โหลด OT จากระบบไม่สำเร็จ';
+            ? 'ไม่พบข้อมูลพนักงานสำหรับโหลด OT'
+            : 'โหลด OT จากระบบไม่สำเร็จ';
       });
     }
   }
@@ -1219,11 +1220,13 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     required String backendMessage,
   }) {
     if (statusCode == 409) {
-      return 'มีรายการ OT ของวันนี้อยู่แล้ว กรุณาลบ/แก้ไขรายการเดิมก่อน';
+      return 'มีรายการ OT ของวันนี้อยู่แล้ว กรุณาลบหรือแก้ไขรายการเดิมก่อน';
     }
 
     if (statusCode == 400) {
-      return backendMessage.isNotEmpty ? backendMessage : 'ข้อมูล OT ไม่ถูกต้อง';
+      return backendMessage.isNotEmpty
+          ? backendMessage
+          : 'ข้อมูล OT ไม่ถูกต้อง';
     }
 
     if (statusCode == 401) {
@@ -1235,11 +1238,11 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     }
 
     if (statusCode == 404) {
-      return 'ไม่พบ API สำหรับบันทึก OT';
+      return 'ยังไม่สามารถเชื่อมต่อระบบบันทึก OT ได้';
     }
 
     if (statusCode >= 500) {
-      return 'ระบบ backend มีปัญหา กรุณาลองใหม่อีกครั้ง';
+      return 'ระบบมีปัญหา กรุณาลองใหม่อีกครั้ง';
     }
 
     return backendMessage.isNotEmpty
@@ -1258,7 +1261,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       return const _ManualOtSaveResult(
         ok: false,
         statusCode: 0,
-        message: 'ไม่พบ staffId ของพนักงาน',
+        message: 'ไม่พบข้อมูลพนักงานสำหรับบันทึก OT',
       );
     }
 
@@ -1267,7 +1270,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       return const _ManualOtSaveResult(
         ok: false,
         statusCode: 401,
-        message: 'ไม่พบสิทธิ์เข้าใช้งาน กรุณาออก/เข้าใหม่',
+        message: 'ไม่พบสิทธิ์เข้าใช้งาน กรุณาออกจากระบบแล้วเข้าใหม่',
       );
     }
 
@@ -1296,10 +1299,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       'asPending': false,
     });
 
-    final candidates = <String>[
-      '/overtime/manual',
-      '/api/overtime/manual',
-    ];
+    final candidates = <String>['/overtime/manual', '/api/overtime/manual'];
 
     int lastStatusCode = 0;
     String lastMessage = '';
@@ -1446,10 +1446,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       final token = await _getToken();
       if (token == null || token.trim().isEmpty) return false;
 
-      final candidates = <String>[
-        '/overtime/$id',
-        '/api/overtime/$id',
-      ];
+      final candidates = <String>['/overtime/$id', '/api/overtime/$id'];
 
       for (final p in candidates) {
         final res = await http.delete(_uri(p), headers: _headers(token));
@@ -1482,9 +1479,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
 
     final result = await Navigator.push(
       context,
-      MaterialPageRoute(
-        builder: (_) => EditEmployeeScreen(employee: emp),
-      ),
+      MaterialPageRoute(builder: (_) => EditEmployeeScreen(employee: emp)),
     );
 
     if (!mounted || _disposed) return;
@@ -1607,10 +1602,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
               onPressed: () => closeWith(false),
               child: const Text('ยกเลิก'),
             ),
-            ElevatedButton(
-              onPressed: submit,
-              child: const Text('ยืนยัน'),
-            ),
+            ElevatedButton(onPressed: submit, child: const Text('ยืนยัน')),
           ],
         );
       },
@@ -1650,9 +1642,9 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
 
           if (a != b) {
             if (!mounted || _disposed) return;
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('PIN ไม่ตรงกัน')),
-            );
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(const SnackBar(content: Text('PIN ไม่ตรงกัน')));
             return;
           }
 
@@ -1699,10 +1691,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
               onPressed: () => closeWith(false),
               child: const Text('ยกเลิก'),
             ),
-            ElevatedButton(
-              onPressed: submit,
-              child: const Text('บันทึก'),
-            ),
+            ElevatedButton(onPressed: submit, child: const Text('บันทึก')),
           ],
         );
       },
@@ -1714,7 +1703,8 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
   Future<void> _initTaxSettingsFromPrefs() async {
     final prefs = await SharedPreferences.getInstance();
     final rawMode = (prefs.getString(_employeeTaxModeKey) ?? 'none').trim();
-    final p = prefs.getDouble(_employeeWithholdingPercentKey) ??
+    final p =
+        prefs.getDouble(_employeeWithholdingPercentKey) ??
         _defaultWithholdingPercent;
 
     if (!mounted || _disposed) return;
@@ -1856,10 +1846,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text(
-          'รูปแบบภาษี',
-          style: TextStyle(fontWeight: FontWeight.bold),
-        ),
+        const Text('รูปแบบภาษี', style: TextStyle(fontWeight: FontWeight.bold)),
         const SizedBox(height: 10),
         DropdownButtonFormField<_EmployeeTaxMode>(
           value: _taxMode,
@@ -1880,12 +1867,12 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
           onChanged: hasClosedPayroll
               ? null
               : !_isEditUnlocked
-                  ? null
-                  : (v) {
-                      if (v == null) return;
-                      if (!mounted || _disposed) return;
-                      setState(() => _taxMode = v);
-                    },
+              ? null
+              : (v) {
+                  if (v == null) return;
+                  if (!mounted || _disposed) return;
+                  setState(() => _taxMode = v);
+                },
         ),
         const SizedBox(height: 10),
         if (_taxMode == _EmployeeTaxMode.withholding) ...[
@@ -1905,8 +1892,9 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
         SizedBox(
           width: double.infinity,
           child: ElevatedButton(
-            onPressed:
-                hasClosedPayroll || _savingTax ? null : _saveTaxSettingsFromUI,
+            onPressed: hasClosedPayroll || _savingTax
+                ? null
+                : _saveTaxSettingsFromUI,
             child: Text(_savingTax ? 'กำลังบันทึก...' : 'บันทึกรูปแบบภาษี'),
           ),
         ),
@@ -1918,24 +1906,18 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
         ),
         Text(
           'สุทธิหลังภาษี: ${netAfterTax.toStringAsFixed(2)} บาท',
-          style: const TextStyle(
-            fontWeight: FontWeight.bold,
-            fontSize: 15,
-          ),
+          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
         ),
         const SizedBox(height: 4),
         Text(
           'ฐานคำนวณสุทธิก่อนภาษี: ${totalMonthPayBeforeTax.toStringAsFixed(2)} บาท',
-          style: TextStyle(
-            fontSize: 12,
-            color: Colors.grey.shade700,
-          ),
+          style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
         ),
         if (hasClosedPayroll)
           const Padding(
             padding: EdgeInsets.only(top: 8),
             child: Text(
-              'เดือนนี้ปิดงวดแล้ว ค่าในส่วนภาษีจะแสดงจาก backend',
+              'เดือนนี้ปิดงวดแล้ว ระบบแสดงค่าภาษีจากงวดที่ปิดแล้ว',
               style: TextStyle(fontSize: 12),
             ),
           )
@@ -1952,42 +1934,42 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
   }
 
   Widget _identityCard() {
-    final linkedUserId = _resolveLinkedUserId();
     final staffId = _resolveStaffIdForPayroll();
+    final ready = staffId.isNotEmpty;
 
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(14),
-        child: Column(
+        child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              'ข้อมูลการผูกบัญชี',
-              style: TextStyle(fontWeight: FontWeight.bold),
+            Icon(
+              ready ? Icons.check_circle_outline : Icons.info_outline,
+              color: ready ? Colors.green.shade700 : Colors.orange.shade700,
             ),
-            const SizedBox(height: 10),
-            SelectableText(
-              'linkedUserId: ${linkedUserId.isEmpty ? '-' : linkedUserId}',
-              style: TextStyle(
-                fontWeight:
-                    linkedUserId.isEmpty ? FontWeight.w500 : FontWeight.w700,
-              ),
-            ),
-            const SizedBox(height: 6),
-            SelectableText(
-              'staffId: ${staffId.isEmpty ? '-' : staffId}',
-              style: TextStyle(
-                fontWeight: staffId.isEmpty ? FontWeight.w500 : FontWeight.w700,
-              ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'ระบบ payroll/OT ใช้ staffId เป็นหลัก ส่วน linkedUserId ใช้ช่วยด้านภาษีและการผูกบัญชี',
-              style: TextStyle(
-                fontSize: 12,
-                color: staffId.isNotEmpty
-                    ? Colors.green.shade700
-                    : Colors.orange.shade700,
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'ระบบเงินเดือนและ OT',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    ready
+                        ? 'ข้อมูลพนักงานนี้พร้อมใช้งานกับระบบเงินเดือนและ OT แล้ว\nสามารถเลือกเมนูที่ต้องการได้เลย'
+                        : 'ข้อมูลพนักงานนี้ยังไม่พร้อมใช้งานกับระบบเงินเดือนและ OT\nกรุณาตรวจสอบหรือแก้ไขข้อมูลพนักงานก่อนใช้งาน',
+                    style: TextStyle(
+                      height: 1.35,
+                      color: ready
+                          ? Colors.grey.shade800
+                          : Colors.orange.shade800,
+                      fontWeight: ready ? FontWeight.w600 : FontWeight.w700,
+                    ),
+                  ),
+                ],
               ),
             ),
           ],
@@ -2007,14 +1989,14 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       if (!mounted) return;
 
       if (clinicId == null || clinicId.trim().isEmpty) {
-        _snack('ไม่พบข้อมูลคลินิก (ลองออก/เข้าใหม่)');
+        _snack('ไม่พบข้อมูลคลินิก กรุณาออกจากระบบแล้วเข้าใหม่');
         return;
       }
 
       final staffId = _resolveStaffIdForPayroll();
 
       if (staffId.isEmpty) {
-        _snack('ปิดงวด/ดูพรีวิวสลิปต้องมี staffId ของพนักงาน');
+        _snack('ไม่พบข้อมูลพนักงานสำหรับดูพรีวิวสลิปหรือปิดงวด');
         return;
       }
 
@@ -2052,8 +2034,9 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
             detailOtHours: 0,
             employeeUserId: linkedUserId.isEmpty ? null : linkedUserId,
             regularWorkHours: isParttime ? regularWorkHoursInput : null,
-            regularWorkMinutes:
-                isParttime ? (regularWorkHoursInput * 60).round() : null,
+            regularWorkMinutes: isParttime
+                ? (regularWorkHoursInput * 60).round()
+                : null,
             workItems: null,
           ),
         ),
@@ -2065,7 +2048,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       await _loadClosedPayrollForSelectedMonth();
     } catch (_) {
       if (!mounted) return;
-      _snack('เปิดหน้าพรีวิวสลิปไม่สำเร็จ (ลองออก/เข้าใหม่)');
+      _snack('เปิดหน้าพรีวิวสลิปไม่สำเร็จ กรุณาลองออกจากระบบแล้วเข้าใหม่');
     }
   }
 
@@ -2151,8 +2134,9 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
 
   Future<void> _persistWorkTimeEntries() async {
     final prefs = await SharedPreferences.getInstance();
-    final payload =
-        jsonEncode(_allWorkTimeEntries.map((e) => e.toMap()).toList());
+    final payload = jsonEncode(
+      _allWorkTimeEntries.map((e) => e.toMap()).toList(),
+    );
     await prefs.setString(_workTimeEntriesKey, payload);
   }
 
@@ -2349,7 +2333,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     final h = entry.hours;
 
     if (h <= 0 || h > 24) {
-      _snack('ช่วงเวลาไม่ถูกต้อง (ชั่วโมงสุทธิ <=0 หรือเกิน 24 ชม.)');
+      _snack('ช่วงเวลาไม่ถูกต้อง');
       return;
     }
 
@@ -2465,12 +2449,13 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     final staffId = _resolveStaffIdForPayroll();
 
     if (staffId.isEmpty) {
-      _snack('ไม่พบ staffId ของพนักงานคนนี้ จึงบันทึก OT เข้าระบบไม่ได้');
+      _snack('ไม่พบข้อมูลพนักงานสำหรับบันทึก OT');
       return;
     }
 
-    final selectedMultiplier =
-        isHolidayX2 ? _holidayOtMultiplier : _normalOtMultiplier;
+    final selectedMultiplier = isHolidayX2
+        ? _holidayOtMultiplier
+        : _normalOtMultiplier;
 
     final workDate = _fmtDate(otDate!);
     final startHHmm = _fmtTOD(otStart!);
@@ -2513,8 +2498,8 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       final savedStatus = result.savedStatus.trim().toLowerCase();
       final visibleStatus =
           ['approved', 'pending', 'rejected'].contains(savedStatus)
-              ? savedStatus
-              : 'approved';
+          ? savedStatus
+          : 'approved';
 
       setState(() {
         otDate = null;
@@ -2569,7 +2554,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
 
     await _saveEmployeeLocal();
 
-    _snack('ลบ OT เดิมในเครื่องแล้ว');
+    _snack('ลบรายการ OT เดิมแล้ว');
   }
 
   Future<void> _saveEmployeeLocal() async {
@@ -2590,7 +2575,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     final id = (row['_id'] ?? row['id'] ?? '').toString().trim();
 
     if (id.isEmpty) {
-      _snack('ลบไม่ได้ (ไม่พบรหัสรายการ)');
+      _snack('ลบไม่ได้ เนื่องจากไม่พบรหัสรายการ');
       return;
     }
 
@@ -2620,7 +2605,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     final id = (row['_id'] ?? row['id'] ?? '').toString().trim();
 
     if (id.isEmpty) {
-      _snack('อนุมัติไม่ได้ (ไม่พบรหัสรายการ)');
+      _snack('อนุมัติไม่ได้ เนื่องจากไม่พบรหัสรายการ');
       return;
     }
 
@@ -2653,7 +2638,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     final id = (row['_id'] ?? row['id'] ?? '').toString().trim();
 
     if (id.isEmpty) {
-      _snack('ปฏิเสธไม่ได้ (ไม่พบรหัสรายการ)');
+      _snack('ปฏิเสธไม่ได้ เนื่องจากไม่พบรหัสรายการ');
       return;
     }
 
@@ -2683,7 +2668,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     final staffId = _resolveStaffIdForPayroll();
 
     if (staffId.isEmpty) {
-      _snack('ไม่พบ staffId ของพนักงานคนนี้');
+      _snack('ไม่พบข้อมูลพนักงานสำหรับอนุมัติ OT');
       return;
     }
 
@@ -2748,6 +2733,22 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     return st;
   }
 
+  String _otStatusLabel(String status) {
+    switch (status.trim().toLowerCase()) {
+      case 'approved':
+      case 'locked':
+        return 'อนุมัติแล้ว';
+      case 'pending':
+        return 'รออนุมัติ';
+      case 'rejected':
+        return 'ไม่อนุมัติ';
+      case 'all':
+        return 'ทั้งหมด';
+      default:
+        return status.trim().isEmpty ? '-' : status;
+    }
+  }
+
   String _otMulLabel(double mul) {
     if (mul >= 1.99) return '×${mul.toStringAsFixed(1)}';
     if (mul >= 1.49 && mul < 1.99) return '×${mul.toStringAsFixed(1)}';
@@ -2757,8 +2758,9 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
   String _otTimeLabel(String start, String end) => '$start - $end';
 
   Widget _otMultiplierToggle() {
-    final selectedMul =
-        isHolidayX2 ? _holidayOtMultiplier : _normalOtMultiplier;
+    final selectedMul = isHolidayX2
+        ? _holidayOtMultiplier
+        : _normalOtMultiplier;
     final mulText = _otMulLabel(selectedMul);
 
     return Column(
@@ -2777,8 +2779,8 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                   const SizedBox(height: 4),
                   Text(
                     isHolidayX2
-                        ? 'วันหยุด/พิเศษ (ตาม policy)'
-                        : 'วันปกติ (ตาม policy)',
+                        ? 'วันหยุด/พิเศษ (ตามเงื่อนไขคลินิก)'
+                        : 'วันปกติ (ตามเงื่อนไขคลินิก)',
                     style: const TextStyle(fontSize: 12),
                   ),
                 ],
@@ -2808,10 +2810,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
         const SizedBox(height: 6),
         Text(
           'ปกติ: ${_otMulLabel(_normalOtMultiplier)}   •   วันหยุด: ${_otMulLabel(_holidayOtMultiplier)}',
-          style: TextStyle(
-            fontSize: 12,
-            color: Colors.grey.shade700,
-          ),
+          style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
         ),
         if (_otPolicyError.isNotEmpty)
           Padding(
@@ -2838,10 +2837,14 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
 
     final hourlyWage = emp.hourlyWage;
 
-    final localTotalOtHours =
-        emp.totalOtHoursOfMonth(selectedMonth.year, selectedMonth.month);
-    final localTotalOtAmount =
-        emp.totalOtAmountOfMonth(selectedMonth.year, selectedMonth.month);
+    final localTotalOtHours = emp.totalOtHoursOfMonth(
+      selectedMonth.year,
+      selectedMonth.month,
+    );
+    final localTotalOtAmount = emp.totalOtAmountOfMonth(
+      selectedMonth.year,
+      selectedMonth.month,
+    );
 
     final backendTotalOtHours = _backendApprovedMinutes / 60.0;
 
@@ -2867,17 +2870,17 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     final closedOtHours = _readNum(closedRow['displayOtHours']);
     final closedGrossBeforeTax = _readNum(closedRow['displayGrossBeforeTax']);
 
-    final fallbackTotalOtHours =
-        (!_loadingBackendOt && _backendOtError.isEmpty)
-            ? backendTotalOtHours
-            : 0.0;
+    final fallbackTotalOtHours = (!_loadingBackendOt && _backendOtError.isEmpty)
+        ? backendTotalOtHours
+        : 0.0;
 
     final fallbackOtPay = (!_loadingBackendOt && _backendOtError.isEmpty)
         ? backendOtPayEstimate
         : 0.0;
 
-    final fallbackSsoAmount =
-        isParttime ? 0.0 : _computeSsoFromClinicConfig(emp.baseSalary);
+    final fallbackSsoAmount = isParttime
+        ? 0.0
+        : _computeSsoFromClinicConfig(emp.baseSalary);
     final fallbackAbsentDeduction = isParttime ? 0.0 : emp.absentDeduction();
 
     final normalPay = isParttime ? (totalWorkHours * hourlyWage) : 0.0;
@@ -2886,26 +2889,29 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     final fallbackAfterSsoAndLeaveNoOtFulltime = isParttime
         ? 0.0
         : (grossBaseFulltime - fallbackSsoAmount - fallbackAbsentDeduction)
-            .clamp(0.0, double.infinity)
-            .toDouble();
+              .clamp(0.0, double.infinity)
+              .toDouble();
 
     final fallbackTotalMonthPayFulltime = isParttime
         ? 0.0
         : (grossBaseFulltime -
-                fallbackSsoAmount -
-                fallbackAbsentDeduction +
-                fallbackOtPay +
-                emp.bonus)
-            .clamp(0.0, double.infinity)
-            .toDouble();
+                  fallbackSsoAmount -
+                  fallbackAbsentDeduction +
+                  fallbackOtPay +
+                  emp.bonus)
+              .clamp(0.0, double.infinity)
+              .toDouble();
 
-    final fallbackTotalMonthPayParttime =
-        isParttime ? (normalPay + fallbackOtPay + emp.bonus) : 0.0;
+    final fallbackTotalMonthPayParttime = isParttime
+        ? (normalPay + fallbackOtPay + emp.bonus)
+        : 0.0;
 
-    final fallbackGrossMonthlyForTax =
-        isParttime ? normalPay : grossBaseFulltime;
-    final fallbackTotalMonthPayBeforeTax =
-        isParttime ? fallbackTotalMonthPayParttime : fallbackTotalMonthPayFulltime;
+    final fallbackGrossMonthlyForTax = isParttime
+        ? normalPay
+        : grossBaseFulltime;
+    final fallbackTotalMonthPayBeforeTax = isParttime
+        ? fallbackTotalMonthPayParttime
+        : fallbackTotalMonthPayFulltime;
 
     final fallbackWithholdingPercent = _getWithholdingPercent();
     final fallbackWithholdingAmount = _taxMode == _EmployeeTaxMode.withholding
@@ -2914,31 +2920,39 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     final fallbackNetAfterTax =
         fallbackTotalMonthPayBeforeTax - fallbackWithholdingAmount;
 
-    final totalOtHours = hasClosedPayroll ? closedOtHours : fallbackTotalOtHours;
+    final totalOtHours = hasClosedPayroll
+        ? closedOtHours
+        : fallbackTotalOtHours;
     final otPay = hasClosedPayroll ? closedOt : fallbackOtPay;
     final ssoAmount = hasClosedPayroll ? closedSso : fallbackSsoAmount;
-    final absentDeduction =
-        hasClosedPayroll ? closedLeaveDeduction : fallbackAbsentDeduction;
+    final absentDeduction = hasClosedPayroll
+        ? closedLeaveDeduction
+        : fallbackAbsentDeduction;
     final shownBonus = hasClosedPayroll ? closedBonus : emp.bonus;
-    final grossMonthlyForTax =
-        hasClosedPayroll ? closedSalary : fallbackGrossMonthlyForTax;
-    final totalMonthPayBeforeTax =
-        hasClosedPayroll ? closedGrossBeforeTax : fallbackTotalMonthPayBeforeTax;
-    final withholdingAmount =
-        hasClosedPayroll ? closedTax : fallbackWithholdingAmount;
+    final grossMonthlyForTax = hasClosedPayroll
+        ? closedSalary
+        : fallbackGrossMonthlyForTax;
+    final totalMonthPayBeforeTax = hasClosedPayroll
+        ? closedGrossBeforeTax
+        : fallbackTotalMonthPayBeforeTax;
+    final withholdingAmount = hasClosedPayroll
+        ? closedTax
+        : fallbackWithholdingAmount;
     final netAfterTax = hasClosedPayroll ? closedNetPay : fallbackNetAfterTax;
 
     final afterSsoAndLeaveNoOtFulltime = hasClosedPayroll
         ? (closedSalary - closedSso - closedLeaveDeduction)
-            .clamp(0.0, double.infinity)
-            .toDouble()
+              .clamp(0.0, double.infinity)
+              .toDouble()
         : fallbackAfterSsoAndLeaveNoOtFulltime;
 
-    final totalMonthPayFulltime =
-        hasClosedPayroll ? closedGrossBeforeTax : fallbackTotalMonthPayFulltime;
+    final totalMonthPayFulltime = hasClosedPayroll
+        ? closedGrossBeforeTax
+        : fallbackTotalMonthPayFulltime;
 
-    final totalMonthPayParttime =
-        hasClosedPayroll ? closedGrossBeforeTax : fallbackTotalMonthPayParttime;
+    final totalMonthPayParttime = hasClosedPayroll
+        ? closedGrossBeforeTax
+        : fallbackTotalMonthPayParttime;
 
     final monthOtEntries = emp.otEntries
         .where((e) => e.isInMonth(selectedMonth.year, selectedMonth.month))
@@ -3036,7 +3050,6 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                   ],
                 ),
                 const SizedBox(height: 8),
-
                 Card(
                   child: Padding(
                     padding: const EdgeInsets.all(14),
@@ -3044,7 +3057,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         const Text(
-                          'OT (จากระบบ)',
+                          'OT จากระบบ',
                           style: TextStyle(fontWeight: FontWeight.bold),
                         ),
                         const SizedBox(height: 10),
@@ -3059,19 +3072,19 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                               items: const [
                                 DropdownMenuItem(
                                   value: 'approved',
-                                  child: Text('approved'),
+                                  child: Text('อนุมัติแล้ว'),
                                 ),
                                 DropdownMenuItem(
                                   value: 'pending',
-                                  child: Text('pending'),
+                                  child: Text('รออนุมัติ'),
                                 ),
                                 DropdownMenuItem(
                                   value: 'rejected',
-                                  child: Text('rejected'),
+                                  child: Text('ไม่อนุมัติ'),
                                 ),
                                 DropdownMenuItem(
                                   value: 'all',
-                                  child: Text('all'),
+                                  child: Text('ทั้งหมด'),
                                 ),
                               ],
                               onChanged: (v) async {
@@ -3105,7 +3118,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                         else ...[
                           Text('แสดงรายการ: ${_backendOtRows.length} รายการ'),
                           const SizedBox(height: 6),
-                          const Text('สรุป “approved” ในเดือนนี้:'),
+                          const Text('สรุปรายการที่อนุมัติในเดือนนี้:'),
                           Text(' • จำนวน: $_backendApprovedCount รายการ'),
                           Text(' • รวมเวลา: $_backendApprovedMinutes นาที'),
                           Text(
@@ -3113,7 +3126,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                           ),
                           if (!hasClosedPayroll)
                             Text(
-                              ' • ประมาณการค่า OT: ${backendOtPayEstimate.toStringAsFixed(2)} บาท',
+                              ' • พรีวิวค่า OT: ${backendOtPayEstimate.toStringAsFixed(2)} บาท',
                             ),
                         ],
                       ],
@@ -3121,7 +3134,6 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                   ),
                 ),
                 const SizedBox(height: 12),
-
                 Card(
                   child: Padding(
                     padding: const EdgeInsets.all(14),
@@ -3145,7 +3157,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                           )
                         else if (hasClosedPayroll)
                           Text(
-                            'เดือนนี้แสดงผลจาก payroll ที่ปิดงวดแล้ว',
+                            'เดือนนี้แสดงยอดจากงวดเงินเดือนที่ปิดแล้ว',
                             style: TextStyle(
                               fontSize: 12,
                               color: Colors.green.shade700,
@@ -3154,7 +3166,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                           )
                         else
                           Text(
-                            'เดือนนี้ยังไม่ปิดงวด — ตัวเลขด้านล่างเป็นค่าประมาณจาก backend OT เท่านั้น ส่วนยอดจริงจะให้ backend คำนวณในหน้าพรีวิว',
+                            'เดือนนี้ยังไม่ปิดงวด — ยอดด้านล่างเป็นพรีวิวจากข้อมูลที่บันทึกในระบบ เมื่อปิดงวด ระบบจะคำนวณยอดจริงอีกครั้ง',
                             style: TextStyle(
                               fontSize: 12,
                               color: Colors.orange.shade700,
@@ -3188,14 +3200,15 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                             children: [
                               TextField(
                                 controller: ssoPercentCtrl,
-                                enabled: !hasClosedPayroll &&
+                                enabled:
+                                    !hasClosedPayroll &&
                                     _isEditUnlocked &&
                                     !_savingSso &&
                                     !_loadingClinicPayrollConfig,
                                 keyboardType:
                                     const TextInputType.numberWithOptions(
-                                  decimal: true,
-                                ),
+                                      decimal: true,
+                                    ),
                                 inputFormatters: [_decimalFormatter],
                                 decoration: InputDecoration(
                                   labelText: 'เช่น 5.00',
@@ -3206,7 +3219,8 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                               ),
                               const SizedBox(height: 8),
                               ElevatedButton(
-                                onPressed: hasClosedPayroll ||
+                                onPressed:
+                                    hasClosedPayroll ||
                                         _savingSso ||
                                         _loadingClinicPayrollConfig
                                     ? null
@@ -3259,7 +3273,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                             ),
                           if (legacyHours > 0)
                             Text(
-                              ' • จากแบบเดิม(ชั่วโมง): ${legacyHours.toStringAsFixed(2)} ชม.',
+                              ' • จากแบบเดิม (ชั่วโมง): ${legacyHours.toStringAsFixed(2)} ชม.',
                             ),
                           Text(
                             'ค่าแรงปกติรวม: ${normalPay.toStringAsFixed(2)} บาท',
@@ -3333,7 +3347,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                           const SizedBox(height: 6),
                           Text(
                             _isEditUnlocked
-                                ? 'ใช้เมื่อมีการสแกนเวลา/OT/ข้อมูลเงินเดือนเปลี่ยนหลังปิดงวด'
+                                ? 'ใช้เมื่อมีการสแกนเวลา OT หรือข้อมูลเงินเดือนเปลี่ยนหลังปิดงวด'
                                 : 'ต้องปลดล็อกโหมดแก้ไขก่อนจึงจะคำนวณงวดใหม่ได้',
                             style: TextStyle(
                               fontSize: 12,
@@ -3348,7 +3362,6 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                   ),
                 ),
                 const SizedBox(height: 12),
-
                 if (isParttime) ...[
                   Card(
                     child: Padding(
@@ -3445,8 +3458,8 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                                     enabled: _isEditUnlocked,
                                     keyboardType:
                                         const TextInputType.numberWithOptions(
-                                      decimal: true,
-                                    ),
+                                          decimal: true,
+                                        ),
                                     inputFormatters: [_decimalFormatter],
                                     decoration: const InputDecoration(
                                       labelText: 'ชั่วโมง',
@@ -3467,54 +3480,49 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                             if (monthWorkTimeEntries.isNotEmpty) ...[
                               const Text('• จากเวลาเริ่ม-จบ'),
                               const SizedBox(height: 6),
-                              ...List.generate(
-                                monthWorkTimeEntries.length,
-                                (i) {
-                                  final e = monthWorkTimeEntries[i];
+                              ...List.generate(monthWorkTimeEntries.length, (
+                                i,
+                              ) {
+                                final e = monthWorkTimeEntries[i];
 
-                                  return ListTile(
-                                    dense: true,
-                                    contentPadding: EdgeInsets.zero,
-                                    title:
-                                        Text('${e.date}  ${e.start}-${e.end}'),
-                                    subtitle: Text(
-                                      'พัก ${e.breakMinutes} นาที • ${e.hours.toStringAsFixed(2)} ชม.',
+                                return ListTile(
+                                  dense: true,
+                                  contentPadding: EdgeInsets.zero,
+                                  title: Text('${e.date}  ${e.start}-${e.end}'),
+                                  subtitle: Text(
+                                    'พัก ${e.breakMinutes} นาที • ${e.hours.toStringAsFixed(2)} ชม.',
+                                  ),
+                                  trailing: IconButton(
+                                    onPressed: () => _deleteWorkTimeEntry(
+                                      i,
+                                      monthWorkTimeEntries,
                                     ),
-                                    trailing: IconButton(
-                                      onPressed: () => _deleteWorkTimeEntry(
-                                        i,
-                                        monthWorkTimeEntries,
-                                      ),
-                                      icon: const Icon(Icons.delete_outline),
-                                    ),
-                                  );
-                                },
-                              ),
+                                    icon: const Icon(Icons.delete_outline),
+                                  ),
+                                );
+                              }),
                               const SizedBox(height: 8),
                             ],
                             if (monthWorkEntries.isNotEmpty) ...[
-                              const Text('• จากแบบเดิม(ชั่วโมง)'),
+                              const Text('• จากแบบเดิม (ชั่วโมง)'),
                               const SizedBox(height: 6),
-                              ...List.generate(
-                                monthWorkEntries.length,
-                                (i) {
-                                  final e = monthWorkEntries[i];
+                              ...List.generate(monthWorkEntries.length, (i) {
+                                final e = monthWorkEntries[i];
 
-                                  return ListTile(
-                                    dense: true,
-                                    contentPadding: EdgeInsets.zero,
-                                    title: Text(e.date),
-                                    subtitle: Text(
-                                      '${e.hours.toStringAsFixed(2)} ชม.',
-                                    ),
-                                    trailing: IconButton(
-                                      onPressed: () =>
-                                          _deleteWorkEntry(i, monthWorkEntries),
-                                      icon: const Icon(Icons.delete_outline),
-                                    ),
-                                  );
-                                },
-                              ),
+                                return ListTile(
+                                  dense: true,
+                                  contentPadding: EdgeInsets.zero,
+                                  title: Text(e.date),
+                                  subtitle: Text(
+                                    '${e.hours.toStringAsFixed(2)} ชม.',
+                                  ),
+                                  trailing: IconButton(
+                                    onPressed: () =>
+                                        _deleteWorkEntry(i, monthWorkEntries),
+                                    icon: const Icon(Icons.delete_outline),
+                                  ),
+                                );
+                              }),
                             ],
                             if (monthWorkEntries.isEmpty &&
                                 monthWorkTimeEntries.isEmpty)
@@ -3526,7 +3534,6 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                   ),
                   const SizedBox(height: 12),
                 ],
-
                 Card(
                   child: Padding(
                     padding: const EdgeInsets.all(14),
@@ -3539,7 +3546,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                         ),
                         const SizedBox(height: 10),
                         Text(
-                          'บันทึกเข้า backend ตามเดือนที่เลือกเท่านั้น: ${_fmtMonth(selectedMonth)}',
+                          'บันทึก OT เข้าระบบตามเดือนที่เลือก: ${_fmtMonth(selectedMonth)}',
                           style: TextStyle(
                             fontSize: 12,
                             color: Colors.grey.shade700,
@@ -3569,9 +3576,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                             OutlinedButton(
                               onPressed: _pickTimeEnd,
                               child: Text(
-                                otEnd == null
-                                    ? 'เวลาจบ'
-                                    : _fmtTOD(otEnd!),
+                                otEnd == null ? 'เวลาจบ' : _fmtTOD(otEnd!),
                               ),
                             ),
                           ],
@@ -3608,7 +3613,6 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                   ),
                 ),
                 const SizedBox(height: 12),
-
                 Card(
                   child: Padding(
                     padding: const EdgeInsets.all(14),
@@ -3616,7 +3620,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         const Text(
-                          'รายการ OT เดือนนี้ (จากระบบ)',
+                          'รายการ OT เดือนนี้',
                           style: TextStyle(fontWeight: FontWeight.bold),
                         ),
                         const SizedBox(height: 10),
@@ -3625,80 +3629,76 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                         else if (_backendOtError.isNotEmpty)
                           Text(_backendOtError)
                         else if (_backendOtRows.isEmpty)
-                          const Text('ยังไม่มีรายการจากระบบ')
+                          const Text('ยังไม่มีรายการ OT ในเดือนนี้')
                         else ...[
-                          ...List.generate(
-                            _backendOtRows.length,
-                            (i) {
-                              final r = _backendOtRows[i];
-                              final date = _rowWorkDate(r);
-                              final start = _safeS(r['start'] ?? r['startTime']);
-                              final end = _safeS(r['end'] ?? r['endTime']);
-                              final minutes = _rowMinutes(r);
-                              final mul = _rowMultiplier(r);
-                              final st = _rowStatus(r);
+                          ...List.generate(_backendOtRows.length, (i) {
+                            final r = _backendOtRows[i];
+                            final date = _rowWorkDate(r);
+                            final start = _safeS(r['start'] ?? r['startTime']);
+                            final end = _safeS(r['end'] ?? r['endTime']);
+                            final minutes = _rowMinutes(r);
+                            final mul = _rowMultiplier(r);
+                            final st = _rowStatus(r);
 
-                              return Card(
-                                margin: const EdgeInsets.only(bottom: 10),
-                                child: Padding(
-                                  padding: const EdgeInsets.all(12),
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        '$date  ${start.isNotEmpty && end.isNotEmpty ? _otTimeLabel(start, end) : ''}',
-                                        style: const TextStyle(
-                                          fontWeight: FontWeight.w700,
+                            return Card(
+                              margin: const EdgeInsets.only(bottom: 10),
+                              child: Padding(
+                                padding: const EdgeInsets.all(12),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      '$date  ${start.isNotEmpty && end.isNotEmpty ? _otTimeLabel(start, end) : ''}',
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 6),
+                                    Text('สถานะ: ${_otStatusLabel(st)}'),
+                                    Text(
+                                      'เวลา: $minutes นาที  •  ตัวคูณ: ${_otMulLabel(mul)}',
+                                    ),
+                                    const SizedBox(height: 8),
+                                    Wrap(
+                                      spacing: 8,
+                                      runSpacing: 8,
+                                      children: [
+                                        OutlinedButton.icon(
+                                          onPressed: _isEditUnlocked
+                                              ? () => _approveBackendOtRow(i)
+                                              : null,
+                                          icon: const Icon(Icons.check),
+                                          label: const Text('อนุมัติ'),
                                         ),
-                                      ),
-                                      const SizedBox(height: 6),
-                                      Text('สถานะ: $st'),
-                                      Text(
-                                        'เวลา: $minutes นาที  •  ตัวคูณ: ${_otMulLabel(mul)}',
-                                      ),
-                                      const SizedBox(height: 8),
-                                      Wrap(
-                                        spacing: 8,
-                                        runSpacing: 8,
-                                        children: [
-                                          OutlinedButton.icon(
-                                            onPressed: _isEditUnlocked
-                                                ? () => _approveBackendOtRow(i)
-                                                : null,
-                                            icon: const Icon(Icons.check),
-                                            label: const Text('approve'),
+                                        OutlinedButton.icon(
+                                          onPressed: _isEditUnlocked
+                                              ? () => _rejectBackendOtRow(i)
+                                              : null,
+                                          icon: const Icon(Icons.close),
+                                          label: const Text('ปฏิเสธ'),
+                                        ),
+                                        OutlinedButton.icon(
+                                          onPressed: _isEditUnlocked
+                                              ? () => _deleteBackendOtRow(i)
+                                              : null,
+                                          icon: const Icon(
+                                            Icons.delete_outline,
                                           ),
-                                          OutlinedButton.icon(
-                                            onPressed: _isEditUnlocked
-                                                ? () => _rejectBackendOtRow(i)
-                                                : null,
-                                            icon: const Icon(Icons.close),
-                                            label: const Text('reject'),
-                                          ),
-                                          OutlinedButton.icon(
-                                            onPressed: _isEditUnlocked
-                                                ? () => _deleteBackendOtRow(i)
-                                                : null,
-                                            icon:
-                                                const Icon(Icons.delete_outline),
-                                            label: const Text('ลบ'),
-                                          ),
-                                        ],
-                                      ),
-                                    ],
-                                  ),
+                                          label: const Text('ลบ'),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
                                 ),
-                              );
-                            },
-                          ),
+                              ),
+                            );
+                          }),
                         ],
                       ],
                     ),
                   ),
                 ),
                 const SizedBox(height: 12),
-
                 Card(
                   child: Padding(
                     padding: const EdgeInsets.all(14),
@@ -3706,41 +3706,38 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         const Text(
-                          'รายการ OT เดิมในเครื่อง (ไม่ใช้คำนวณเงินเดือน)',
+                          'ประวัติ OT เดิม (ไม่ถูกนำไปคำนวณเงินเดือน)',
                           style: TextStyle(fontWeight: FontWeight.bold),
                         ),
                         const SizedBox(height: 10),
                         if (monthOtEntries.isEmpty)
-                          const Text('ไม่มีรายการ OT เดิมในเครื่อง')
+                          const Text('ไม่มีประวัติ OT เดิมในเดือนนี้')
                         else ...[
-                          ...List.generate(
-                            monthOtEntries.length,
-                            (i) {
-                              final e = monthOtEntries[i];
+                          ...List.generate(monthOtEntries.length, (i) {
+                            final e = monthOtEntries[i];
 
-                              return ListTile(
-                                dense: true,
-                                contentPadding: EdgeInsets.zero,
-                                title: Text('${e.date}  ${e.start}-${e.end}'),
-                                subtitle: Text(
-                                  'ตัวคูณ: ${_otMulLabel(e.multiplier)}  •  ${e.hours.toStringAsFixed(2)} ชม.',
+                            return ListTile(
+                              dense: true,
+                              contentPadding: EdgeInsets.zero,
+                              title: Text('${e.date}  ${e.start}-${e.end}'),
+                              subtitle: Text(
+                                'ตัวคูณ: ${_otMulLabel(e.multiplier)}  •  ${e.hours.toStringAsFixed(2)} ชม.',
+                              ),
+                              trailing: IconButton(
+                                onPressed: () => _deleteOtEntryByMonthIndex(
+                                  i,
+                                  monthOtEntries,
                                 ),
-                                trailing: IconButton(
-                                  onPressed: () => _deleteOtEntryByMonthIndex(
-                                    i,
-                                    monthOtEntries,
-                                  ),
-                                  icon: const Icon(Icons.delete_outline),
-                                ),
-                              );
-                            },
-                          ),
+                                icon: const Icon(Icons.delete_outline),
+                              ),
+                            );
+                          }),
                           const SizedBox(height: 6),
                           Text(
-                            'รวม OT เดิมในเครื่อง: ${localTotalOtHours.toStringAsFixed(2)} ชม. (ไม่ใช้ปิดงวด)',
+                            'รวมประวัติ OT เดิม: ${localTotalOtHours.toStringAsFixed(2)} ชม. (ไม่ใช้ปิดงวด)',
                           ),
                           Text(
-                            'ค่า OT เดิมในเครื่อง: ${localTotalOtAmount.toStringAsFixed(2)} บาท (ไม่ใช้ปิดงวด)',
+                            'ค่า OT เดิม: ${localTotalOtAmount.toStringAsFixed(2)} บาท (ไม่ใช้ปิดงวด)',
                           ),
                         ],
                       ],

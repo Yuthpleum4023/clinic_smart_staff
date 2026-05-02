@@ -14,7 +14,7 @@ import 'package:clinic_smart_staff/screens/clinic/clinic_attendance_approval_scr
 import 'package:clinic_smart_staff/screens/clinic/clinic_attendance_settings_screen.dart';
 import 'package:clinic_smart_staff/screens/clinic/clinic_location_settings_screen.dart';
 
-// ✅ Attendance dashboard
+// ✅ แดชบอร์ดการลงเวลา
 import 'package:clinic_smart_staff/screens/admin/attendance_dashboard_screen.dart';
 
 // ✅ Social security receipts
@@ -34,11 +34,7 @@ class ClinicHomeScreen extends StatefulWidget {
   final String? clinicId;
   final String? userId;
 
-  const ClinicHomeScreen({
-    super.key,
-    this.clinicId,
-    this.userId,
-  });
+  const ClinicHomeScreen({super.key, this.clinicId, this.userId});
 
   @override
   State<ClinicHomeScreen> createState() => _ClinicHomeScreenState();
@@ -115,9 +111,7 @@ class _ClinicHomeScreenState extends State<ClinicHomeScreen> {
 
   void _snack(String msg) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg)),
-    );
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
   Future<void> _openLocalPayroll() async {
@@ -138,9 +132,7 @@ class _ClinicHomeScreenState extends State<ClinicHomeScreen> {
     await Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => SocialSecurityReceiptListScreen(
-          clinicId: cid,
-        ),
+        builder: (_) => SocialSecurityReceiptListScreen(clinicId: cid),
       ),
     );
   }
@@ -155,9 +147,7 @@ class _ClinicHomeScreenState extends State<ClinicHomeScreen> {
 
     await Navigator.push(
       context,
-      MaterialPageRoute(
-        builder: (_) => ClinicShiftNeedScreen(clinicId: cid),
-      ),
+      MaterialPageRoute(builder: (_) => ClinicShiftNeedScreen(clinicId: cid)),
     );
   }
 
@@ -171,27 +161,21 @@ class _ClinicHomeScreenState extends State<ClinicHomeScreen> {
   Future<void> _openAvailabilities() async {
     await Navigator.push(
       context,
-      MaterialPageRoute(
-        builder: (_) => const ClinicAvailabilitiesScreen(),
-      ),
+      MaterialPageRoute(builder: (_) => const ClinicAvailabilitiesScreen()),
     );
   }
 
   Future<void> _openAttendanceApproval() async {
     await Navigator.push(
       context,
-      MaterialPageRoute(
-        builder: (_) => const ClinicAttendanceApprovalScreen(),
-      ),
+      MaterialPageRoute(builder: (_) => const ClinicAttendanceApprovalScreen()),
     );
   }
 
   Future<void> _openAttendanceSettings() async {
     await Navigator.push(
       context,
-      MaterialPageRoute(
-        builder: (_) => const ClinicAttendanceSettingsScreen(),
-      ),
+      MaterialPageRoute(builder: (_) => const ClinicAttendanceSettingsScreen()),
     );
   }
 
@@ -200,18 +184,14 @@ class _ClinicHomeScreenState extends State<ClinicHomeScreen> {
 
     await Navigator.push(
       context,
-      MaterialPageRoute(
-        builder: (_) => const ClinicLocationSettingsScreen(),
-      ),
+      MaterialPageRoute(builder: (_) => const ClinicLocationSettingsScreen()),
     );
   }
 
   Future<void> _openAttendanceAnalytics() async {
     await Navigator.push(
       context,
-      MaterialPageRoute(
-        builder: (_) => const AttendanceDashboardScreen(),
-      ),
+      MaterialPageRoute(builder: (_) => const AttendanceDashboardScreen()),
     );
   }
 
@@ -328,19 +308,14 @@ class _ClinicHomeScreenState extends State<ClinicHomeScreen> {
   Future<void> _openClinicAdmin() async {
     await Navigator.push(
       context,
-      MaterialPageRoute(
-        builder: (_) => const ClinicAdminSettingsScreen(),
-      ),
+      MaterialPageRoute(builder: (_) => const ClinicAdminSettingsScreen()),
     );
   }
 
   Widget _sectionTitle(String text) {
     return Text(
       text,
-      style: const TextStyle(
-        fontWeight: FontWeight.w900,
-        fontSize: 15,
-      ),
+      style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 15),
     );
   }
 
@@ -364,11 +339,7 @@ class _ClinicHomeScreenState extends State<ClinicHomeScreen> {
   @override
   Widget build(BuildContext context) {
     if (_loading) {
-      return const Scaffold(
-        body: Center(
-          child: CircularProgressIndicator(),
-        ),
-      );
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
     return Scaffold(
@@ -419,8 +390,7 @@ class _ClinicHomeScreenState extends State<ClinicHomeScreen> {
           _menuCard(
             icon: Icons.schedule_outlined,
             title: 'ตั้งค่ากฎเวลาเข้า-ออกงาน',
-            subtitle:
-                'กำหนดเวลาเข้า-ออกงานปกติและกติกาการลงเวลาในแต่ละวัน',
+            subtitle: 'กำหนดเวลาเข้า-ออกงานปกติและกติกาการลงเวลาในแต่ละวัน',
             onTap: _openAttendanceSettings,
           ),
           _menuCard(
@@ -440,8 +410,8 @@ class _ClinicHomeScreenState extends State<ClinicHomeScreen> {
           const SizedBox(height: 8),
           _menuCard(
             icon: Icons.payments_outlined,
-            title: 'คำนวณเงินเดือนในเครื่อง',
-            subtitle: 'จัดการข้อมูลเงินเดือนและดูผลคำนวณเบื้องต้น',
+            title: 'พรีวิวเงินเดือน',
+            subtitle: 'จัดการข้อมูลพนักงานและตรวจสอบยอดเงินเดือนก่อนปิดงวดจริง',
             onTap: _openLocalPayroll,
           ),
           _menuCard(
