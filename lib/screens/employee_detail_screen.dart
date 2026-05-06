@@ -908,6 +908,14 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
         // Full-time uses staff_service salary first; this is fallback only.
         'grossBase': emp.isPartTime ? 0.0 : emp.baseSalary,
 
+        // ✅ Production payroll hint:
+        // Backend still uses staff_service as source of truth when available.
+        // These fields are fallback only when staff_service is rate-limited/down.
+        'employmentType': emp.isPartTime ? 'parttime' : 'fulltime',
+        'isPartTime': emp.isPartTime,
+        'hourlyRate': emp.isPartTime ? emp.hourlyWage : 0.0,
+        'hourlyWage': emp.isPartTime ? emp.hourlyWage : 0.0,
+
         'bonus': emp.bonus,
         'otherAllowance': 0.0,
         'otherDeduction': emp.isPartTime ? 0.0 : emp.absentDeduction(),
@@ -2021,7 +2029,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
         const Text('รูปแบบภาษี', style: TextStyle(fontWeight: FontWeight.bold)),
         const SizedBox(height: 10),
         DropdownButtonFormField<_EmployeeTaxMode>(
-          value: _taxMode,
+          initialValue: _taxMode,
           decoration: const InputDecoration(
             labelText: 'เลือกการหักภาษี',
             border: OutlineInputBorder(),
