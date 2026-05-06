@@ -38,12 +38,22 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
   DateTime? _from;
   DateTime? _to;
 
-  late String _selectedShiftId;
-  late String _selectedShiftLabel;
+  late final String _initialShiftId;
+  late final String _initialShiftLabel;
+
+  // Production behavior:
+  // - Do not silently lock 30-day history to one shift.
+  // - Admin/helper can explicitly switch to selected shift when needed.
+  bool _showSelectedShiftOnly = false;
 
   final Map<String, String> _clinicNameCache = <String, String>{};
 
   bool get _isHelper => widget.role.trim().toLowerCase() == 'helper';
+
+  String get _activeShiftId => _showSelectedShiftOnly ? _initialShiftId : '';
+
+  String get _activeShiftLabel =>
+      _initialShiftLabel.trim().isNotEmpty ? _initialShiftLabel.trim() : 'กะที่เลือก';
 
   Uri _payrollUri(String path, {Map<String, String>? qs}) {
     final base = ApiConfig.payrollBaseUrl.replaceAll(RegExp(r'\/+$'), '');
@@ -62,6 +72,18 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer ${widget.token}',
       };
+
+  String _s(dynamic v) => (v ?? '').toString().trim();
+
+  Map<String, dynamic> _asMap(dynamic v) {
+    if (v is Map<String, dynamic>) return v;
+    if (v is Map) {
+      return Map<String, dynamic>.from(
+        v.map((k, val) => MapEntry(k.toString(), val)),
+      );
+    }
+    return <String, dynamic>{};
+  }
 
   String _ymd(DateTime d) {
     final y = d.year.toString().padLeft(4, '0');
@@ -88,13 +110,13 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
 
     try {
       final dt = DateTime.parse(s);
-
       final hasUtcZ = s.toUpperCase().endsWith('Z');
       final hasTzOffset = RegExp(r'([+-]\d{2}:\d{2})$').hasMatch(s);
 
       if (hasUtcZ || hasTzOffset || dt.isUtc) {
         return dt.toLocal();
       }
+
       return dt;
     } catch (_) {
       if (s.length >= 10) {
@@ -108,34 +130,87 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
           return DateTime(y, m, d);
         }
       }
+
       return null;
     }
   }
 
+  (int, int)? _parseHHmm(dynamic v) {
+    final s = _s(v);
+    if (s.isEmpty) return null;
+
+    final parts = s.split(':');
+    if (parts.length < 2) return null;
+
+    final h = int.tryParse(parts[0]);
+    final m = int.tryParse(parts[1]);
+
+    if (h == null || m == null) return null;
+    if (h < 0 || h > 23) return null;
+    if (m < 0 || m > 59) return null;
+
+    return (h, m);
+  }
+
   String _fmtHM(dynamic v) {
+    final hhmm = _parseHHmm(v);
+    if (hhmm != null) {
+      final h = hhmm.$1.toString().padLeft(2, '0');
+      final m = hhmm.$2.toString().padLeft(2, '0');
+      return '$h:$m';
+    }
+
     final dt = _parseDateAny(v);
     if (dt == null) return '-';
+
     final h = dt.hour.toString().padLeft(2, '0');
     final m = dt.minute.toString().padLeft(2, '0');
     return '$h:$m';
   }
 
-  bool _hasIn(Map<String, dynamic> s) {
-    final v = s['checkInAt'] ?? s['checkinAt'] ?? s['checkInTime'];
-    return v != null && v.toString().trim().isNotEmpty;
+  dynamic _checkInValue(Map<String, dynamic> s) {
+    return s['checkInAt'] ??
+        s['checkinAt'] ??
+        s['checkedInAt'] ??
+        s['clockInAt'] ??
+        s['inAt'] ??
+        s['startAt'] ??
+        s['startTime'] ??
+        s['checkInTime'] ??
+        s['clockInTime'] ??
+        s['timeIn'] ??
+        _asMap(s['checkIn'])['at'] ??
+        _asMap(s['clockIn'])['at'];
   }
 
-  bool _hasOut(Map<String, dynamic> s) {
-    final v = s['checkOutAt'] ?? s['checkoutAt'] ?? s['checkOutTime'];
-    return v != null && v.toString().trim().isNotEmpty;
+  dynamic _checkOutValue(Map<String, dynamic> s) {
+    return s['checkOutAt'] ??
+        s['checkoutAt'] ??
+        s['checkedOutAt'] ??
+        s['clockOutAt'] ??
+        s['outAt'] ??
+        s['endAt'] ??
+        s['endTime'] ??
+        s['checkOutTime'] ??
+        s['clockOutTime'] ??
+        s['timeOut'] ??
+        _asMap(s['checkOut'])['at'] ??
+        _asMap(s['clockOut'])['at'];
   }
+
+  bool _hasValue(dynamic v) => v != null && v.toString().trim().isNotEmpty;
+
+  bool _hasIn(Map<String, dynamic> s) => _hasValue(_checkInValue(s));
+
+  bool _hasOut(Map<String, dynamic> s) => _hasValue(_checkOutValue(s));
 
   String _statusCode(Map<String, dynamic> s) {
-    return (s['status'] ?? '').toString().trim().toLowerCase();
+    return _s(s['status'] ?? s['attendanceStatus'] ?? s['state']).toLowerCase();
   }
 
   String _approvalStatus(Map<String, dynamic> s) {
-    return (s['approvalStatus'] ?? '').toString().trim().toLowerCase();
+    return _s(s['approvalStatus'] ?? s['approval'] ?? s['requestStatus'])
+        .toLowerCase();
   }
 
   bool _isPendingManual(Map<String, dynamic> s) {
@@ -143,6 +218,7 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
     final approval = _approvalStatus(s);
 
     return status == 'pending_manual' ||
+        status == 'manual_pending' ||
         approval == 'pending' ||
         approval == 'waiting';
   }
@@ -157,24 +233,105 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
     return approval == 'approved';
   }
 
+  double _readNum(dynamic v) {
+    if (v is num) return v.toDouble();
+    return double.tryParse('${v ?? ''}') ?? 0.0;
+  }
+
+  int _firstPositiveMinutes(Map<String, dynamic> s) {
+    final minuteKeys = [
+      'regularWorkMinutes',
+      'normalWorkMinutes',
+      'workMinutes',
+      'totalWorkMinutes',
+      'totalMinutes',
+      'workedMinutes',
+      'durationMinutes',
+      'minutes',
+    ];
+
+    for (final k in minuteKeys) {
+      final n = _readNum(s[k]).floor();
+      if (n > 0) return n;
+    }
+
+    final hourKeys = [
+      'regularWorkHours',
+      'normalWorkHours',
+      'workHours',
+      'totalWorkHours',
+      'totalHours',
+      'workedHours',
+      'durationHours',
+      'hours',
+    ];
+
+    for (final k in hourKeys) {
+      final n = _readNum(s[k]);
+      if (n > 0) return (n * 60).floor();
+    }
+
+    return 0;
+  }
+
   double _calcHours(Map<String, dynamic> s) {
-    final ci =
-        _parseDateAny(s['checkInAt'] ?? s['checkinAt'] ?? s['checkInTime']);
-    final co =
-        _parseDateAny(s['checkOutAt'] ?? s['checkoutAt'] ?? s['checkOutTime']);
-    if (ci == null || co == null) return 0;
-    final diff = co.difference(ci).inMinutes;
-    if (diff <= 0) return 0;
-    return diff / 60.0;
+    final precomputedMinutes = _firstPositiveMinutes(s);
+    if (precomputedMinutes > 0) return precomputedMinutes / 60.0;
+
+    final ciRaw = _checkInValue(s);
+    final coRaw = _checkOutValue(s);
+
+    final ci = _parseDateAny(ciRaw);
+    final co = _parseDateAny(coRaw);
+
+    if (ci != null && co != null) {
+      final diff = co.difference(ci).inMinutes;
+      if (diff > 0 && diff <= 24 * 60) return diff / 60.0;
+    }
+
+    final inHHmm = _parseHHmm(ciRaw);
+    final outHHmm = _parseHHmm(coRaw);
+
+    if (inHHmm != null && outHHmm != null) {
+      final startMin = inHHmm.$1 * 60 + inHHmm.$2;
+      var endMin = outHHmm.$1 * 60 + outHHmm.$2;
+
+      if (endMin < startMin) endMin += 24 * 60;
+
+      final diff = endMin - startMin;
+      if (diff > 0 && diff <= 24 * 60) return diff / 60.0;
+    }
+
+    return 0;
   }
 
   String _workDateText(Map<String, dynamic> s) {
-    final workDate = s['workDate'] ?? s['date'] ?? s['day'];
+    final workDate = s['workDate'] ??
+        s['date'] ??
+        s['day'] ??
+        s['attendanceDate'] ??
+        s['workDay'];
+
     final d = _parseDateAny(workDate) ??
-        _parseDateAny(s['checkInAt'] ?? s['checkinAt'] ?? s['checkInTime']) ??
-        _parseDateAny(s['createdAt']);
+        _parseDateAny(_checkInValue(s)) ??
+        _parseDateAny(s['createdAt']) ??
+        _parseDateAny(s['updatedAt']);
+
     if (d == null) return '-';
     return _ymd(d);
+  }
+
+  DateTime? _workDateForFilter(Map<String, dynamic> s) {
+    return _parseDateAny(
+          s['workDate'] ??
+              s['date'] ??
+              s['day'] ??
+              s['attendanceDate'] ??
+              s['workDay'],
+        ) ??
+        _parseDateAny(_checkInValue(s)) ??
+        _parseDateAny(s['createdAt']) ??
+        _parseDateAny(s['updatedAt']);
   }
 
   bool _isTodayText(String ymd) {
@@ -207,6 +364,21 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
     if (_isRejectedManual(s)) return true;
     if (_isApprovedManual(s) && !hasIn && !hasOut) return true;
 
+    final status = _statusCode(s);
+    if ([
+      'completed',
+      'complete',
+      'checked_out',
+      'checkout',
+      'checkedout',
+      'finished',
+      'done',
+      'closed',
+      'success',
+    ].contains(status)) {
+      return true;
+    }
+
     return false;
   }
 
@@ -226,6 +398,8 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
 
     if (hasIn && !hasOut) return 'ยังไม่เช็กเอาท์';
 
+    if (hours > 0) return '${hours.toStringAsFixed(2)} ชม.';
+
     return '-';
   }
 
@@ -241,6 +415,10 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
     if (hasIn && !hasOut) {
       return _isStaleOpen(s) ? 'ค้างเก่า' : 'กำลังทำงาน';
     }
+
+    final status = _statusCode(s);
+    if (status == 'completed' || status == 'complete') return 'เสร็จสิ้น';
+
     return 'ไม่สมบูรณ์';
   }
 
@@ -258,6 +436,12 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
     if (hasIn && !hasOut) {
       return _isStaleOpen(s) ? Colors.red.shade700 : Colors.orange.shade700;
     }
+
+    final status = _statusCode(s);
+    if (status == 'completed' || status == 'complete') {
+      return Colors.green.shade700;
+    }
+
     return Colors.red.shade700;
   }
 
@@ -275,6 +459,12 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
     if (hasIn && !hasOut) {
       return _isStaleOpen(s) ? Colors.red.shade50 : Colors.orange.shade50;
     }
+
+    final status = _statusCode(s);
+    if (status == 'completed' || status == 'complete') {
+      return Colors.green.shade50;
+    }
+
     return Colors.grey.shade100;
   }
 
@@ -303,41 +493,52 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
   DateTimeRange _effectiveRange() {
     final now = DateTime.now();
     final end = DateTime(now.year, now.month, now.day, 23, 59, 59);
-    final start = DateTime(now.year, now.month, now.day)
-        .subtract(Duration(days: _quickDays - 1));
+    final start = DateTime(now.year, now.month, now.day).subtract(
+      Duration(days: (_quickDays <= 0 ? 30 : _quickDays) - 1),
+    );
+
     return DateTimeRange(start: start, end: end);
   }
 
   DateTimeRange _rangeOrQuick() {
     if (_from == null && _to == null) return _effectiveRange();
+
     final now = DateTime.now();
     final from = _from ??
-        DateTime(now.year, now.month, now.day)
-            .subtract(const Duration(days: 29));
+        DateTime(now.year, now.month, now.day).subtract(
+          const Duration(days: 29),
+        );
     final to = _to ?? now;
+
     final start = DateTime(from.year, from.month, from.day);
     final end = DateTime(to.year, to.month, to.day, 23, 59, 59);
+
     return DateTimeRange(start: start, end: end);
   }
 
   bool _isInRange(Map<String, dynamic> s, DateTimeRange r) {
-    final d = _parseDateAny(s['workDate'] ?? s['date'] ?? s['day']) ??
-        _parseDateAny(s['checkInAt'] ?? s['checkinAt'] ?? s['checkInTime']) ??
-        _parseDateAny(s['createdAt']);
+    final d = _workDateForFilter(s);
     if (d == null) return false;
     return !d.isBefore(r.start) && !d.isAfter(r.end);
   }
 
   String _sessionShiftId(Map<String, dynamic> s) {
-    return (s['shiftId'] ?? s['shift']?['_id'] ?? s['shift']?['id'] ?? '')
-        .toString()
-        .trim();
+    final shift = _asMap(s['shift']);
+    return _s(
+      s['shiftId'] ??
+          s['clinicShiftNeedId'] ??
+          s['shiftNeedId'] ??
+          s['workAssignmentId'] ??
+          shift['_id'] ??
+          shift['id'] ??
+          shift['shiftId'],
+    );
   }
 
   bool _matchesShiftFilter(Map<String, dynamic> s) {
     if (!_isHelper) return true;
-    if (_selectedShiftId.isEmpty) return true;
-    return _sessionShiftId(s) == _selectedShiftId;
+    if (_activeShiftId.isEmpty) return true;
+    return _sessionShiftId(s) == _activeShiftId;
   }
 
   List<Map<String, dynamic>> _filtered() {
@@ -349,92 +550,103 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
         .toList();
 
     list.sort((a, b) {
-      final da = _parseDateAny(a['workDate'] ?? a['date'] ?? a['day']) ??
-          _parseDateAny(a['checkInAt'] ?? a['checkinAt'] ?? a['checkInTime']) ??
+      final da = _workDateForFilter(a) ?? DateTime.fromMillisecondsSinceEpoch(0);
+      final db = _workDateForFilter(b) ?? DateTime.fromMillisecondsSinceEpoch(0);
+
+      final cmpDate = db.compareTo(da);
+      if (cmpDate != 0) return cmpDate;
+
+      final ca = _parseDateAny(_checkInValue(a)) ??
           _parseDateAny(a['createdAt']) ??
           DateTime.fromMillisecondsSinceEpoch(0);
-      final db = _parseDateAny(b['workDate'] ?? b['date'] ?? b['day']) ??
-          _parseDateAny(b['checkInAt'] ?? b['checkinAt'] ?? b['checkInTime']) ??
+      final cb = _parseDateAny(_checkInValue(b)) ??
           _parseDateAny(b['createdAt']) ??
           DateTime.fromMillisecondsSinceEpoch(0);
-      return db.compareTo(da);
+
+      return cb.compareTo(ca);
     });
 
     return list;
   }
 
   String _manualReasonText(Map<String, dynamic> s) {
-    return (s['manualReason'] ??
-            s['reasonText'] ??
-            s['approvalNote'] ??
-            s['rejectReason'] ??
-            s['note'] ??
-            s['message'] ??
-            '')
-        .toString()
-        .trim();
+    return _s(
+      s['manualReason'] ??
+          s['reasonText'] ??
+          s['approvalNote'] ??
+          s['rejectReason'] ??
+          s['note'] ??
+          s['message'],
+    );
   }
 
   String _displayShiftText(Map<String, dynamic> s) {
-    final shift = s['shift'];
-    if (shift is Map) {
-      final label = (shift['label'] ??
-              shift['name'] ??
-              shift['title'] ??
-              shift['shiftLabel'] ??
-              '')
-          .toString()
-          .trim();
-      if (label.isNotEmpty) return label;
-    }
+    final shift = _asMap(s['shift']);
+    final label = _s(
+      shift['label'] ??
+          shift['name'] ??
+          shift['title'] ??
+          shift['shiftLabel'] ??
+          s['shiftLabel'] ??
+          s['shiftName'] ??
+          s['shiftTitle'],
+    );
 
-    if (_isHelper &&
-        _selectedShiftLabel.trim().isNotEmpty &&
-        _sessionShiftId(s) == _selectedShiftId) {
-      return _selectedShiftLabel.trim();
-    }
+    if (label.isNotEmpty) return label;
 
     final shiftId = _sessionShiftId(s);
-    if (shiftId.isEmpty) return '-';
+    if (_isHelper &&
+        _initialShiftLabel.trim().isNotEmpty &&
+        shiftId == _initialShiftId) {
+      return _initialShiftLabel.trim();
+    }
 
+    if (shiftId.isEmpty) return '-';
     if (shiftId.length <= 16) return shiftId;
+
     return '${shiftId.substring(0, 8)}...${shiftId.substring(shiftId.length - 6)}';
   }
 
   String _extractClinicNameFromAny(Map<String, dynamic> s) {
-    final shift = s['shift'];
-    if (shift is Map) {
-      final fromShift = (shift['clinicName'] ??
-              shift['clinic']?['name'] ??
-              shift['clinic']?['clinicName'] ??
-              shift['clinic']?['title'] ??
-              shift['locationName'] ??
-              shift['workplaceName'] ??
-              '')
-          .toString()
-          .trim();
-      if (fromShift.isNotEmpty) return fromShift;
-    }
+    final shift = _asMap(s['shift']);
+    final shiftClinic = _asMap(shift['clinic']);
+    final clinic = _asMap(s['clinic']);
 
-    return (s['clinicName'] ??
-            s['clinic']?['name'] ??
-            s['clinic']?['clinicName'] ??
-            s['clinic']?['title'] ??
-            s['clinicTitle'] ??
-            s['clinicDisplayName'] ??
-            s['locationName'] ??
-            s['workplaceName'] ??
-            s['hospitalName'] ??
-            s['branchName'] ??
-            '')
-        .toString()
-        .trim();
+    final fromShift = _s(
+      shift['clinicName'] ??
+          shiftClinic['name'] ??
+          shiftClinic['clinicName'] ??
+          shiftClinic['title'] ??
+          shift['locationName'] ??
+          shift['workplaceName'],
+    );
+
+    if (fromShift.isNotEmpty) return fromShift;
+
+    return _s(
+      s['clinicName'] ??
+          clinic['name'] ??
+          clinic['clinicName'] ??
+          clinic['title'] ??
+          s['clinicTitle'] ??
+          s['clinicDisplayName'] ??
+          s['locationName'] ??
+          s['workplaceName'] ??
+          s['hospitalName'] ??
+          s['branchName'],
+    );
   }
 
   String _extractClinicId(Map<String, dynamic> s) {
-    return (s['clinicId'] ?? s['clinic']?['_id'] ?? s['clinic']?['id'] ?? '')
-        .toString()
-        .trim();
+    final clinic = _asMap(s['clinic']);
+
+    return _s(
+      s['clinicId'] ??
+          clinic['_id'] ??
+          clinic['id'] ??
+          clinic['clinicId'] ??
+          s['clinic_id'],
+    );
   }
 
   String _displayClinicText(Map<String, dynamic> s) {
@@ -463,8 +675,13 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
   @override
   void initState() {
     super.initState();
-    _selectedShiftId = widget.initialShiftId.trim();
-    _selectedShiftLabel = widget.initialShiftLabel.trim();
+
+    _initialShiftId = widget.initialShiftId.trim();
+    _initialShiftLabel = widget.initialShiftLabel.trim();
+
+    // Do not apply hidden shift filter by default.
+    _showSelectedShiftOnly = false;
+
     _load();
   }
 
@@ -493,28 +710,26 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
         Map<String, dynamic> map = <String, dynamic>{};
 
         if (decoded is Map) {
-          map = Map<String, dynamic>.from(decoded);
+          map = _asMap(decoded);
+
           if (map['data'] is Map) {
-            map = Map<String, dynamic>.from(map['data'] as Map);
+            map = _asMap(map['data']);
           } else if (map['item'] is Map) {
-            map = Map<String, dynamic>.from(map['item'] as Map);
+            map = _asMap(map['item']);
           } else if (map['clinic'] is Map) {
-            map = Map<String, dynamic>.from(map['clinic'] as Map);
+            map = _asMap(map['clinic']);
           }
         }
 
-        final name = (map['name'] ??
-                map['clinicName'] ??
-                map['title'] ??
-                map['clinicTitle'] ??
-                map['displayName'] ??
-                '')
-            .toString()
-            .trim();
+        final name = _s(
+          map['name'] ??
+              map['clinicName'] ??
+              map['title'] ??
+              map['clinicTitle'] ??
+              map['displayName'],
+        );
 
-        if (name.isNotEmpty) {
-          return name;
-        }
+        if (name.isNotEmpty) return name;
       } catch (_) {}
     }
 
@@ -554,13 +769,169 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
       }
     }
 
-    if (changed && mounted) {
-      setState(() {});
+    if (changed && mounted) setState(() {});
+  }
+
+  void _addMapsFromList(dynamic raw, List<Map<String, dynamic>> out) {
+    if (raw is! List) return;
+
+    for (final item in raw) {
+      if (item is Map) {
+        out.add(_asMap(item));
+      }
     }
+  }
+
+  List<Map<String, dynamic>> _extractAttendanceRows(dynamic decoded) {
+    final out = <Map<String, dynamic>>[];
+
+    if (decoded is List) {
+      _addMapsFromList(decoded, out);
+      return out;
+    }
+
+    if (decoded is! Map) return out;
+
+    final root = _asMap(decoded);
+
+    final rootListKeys = [
+      'data',
+      'items',
+      'results',
+      'rows',
+      'sessions',
+      'attendanceSessions',
+      'histories',
+      'history',
+      'records',
+    ];
+
+    for (final key in rootListKeys) {
+      _addMapsFromList(root[key], out);
+    }
+
+    final nestedCandidates = <Map<String, dynamic>>[];
+
+    for (final key in [
+      'data',
+      'attendance',
+      'result',
+      'payload',
+      'response',
+      'item',
+    ]) {
+      if (root[key] is Map) nestedCandidates.add(_asMap(root[key]));
+    }
+
+    for (final nested in nestedCandidates) {
+      for (final key in rootListKeys) {
+        _addMapsFromList(nested[key], out);
+      }
+
+      final attendance = _asMap(nested['attendance']);
+      if (attendance.isNotEmpty) {
+        for (final key in rootListKeys) {
+          _addMapsFromList(attendance[key], out);
+        }
+      }
+    }
+
+    // Single current/open session fallback.
+    // This is intentionally last so it never replaces the full list.
+    final singleKeys = [
+      'session',
+      'todaySession',
+      'currentSession',
+      'openSession',
+      'pendingManualSession',
+      'latestSession',
+      'lastSession',
+    ];
+
+    for (final key in singleKeys) {
+      if (root[key] is Map) out.add(_asMap(root[key]));
+    }
+
+    final attendance = _asMap(root['attendance']);
+    if (attendance.isNotEmpty) {
+      for (final key in singleKeys) {
+        if (attendance[key] is Map) out.add(_asMap(attendance[key]));
+      }
+    }
+
+    return out;
+  }
+
+  String _rowKey(Map<String, dynamic> row) {
+    final id = _s(row['_id'] ?? row['id'] ?? row['sessionId']);
+    if (id.isNotEmpty) return 'id:$id';
+
+    return [
+      _workDateText(row),
+      _s(_checkInValue(row)),
+      _s(_checkOutValue(row)),
+      _statusCode(row),
+      _approvalStatus(row),
+      _sessionShiftId(row),
+      _extractClinicId(row),
+      _manualReasonText(row),
+    ].join('|');
+  }
+
+  List<Map<String, dynamic>> _mergeUniqueRows(List<Map<String, dynamic>> rows) {
+    final out = <Map<String, dynamic>>[];
+    final seen = <String>{};
+
+    for (final row in rows) {
+      final key = _rowKey(row);
+      if (key.trim().isEmpty || seen.contains(key)) continue;
+      seen.add(key);
+      out.add(row);
+    }
+
+    return out;
+  }
+
+  Map<String, String> _buildQuery(DateTimeRange range) {
+    final days = range.duration.inDays.abs() + 1;
+    final qs = <String, String>{
+      'dateFrom': _ymd(range.start),
+      'dateTo': _ymd(range.end),
+
+      // Compatibility aliases for different controller versions.
+      'from': _ymd(range.start),
+      'to': _ymd(range.end),
+      'startDate': _ymd(range.start),
+      'endDate': _ymd(range.end),
+      'days': days.toString(),
+      'limit': '500',
+      'includeAll': 'true',
+    };
+
+    final staffId = widget.staffId.trim();
+    if (staffId.isNotEmpty) {
+      qs['staffId'] = staffId;
+      qs['employeeId'] = staffId;
+      qs['principalId'] = staffId;
+    }
+
+    final clinicId = widget.clinicId.trim();
+    if (clinicId.isNotEmpty) {
+      qs['clinicId'] = clinicId;
+    }
+
+    if (_isHelper && _activeShiftId.isNotEmpty) {
+      qs['shiftId'] = _activeShiftId;
+      qs['clinicShiftNeedId'] = _activeShiftId;
+      qs['shiftNeedId'] = _activeShiftId;
+    }
+
+    return qs;
   }
 
   Future<void> _load() async {
     if (!mounted) return;
+
     setState(() {
       _loading = true;
       _err = '';
@@ -569,73 +940,75 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
 
     try {
       final range = _rangeOrQuick();
-      final qs = <String, String>{
-        'dateFrom': _ymd(range.start),
-        'dateTo': _ymd(range.end),
-      };
-
-      if (_isHelper && _selectedShiftId.isNotEmpty) {
-        qs['shiftId'] = _selectedShiftId;
-      }
+      final qs = _buildQuery(range);
 
       final candidates = <String>[
+        '/attendance/my-sessions',
+        '/api/attendance/my-sessions',
+        '/attendance/me/history',
+        '/api/attendance/me/history',
+        '/attendance/history',
+        '/api/attendance/history',
+        '/attendance/sessions/my',
+        '/api/attendance/sessions/my',
         '/attendance/me',
         '/api/attendance/me',
       ];
 
       http.Response? last;
+      final collected = <Map<String, dynamic>>[];
+      bool gotAnyOk = false;
 
       for (final p in candidates) {
         final u = _payrollUri(p, qs: qs);
-        final res = await _tryGet(u);
+
+        http.Response res;
+        try {
+          res = await _tryGet(u);
+        } catch (_) {
+          continue;
+        }
+
         last = res;
 
         if (res.statusCode == 404) continue;
         if (res.statusCode == 401) throw Exception('no token');
         if (res.statusCode == 403) throw Exception('forbidden');
-        if (res.statusCode != 200) break;
 
-        final decoded = jsonDecode(res.body);
-
-        List<Map<String, dynamic>> list = [];
-
-        if (decoded is Map) {
-          final dataAny = decoded['data'];
-          if (dataAny is List) {
-            list = dataAny
-                .whereType<Map>()
-                .map((e) => Map<String, dynamic>.from(e))
-                .toList();
-          } else if (decoded['items'] is List) {
-            list = (decoded['items'] as List)
-                .whereType<Map>()
-                .map((e) => Map<String, dynamic>.from(e))
-                .toList();
-          } else if (decoded['results'] is List) {
-            list = (decoded['results'] as List)
-                .whereType<Map>()
-                .map((e) => Map<String, dynamic>.from(e))
-                .toList();
-          }
-        } else if (decoded is List) {
-          list = decoded
-              .whereType<Map>()
-              .map((e) => Map<String, dynamic>.from(e))
-              .toList();
+        if (res.statusCode != 200) {
+          continue;
         }
 
-        if (!mounted) return;
+        gotAnyOk = true;
+
+        dynamic decoded;
+        try {
+          decoded = jsonDecode(res.body);
+        } catch (_) {
+          continue;
+        }
+
+        final rows = _extractAttendanceRows(decoded);
+        if (rows.isNotEmpty) {
+          collected.addAll(rows);
+        }
+      }
+
+      final merged = _mergeUniqueRows(collected);
+
+      if (!mounted) return;
+
+      if (gotAnyOk) {
         setState(() {
           _loading = false;
           _err = '';
-          _all = list;
+          _all = merged;
         });
 
-        await _hydrateClinicNames(list);
+        await _hydrateClinicNames(merged);
         return;
       }
 
-      if (!mounted) return;
       setState(() {
         _loading = false;
         _err = (last == null)
@@ -645,12 +1018,14 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
       });
     } catch (e) {
       if (!mounted) return;
+
       final s = e.toString().toLowerCase();
+
       setState(() {
         _loading = false;
         _err = s.contains('forbidden')
             ? 'ไม่มีสิทธิ์ใช้งานเมนูนี้'
-            : 'เซสชันหมดอายุ/โหลดข้อมูลไม่สำเร็จ กรุณาเข้าสู่ระบบใหม่';
+            : 'เซสชันหมดอายุหรือโหลดข้อมูลไม่สำเร็จ กรุณาเข้าสู่ระบบใหม่';
         _all = [];
       });
     }
@@ -658,33 +1033,43 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
 
   Future<void> _pickFrom() async {
     final now = DateTime.now();
-    final initial = _from ?? now.subtract(Duration(days: _quickDays));
+    final initial = _from ?? now.subtract(Duration(days: _quickDays - 1));
+
     final picked = await showDatePicker(
       context: context,
       initialDate: initial,
       firstDate: DateTime(now.year - 2),
       lastDate: now,
     );
+
     if (picked == null) return;
+    if (!mounted) return;
+
     setState(() {
       _from = picked;
     });
+
     await _load();
   }
 
   Future<void> _pickTo() async {
     final now = DateTime.now();
     final initial = _to ?? now;
+
     final picked = await showDatePicker(
       context: context,
       initialDate: initial,
       firstDate: DateTime(now.year - 2),
       lastDate: now,
     );
+
     if (picked == null) return;
+    if (!mounted) return;
+
     setState(() {
       _to = picked;
     });
+
     await _load();
   }
 
@@ -693,7 +1078,31 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
       _quickDays = days;
       _from = null;
       _to = null;
+
+      // Quick history should show the whole period, not only one selected shift.
+      if (days >= 30) {
+        _showSelectedShiftOnly = false;
+      }
     });
+
+    _load();
+  }
+
+  void _showAllShifts() {
+    setState(() {
+      _showSelectedShiftOnly = false;
+    });
+
+    _load();
+  }
+
+  void _showOnlyInitialShift() {
+    if (_initialShiftId.isEmpty) return;
+
+    setState(() {
+      _showSelectedShiftOnly = true;
+    });
+
     _load();
   }
 
@@ -761,7 +1170,7 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
       decoration: BoxDecoration(
         color: bg,
         borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: fg.withOpacity(0.15)),
+        border: Border.all(color: fg.withValues(alpha: 0.15)),
       ),
       child: Text(
         text,
@@ -776,12 +1185,8 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
 
   Future<void> _showDetailSheet(Map<String, dynamic> s) async {
     final dateText = _workDateText(s);
-    final ci = _fmtHM(
-      s['checkInAt'] ?? s['checkinAt'] ?? s['checkInTime'],
-    );
-    final co = _fmtHM(
-      s['checkOutAt'] ?? s['checkoutAt'] ?? s['checkOutTime'],
-    );
+    final ci = _fmtHM(_checkInValue(s));
+    final co = _fmtHM(_checkOutValue(s));
     final statusText = _statusLabel(s);
     final mainValue = _mainValueText(s);
     final manualReason = _manualReasonText(s);
@@ -824,7 +1229,7 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
                           vertical: 6,
                         ),
                         decoration: BoxDecoration(
-                          color: Colors.black.withOpacity(0.04),
+                          color: Colors.black.withValues(alpha: 0.04),
                           borderRadius: BorderRadius.circular(999),
                         ),
                         child: Text(
@@ -852,15 +1257,9 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
                           ),
                           _detailRow(label: 'ผลลัพธ์', value: mainValue),
                           if (_isHelper)
-                            _detailRow(
-                              label: 'คลินิก',
-                              value: clinicText,
-                            ),
+                            _detailRow(label: 'คลินิก', value: clinicText),
                           if (_isHelper)
-                            _detailRow(
-                              label: 'กะงาน',
-                              value: displayShift,
-                            ),
+                            _detailRow(label: 'กะงาน', value: displayShift),
                           if (_isHelper && shiftId.isNotEmpty)
                             _detailRow(
                               label: 'รหัสกะงาน',
@@ -927,7 +1326,7 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
                                 ),
                               ),
                               child: Text(
-                                'รายการนี้เป็น session ค้างเก่าที่ยังไม่มีเวลาเช็กเอาท์',
+                                'รายการนี้ยังไม่มีเวลาเช็กเอาท์ และไม่ใช่รายการของวันนี้',
                                 style: TextStyle(
                                   color: Colors.red.shade700,
                                   fontWeight: FontWeight.w800,
@@ -948,7 +1347,7 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
                                 ),
                               ),
                               child: Text(
-                                'รายการนี้เป็น session ที่กำลังทำงานอยู่ของวันนี้',
+                                'รายการนี้เป็นรายการที่กำลังทำงานอยู่ของวันนี้',
                                 style: TextStyle(
                                   color: Colors.orange.shade800,
                                   fontWeight: FontWeight.w800,
@@ -975,6 +1374,57 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
           ),
         );
       },
+    );
+  }
+
+  Widget _shiftFilterCard() {
+    if (!_isHelper || _initialShiftId.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    final showingShift = _showSelectedShiftOnly;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: showingShift ? Colors.green.shade50 : Colors.blue.shade50,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: showingShift ? Colors.green.shade100 : Colors.blue.shade100,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            showingShift
+                ? 'กำลังแสดงเฉพาะกะ: $_activeShiftLabel'
+                : 'กำลังแสดงประวัติทุกกะในช่วงเวลานี้',
+            style: TextStyle(
+              color: showingShift ? Colors.green.shade800 : Colors.blue.shade800,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              OutlinedButton.icon(
+                onPressed: showingShift ? _showAllShifts : null,
+                icon: const Icon(Icons.view_list),
+                label: const Text('แสดงทุกกะ'),
+              ),
+              OutlinedButton.icon(
+                onPressed: showingShift ? null : _showOnlyInitialShift,
+                icon: const Icon(Icons.filter_alt),
+                label: const Text('ดูกะที่เลือก'),
+              ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 
@@ -1049,29 +1499,9 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
                                 ),
                               ),
                               const SizedBox(height: 8),
-                              if (_isHelper && _selectedShiftId.isNotEmpty) ...[
-                                Container(
-                                  width: double.infinity,
-                                  padding: const EdgeInsets.all(10),
-                                  decoration: BoxDecoration(
-                                    color: Colors.green.shade50,
-                                    borderRadius: BorderRadius.circular(12),
-                                    border: Border.all(
-                                      color: Colors.green.shade100,
-                                    ),
-                                  ),
-                                  child: Text(
-                                    _selectedShiftLabel.isNotEmpty
-                                        ? 'กำลังแสดงประวัติของกะ: $_selectedShiftLabel'
-                                        : 'กำลังแสดงประวัติของกะที่เลือก',
-                                    style: TextStyle(
-                                      color: Colors.green.shade800,
-                                      fontWeight: FontWeight.w800,
-                                    ),
-                                  ),
-                                ),
+                              _shiftFilterCard(),
+                              if (_isHelper && _initialShiftId.isNotEmpty)
                                 const SizedBox(height: 10),
-                              ],
                               SingleChildScrollView(
                                 scrollDirection: Axis.horizontal,
                                 child: Row(
@@ -1107,6 +1537,7 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
                                               const Duration(days: 29),
                                             );
                                             _to = DateTime.now();
+                                            _showSelectedShiftOnly = false;
                                           });
                                           _load();
                                         }
@@ -1141,7 +1572,7 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
                               ),
                               const SizedBox(height: 8),
                               Text(
-                                'แสดง: ${_ymd(r.start)} ถึง ${_ymd(r.end)} • ทั้งหมด ${list.length} รายการ',
+                                'แสดง: ${_ymd(r.start)} ถึง ${_ymd(r.end)} • พบ ${list.length} รายการ',
                                 style: TextStyle(color: Colors.grey.shade700),
                               ),
                             ],
@@ -1153,7 +1584,7 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
                       child: list.isEmpty
                           ? Center(
                               child: Text(
-                                _isHelper && _selectedShiftId.isNotEmpty
+                                _isHelper && _showSelectedShiftOnly
                                     ? 'ไม่พบรายการของกะที่เลือกในช่วงเวลานี้'
                                     : 'ไม่พบรายการในช่วงเวลานี้',
                                 style: TextStyle(color: Colors.grey.shade700),
@@ -1166,16 +1597,8 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
                                 final s = list[i];
 
                                 final dateText = _workDateText(s);
-                                final ci = _fmtHM(
-                                  s['checkInAt'] ??
-                                      s['checkinAt'] ??
-                                      s['checkInTime'],
-                                );
-                                final co = _fmtHM(
-                                  s['checkOutAt'] ??
-                                      s['checkoutAt'] ??
-                                      s['checkOutTime'],
-                                );
+                                final ci = _fmtHM(_checkInValue(s));
+                                final co = _fmtHM(_checkOutValue(s));
 
                                 final mainValue = _mainValueText(s);
                                 final shiftText = _displayShiftText(s);

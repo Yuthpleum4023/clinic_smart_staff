@@ -968,7 +968,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
         _loadingPayrollPreview = false;
         _payrollPreviewError = e.toString().contains('NO_TOKEN')
             ? 'ไม่พบสิทธิ์เข้าใช้งาน กรุณาออกจากระบบแล้วเข้าใหม่'
-            : 'โหลดพรีวิวเงินเดือนจาก backend ไม่สำเร็จ';
+            : 'โหลดพรีวิวเงินเดือนไม่สำเร็จ';
         _payrollPreviewRow = null;
         _payrollPreviewSummary = null;
         _payrollPreviewInputs = null;
@@ -1074,8 +1074,9 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
         _snack('คำนวณงวดใหม่ไม่สำเร็จ');
       }
     } finally {
-      if (!mounted || _disposed) return;
-      setState(() => _recalculatingClosedPayroll = false);
+      if (mounted && !_disposed) {
+        setState(() => _recalculatingClosedPayroll = false);
+      }
     }
   }
 
@@ -2128,8 +2129,9 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     } catch (_) {
       _snack('บันทึกค่า SSO ไม่สำเร็จ');
     } finally {
-      if (!mounted || _disposed) return;
-      setState(() => _savingSso = false);
+      if (mounted && !_disposed) {
+        setState(() => _savingSso = false);
+      }
     }
   }
 
@@ -2171,8 +2173,9 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     } catch (_) {
       _snack('บันทึกไม่สำเร็จ');
     } finally {
-      if (!mounted || _disposed) return;
-      setState(() => _savingTax = false);
+      if (mounted && !_disposed) {
+        setState(() => _savingTax = false);
+      }
     }
   }
 
@@ -2259,7 +2262,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
           ),
         ] else ...[
           Text(
-            'ยังไม่มีพรีวิวจาก backend สำหรับเดือนนี้',
+            'ยังไม่มีพรีวิวเงินเดือนสำหรับเดือนนี้',
             style: TextStyle(fontSize: 12, color: Colors.orange.shade700),
           ),
         ],
@@ -2731,8 +2734,9 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
 
       _snack('บันทึกเวลาเข้างาน-ออกงานแทนพนักงานแล้ว ✅');
     } finally {
-      if (!mounted || _disposed) return;
-      setState(() => _savingManualAttendance = false);
+      if (mounted && !_disposed) {
+        setState(() => _savingManualAttendance = false);
+      }
     }
   }
 
@@ -2902,8 +2906,9 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       await _loadBackendOtForSelectedMonth();
       await _loadClosedPayrollForSelectedMonth();
     } finally {
-      if (!mounted || _disposed) return;
-      setState(() => _savingManualOt = false);
+      if (mounted && !_disposed) {
+        setState(() => _savingManualOt = false);
+      }
     }
   }
 
@@ -3516,7 +3521,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                           ),
                           const SizedBox(height: 6),
                           Text(
-                            'หมายเหตุ: ยอดเงิน OT จริงให้ยึดจาก backend preview/งวดที่ปิดแล้วเท่านั้น',
+                            'หมายเหตุ: ยอดเงิน OT จะแสดงจากระบบเงินเดือนเท่านั้น',
                             style: TextStyle(
                               fontSize: 12,
                               color: Colors.grey.shade700,
@@ -3563,7 +3568,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                           )
                         else if (hasBackendPayrollPreview)
                           Text(
-                            'เดือนนี้ยังไม่ปิดงวด — ยอดด้านล่างเป็นพรีวิวจาก backend และข้อมูล attendance ล่าสุด',
+                            'เดือนนี้ยังไม่ปิดงวด — ยอดด้านล่างเป็นพรีวิวจากข้อมูลเวลาเข้างานล่าสุด',
                             style: TextStyle(
                               fontSize: 12,
                               color: Colors.green.shade700,
@@ -3572,7 +3577,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                           )
                         else
                           Text(
-                            'เดือนนี้ยังไม่ปิดงวด — ยังไม่มีพรีวิวจาก backend',
+                            'เดือนนี้ยังไม่ปิดงวด — ยังไม่มีพรีวิวเงินเดือน',
                             style: TextStyle(
                               fontSize: 12,
                               color: Colors.orange.shade700,
@@ -3598,7 +3603,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                         const SizedBox(height: 8),
                         if (!hasBackendPayrollValue) ...[
                           Text(
-                            'ยังไม่มีตัวเลขเงินเดือนจาก backend สำหรับเดือนนี้',
+                            'ยังไม่มีตัวเลขเงินเดือนสำหรับเดือนนี้',
                             style: TextStyle(
                               color: Colors.grey.shade800,
                               height: 1.35,
@@ -3606,7 +3611,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                           ),
                           const SizedBox(height: 6),
                           Text(
-                            'กรุณารีเฟรชข้อมูล หรือเปิดพรีวิวสลิปเพื่อให้ backend คำนวณ',
+                            'กรุณารีเฟรชข้อมูล หรือเปิดพรีวิวสลิปเพื่อให้ระบบคำนวณใหม่',
                             style: TextStyle(
                               fontSize: 12,
                               color: Colors.grey.shade700,
@@ -3624,13 +3629,13 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                               const Padding(
                                 padding: EdgeInsets.only(top: 4),
                                 child: Text(
-                                  'กำลังโหลดชั่วโมงทำงานจาก backend...',
+                                  'กำลังโหลดข้อมูลเวลาเข้างาน...',
                                   style: TextStyle(fontSize: 12),
                                 ),
                               ),
                             if (hasBackendPayrollPreview || hasClosedPayroll)
                               const Text(
-                                ' • จาก backend attendance/check-in checkout',
+                                ' • จากเวลาเข้า-ออกงานในระบบ',
                                 style: TextStyle(fontSize: 12),
                               ),
                             if (timeHours > 0)
@@ -3644,7 +3649,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                                 style: const TextStyle(fontSize: 12),
                               ),
                           ] else ...[
-                            const Text('เงินเดือนฐานรายเดือนจาก backend/staff service'),
+                            const Text('เงินเดือนฐานรายเดือนจากข้อมูลพนักงาน'),
                           ],
                           const SizedBox(height: 10),
                           Text(
@@ -3874,7 +3879,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                             }),
                             const SizedBox(height: 8),
                             Text(
-                              'หมายเหตุ: การลบตรงนี้ลบเฉพาะรายการที่แสดงในเครื่องนี้ หากต้องแก้ข้อมูลที่ส่งเข้า backend แล้ว ให้ใช้ flow แก้ไข attendance ฝั่งระบบหลังบ้าน',
+                              'หมายเหตุ: การลบตรงนี้ลบเฉพาะรายการที่แสดงในเครื่องนี้ หากต้องแก้ข้อมูลเวลาเข้า-ออกงานที่บันทึกแล้ว ให้ใช้เมนูจัดการเวลาทำงานของระบบ',
                               style: TextStyle(
                                 fontSize: 12,
                                 color: Colors.grey.shade700,
