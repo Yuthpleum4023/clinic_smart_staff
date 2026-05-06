@@ -1,3 +1,23 @@
+// backend/score_service/controllers/helperController.js
+//
+// ✅ PRODUCTION helperController
+// ------------------------------------------------------
+// ✅ Fix TrustScore lookup by name/phone/userId
+// ✅ Important production fix:
+//    users.userId = usr_xxx
+//    trustscores.staffId = usr_xxx
+//    trustscores.userId = ""
+//
+//    Old logic searched only trustscores.userId,
+//    so real score was not found and UI fell back to 80.
+// ------------------------------------------------------
+// ✅ This version searches TrustScore by:
+//    - userId
+//    - staffId
+//    - principalId
+//    across all known identity ids.
+// ------------------------------------------------------
+
 const mongoose = require("mongoose");
 const TrustScore = require("../models/TrustScore");
 const {
@@ -27,14 +47,24 @@ function escapeRegex(v) {
   return String(v || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function isValidStaffId(v) {
-  const x = s(v);
-  return x.startsWith("stf_") && x.length >= 6;
-}
-
 function isValidUserId(v) {
   const x = s(v);
   return x.startsWith("usr_") && x.length >= 6;
+}
+
+// ✅ In production TrustScore.staffId may store either:
+// - stf_xxx = old staff model id
+// - usr_xxx = helper/user principal id
+function isValidStaffId(v) {
+  const x = s(v);
+  return (
+    (x.startsWith("stf_") || x.startsWith("usr_")) &&
+    x.length >= 6
+  );
+}
+
+function isValidIdentityId(v) {
+  return isValidUserId(v) || isValidStaffId(v);
 }
 
 function authBase() {
@@ -74,6 +104,21 @@ function normalizeStats(doc) {
     noShow: n(doc?.noShow),
     cancelledEarly: n(doc?.cancelledEarly ?? doc?.cancelled),
   };
+}
+
+function hasMeaningfulScoreDoc(doc) {
+  if (!doc) return false;
+
+  const stats = normalizeStats(doc);
+  return (
+    stats.totalShifts > 0 ||
+    stats.completed > 0 ||
+    stats.late > 0 ||
+    stats.noShow > 0 ||
+    stats.cancelledEarly > 0 ||
+    asArray(doc.flags).length > 0 ||
+    asArray(doc.badges).length > 0
+  );
 }
 
 function pickLocation(raw) {
@@ -152,6 +197,7 @@ function toScorePayload(doc) {
       },
       level: "unknown",
       levelLabel: "ยังไม่มีข้อมูล",
+      clinicId: "",
       fullName: "",
       name: "",
       phone: "",
@@ -177,10 +223,17 @@ function toScorePayload(doc) {
 
   const location = pickLocation(doc.location);
 
+  const staffId = isValidStaffId(doc.staffId) ? s(doc.staffId) : "";
+  const userId =
+    (isValidUserId(doc.userId) ? s(doc.userId) : "") ||
+    (isValidUserId(doc.staffId) ? s(doc.staffId) : "") ||
+    (isValidUserId(doc.principalId) ? s(doc.principalId) : "");
+
   return {
-    userId: isValidUserId(doc.userId) ? s(doc.userId) : "",
-    principalId: s(doc.principalId),
-    staffId: isValidStaffId(doc.staffId) ? s(doc.staffId) : "",
+    userId,
+    principalId: s(doc.principalId) || userId || staffId,
+    staffId,
+    clinicId: s(doc.clinicId),
     fullName: s(doc.fullName),
     name: s(doc.name),
     phone: s(doc.phone),
@@ -206,22 +259,44 @@ function isBetterDoc(nextDoc, currentDoc) {
   if (!currentDoc) return true;
   if (!nextDoc) return false;
 
-  const nextScore = n(nextDoc.trustScore, 0);
-  const currentScore = n(currentDoc.trustScore, 0);
+  const nextHasRealData = hasMeaningfulScoreDoc(nextDoc);
+  const currentHasRealData = hasMeaningfulScoreDoc(currentDoc);
 
-  if (nextScore !== currentScore) {
-    return nextScore > currentScore;
+  // ✅ Avoid choosing default 80 / no data over real score 62 with real events.
+  if (nextHasRealData !== currentHasRealData) {
+    return nextHasRealData;
   }
 
   const nextTime = new Date(nextDoc.updatedAt || 0).getTime();
   const currentTime = new Date(currentDoc.updatedAt || 0).getTime();
 
-  return nextTime > currentTime;
+  if (nextTime !== currentTime) {
+    return nextTime > currentTime;
+  }
+
+  const nextShifts = n(nextDoc.totalShifts, 0);
+  const currentShifts = n(currentDoc.totalShifts, 0);
+
+  if (nextShifts !== currentShifts) {
+    return nextShifts > currentShifts;
+  }
+
+  const nextScore = n(nextDoc.trustScore, 0);
+  const currentScore = n(currentDoc.trustScore, 0);
+
+  return nextScore > currentScore;
 }
 
 function isBetterItem(nextItem, currentItem) {
   if (!currentItem) return true;
   if (!nextItem) return false;
+
+  const nextHasRealData = n(nextItem?.stats?.totalShifts, 0) > 0;
+  const currentHasRealData = n(currentItem?.stats?.totalShifts, 0) > 0;
+
+  if (nextHasRealData !== currentHasRealData) {
+    return nextHasRealData;
+  }
 
   const nextScore = n(nextItem.trustScore, 0);
   const currentScore = n(currentItem.trustScore, 0);
@@ -247,11 +322,14 @@ function makeIdentityKey(item) {
   const staffId = s(item.staffId);
   if (isValidStaffId(staffId)) return `s:${staffId}`;
 
+  const principalId = s(item.principalId);
+  if (isValidIdentityId(principalId)) return `p:${principalId}`;
+
   const phone = s(item.phone);
-  if (phone) return `p:${phone}`;
+  if (phone) return `phone:${phone}`;
 
   const fullName = s(item.fullName) || s(item.name);
-  if (fullName) return `n:${fullName.toLowerCase()}`;
+  if (fullName) return `name:${fullName.toLowerCase()}`;
 
   return "";
 }
@@ -327,10 +405,25 @@ function normalizeAuthUser(raw) {
       user.location
   );
 
+  const userId = isValidUserId(rawUserId)
+    ? rawUserId
+    : isValidUserId(rawStaffId)
+      ? rawStaffId
+      : "";
+
+  // ✅ If users.staffId is empty but users.userId is usr_xxx,
+  // use userId as staffId for score identity matching.
+  const staffId = isValidStaffId(rawStaffId)
+    ? rawStaffId
+    : isValidUserId(userId)
+      ? userId
+      : "";
+
   return {
     ...u,
-    userId: isValidUserId(rawUserId) ? rawUserId : "",
-    staffId: isValidStaffId(rawStaffId) ? rawStaffId : "",
+    userId,
+    staffId,
+    principalId: s(u.principalId) || userId || staffId,
     fullName,
     name: s(u.name) || s(profile.name) || s(user.name) || fullName,
     phone,
@@ -346,8 +439,15 @@ function mergeHelperWithScore(user, scoreDoc) {
   const normalizedUser = normalizeAuthUser(user);
   const scorePayload = toScorePayload(scoreDoc);
 
-  const userId = normalizedUser.userId || scorePayload.userId;
-  const staffId = normalizedUser.staffId || scorePayload.staffId;
+  const userId =
+    normalizedUser.userId ||
+    scorePayload.userId ||
+    (isValidUserId(scorePayload.staffId) ? scorePayload.staffId : "");
+
+  const staffId =
+    normalizedUser.staffId ||
+    scorePayload.staffId ||
+    (isValidUserId(userId) ? userId : "");
 
   const fullName =
     s(normalizedUser.fullName) ||
@@ -377,7 +477,9 @@ function mergeHelperWithScore(user, scoreDoc) {
     userId: isValidUserId(userId) ? userId : "",
     principalId:
       s(scorePayload.principalId) ||
-      (isValidUserId(userId) ? userId : ""),
+      s(normalizedUser.principalId) ||
+      (isValidUserId(userId) ? userId : "") ||
+      (isValidStaffId(staffId) ? staffId : ""),
     staffId: isValidStaffId(staffId) ? staffId : "",
     fullName,
     name: s(normalizedUser.name) || s(scorePayload.name) || fullName,
@@ -388,45 +490,111 @@ function mergeHelperWithScore(user, scoreDoc) {
   };
 }
 
+function collectIdentityIds(item) {
+  const ids = [
+    s(item?.userId),
+    s(item?.staffId),
+    s(item?.principalId),
+  ].filter(isValidIdentityId);
+
+  return Array.from(new Set(ids));
+}
+
+function putBetter(map, key, doc) {
+  const k = s(key);
+  if (!k) return;
+
+  const current = map.get(k);
+  if (isBetterDoc(doc, current)) {
+    map.set(k, doc);
+  }
+}
+
 function buildScoreMaps(scoreDocs) {
   const byUserId = new Map();
   const byStaffId = new Map();
+  const byPrincipalId = new Map();
+  const byIdentityId = new Map();
 
-  for (const d of scoreDocs) {
+  for (const d of scoreDocs || []) {
     const userId = isValidUserId(d.userId) ? s(d.userId) : "";
     const staffId = isValidStaffId(d.staffId) ? s(d.staffId) : "";
+    const principalId = isValidIdentityId(d.principalId) ? s(d.principalId) : "";
 
     if (userId) {
-      const current = byUserId.get(userId);
-      if (isBetterDoc(d, current)) {
-        byUserId.set(userId, d);
-      }
+      putBetter(byUserId, userId, d);
+      putBetter(byIdentityId, userId, d);
     }
 
     if (staffId) {
-      const current = byStaffId.get(staffId);
-      if (isBetterDoc(d, current)) {
-        byStaffId.set(staffId, d);
+      putBetter(byStaffId, staffId, d);
+      putBetter(byIdentityId, staffId, d);
+
+      // ✅ Critical fix:
+      // TrustScore.staffId may be usr_xxx.
+      // Let byUserId also find it by userId.
+      if (isValidUserId(staffId)) {
+        putBetter(byUserId, staffId, d);
+      }
+    }
+
+    if (principalId) {
+      putBetter(byPrincipalId, principalId, d);
+      putBetter(byIdentityId, principalId, d);
+
+      if (isValidUserId(principalId)) {
+        putBetter(byUserId, principalId, d);
+      }
+
+      if (isValidStaffId(principalId)) {
+        putBetter(byStaffId, principalId, d);
       }
     }
   }
 
-  return { byUserId, byStaffId };
+  return { byUserId, byStaffId, byPrincipalId, byIdentityId };
+}
+
+function findBestScoreDocForIdentity(item, maps) {
+  const ids = collectIdentityIds(item);
+
+  for (const id of ids) {
+    const found =
+      maps.byIdentityId.get(id) ||
+      maps.byUserId.get(id) ||
+      maps.byStaffId.get(id) ||
+      maps.byPrincipalId.get(id);
+
+    if (found) return found;
+  }
+
+  return null;
 }
 
 async function loadScoreDocsByIdentity(items) {
-  const userIds = items.map((x) => s(x.userId)).filter(isValidUserId);
-  const staffIds = items.map((x) => s(x.staffId)).filter(isValidStaffId);
+  // ✅ Production fix:
+  // Some TrustScore docs store users.userId inside trustscores.staffId.
+  // Therefore we collect every known id and search across every id field.
+  const identityIds = Array.from(
+    new Set(
+      (Array.isArray(items) ? items : [])
+        .flatMap((x) => collectIdentityIds(x))
+        .filter(isValidIdentityId)
+    )
+  );
 
-  const or = [];
-  if (userIds.length > 0) or.push({ userId: { $in: userIds } });
-  if (staffIds.length > 0) or.push({ staffId: { $in: staffIds } });
+  if (identityIds.length === 0) return [];
 
-  if (or.length === 0) return [];
-
-  return TrustScore.find({ $or: or })
+  return TrustScore.find({
+    $or: [
+      { userId: { $in: identityIds } },
+      { staffId: { $in: identityIds } },
+      { principalId: { $in: identityIds } },
+    ],
+  })
     .select(
       [
+        "clinicId",
         "userId",
         "principalId",
         "staffId",
@@ -487,6 +655,7 @@ async function searchUsersFallback(q, limit, clinicLat = null, clinicLng = null)
     .project({
       userId: 1,
       staffId: 1,
+      principalId: 1,
       fullName: 1,
       phone: 1,
       role: 1,
@@ -501,16 +670,10 @@ async function searchUsersFallback(q, limit, clinicLat = null, clinicLng = null)
 
   const normalizedUsers = docs.map(normalizeAuthUser);
   const scoreDocs = await loadScoreDocsByIdentity(normalizedUsers);
-  const { byUserId, byStaffId } = buildScoreMaps(scoreDocs);
+  const maps = buildScoreMaps(scoreDocs);
 
   const merged = normalizedUsers.map((u) => {
-    const userId = s(u.userId);
-    const staffId = s(u.staffId);
-
-    const scoreDoc =
-      (userId ? byUserId.get(userId) : null) ||
-      (staffId ? byStaffId.get(staffId) : null) ||
-      null;
+    const scoreDoc = findBestScoreDocForIdentity(u, maps);
 
     const item = {
       ...mergeHelperWithScore(u, scoreDoc),
@@ -543,10 +706,12 @@ async function searchTrustScoreFallback(q, limit, clinicLat = null, clinicLng = 
       { phone: regex },
       { userId: regex },
       { staffId: regex },
+      { principalId: regex },
     ],
   })
     .select(
       [
+        "clinicId",
         "userId",
         "principalId",
         "staffId",
@@ -576,10 +741,13 @@ async function searchTrustScoreFallback(q, limit, clinicLat = null, clinicLng = 
   const dedup = new Map();
 
   for (const d of docs) {
-    const userId = isValidUserId(d.userId) ? s(d.userId) : "";
-    const staffId = isValidStaffId(d.staffId) ? s(d.staffId) : "";
-    const principalId = s(d.principalId);
-    const key = userId || staffId || principalId;
+    const payload = toScorePayload(d);
+    const key =
+      payload.userId ||
+      payload.staffId ||
+      payload.principalId ||
+      payload.phone ||
+      payload.fullName;
 
     if (!key) continue;
 
@@ -598,6 +766,7 @@ async function searchTrustScoreFallback(q, limit, clinicLat = null, clinicLng = 
       userId: payload.userId,
       principalId: payload.principalId,
       staffId: payload.staffId,
+      clinicId: payload.clinicId,
       fullName: payload.fullName,
       name: payload.name || payload.fullName,
       phone: payload.phone,
@@ -681,6 +850,7 @@ async function searchHelpers(req, res) {
         clinicLat,
         clinicLng
       );
+
       if (userFallbackItems.length > 0) {
         return res.json({
           ok: true,
@@ -698,6 +868,7 @@ async function searchHelpers(req, res) {
         clinicLat,
         clinicLng
       );
+
       if (trustFallbackItems.length > 0) {
         return res.json({
           ok: true,
@@ -720,17 +891,11 @@ async function searchHelpers(req, res) {
     const items = rawItems.map(normalizeAuthUser);
 
     const scoreDocs = await loadScoreDocsByIdentity(items);
-    const { byUserId, byStaffId } = buildScoreMaps(scoreDocs);
+    const maps = buildScoreMaps(scoreDocs);
 
     const results = dedupeItems(
       items.map((u) => {
-        const userId = s(u.userId);
-        const staffId = s(u.staffId);
-
-        const scoreDoc =
-          (userId ? byUserId.get(userId) : null) ||
-          (staffId ? byStaffId.get(staffId) : null) ||
-          null;
+        const scoreDoc = findBestScoreDocForIdentity(u, maps);
 
         const item = mergeHelperWithScore(u, scoreDoc);
         const location = pickLocation(item.location);
@@ -752,6 +917,7 @@ async function searchHelpers(req, res) {
         clinicLat,
         clinicLng
       );
+
       if (userFallbackItems.length > 0) {
         return res.json({
           ok: true,
@@ -768,6 +934,7 @@ async function searchHelpers(req, res) {
         clinicLat,
         clinicLng
       );
+
       if (trustFallbackItems.length > 0) {
         return res.json({
           ok: true,
@@ -794,16 +961,48 @@ async function searchHelpers(req, res) {
   }
 }
 
+async function findUserByIdentity(identityId) {
+  const db = mongoose.connection?.db;
+  const id = s(identityId);
+
+  if (!db || !id) return null;
+
+  try {
+    const user = await db.collection("users").findOne({
+      $or: [
+        { userId: id },
+        { staffId: id },
+        { principalId: id },
+        { phone: id },
+      ],
+    });
+
+    return user ? normalizeAuthUser(user) : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 async function getHelperScoreByUserId(req, res) {
   try {
     const userId = s(req.params.userId);
+
     if (!userId) {
       return res.status(400).json({ message: "userId required" });
     }
 
-    const docs = await TrustScore.find({ userId })
+    // ✅ Production fix:
+    // users.userId may be stored as trustscores.staffId.
+    const docs = await TrustScore.find({
+      $or: [
+        { userId },
+        { staffId: userId },
+        { principalId: userId },
+      ],
+    })
       .select(
         [
+          "clinicId",
           "userId",
           "principalId",
           "staffId",
@@ -835,13 +1034,14 @@ async function getHelperScoreByUserId(req, res) {
       }
     }
 
-    const payload = toScorePayload(bestDoc);
-    const location = pickLocation(payload.location);
+    const user = await findUserByIdentity(userId);
+    const merged = mergeHelperWithScore(user || { userId }, bestDoc);
+    const location = pickLocation(merged.location);
 
     return res.json({
       ok: true,
-      userId,
-      ...payload,
+      userId: merged.userId || userId,
+      ...merged,
       location,
       areaText: buildAreaText(location),
     });
