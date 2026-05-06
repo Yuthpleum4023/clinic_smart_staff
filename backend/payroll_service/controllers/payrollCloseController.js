@@ -1211,20 +1211,98 @@ async function resolveSalaryBaseFromBackend({
   employeeId,
   month,
 }) {
-  const employmentType = normalizeEmploymentType(
-    employee?.employmentType || employee?.employeeType || employee?.workType
-  );
+  const b = body || {};
+
+  // ✅ Production fallback:
+  // staff_service is still the source of truth when available.
+  // But if staff_service is rate-limited / down / returns null,
+  // payroll can still detect part-time from request body hints.
+  const bodyHourlyRate = pickFirstPositiveNumber(b, [
+    "hourlyRate",
+    "hourlyWage",
+    "wagePerHour",
+    "ratePerHour",
+  ]);
+
+  const bodyMonthlySalary = pickFirstPositiveNumber(b, [
+    "monthlySalary",
+    "baseSalary",
+    "salary",
+    "monthlyWage",
+    "grossBase",
+    "grossMonthly",
+  ]);
+
+  const bodySaysPartTime =
+    b.isPartTime === true ||
+    b.isParttime === true ||
+    b.partTime === true ||
+    b.parttime === true ||
+    normalizeEmploymentType(b.employmentType) === "parttime" ||
+    normalizeEmploymentType(b.employeeType) === "parttime" ||
+    normalizeEmploymentType(b.workType) === "parttime" ||
+    bodyHourlyRate > 0;
+
+  const bodySaysFullTime =
+    b.isFullTime === true ||
+    b.fullTime === true ||
+    b.fulltime === true ||
+    normalizeEmploymentType(b.employmentType) === "fulltime" ||
+    normalizeEmploymentType(b.employeeType) === "fulltime" ||
+    normalizeEmploymentType(b.workType) === "fulltime";
+
+  const staffEmploymentRaw =
+    employee?.employmentType || employee?.employeeType || employee?.workType;
+
+  const staffEmploymentType = normalizeEmploymentType(staffEmploymentRaw);
+
+  let employmentType = employee
+    ? staffEmploymentType
+    : bodySaysPartTime
+    ? "parttime"
+    : bodySaysFullTime
+    ? "fulltime"
+    : staffEmploymentType;
+
+  // ✅ During migration / staff_service instability:
+  // If Flutter clearly says this employee is part-time, do not let
+  // missing/failed staff lookup silently become full-time.
+  if (bodySaysPartTime) {
+    employmentType = "parttime";
+  }
 
   const monthlyFromStaff = resolveMonthlySalaryFromEmployee(employee);
   const hourlyFromStaff = resolvePartTimeHourlyFromEmployee(employee);
 
-  const bodyRegularWork = extractRegularWorkSummary(body);
+  const monthlyResolved =
+    monthlyFromStaff > 0 ? monthlyFromStaff : bodyMonthlySalary;
+
+  const hourlyResolved =
+    hourlyFromStaff > 0 ? hourlyFromStaff : bodyHourlyRate;
+
+  const monthlySalarySource =
+    monthlyFromStaff > 0
+      ? "staff_service.monthlySalary"
+      : bodyMonthlySalary > 0
+      ? "body.monthlySalary_fallback"
+      : "missing";
+
+  const hourlyRateSource =
+    hourlyFromStaff > 0
+      ? "staff_service.hourlyRate"
+      : bodyHourlyRate > 0
+      ? "body.hourlyRate_fallback"
+      : "missing";
+
+  const bodyRegularWork = extractRegularWorkSummary(b);
 
   let attendanceRegularWork = {
     minutes: 0,
     hours: 0,
     source: "not_used",
     count: 0,
+    strictCount: 0,
+    fallbackCount: 0,
     payableCount: 0,
     items: [],
     personIds: [],
@@ -1236,12 +1314,12 @@ async function resolveSalaryBaseFromBackend({
       monthKey: month,
       employeeId,
       employee,
-      body,
+      body: b,
     });
   }
 
   // ✅ Backend attendance wins for part-time.
-  // Flutter/body regularWork remains migration fallback only.
+  // Flutter/body regularWork remains fallback only.
   const regularWork =
     employmentType === "parttime" && attendanceRegularWork.minutes > 0
       ? attendanceRegularWork
@@ -1251,23 +1329,25 @@ async function resolveSalaryBaseFromBackend({
   let grossBaseSource = "missing";
 
   if (employmentType === "parttime") {
-    if (regularWork.hours > 0 && hourlyFromStaff > 0) {
-      grossBase = round2(regularWork.hours * hourlyFromStaff);
-      grossBaseSource = `${regularWork.source}*staff_service.hourlyRate`;
-    } else if (monthlyFromStaff > 0) {
-      grossBase = monthlyFromStaff;
-      grossBaseSource = "staff_service.monthlySalary";
-    } else if (clampMin0(body?.grossBase) > 0) {
-      grossBase = round2(clampMin0(body.grossBase));
+    if (regularWork.hours > 0 && hourlyResolved > 0) {
+      grossBase = round2(regularWork.hours * hourlyResolved);
+      grossBaseSource = `${regularWork.source}*${hourlyRateSource}`;
+    } else if (monthlyResolved > 0) {
+      // Compatibility fallback only.
+      // Normal part-time payroll should use attendance hours * hourlyRate.
+      grossBase = monthlyResolved;
+      grossBaseSource = `${monthlySalarySource}_fallback_for_parttime`;
+    } else if (clampMin0(b?.grossBase) > 0) {
+      grossBase = round2(clampMin0(b.grossBase));
       grossBaseSource = "body.grossBase_fallback_migration";
     }
   } else {
     // ✅ Full-time flow unchanged.
-    if (monthlyFromStaff > 0) {
-      grossBase = monthlyFromStaff;
-      grossBaseSource = "staff_service.monthlySalary";
-    } else if (clampMin0(body?.grossBase) > 0) {
-      grossBase = round2(clampMin0(body.grossBase));
+    if (monthlyResolved > 0) {
+      grossBase = monthlyResolved;
+      grossBaseSource = monthlySalarySource;
+    } else if (clampMin0(b?.grossBase) > 0) {
+      grossBase = round2(clampMin0(b.grossBase));
       grossBaseSource = "body.grossBase_fallback_migration";
     }
   }
@@ -1276,8 +1356,14 @@ async function resolveSalaryBaseFromBackend({
     employmentType,
     grossBase: round2(grossBase),
     grossBaseSource,
-    hourlyRate: round2(hourlyFromStaff),
+
+    hourlyRate: round2(hourlyResolved),
+    hourlyRateSource,
+
     monthlySalaryFromStaff: round2(monthlyFromStaff),
+    monthlySalaryResolved: round2(monthlyResolved),
+    monthlySalarySource,
+
     regularWork,
     bodyRegularWork,
     attendanceRegularWork,
