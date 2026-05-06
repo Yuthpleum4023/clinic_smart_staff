@@ -18,6 +18,7 @@
 //
 // Backend คำนวณเอง:
 // - salary/grossBase จาก staff_service เป็นหลัก
+// - ✅ Part-time normal wage จาก Attendance/check-in checkout ใน backend
 // - OT จาก Overtime status=approved/locked เท่านั้น
 // - OT รวมทุก source ที่ใช้คิดเงินเดือนได้:
 //   attendance  = OT จากสแกน / check-in checkout
@@ -33,17 +34,15 @@
 // - grossMonthly/netPay/withheldTaxMonthly จาก client ไม่ถูกใช้
 //
 // ✅ Production patch:
+// - full-time flow unchanged
+// - part-time reads completed Attendance rows for regular work hours
+// - part-time regular wage = attendance payable minutes * hourlyRate
+// - part-time approved OT minutes are excluded from regular minutes to avoid double-pay
 // - explicit include OT sources: attendance/manual/manual_user
 // - include approved + locked OT records for recalculation safety
 // - add OT breakdown by source for debugging
 // - lock OT records after payroll close to prevent accidental mutation
 // - recalculateClosedMonth() recalculates from latest approved/locked OT
-//
-// ✅ Includes:
-// - closeMonth()
-// - previewMonth() สำหรับ Flutter แสดงผลจาก backend
-// - recalculateClosedMonth()
-// - closed month readers
 //
 
 const axios = require("axios");
@@ -51,6 +50,23 @@ const PayrollClose = require("../models/PayrollClose");
 const TaxYTD = require("../models/TaxYTD");
 const Overtime = require("../models/Overtime");
 const Clinic = require("../models/Clinic");
+
+// ✅ Attendance is optional-safe because some deployments may use
+// models/Attendance.js or models/attendance.js.
+// Payroll must not crash if the model file name differs during migration.
+let Attendance = null;
+try {
+  Attendance = require("../models/Attendance");
+} catch (e1) {
+  try {
+    Attendance = require("../models/attendance");
+  } catch (e2) {
+    console.log("⚠️ Attendance model not loaded for payroll:", {
+      Attendance: e1?.message,
+      attendance: e2?.message,
+    });
+  }
+}
 
 const { getEmployeeByStaffId } = require("../utils/staffClient");
 
@@ -358,6 +374,571 @@ function extractRegularWorkSummary(body) {
   };
 }
 
+// ================= PART-TIME ATTENDANCE REGULAR WORK =================
+// ✅ Production goal:
+// - Part-time payroll must calculate normal wage from backend attendance
+// - Fingerprint/check-in checkout creates Attendance rows
+// - Payroll preview/close reads those rows directly
+// - Full-time flow remains unchanged
+
+function uniqueNonEmptyStrings(values) {
+  return [...new Set((values || []).map(safeStr).filter(Boolean))];
+}
+
+function getByPath(obj, path) {
+  if (!obj || !path) return undefined;
+
+  const parts = String(path).split(".");
+  let cur = obj;
+
+  for (const p of parts) {
+    if (cur == null || typeof cur !== "object") return undefined;
+    cur = cur[p];
+  }
+
+  return cur;
+}
+
+function firstValueByPaths(obj, paths) {
+  for (const p of paths || []) {
+    const v = getByPath(obj, p);
+    if (v !== undefined && v !== null && v !== "") return v;
+  }
+  return null;
+}
+
+function toDateOrNull(v) {
+  if (!v) return null;
+
+  if (v instanceof Date) {
+    return Number.isFinite(v.getTime()) ? v : null;
+  }
+
+  const d = new Date(v);
+  return Number.isFinite(d.getTime()) ? d : null;
+}
+
+function monthRangeBangkok(monthKey) {
+  const s = safeStr(monthKey);
+  const [yy, mm] = s.split("-").map((x) => Number(x));
+
+  if (!Number.isFinite(yy) || !Number.isFinite(mm) || mm < 1 || mm > 12) {
+    return null;
+  }
+
+  // Asia/Bangkok local month start 00:00 equals UTC previous day 17:00.
+  const startDate = new Date(Date.UTC(yy, mm - 1, 1, -7, 0, 0, 0));
+  const endDate = new Date(Date.UTC(yy, mm, 1, -7, 0, 0, 0));
+
+  const lastDay = new Date(Date.UTC(yy, mm, 0)).getUTCDate();
+  const startDay = `${s}-01`;
+  const endDay = `${s}-${String(lastDay).padStart(2, "0")}`;
+
+  return {
+    startDate,
+    endDate,
+    startDay,
+    endDay,
+  };
+}
+
+function buildPayrollPersonIds({ employeeId, employee, body }) {
+  return uniqueNonEmptyStrings([
+    employeeId,
+
+    body?.employeeUserId,
+    body?.userId,
+    body?.staffId,
+    body?.workerId,
+    body?.helperId,
+    body?.principalId,
+
+    employee?._id,
+    employee?.id,
+    employee?.staffId,
+    employee?.employeeId,
+    employee?.userId,
+    employee?.linkedUserId,
+    employee?.linked_user_id,
+    employee?.principalId,
+    employee?.helperId,
+    employee?.workerId,
+  ]);
+}
+
+function buildAttendancePersonOr(personIds) {
+  const ids = uniqueNonEmptyStrings(personIds);
+
+  const fields = [
+    "staffId",
+    "employeeId",
+    "userId",
+    "principalId",
+    "employeeUserId",
+    "linkedUserId",
+    "helperId",
+    "workerId",
+    "providerId",
+    "assignedStaffId",
+
+    "staff.id",
+    "staff._id",
+    "employee.id",
+    "employee._id",
+    "user.id",
+    "user._id",
+  ];
+
+  const ors = [];
+
+  for (const id of ids) {
+    for (const f of fields) {
+      ors.push({ [f]: id });
+    }
+  }
+
+  return ors;
+}
+
+function buildAttendanceClinicOr(clinicId) {
+  const cId = safeStr(clinicId);
+
+  return [
+    { clinicId: cId },
+    { "clinic.id": cId },
+    { "clinic._id": cId },
+  ];
+}
+
+function buildAttendanceMonthOr(monthKey) {
+  const mKey = safeStr(monthKey);
+  const r = monthRangeBangkok(mKey);
+
+  if (!r) return [{ monthKey: mKey }];
+
+  return [
+    { monthKey: mKey },
+    { payrollMonth: mKey },
+    { attendanceMonth: mKey },
+    { workMonth: mKey },
+
+    // String date fields: yyyy-MM-dd
+    { workDate: { $gte: r.startDay, $lte: r.endDay } },
+    { date: { $gte: r.startDay, $lte: r.endDay } },
+    { attendanceDate: { $gte: r.startDay, $lte: r.endDay } },
+
+    // Date fields
+    { workDate: { $gte: r.startDate, $lt: r.endDate } },
+    { date: { $gte: r.startDate, $lt: r.endDate } },
+    { attendanceDate: { $gte: r.startDate, $lt: r.endDate } },
+
+    // Actual time fields
+    { checkInAt: { $gte: r.startDate, $lt: r.endDate } },
+    { checkedInAt: { $gte: r.startDate, $lt: r.endDate } },
+    { clockInAt: { $gte: r.startDate, $lt: r.endDate } },
+    { inAt: { $gte: r.startDate, $lt: r.endDate } },
+    { startAt: { $gte: r.startDate, $lt: r.endDate } },
+    { createdAt: { $gte: r.startDate, $lt: r.endDate } },
+  ];
+}
+
+function firstPositiveMinutesFromAttendance(row) {
+  const minutePaths = [
+    "regularWorkMinutes",
+    "normalWorkMinutes",
+    "workMinutes",
+    "totalWorkMinutes",
+    "totalMinutes",
+    "workedMinutes",
+    "durationMinutes",
+    "minutes",
+  ];
+
+  for (const p of minutePaths) {
+    const n = Math.floor(toNumber(getByPath(row, p)));
+    if (n > 0) return n;
+  }
+
+  const hourPaths = [
+    "regularWorkHours",
+    "normalWorkHours",
+    "workHours",
+    "totalWorkHours",
+    "totalHours",
+    "workedHours",
+    "durationHours",
+    "hours",
+  ];
+
+  for (const p of hourPaths) {
+    const n = toNumber(getByPath(row, p));
+    if (n > 0) return Math.floor(n * 60);
+  }
+
+  return 0;
+}
+
+function extractAttendanceWorkedMinutes(row) {
+  if (!row || typeof row !== "object") return 0;
+
+  const precomputed = firstPositiveMinutesFromAttendance(row);
+  if (precomputed > 0) return precomputed;
+
+  const inRaw = firstValueByPaths(row, [
+    "checkInAt",
+    "checkedInAt",
+    "clockInAt",
+    "inAt",
+    "startAt",
+    "startTime",
+    "checkInTime",
+    "clockInTime",
+    "timeIn",
+    "checkIn.at",
+    "clockIn.at",
+  ]);
+
+  const outRaw = firstValueByPaths(row, [
+    "checkOutAt",
+    "checkedOutAt",
+    "clockOutAt",
+    "outAt",
+    "endAt",
+    "endTime",
+    "checkOutTime",
+    "clockOutTime",
+    "timeOut",
+    "checkOut.at",
+    "clockOut.at",
+  ]);
+
+  const inDate = toDateOrNull(inRaw);
+  const outDate = toDateOrNull(outRaw);
+
+  if (inDate && outDate) {
+    const diff = Math.floor((outDate.getTime() - inDate.getTime()) / 60000);
+
+    // Ignore impossible/too-long sessions for safety.
+    if (diff > 0 && diff <= 24 * 60) return diff;
+  }
+
+  // Fallback HH:mm string.
+  const byHHmm = minutesBetween(inRaw, outRaw, row.breakMinutes || 0);
+  if (byHHmm > 0) return byHHmm;
+
+  return 0;
+}
+
+function isAttendanceCompletedForPayroll(row) {
+  if (!row || typeof row !== "object") return false;
+
+  const outRaw = firstValueByPaths(row, [
+    "checkOutAt",
+    "checkedOutAt",
+    "clockOutAt",
+    "outAt",
+    "endAt",
+    "endTime",
+    "checkOutTime",
+    "clockOutTime",
+    "timeOut",
+    "checkOut.at",
+    "clockOut.at",
+  ]);
+
+  if (outRaw) return true;
+
+  const status = safeStr(
+    row.status || row.attendanceStatus || row.state || row.lifecycleStatus
+  ).toLowerCase();
+
+  return [
+    "completed",
+    "complete",
+    "checked_out",
+    "checkout",
+    "checkedout",
+    "finished",
+    "done",
+    "closed",
+    "success",
+  ].includes(status);
+}
+
+function summarizeAttendanceItem(row, minutes) {
+  const inRaw = firstValueByPaths(row, [
+    "checkInAt",
+    "checkedInAt",
+    "clockInAt",
+    "inAt",
+    "startAt",
+    "startTime",
+    "checkInTime",
+    "clockInTime",
+    "timeIn",
+    "checkIn.at",
+    "clockIn.at",
+  ]);
+
+  const outRaw = firstValueByPaths(row, [
+    "checkOutAt",
+    "checkedOutAt",
+    "clockOutAt",
+    "outAt",
+    "endAt",
+    "endTime",
+    "checkOutTime",
+    "clockOutTime",
+    "timeOut",
+    "checkOut.at",
+    "clockOut.at",
+  ]);
+
+  return {
+    id: String(row?._id || ""),
+    workDate: safeStr(row?.workDate || row?.date || row?.attendanceDate || ""),
+    checkInAt: inRaw || null,
+    checkOutAt: outRaw || null,
+    minutes,
+    hours: round2(minutes / 60),
+    status: safeStr(row?.status || row?.attendanceStatus || row?.state),
+  };
+}
+
+async function getAttendanceRegularWorkSummaryForMonth({
+  clinicId,
+  monthKey,
+  employeeId,
+  employee,
+  body,
+}) {
+  const cId = safeStr(clinicId);
+  const mKey = safeStr(monthKey);
+  const staffId = safeStr(employeeId);
+
+  if (!Attendance) {
+    return {
+      minutes: 0,
+      hours: 0,
+      source: "attendance_model_missing",
+      count: 0,
+      payableCount: 0,
+      items: [],
+      personIds: [],
+    };
+  }
+
+  if (!cId || !mKey || !staffId) {
+    return {
+      minutes: 0,
+      hours: 0,
+      source: "attendance_missing_query_keys",
+      count: 0,
+      payableCount: 0,
+      items: [],
+      personIds: [],
+    };
+  }
+
+  const personIds = buildPayrollPersonIds({
+    employeeId: staffId,
+    employee,
+    body,
+  });
+
+  const personOr = buildAttendancePersonOr(personIds);
+
+  if (!personOr.length) {
+    return {
+      minutes: 0,
+      hours: 0,
+      source: "attendance_missing_person_ids",
+      count: 0,
+      payableCount: 0,
+      items: [],
+      personIds,
+    };
+  }
+
+  const q = {
+    $and: [
+      { $or: buildAttendanceClinicOr(cId) },
+      { $or: personOr },
+      { $or: buildAttendanceMonthOr(mKey) },
+    ],
+  };
+
+  const rows = await Attendance.find(q)
+    .select({
+      _id: 1,
+      clinicId: 1,
+      staffId: 1,
+      employeeId: 1,
+      userId: 1,
+      principalId: 1,
+      employeeUserId: 1,
+      linkedUserId: 1,
+      helperId: 1,
+      workerId: 1,
+      providerId: 1,
+      assignedStaffId: 1,
+      workDate: 1,
+      date: 1,
+      attendanceDate: 1,
+      monthKey: 1,
+      payrollMonth: 1,
+      attendanceMonth: 1,
+      workMonth: 1,
+      checkInAt: 1,
+      checkedInAt: 1,
+      clockInAt: 1,
+      inAt: 1,
+      startAt: 1,
+      startTime: 1,
+      checkInTime: 1,
+      clockInTime: 1,
+      timeIn: 1,
+      checkOutAt: 1,
+      checkedOutAt: 1,
+      clockOutAt: 1,
+      outAt: 1,
+      endAt: 1,
+      endTime: 1,
+      checkOutTime: 1,
+      clockOutTime: 1,
+      timeOut: 1,
+      regularWorkMinutes: 1,
+      normalWorkMinutes: 1,
+      workMinutes: 1,
+      totalWorkMinutes: 1,
+      totalMinutes: 1,
+      workedMinutes: 1,
+      durationMinutes: 1,
+      minutes: 1,
+      regularWorkHours: 1,
+      normalWorkHours: 1,
+      workHours: 1,
+      totalWorkHours: 1,
+      totalHours: 1,
+      workedHours: 1,
+      durationHours: 1,
+      hours: 1,
+      breakMinutes: 1,
+      status: 1,
+      attendanceStatus: 1,
+      state: 1,
+      lifecycleStatus: 1,
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    .sort({
+      workDate: 1,
+      date: 1,
+      attendanceDate: 1,
+      checkInAt: 1,
+      clockInAt: 1,
+      startAt: 1,
+      createdAt: 1,
+    })
+    .lean();
+
+  let totalMinutes = 0;
+  const payableItems = [];
+
+  for (const row of rows) {
+    const completed = isAttendanceCompletedForPayroll(row);
+    const minutes = extractAttendanceWorkedMinutes(row);
+
+    if (!completed || minutes <= 0) continue;
+
+    totalMinutes += minutes;
+    payableItems.push(summarizeAttendanceItem(row, minutes));
+  }
+
+  const result = {
+    minutes: totalMinutes,
+    hours: round2(totalMinutes / 60),
+    source:
+      totalMinutes > 0
+        ? "attendance.checkin_checkout"
+        : rows.length > 0
+        ? "attendance.no_completed_payable_records"
+        : "attendance.no_records",
+    count: rows.length,
+    payableCount: payableItems.length,
+    items: payableItems.slice(0, 31),
+    personIds,
+  };
+
+  console.log("[PAYROLL_PARTTIME_ATTENDANCE_WORK]", {
+    clinicId: cId,
+    employeeId: staffId,
+    monthKey: mKey,
+    source: result.source,
+    matchedRows: result.count,
+    payableRows: result.payableCount,
+    minutes: result.minutes,
+    hours: result.hours,
+    personIds,
+  });
+
+  return result;
+}
+
+function applyPartTimeOtExclusionToSalaryProfile({ salaryProfile, otSummary }) {
+  const profile = salaryProfile || {};
+
+  if (profile.employmentType !== "parttime") return profile;
+
+  const hourlyRate = round2(clampMin0(profile.hourlyRate));
+  const rw = profile.regularWork || {};
+
+  const rawMinutes = Math.max(0, Math.floor(toNumber(rw.minutes)));
+  const otMinutesExcluded = Math.min(
+    rawMinutes,
+    Math.max(0, Math.floor(toNumber(otSummary?.approvedMinutes)))
+  );
+
+  const payableMinutes = Math.max(0, rawMinutes - otMinutesExcluded);
+  const payableHours = round2(payableMinutes / 60);
+
+  if (rawMinutes <= 0 || hourlyRate <= 0) {
+    return {
+      ...profile,
+      regularWork: {
+        ...rw,
+        rawMinutes,
+        rawHours: round2(rawMinutes / 60),
+        otMinutesExcluded,
+        payableMinutes,
+        payableHours,
+      },
+    };
+  }
+
+  return {
+    ...profile,
+    grossBase: round2(payableHours * hourlyRate),
+    grossBaseSource: `${
+      rw.source || "regularWork"
+    }*staff_service.hourlyRate_minus_approved_ot_minutes`,
+    regularWork: {
+      ...rw,
+
+      // Existing UI fields:
+      minutes: payableMinutes,
+      hours: payableHours,
+
+      // Audit/debug fields:
+      rawMinutes,
+      rawHours: round2(rawMinutes / 60),
+      otMinutesExcluded,
+      payableMinutes,
+      payableHours,
+    },
+  };
+}
+
 async function fetchEmployeeForPayroll(employeeId, authHeader) {
   let employee = null;
   let staffLookupError = "";
@@ -372,14 +953,48 @@ async function fetchEmployeeForPayroll(employeeId, authHeader) {
   return { employee, staffLookupError };
 }
 
-function resolveSalaryBaseFromBackend({ employee, body }) {
+async function resolveSalaryBaseFromBackend({
+  employee,
+  body,
+  clinicId,
+  employeeId,
+  month,
+}) {
   const employmentType = normalizeEmploymentType(
     employee?.employmentType || employee?.employeeType || employee?.workType
   );
 
   const monthlyFromStaff = resolveMonthlySalaryFromEmployee(employee);
   const hourlyFromStaff = resolvePartTimeHourlyFromEmployee(employee);
-  const regularWork = extractRegularWorkSummary(body);
+
+  const bodyRegularWork = extractRegularWorkSummary(body);
+
+  let attendanceRegularWork = {
+    minutes: 0,
+    hours: 0,
+    source: "not_used",
+    count: 0,
+    payableCount: 0,
+    items: [],
+    personIds: [],
+  };
+
+  if (employmentType === "parttime") {
+    attendanceRegularWork = await getAttendanceRegularWorkSummaryForMonth({
+      clinicId,
+      monthKey: month,
+      employeeId,
+      employee,
+      body,
+    });
+  }
+
+  // ✅ Backend attendance wins for part-time.
+  // Flutter/body regularWork remains migration fallback only.
+  const regularWork =
+    employmentType === "parttime" && attendanceRegularWork.minutes > 0
+      ? attendanceRegularWork
+      : bodyRegularWork;
 
   let grossBase = 0;
   let grossBaseSource = "missing";
@@ -396,6 +1011,7 @@ function resolveSalaryBaseFromBackend({ employee, body }) {
       grossBaseSource = "body.grossBase_fallback_migration";
     }
   } else {
+    // ✅ Full-time flow unchanged.
     if (monthlyFromStaff > 0) {
       grossBase = monthlyFromStaff;
       grossBaseSource = "staff_service.monthlySalary";
@@ -412,6 +1028,8 @@ function resolveSalaryBaseFromBackend({ employee, body }) {
     hourlyRate: round2(hourlyFromStaff),
     monthlySalaryFromStaff: round2(monthlyFromStaff),
     regularWork,
+    bodyRegularWork,
+    attendanceRegularWork,
   };
 }
 
@@ -651,13 +1269,6 @@ async function getApprovedOtSummaryForMonth({ clinicId, monthKey, employeeId }) 
     };
   }
 
-  // ✅ PRODUCTION:
-  // - attendance   = OT จากการสแกน/check-in checkout
-  // - manual       = OT ที่ admin input กรณี scan ไม่ได้
-  // - manual_user  = OT ที่ user ขอและ admin อนุมัติ
-  // - approved     = พร้อมใช้คิดเงินเดือน
-  // - locked       = เคยถูกใช้ปิดงวดแล้ว แต่ต้องรวมในการ recalculate ได้
-  // - legacy source ว่าง/ไม่มีค่า ให้ถือเป็น attendance เพื่อไม่หลุดย้อนหลัง
   const q = {
     clinicId: cId,
     monthKey: mKey,
@@ -1167,7 +1778,28 @@ async function computePayrollForMonth({
     req.headers.authorization
   );
 
-  const salaryProfile = resolveSalaryBaseFromBackend({ employee, body: b });
+  const otSummary = await getApprovedOtSummaryForMonth({
+    clinicId: clinicIdFromToken,
+    monthKey: month,
+    employeeId,
+  });
+
+  let salaryProfile = await resolveSalaryBaseFromBackend({
+    employee,
+    body: b,
+    clinicId: clinicIdFromToken,
+    employeeId,
+    month,
+  });
+
+  // ✅ Part-time only:
+  // normal wage = attendance worked minutes - approved OT minutes
+  // OT pay is paid separately by weighted OT hours.
+  // ✅ Full-time is returned unchanged by this helper.
+  salaryProfile = applyPartTimeOtExclusionToSalaryProfile({
+    salaryProfile,
+    otSummary,
+  });
 
   const grossBaseFinal = round2(clampMin0(salaryProfile.grossBase));
 
@@ -1220,12 +1852,6 @@ async function computePayrollForMonth({
     employeeKeys: ["pvdEmployeeMonthly", "pvd", "providentFund"],
     oldKeys: ["pvdEmployeeMonthly"],
     defaultValue: 0,
-  });
-
-  const otSummary = await getApprovedOtSummaryForMonth({
-    clinicId: clinicIdFromToken,
-    monthKey: month,
-    employeeId,
   });
 
   const otRateResolved = resolveOtBaseHourlyFromProfile({
@@ -1372,6 +1998,8 @@ async function computePayrollForMonth({
     grossBaseSource: salaryProfile.grossBaseSource,
     hourlyRate: salaryProfile.hourlyRate,
     regularWork: salaryProfile.regularWork,
+    attendanceRegularWork: salaryProfile.attendanceRegularWork,
+    bodyRegularWork: salaryProfile.bodyRegularWork,
     staffLookupError,
     bonusFinal,
     otherAllowanceFinal,
@@ -1504,9 +2132,28 @@ function buildPayrollClosePayload(c) {
       employmentTypeResolved: c.salaryProfile.employmentType,
       hourlyRateResolved: c.salaryProfile.hourlyRate,
       monthlySalaryFromStaff: c.salaryProfile.monthlySalaryFromStaff,
+
       regularWorkMinutes: c.salaryProfile.regularWork.minutes,
       regularWorkHours: c.salaryProfile.regularWork.hours,
       regularWorkSource: c.salaryProfile.regularWork.source,
+
+      regularWorkRawMinutes:
+        c.salaryProfile.regularWork.rawMinutes ??
+        c.salaryProfile.regularWork.minutes,
+      regularWorkRawHours:
+        c.salaryProfile.regularWork.rawHours ??
+        c.salaryProfile.regularWork.hours,
+      regularWorkPayableMinutes:
+        c.salaryProfile.regularWork.payableMinutes ??
+        c.salaryProfile.regularWork.minutes,
+      regularWorkPayableHours:
+        c.salaryProfile.regularWork.payableHours ??
+        c.salaryProfile.regularWork.hours,
+      regularWorkOtMinutesExcluded:
+        c.salaryProfile.regularWork.otMinutesExcluded ?? 0,
+
+      attendanceRegularWork: c.salaryProfile.attendanceRegularWork || null,
+      bodyRegularWork: c.salaryProfile.bodyRegularWork || null,
 
       ssoBaseUsed: c.salaryBaseForSso,
       salaryBaseAfterLeave: c.salaryBaseAfterLeave,
@@ -1609,6 +2256,8 @@ function buildResponsePayload({
       hourlyRate: c.salaryProfile.hourlyRate,
       monthlySalaryFromStaff: c.salaryProfile.monthlySalaryFromStaff,
       regularWork: c.salaryProfile.regularWork,
+      attendanceRegularWork: c.salaryProfile.attendanceRegularWork || null,
+      bodyRegularWork: c.salaryProfile.bodyRegularWork || null,
       bonus: c.bonusFinal,
       otherAllowance: c.otherAllowanceFinal,
       otherDeduction: c.otherDeductionFinal,
@@ -1743,9 +2392,6 @@ async function closeMonth(req, res) {
 
     await ytd.save();
 
-    // ✅ Lock OT records after successful payroll close/YTD update.
-    // ไม่ fail payroll close ถ้า lock fail แต่จะ log และส่งกลับใน response
-    // เพื่อให้ admin/debug ตรวจสอบได้
     const otLockResult = await lockOtRowsForPayrollClose({
       c,
       payrollClose,
