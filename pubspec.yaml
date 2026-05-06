@@ -2,7 +2,7 @@ name: clinic_smart_staff
 description: "A Flutter project for clinic smart staff management."
 publish_to: 'none'
 
-version: 1.0.18+19
+version: 1.0.19+20
 
 environment:
   sdk: ^3.10.4

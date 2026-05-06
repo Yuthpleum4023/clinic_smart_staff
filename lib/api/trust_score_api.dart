@@ -1,3 +1,18 @@
+// lib/api/trust_score_api.dart
+//
+// ✅ PRODUCTION TrustScoreApi
+// ------------------------------------------------------
+// ✅ Search helper by name / phone / keyword
+// ✅ Get score by either:
+//    - stf_xxx via /score/staff/:staffId/score
+//    - usr_xxx via /helpers/:userId/score
+//
+// ✅ Important production fix:
+//    Some UI flows call getStaffScore(staffId: sid)
+//    even when sid is actually usr_xxx.
+//    This file now auto-detects usr_xxx and routes to helper score endpoint.
+// ------------------------------------------------------
+
 import 'package:clinic_smart_staff/api/api_client.dart';
 import 'package:clinic_smart_staff/api/api_config.dart';
 
@@ -10,7 +25,7 @@ class TrustScoreApi {
   static ApiClient get _client => ApiClient(baseUrl: ApiConfig.scoreBaseUrl);
 
   // ======================================================
-  // helpers
+  // Helpers
   // ======================================================
 
   static const Set<String> _allowedStatuses = <String>{
@@ -20,17 +35,21 @@ class TrustScoreApi {
     'cancelled_early',
   };
 
-  static bool _looksLikeStaffId(String s) {
-    final v = s.trim();
-    return v.startsWith('stf_') && v.length >= 6;
-  }
-
-  static bool _looksLikeUserId(String s) {
-    final v = s.trim();
-    return v.startsWith('usr_') && v.length >= 6;
-  }
-
   static String _s(dynamic v) => (v ?? '').toString().trim();
+
+  static bool _looksLikeStaffId(String v) {
+    final x = v.trim();
+    return x.startsWith('stf_') && x.length >= 6;
+  }
+
+  static bool _looksLikeUserId(String v) {
+    final x = v.trim();
+    return x.startsWith('usr_') && x.length >= 6;
+  }
+
+  static bool _looksLikeAnyScoreId(String v) {
+    return _looksLikeStaffId(v) || _looksLikeUserId(v);
+  }
 
   static _StatusTry _normalizeStatusTry(String status) {
     final s = status.trim().toLowerCase();
@@ -80,22 +99,7 @@ class TrustScoreApi {
     return _StatusTry(s);
   }
 
-  // ======================================================
-  // Search helpers by name / phone / keyword
-  // IMPORTANT:
-  // use helper search endpoint, not staff search
-  // ======================================================
-  static Future<List<Map<String, dynamic>>> searchHelpers({
-    required String q,
-    int limit = 20,
-    bool auth = true,
-  }) async {
-    final query = q.trim();
-    if (query.isEmpty) return [];
-
-    final path = '/helpers/search?q=${Uri.encodeComponent(query)}&limit=$limit';
-    final decoded = await _client.get(path, auth: auth);
-
+  static List<Map<String, dynamic>> _extractList(dynamic decoded) {
     dynamic listAny = decoded;
 
     if (decoded is Map) {
@@ -112,7 +116,7 @@ class TrustScoreApi {
       }
     }
 
-    if (listAny is! List) return [];
+    if (listAny is! List) return <Map<String, dynamic>>[];
 
     final out = <Map<String, dynamic>>[];
     for (final it in listAny) {
@@ -120,11 +124,40 @@ class TrustScoreApi {
         out.add(Map<String, dynamic>.from(it));
       }
     }
+
     return out;
   }
 
+  static Map<String, dynamic> _asMap(dynamic decoded) {
+    if (decoded is Map<String, dynamic>) return decoded;
+    if (decoded is Map) return Map<String, dynamic>.from(decoded);
+    return <String, dynamic>{};
+  }
+
   // ======================================================
-  // Legacy staff search (keep for compatibility)
+  // Search helpers by name / phone / keyword
+  // IMPORTANT:
+  // use helper search endpoint, not staff search
+  // ======================================================
+  static Future<List<Map<String, dynamic>>> searchHelpers({
+    required String q,
+    int limit = 20,
+    bool auth = true,
+  }) async {
+    final query = q.trim();
+    if (query.isEmpty) return [];
+
+    final safeLimit = limit <= 0 ? 20 : limit.clamp(1, 50);
+    final path =
+        '/helpers/search?q=${Uri.encodeComponent(query)}&limit=$safeLimit';
+
+    final decoded = await _client.get(path, auth: auth);
+    return _extractList(decoded);
+  }
+
+  // ======================================================
+  // Legacy staff search
+  // Keep for compatibility. Internally uses helper search.
   // ======================================================
   static Future<List<Map<String, dynamic>>> searchStaff({
     required String q,
@@ -135,15 +168,31 @@ class TrustScoreApi {
   }
 
   // ======================================================
-  // Get score by staffId
+  // Get score by staffId / userId
+  //
+  // ✅ Production fix:
+  // Some screens call getStaffScore(staffId: sid), but sid can be usr_xxx.
+  // If sid is usr_xxx, route to /helpers/:userId/score automatically.
   // ======================================================
   static Future<Map<String, dynamic>> getStaffScore({
     required String staffId,
     bool auth = true,
   }) async {
-    return _client.get(
-      ApiConfig.staffScore(staffId.trim()),
-      auth: auth,
+    final id = staffId.trim();
+
+    if (id.isEmpty) {
+      throw Exception('staffId is required');
+    }
+
+    if (_looksLikeUserId(id)) {
+      return getHelperScoreByUserId(userId: id, auth: auth);
+    }
+
+    return _asMap(
+      await _client.get(
+        ApiConfig.staffScore(id),
+        auth: auth,
+      ),
     );
   }
 
@@ -155,21 +204,44 @@ class TrustScoreApi {
     bool auth = true,
   }) async {
     final uid = userId.trim();
+
     if (uid.isEmpty) {
       throw Exception('userId is required');
     }
 
-    return _client.get(
-      '/helpers/${Uri.encodeComponent(uid)}/score',
-      auth: auth,
+    return _asMap(
+      await _client.get(
+        '/helpers/${Uri.encodeComponent(uid)}/score',
+        auth: auth,
+      ),
     );
   }
 
   // ======================================================
+  // Get score by either usr_xxx / stf_xxx
+  // ======================================================
+  static Future<Map<String, dynamic>> getScoreByIdentity({
+    required String id,
+    bool auth = true,
+  }) async {
+    final x = id.trim();
+
+    if (x.isEmpty) {
+      throw Exception('id is required');
+    }
+
+    if (_looksLikeUserId(x)) {
+      return getHelperScoreByUserId(userId: x, auth: auth);
+    }
+
+    return getStaffScore(staffId: x, auth: auth);
+  }
+
+  // ======================================================
   // Lookup score by input
-  // - ถ้าเป็น staffId -> ยิง staff score ตรง
-  // - ถ้าเป็น userId -> ยิง helper score ตรง
-  // - ถ้าเป็นชื่อ/เบอร์ -> search helper ก่อน แล้วค่อยเลือกตัวแรก
+  // - staffId -> staff score
+  // - userId -> helper score
+  // - name/phone -> search helper first, then fetch score by picked id
   // ======================================================
   static Future<Map<String, dynamic>> lookupStaffScore({
     required String input,
@@ -213,13 +285,13 @@ class TrustScoreApi {
     }
 
     Map<String, dynamic>? picked;
+    final q = raw.toLowerCase();
 
     // 1) prefer exact-ish fullName/name/phone match
     for (final c in candidates) {
       final fullName = _s(c['fullName']).toLowerCase();
       final name = _s(c['name']).toLowerCase();
       final phone = _s(c['phone']).toLowerCase();
-      final q = raw.toLowerCase();
 
       if (fullName == q || name == q || phone == q) {
         picked = c;
@@ -234,24 +306,29 @@ class TrustScoreApi {
     final pickedStaffId = _s(picked['staffId']);
 
     Map<String, dynamic> score;
+    String mode;
 
     if (_looksLikeUserId(pickedUserId)) {
       score = await getHelperScoreByUserId(
         userId: pickedUserId,
         auth: auth,
       );
-    } else if (_looksLikeStaffId(pickedStaffId)) {
+      mode = 'search_userId';
+    } else if (_looksLikeAnyScoreId(pickedStaffId)) {
       score = await getStaffScore(
         staffId: pickedStaffId,
         auth: auth,
       );
+      mode = _looksLikeUserId(pickedStaffId)
+          ? 'search_staffId_as_userId'
+          : 'search_staffId';
     } else {
       throw Exception('ค้นหาเจอแล้ว แต่ข้อมูลผู้ช่วยไม่ครบ (ไม่มี userId/staffId)');
     }
 
     return {
       'ok': true,
-      'mode': 'search',
+      'mode': mode,
       'query': raw,
       'picked': picked,
       'staffId': pickedStaffId,
@@ -282,17 +359,19 @@ class TrustScoreApi {
     final stTry = _normalizeStatusTry(status);
     final when = (occurredAt ?? DateTime.now()).toUtc().toIso8601String();
 
-    return _client.post(
-      ApiConfig.attendanceEvent,
-      auth: auth,
-      body: {
-        'clinicId': cid,
-        'staffId': sid,
-        'shiftId': shiftId.trim(),
-        'status': stTry.primary,
-        'minutesLate': (minutesLate < 0) ? 0 : minutesLate,
-        'occurredAt': when,
-      },
+    return _asMap(
+      await _client.post(
+        ApiConfig.attendanceEvent,
+        auth: auth,
+        body: {
+          'clinicId': cid,
+          'staffId': sid,
+          'shiftId': shiftId.trim(),
+          'status': stTry.primary,
+          'minutesLate': (minutesLate < 0) ? 0 : minutesLate,
+          'occurredAt': when,
+        },
+      ),
     );
   }
 }

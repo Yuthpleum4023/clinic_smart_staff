@@ -1,3 +1,13 @@
+// lib/screens/trustscore_lookup_screen.dart
+//
+// ✅ PRODUCTION TrustScore Lookup Screen
+// ------------------------------------------------------
+// ✅ Search helper by name / phone / staffId / userId
+// ✅ Correctly supports helpers whose score identity is usr_xxx
+// ✅ Fix snackbar "โหลดคะแนนไม่สำเร็จ" when result has staffId/userId = usr_xxx
+// ✅ Keeps Thai UI wording production-friendly
+// ------------------------------------------------------
+
 import 'package:flutter/material.dart';
 
 import 'package:clinic_smart_staff/api/trust_score_api.dart';
@@ -24,7 +34,7 @@ class _TrustScoreLookupScreenState extends State<TrustScoreLookupScreen> {
   bool _loading = false;
   Map<String, dynamic>? _score;
   List<Map<String, dynamic>> _searchResults = [];
-  String _selectedStaffId = '';
+  String _selectedIdentityId = '';
 
   @override
   void initState() {
@@ -66,6 +76,28 @@ class _TrustScoreLookupScreenState extends State<TrustScoreLookupScreen> {
     return v.startsWith('stf_') && v.length >= 6;
   }
 
+  bool _isUserId(String s) {
+    final v = _s(s).toLowerCase();
+    return v.startsWith('usr_') && v.length >= 6;
+  }
+
+  bool _isScoreIdentityId(String s) {
+    return _isStaffId(s) || _isUserId(s);
+  }
+
+  String _bestIdentityId(Map<String, dynamic> item) {
+    final userId = _s(item['userId']);
+    if (_isUserId(userId)) return userId;
+
+    final staffId = _s(item['staffId']);
+    if (_isScoreIdentityId(staffId)) return staffId;
+
+    final principalId = _s(item['principalId']);
+    if (_isScoreIdentityId(principalId)) return principalId;
+
+    return '';
+  }
+
   List<String> _splitTokens(String input) {
     return input
         .split('/')
@@ -98,7 +130,6 @@ class _TrustScoreLookupScreenState extends State<TrustScoreLookupScreen> {
       final m = _asMap(stats);
       if (m.containsKey(key)) return m[key];
 
-      // fallback alias
       if (key == 'cancelledEarly' && m.containsKey('cancelled')) {
         return m['cancelled'];
       }
@@ -161,17 +192,17 @@ class _TrustScoreLookupScreenState extends State<TrustScoreLookupScreen> {
         prefill = _s(helperMap['phone']);
       }
 
-      final helperStaffId = _s(helperMap['staffId']);
-      if (helperStaffId.isNotEmpty) {
-        _inputCtrl.text = prefill.isNotEmpty ? prefill : helperStaffId;
-        await _fetchByStaffId(helperStaffId);
+      final identityId = _bestIdentityId(helperMap);
+      if (identityId.isNotEmpty) {
+        _inputCtrl.text = prefill.isNotEmpty ? prefill : identityId;
+        await _fetchByIdentityId(identityId);
         return;
       }
     }
 
     if (initialStaffId.isNotEmpty) {
       _inputCtrl.text = initialStaffId;
-      await _fetchByStaffId(initialStaffId);
+      await _fetchByIdentityId(initialStaffId);
       return;
     }
 
@@ -210,21 +241,23 @@ class _TrustScoreLookupScreenState extends State<TrustScoreLookupScreen> {
 
     for (final raw in items) {
       final m = _asMap(raw);
-      final sid = _s(m['staffId']);
+      final identityId = _bestIdentityId(m);
 
-      // อนุญาตให้โชว์ได้ถ้ามี staffId หรือ userId
-      if (sid.isEmpty && _s(m['userId']).isEmpty) continue;
+      if (identityId.isEmpty) continue;
 
       out.add({
-        'staffId': sid,
+        'staffId': _s(m['staffId']).isNotEmpty ? _s(m['staffId']) : identityId,
         'userId': _s(m['userId']),
+        'principalId': _s(m['principalId']),
         'fullName': _s(m['fullName']),
         'name': _s(m['name']),
         'phone': _s(m['phone']),
         'role': _s(m['role']),
         'trustScore': m['trustScore'],
+        'stats': m['stats'],
         'level': _s(m['level']),
         'levelLabel': _s(m['levelLabel']),
+        'updatedAt': m['updatedAt'],
       });
     }
 
@@ -232,9 +265,9 @@ class _TrustScoreLookupScreenState extends State<TrustScoreLookupScreen> {
   }
 
   // ---------------- MAIN FLOW ----------------
-  Future<void> _fetchByStaffId(String staffId) async {
-    final sid = _s(staffId);
-    if (sid.isEmpty) {
+  Future<void> _fetchByIdentityId(String identityId) async {
+    final id = _s(identityId);
+    if (id.isEmpty) {
       _snack('ไม่สามารถระบุผู้ช่วยได้');
       return;
     }
@@ -242,14 +275,19 @@ class _TrustScoreLookupScreenState extends State<TrustScoreLookupScreen> {
     setState(() {
       _loading = true;
       _score = null;
-      _selectedStaffId = sid;
+      _selectedIdentityId = id;
     });
 
     try {
-      final raw = await TrustScoreApi.getStaffScore(
-        staffId: sid,
-        auth: true,
-      );
+      final raw = _isUserId(id)
+          ? await TrustScoreApi.getHelperScoreByUserId(
+              userId: id,
+              auth: true,
+            )
+          : await TrustScoreApi.getStaffScore(
+              staffId: id,
+              auth: true,
+            );
 
       final payload = _scorePayload(raw);
 
@@ -258,15 +296,16 @@ class _TrustScoreLookupScreenState extends State<TrustScoreLookupScreen> {
     } catch (e) {
       _snack('โหลดคะแนนไม่สำเร็จ กรุณาลองใหม่');
     } finally {
-      if (!mounted) return;
-      setState(() => _loading = false);
+      if (mounted) {
+        setState(() => _loading = false);
+      }
     }
   }
 
   Future<void> _fetch() async {
     final input = _inputCtrl.text.trim();
     if (input.isEmpty) {
-      _snack('กรุณากรอกชื่อ เบอร์โทร หรือ staffId');
+      _snack('กรุณากรอกชื่อ เบอร์โทร หรือ staffId/userId');
       return;
     }
 
@@ -274,12 +313,12 @@ class _TrustScoreLookupScreenState extends State<TrustScoreLookupScreen> {
       _loading = true;
       _score = null;
       _searchResults = [];
-      _selectedStaffId = '';
+      _selectedIdentityId = '';
     });
 
     try {
-      if (_isStaffId(input)) {
-        await _fetchByStaffId(input);
+      if (_isScoreIdentityId(input)) {
+        await _fetchByIdentityId(input);
         return;
       }
 
@@ -310,16 +349,17 @@ class _TrustScoreLookupScreenState extends State<TrustScoreLookupScreen> {
       });
 
       if (candidates.length == 1) {
-        final sid = _s(candidates.first['staffId']);
-        if (sid.isNotEmpty) {
-          await _fetchByStaffId(sid);
+        final identityId = _bestIdentityId(candidates.first);
+        if (identityId.isNotEmpty) {
+          await _fetchByIdentityId(identityId);
         }
       }
     } catch (e) {
       _snack('ค้นหาไม่สำเร็จ กรุณาลองใหม่');
     } finally {
-      if (!mounted) return;
-      setState(() => _loading = false);
+      if (mounted) {
+        setState(() => _loading = false);
+      }
     }
   }
 
@@ -335,15 +375,15 @@ class _TrustScoreLookupScreenState extends State<TrustScoreLookupScreen> {
     final subtitle = _displaySubtitle(item);
     final score = _toInt(item['trustScore'], fallback: 0);
     final scoreColor = _scoreColor(score, cs);
-    final sid = _s(item['staffId']);
-    final selected = sid.isNotEmpty && sid == _selectedStaffId;
+    final identityId = _bestIdentityId(item);
+    final selected = identityId.isNotEmpty && identityId == _selectedIdentityId;
 
     return Card(
       margin: const EdgeInsets.only(bottom: 10),
       elevation: selected ? 2 : 0.5,
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
-        onTap: sid.isEmpty ? null : () => _fetchByStaffId(sid),
+        onTap: identityId.isEmpty ? null : () => _fetchByIdentityId(identityId),
         child: Padding(
           padding: const EdgeInsets.all(14),
           child: Row(
@@ -370,7 +410,7 @@ class _TrustScoreLookupScreenState extends State<TrustScoreLookupScreen> {
                     Text(
                       subtitle,
                       style: TextStyle(
-                        color: cs.onSurface.withOpacity(0.65),
+                        color: cs.onSurface.withValues(alpha: 0.65),
                       ),
                     ),
                   ],
@@ -383,7 +423,7 @@ class _TrustScoreLookupScreenState extends State<TrustScoreLookupScreen> {
                   vertical: 8,
                 ),
                 decoration: BoxDecoration(
-                  color: scoreColor.withOpacity(0.12),
+                  color: scoreColor.withValues(alpha: 0.12),
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: Column(
@@ -449,7 +489,7 @@ class _TrustScoreLookupScreenState extends State<TrustScoreLookupScreen> {
       return Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
         decoration: BoxDecoration(
-          color: c.withOpacity(0.12),
+          color: c.withValues(alpha: 0.12),
           borderRadius: BorderRadius.circular(999),
         ),
         child: Text(
@@ -498,7 +538,7 @@ class _TrustScoreLookupScreenState extends State<TrustScoreLookupScreen> {
               Text(
                 'โทร: ${_s(_score?['phone'])}',
                 style: TextStyle(
-                  color: cs.onSurface.withOpacity(0.65),
+                  color: cs.onSurface.withValues(alpha: 0.65),
                 ),
               ),
             ],
@@ -545,13 +585,13 @@ class _TrustScoreLookupScreenState extends State<TrustScoreLookupScreen> {
               controller: _inputCtrl,
               decoration: const InputDecoration(
                 labelText: 'ค้นหาผู้ช่วย',
-                hintText: 'ชื่อ หรือ เบอร์โทร หรือ staffId',
+                hintText: 'ชื่อ เบอร์โทร staffId หรือ userId',
                 border: OutlineInputBorder(),
               ),
               onChanged: (_) {
                 setState(() {
                   _score = null;
-                  _selectedStaffId = '';
+                  _selectedIdentityId = '';
                 });
               },
               onSubmitted: (_) {
@@ -571,7 +611,7 @@ class _TrustScoreLookupScreenState extends State<TrustScoreLookupScreen> {
             if (!_loading && _score == null && _searchResults.isEmpty)
               Text(
                 'ค้นหาผู้ช่วยเพื่อดูคะแนนความน่าเชื่อถือ',
-                style: TextStyle(color: cs.onSurface.withOpacity(0.6)),
+                style: TextStyle(color: cs.onSurface.withValues(alpha: 0.6)),
               ),
 
             if (_searchResults.isNotEmpty) ...[
@@ -579,7 +619,7 @@ class _TrustScoreLookupScreenState extends State<TrustScoreLookupScreen> {
               Text(
                 'ผลการค้นหา',
                 style: TextStyle(
-                  color: cs.onSurface.withOpacity(0.7),
+                  color: cs.onSurface.withValues(alpha: 0.7),
                   fontWeight: FontWeight.w700,
                 ),
               ),
