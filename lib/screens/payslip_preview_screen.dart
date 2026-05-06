@@ -1,3 +1,22 @@
+// lib/screens/payslip_preview_screen.dart
+//
+// ✅ PRODUCTION — Backend-only payslip preview
+// --------------------------------------------------
+// Flutter responsibilities:
+// - Load closed payroll / payslipSummary from backend
+// - Display backend values only
+// - Generate PDF from backend values only
+//
+// Flutter must NOT:
+// - Calculate payroll
+// - Calculate SSO
+// - Calculate OT pay
+// - Calculate net pay
+// - Recompute payslip mismatch
+//
+// Backend owns payroll calculation:
+// payroll_service/controllers/payrollCloseController.js
+
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
@@ -13,7 +32,6 @@ import '../api/api_config.dart';
 import '../models/employee_model.dart';
 import '../models/payslip_summary_model.dart';
 import '../services/auth_storage.dart';
-import '../utils/payroll_calculator.dart';
 
 class _ClinicBrand {
   final String clinicId;
@@ -102,6 +120,7 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
 
   void _logSummary(String label, PayslipSummaryModel? s) {
     if (!kDebugMode || s == null) return;
+
     _log(label, {
       'month': s.month,
       'source': s.source,
@@ -114,8 +133,6 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
       'leaveDeduction': s.leaveDeduction,
       'tax': s.tax,
       'netPay': s.netPay,
-      'recomputedNet': s.recomputedNet,
-      'hasMismatch': s.hasMismatch,
       'grossBaseModeApplied': s.grossBaseModeApplied,
       'lineItems': s.lineItems
           .map(
@@ -135,12 +152,14 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
     super.initState();
     final now = DateTime.now();
     _selectedMonth = DateTime(now.year, now.month, 1);
+
     _log('INIT', {
       'selectedMonth': _monthKey(_selectedMonth),
       'employeeName': widget.emp.fullName,
       'employeeStaffId': widget.emp.staffId,
       'employeeId': widget.emp.id,
     });
+
     _bootstrap();
   }
 
@@ -285,10 +304,12 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
 
   Future<void> _loadPdfFonts() async {
     try {
-      final dataRegular =
-          await rootBundle.load('assets/fonts/NotoSansThai_Condensed-Regular.ttf');
-      final dataBold =
-          await rootBundle.load('assets/fonts/NotoSansThai_Condensed-Bold.ttf');
+      final dataRegular = await rootBundle.load(
+        'assets/fonts/NotoSansThai_Condensed-Regular.ttf',
+      );
+      final dataBold = await rootBundle.load(
+        'assets/fonts/NotoSansThai_Condensed-Bold.ttf',
+      );
 
       _pdfFontRegular = pw.Font.ttf(dataRegular);
       _pdfFontBold = pw.Font.ttf(dataBold);
@@ -509,7 +530,9 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
     };
 
     final candidates = <Uri>[
-      Uri.parse('$_payrollBaseUrl/payroll-close/close-month/$employeeId/$monthKey'),
+      Uri.parse(
+        '$_payrollBaseUrl/payroll-close/close-month/$employeeId/$monthKey',
+      ),
       Uri.parse(
         '$_payrollBaseUrl/api/payroll-close/close-month/$employeeId/$monthKey',
       ),
@@ -544,6 +567,7 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
           _log('GET CLOSED MONTH NOT FOUND', {'url': u.toString()});
           continue;
         }
+
         if (resp.statusCode != 200) {
           _log('GET CLOSED MONTH NON-200', {
             'url': u.toString(),
@@ -650,8 +674,10 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
   String _abbrFromName(String name) {
     final t = name.trim();
     if (t.isEmpty) return 'CL';
+
     final parts =
         t.split(RegExp(r'\s+')).where((x) => x.trim().isNotEmpty).toList();
+
     if (parts.isEmpty) return 'CL';
 
     if (parts.length == 1) {
@@ -665,7 +691,7 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
     return ('$a$b').toUpperCase();
   }
 
-  bool _isPartTime() => PayrollCalculator.isPartTime(widget.emp);
+  bool _isPartTime() => widget.emp.isPartTime;
 
   Color _parseHexToColor(
     String? hex, {
@@ -673,11 +699,14 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
   }) {
     final h = (hex ?? '').trim();
     if (h.isEmpty) return fallback;
+
     final v = h.replaceAll('#', '');
+
     try {
       if (v.length == 6) return Color(int.parse('FF$v', radix: 16));
       if (v.length == 8) return Color(int.parse(v, radix: 16));
     } catch (_) {}
+
     return fallback;
   }
 
@@ -689,6 +718,7 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
     if (h.isEmpty) return fallback;
 
     final v = h.replaceAll('#', '');
+
     try {
       if (v.length == 6) {
         final i = int.parse(v, radix: 16);
@@ -698,6 +728,7 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
         return PdfColor(r / 255.0, g / 255.0, b / 255.0);
       }
     } catch (_) {}
+
     return fallback;
   }
 
@@ -739,10 +770,12 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
       final v = (widget.emp as dynamic).branch;
       return (v ?? '').toString().trim();
     } catch (_) {}
+
     try {
       final v = (widget.emp as dynamic).clinicName;
       return (v ?? '').toString().trim();
     } catch (_) {}
+
     return '';
   }
 
@@ -938,8 +971,6 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
           )
           .toList(),
       'netPay': summary.netPay,
-      'recomputedNet': summary.recomputedNet,
-      'hasMismatch': summary.hasMismatch,
     });
 
     pdf.addPage(
@@ -1002,16 +1033,13 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
           ),
           pw.SizedBox(height: 12),
           pw.Divider(),
-
           _section('Employee Info'),
           _kv('Name', widget.emp.fullName, bold: true),
           if (empId.isNotEmpty) _kv('Employee ID', empId),
           if (empPos.isNotEmpty) _kv('Position', empPos),
           _kv('Employment Type', _isPartTime() ? 'Part-time' : 'Full-time'),
           if (empBranch.isNotEmpty) _kv('Branch/Clinic', empBranch),
-
           pw.Divider(),
-
           _section('Summary'),
           for (final item in summary.lineItems)
             if (item.amount > 0 || item.keyName == 'salary')
@@ -1019,24 +1047,9 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
                 item.label,
                 '${item.sign}${_money(item.amount)} THB',
               ),
-
           pw.Divider(),
           _kv('เงินรับจริง', '${_money(summary.netPay)} THB', bold: true),
-
-          if (summary.hasMismatch) ...[
-            pw.SizedBox(height: 6),
-            pw.Text(
-              'Recomputed Net: ${_money(summary.recomputedNet)} THB',
-              style: pw.TextStyle(
-                fontSize: 9,
-                color: PdfColors.red700,
-                fontWeight: pw.FontWeight.bold,
-              ),
-            ),
-          ],
-
           _signatureLine(label: 'Approved by (Signature)'),
-
           pw.SizedBox(height: 14),
           pw.Text(
             'Generated by Clinic Payroll • This document is for record purpose.',
@@ -1099,20 +1112,6 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
                 ),
               ],
             ),
-            if (summary.hasMismatch) ...[
-              const SizedBox(height: 10),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  'ตรวจสอบ: ยอดรวมจากรายการ = ${_money(summary.recomputedNet)}',
-                  style: TextStyle(
-                    color: Colors.red.shade700,
-                    fontWeight: FontWeight.w700,
-                    fontSize: 12,
-                  ),
-                ),
-              ),
-            ],
           ],
         ),
       ),
@@ -1190,7 +1189,10 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
                                 'pageFormat': format.toString(),
                                 'selectedMonth': _monthKey(_selectedMonth),
                               });
-                              _logSummary('PDF PREVIEW CURRENT SUMMARY', summary);
+                              _logSummary(
+                                'PDF PREVIEW CURRENT SUMMARY',
+                                summary,
+                              );
                               return _buildPdf(summary).save();
                             },
                           ),
