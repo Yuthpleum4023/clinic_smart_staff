@@ -24,7 +24,7 @@
 //   attendance  = OT จากสแกน / check-in checkout
 //   manual      = OT ที่ admin input เอง
 //   manual_user = OT ที่ user ขอและ admin อนุมัติ
-// - SSO จาก Clinic.socialSecurity
+// - SSO จาก Clinic.socialSecurity เฉพาะ full-time; part-time/hourly = 0 เสมอ
 // - Tax/YTD จาก auth internal tax service
 // - gross/net/display snapshot
 //
@@ -51,6 +51,13 @@
 // - fallback searches clinic+month then direct-safe matches known ids only
 // - removes unsafe full-document deep recursion to avoid stack overflow
 // - avoids touching full-time salary/OT flow
+//
+// ✅ Production patch 3:
+// - Flutter remains display/input only; backend owns all payroll math
+// - full-time SSO flow unchanged
+// - ✅ part-time/hourly payroll is explicitly SSO-exempt in backend
+// - part-time ssoEmployeeMonthly/displaySsoAmount/ssoYTD contribution = 0
+// - snapshot/response include SSO exemption reason for audit/debug
 //
 
 const axios = require("axios");
@@ -1544,6 +1551,54 @@ function computeSsoEmployeeMonthlyFromClinicConfig(salaryBaseForSso, ssoConfig) 
   return round2(contributableBase * clampMin0(ssoConfig.employeeRate));
 }
 
+function computeSsoEmployeeMonthlyForPayroll({
+  employmentType,
+  salaryBaseForSso,
+  ssoConfig,
+}) {
+  const normalizedEmploymentType = normalizeEmploymentType(employmentType);
+
+  // ✅ Production business rule:
+  // Part-time / hourly staff are paid by hours worked and must not have
+  // Social Security deducted by this payroll calculator.
+  // Flutter must not override this value. Backend returns 0 to every caller.
+  if (normalizedEmploymentType === "parttime") {
+    return {
+      amount: 0,
+      skipped: true,
+      exempt: true,
+      reason: "PART_TIME_HOURLY_NO_SSO",
+      contributableBase: 0,
+      employmentType: normalizedEmploymentType,
+    };
+  }
+
+  if (!ssoConfig?.enabled) {
+    return {
+      amount: 0,
+      skipped: true,
+      exempt: false,
+      reason: "CLINIC_SSO_DISABLED",
+      contributableBase: 0,
+      employmentType: normalizedEmploymentType,
+    };
+  }
+
+  const contributableBase = Math.min(
+    clampMin0(salaryBaseForSso),
+    clampMin0(ssoConfig.maxWageBase)
+  );
+
+  return {
+    amount: round2(contributableBase * clampMin0(ssoConfig.employeeRate)),
+    skipped: false,
+    exempt: false,
+    reason: "FULL_TIME_SALARY_BASE",
+    contributableBase: round2(contributableBase),
+    employmentType: normalizedEmploymentType,
+  };
+}
+
 // ================= AUTH PICKER =================
 function pickAuth(req) {
   const u = req.user || {};
@@ -2251,21 +2306,16 @@ async function computePayrollForMonth({
   const salaryBaseAfterLeave = round2(payrollResolved.salaryBaseAfterLeave);
   const leaveDeduction = round2(payrollResolved.leaveDeduction);
 
-  const ssoM = computeSsoEmployeeMonthlyFromClinicConfig(
+  const ssoResolved = computeSsoEmployeeMonthlyForPayroll({
+    employmentType: salaryProfile.employmentType,
     salaryBaseForSso,
-    ssoConfig
-  );
+    ssoConfig,
+  });
+
+  const ssoM = round2(clampMin0(ssoResolved.amount));
 
   const netBeforeTaxAndPvd = round2(
-    Math.max(
-      0,
-      salaryBaseForSso -
-        ssoM -
-        leaveDeduction +
-        otPayFinal +
-        bonusFinal +
-        otherAllowanceFinal
-    )
+    Math.max(0, payrollResolved.netBeforeTaxAndPvd - ssoM)
   );
 
   let ytd = existingYtdOverride;
@@ -2380,6 +2430,9 @@ async function computePayrollForMonth({
     calculatedOtPay,
     allowManualOtPayOverride,
     otPayFinal,
+    ssoM,
+    ssoReason: ssoResolved.reason,
+    ssoExempt: ssoResolved.exempt,
     ignoredClientInputs,
   });
 
@@ -2395,6 +2448,7 @@ async function computePayrollForMonth({
     salaryProfile,
     leaveDeductionResolved,
     ssoConfig,
+    ssoResolved,
     otSummary,
     otRateResolved,
     payrollResolved,
@@ -2427,7 +2481,6 @@ async function computePayrollForMonth({
     ignoredClientInputs,
   };
 }
-
 function buildPayrollClosePayload(c) {
   const otRecordIds = Array.isArray(c.otSummary?.records)
     ? c.otSummary.records.map((x) => String(x?._id || "")).filter(Boolean)
@@ -2552,6 +2605,10 @@ function buildPayrollClosePayload(c) {
       ssoMaxEmployeeMonthly: c.ssoConfig.maxEmployeeMonthly,
       ssoEmployeeMonthlyInput: c.ignoredClientInputs.ssoEmployeeMonthlyInput,
       ssoEmployeeMonthlyApplied: c.ssoM,
+      ssoExempt: c.ssoResolved?.exempt === true,
+      ssoSkipped: c.ssoResolved?.skipped === true,
+      ssoReason: c.ssoResolved?.reason || "",
+      ssoContributableBase: c.ssoResolved?.contributableBase ?? c.salaryBaseForSso,
 
       ignoredClientInputs: c.ignoredClientInputs,
     },
@@ -2587,6 +2644,11 @@ function buildResponsePayload({
       employeeRate: c.ssoConfig.employeeRate,
       maxWageBase: c.ssoConfig.maxWageBase,
       maxEmployeeMonthly: c.ssoConfig.maxEmployeeMonthly,
+      appliedAmount: c.ssoM,
+      exempt: c.ssoResolved?.exempt === true,
+      skipped: c.ssoResolved?.skipped === true,
+      reason: c.ssoResolved?.reason || "",
+      contributableBase: c.ssoResolved?.contributableBase ?? c.salaryBaseForSso,
     },
     otSummary: {
       monthKey: c.otSummary.monthKey,
@@ -2635,6 +2697,8 @@ function buildResponsePayload({
       otherDeduction: c.otherDeductionFinal,
       leaveDeductionResolved: c.leaveDeductionResolved,
       pvdEmployeeMonthly: c.pvdM,
+      ssoEmployeeMonthly: c.ssoM,
+      ssoResolved: c.ssoResolved,
       ignoredClientInputs: c.ignoredClientInputs,
     },
     row: rowLike,
@@ -2910,6 +2974,7 @@ async function applyTaxYtdFromClosedPayroll(row) {
 
 function buildRecalculateBody({ req, oldRow, clinicId, employeeId, month }) {
   const body = req.body || {};
+  const oldSnapshot = oldRow?.snapshot || {};
 
   return {
     ...body,
@@ -2927,10 +2992,23 @@ function buildRecalculateBody({ req, oldRow, clinicId, employeeId, month }) {
       ssoEmployeeMonthly: oldRow?.ssoEmployeeMonthly ?? 0,
       taxMode: oldRow?.taxMode || "WITHHOLDING",
       grossBaseMode:
-        oldRow?.snapshot?.grossBaseModeRequested ||
-        oldRow?.snapshot?.grossBaseModeApplied ||
+        oldSnapshot?.grossBaseModeRequested ||
+        oldSnapshot?.grossBaseModeApplied ||
         "PRE_DEDUCTION",
     },
+
+    // ✅ Preserve part-time identity during recalculation if staff_service is
+    // temporarily unavailable. Backend still recomputes hours/OT from DB.
+    employmentType:
+      body.employmentType ||
+      body.employeeType ||
+      oldSnapshot?.employmentTypeResolved ||
+      "",
+
+    hourlyRate:
+      body.hourlyRate !== undefined
+        ? body.hourlyRate
+        : oldSnapshot?.hourlyRateResolved ?? 0,
 
     grossBase:
       body.grossBase !== undefined ? body.grossBase : oldRow?.grossBase ?? 0,
@@ -2949,8 +3027,8 @@ function buildRecalculateBody({ req, oldRow, clinicId, employeeId, month }) {
 
     grossBaseMode:
       body.grossBaseMode ||
-      oldRow?.snapshot?.grossBaseModeRequested ||
-      oldRow?.snapshot?.grossBaseModeApplied ||
+      oldSnapshot?.grossBaseModeRequested ||
+      oldSnapshot?.grossBaseModeApplied ||
       "PRE_DEDUCTION",
   };
 }
