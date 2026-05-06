@@ -1,38 +1,6 @@
 // lib/screens/edit_employee_screen.dart
 //
-// ✅ PRODUCTION FULL FILE — Employee Edit Screen
-//
-// Goals:
-// - Save employee profile to staff_service when supported
-// - Keep local legacy payroll fields stable for current app flow
-// - Do not drop existing otEntries
-// - Keep bonus / absentDays / position stable after editing
-//
-// Backend primary fields:
-// - userId
-// - fullName
-// - employmentType => fullTime / partTime
-// - monthlySalary
-// - hourlyRate
-//
-// Backend extra payroll/profile fields if supported:
-// - position
-// - bonus
-// - absentDays
-// - baseSalary
-// - hourlyWage
-//
-// Local legacy fields always preserved:
-// - position
-// - bonus
-// - absentDays
-// - otEntries
-//
-// Important:
-// - staffId จริง = employee record id จาก backend ถ้ามี
-// - ถ้า backend reject extra fields จะ fallback ส่งเฉพาะ core fields
-// - local cache ยังเก็บ bonus / absentDays / position ต่อให้ backend ยังไม่รองรับ
-//
+// PRODUCTION — Employee Edit Screen
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -129,8 +97,7 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
   }
 
   void _markDirty() {
-    if (!mounted) return;
-    if (_dirty) return;
+    if (!mounted || _dirty) return;
     setState(() => _dirty = true);
   }
 
@@ -198,8 +165,7 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
   }
 
   void _safePop<T extends Object?>([T? result]) {
-    if (!mounted) return;
-    if (_isPopping) return;
+    if (!mounted || _isPopping) return;
 
     _isPopping = true;
 
@@ -209,28 +175,35 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
     });
   }
 
+  void _showSnack(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
+  }
+
   String? _validateSync() {
     final fn = firstNameCtrl.text.trim();
     final ln = lastNameCtrl.text.trim();
     final pos = positionCtrl.text.trim();
 
-    if (fn.isEmpty) return 'กรุณากรอก “ชื่อ”';
-    if (ln.isEmpty) return 'กรุณากรอก “นามสกุล”';
-    if (pos.isEmpty) return 'กรุณากรอก “ตำแหน่ง”';
+    if (fn.isEmpty) return 'กรุณากรอกชื่อพนักงาน';
+    if (ln.isEmpty) return 'กรุณากรอกนามสกุลพนักงาน';
+    if (pos.isEmpty) return 'กรุณากรอกตำแหน่ง';
 
     final bonus = _toDouble(bonusCtrl.text);
-    if (bonus < 0) return 'โบนัสต้องไม่ติดลบ';
+    if (bonus < 0) return 'โบนัสหรือค่าคอมมิชชั่นต้องไม่ติดลบ';
 
     if (employmentType == 'fulltime') {
       final base = _toDouble(baseSalaryCtrl.text);
       final absent = _toInt(absentDaysCtrl.text);
 
-      if (base <= 0) return 'เงินเดือนพื้นฐานต้องมากกว่า 0';
-      if (absent < 0) return 'วันลา/ขาด ต้องไม่ติดลบ';
-      if (absent > 31) return 'วันลา/ขาด เกิน 31 วัน (ตรวจสอบอีกครั้ง)';
+      if (base <= 0) return 'กรุณากรอกเงินเดือนพื้นฐานให้ถูกต้อง';
+      if (absent < 0) return 'จำนวนวันลา/ขาดต้องไม่ติดลบ';
+      if (absent > 31) return 'จำนวนวันลา/ขาดเกิน 31 วัน กรุณาตรวจสอบอีกครั้ง';
     } else {
       final wage = _toDouble(hourlyWageCtrl.text);
-      if (wage <= 0) return 'กรุณากรอก “ค่าจ้าง/ชั่วโมง” ให้ถูกต้อง';
+      if (wage <= 0) return 'กรุณากรอกค่าจ้างต่อชั่วโมงให้ถูกต้อง';
     }
 
     return null;
@@ -249,7 +222,7 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
       );
 
       if (duplicated) {
-        return 'User ID นี้ถูกผูกกับพนักงานคนอื่นแล้ว';
+        return 'รหัสผู้ใช้นี้ถูกผูกกับพนักงานคนอื่นแล้ว';
       }
     }
 
@@ -275,7 +248,8 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
     final monthlySalary = _toDouble(baseSalaryCtrl.text);
     final hourlyRate = _toDouble(hourlyWageCtrl.text);
     final bonus = _toDouble(bonusCtrl.text);
-    final absentDays = employmentType == 'fulltime' ? _toInt(absentDaysCtrl.text) : 0;
+    final absentDays =
+        employmentType == 'fulltime' ? _toInt(absentDaysCtrl.text) : 0;
 
     final body = <String, dynamic>{
       'fullName': fullName,
@@ -292,7 +266,6 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
     if (includePayrollExtras) {
       body['position'] = positionCtrl.text.trim();
 
-      // ส่ง alias ไว้เพื่อให้ backend หลายเวอร์ชันรับได้
       if (employmentType == 'fulltime') {
         body['baseSalary'] = monthlySalary;
         body['salary'] = monthlySalary;
@@ -343,13 +316,8 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
 
     try {
       return await _updateEmployeeOnBackend(employeeId, fullBody);
-    } catch (fullErr) {
-      // fallback สำหรับ staff_service ที่ยัง strict และยังไม่รับ bonus/absentDays/position
-      try {
-        return await _updateEmployeeOnBackend(employeeId, coreBody);
-      } catch (_) {
-        rethrow;
-      }
+    } catch (_) {
+      return _updateEmployeeOnBackend(employeeId, coreBody);
     }
   }
 
@@ -413,25 +381,22 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
 
     return widget.employee.copyWith(
       id: backendStaffId.isNotEmpty ? backendStaffId : widget.employee.id,
-      staffId: backendStaffId.isNotEmpty ? backendStaffId : widget.employee.staffId,
+      staffId:
+          backendStaffId.isNotEmpty ? backendStaffId : widget.employee.staffId,
       linkedUserId: backendUserId,
       firstName: firstNameCtrl.text.trim(),
       lastName: lastNameCtrl.text.trim(),
-      position: backendPosition.isNotEmpty ? backendPosition : positionCtrl.text.trim(),
+      position:
+          backendPosition.isNotEmpty ? backendPosition : positionCtrl.text.trim(),
       employmentType: isParttime ? 'parttime' : 'fulltime',
       baseSalary: isParttime ? 0.0 : monthlySalary,
       hourlyWage: isParttime ? hourlyRate : 0.0,
-
-      // ✅ payroll local legacy fields always use latest UI input
-      // ถ้า backend ส่งกลับมาก็รองรับ แต่ UI input เป็น source ที่ admin เพิ่งแก้
       bonus: backendBonus > 0 ? backendBonus : _toDouble(bonusCtrl.text),
       absentDays: isParttime
           ? 0
           : backendAbsentDays > 0
               ? backendAbsentDays
               : _toInt(absentDaysCtrl.text),
-
-      // ✅ ห้ามลบ OT เดิม
       otEntries: widget.employee.otEntries,
     );
   }
@@ -458,6 +423,28 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
     }
   }
 
+  String _friendlySaveError(Object e) {
+    final msg = e.toString();
+
+    if (msg.contains('401')) {
+      return 'สิทธิ์หมดอายุ กรุณาออกจากระบบแล้วเข้าใหม่';
+    }
+
+    if (msg.contains('403')) {
+      return 'ไม่มีสิทธิ์แก้ไขข้อมูลพนักงาน';
+    }
+
+    if (msg.contains('404')) {
+      return 'ไม่พบข้อมูลพนักงาน กรุณารีเฟรชแล้วลองใหม่';
+    }
+
+    if (msg.contains('timeout') || msg.contains('SocketException')) {
+      return 'เชื่อมต่อระบบไม่สำเร็จ กรุณาตรวจสอบอินเทอร์เน็ต';
+    }
+
+    return 'บันทึกข้อมูลไม่สำเร็จ กรุณาลองใหม่อีกครั้ง';
+  }
+
   Future<void> _save() async {
     if (_isSaving) return;
 
@@ -471,16 +458,14 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
       if (err != null) {
         if (!mounted) return;
         setState(() => _isSaving = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(err)),
-        );
+        _showSnack(err);
         return;
       }
 
       final employeeId = _employeeIdForBackend();
 
       if (employeeId.isEmpty) {
-        throw Exception('ไม่พบ employee id สำหรับอัปเดต backend');
+        throw Exception('MISSING_EMPLOYEE_ID');
       }
 
       final updatedRes = await _updateEmployeeProductionSafe(employeeId);
@@ -496,15 +481,13 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
         _dirty = false;
       });
 
+      _showSnack('บันทึกข้อมูลพนักงานแล้ว');
       _safePop<EmployeeModel>(updated);
     } catch (e) {
       if (!mounted) return;
 
       setState(() => _isSaving = false);
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('บันทึกไม่สำเร็จ: $e')),
-      );
+      _showSnack(_friendlySaveError(e));
     }
   }
 
@@ -520,9 +503,10 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
     List<TextInputFormatter>? formatters,
     String? hint,
     bool enabled = true,
+    String? helperText,
   }) {
     final isNumeric = _isNumericType(type);
-    final effectiveKeyboardType = isNumeric ? type : TextInputType.multiline;
+    final effectiveKeyboardType = isNumeric ? type : TextInputType.text;
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
@@ -532,13 +516,13 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
         keyboardType: effectiveKeyboardType,
         inputFormatters: formatters,
         minLines: 1,
-        maxLines: isNumeric ? 1 : null,
-        textInputAction:
-            isNumeric ? TextInputAction.done : TextInputAction.newline,
+        maxLines: 1,
+        textInputAction: TextInputAction.next,
         style: const TextStyle(fontSize: 16, height: 1.4),
         decoration: InputDecoration(
           labelText: label,
           hintText: hint,
+          helperText: helperText,
           border: const OutlineInputBorder(),
           contentPadding:
               const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
@@ -555,7 +539,7 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
       builder: (ctx) => AlertDialog(
         title: const Text('ยังไม่ได้บันทึก'),
         content: const Text(
-          'คุณแก้ไขข้อมูลแล้ว แต่ยังไม่ได้กดบันทึก ต้องการออกเลยไหม?',
+          'มีข้อมูลที่แก้ไขแล้วยังไม่ได้บันทึก ต้องการออกจากหน้านี้หรือไม่?',
         ),
         actions: [
           TextButton(
@@ -564,7 +548,7 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
           ),
           ElevatedButton(
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('ออกเลย'),
+            child: const Text('ออกจากหน้า'),
           ),
         ],
       ),
@@ -623,9 +607,13 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
           const SizedBox(height: 6),
           Text(
             employmentType == 'parttime'
-                ? 'หมายเหตุ: Part-time ไม่หักประกันสังคม และไม่สน absentDays'
-                : 'หมายเหตุ: Full-time คิดประกันสังคม/หักขาด-ลา ตามระบบ',
-            style: TextStyle(color: Colors.grey.shade700),
+                ? 'พนักงานรายชั่วโมงจะคิดค่าจ้างตามเวลาทำงาน และไม่หักประกันสังคมในงวดเงินเดือน'
+                : 'พนักงานประจำใช้เงินเดือนพื้นฐาน วันลา/ขาด และค่าประกันสังคมตามนโยบายคลินิก',
+            style: TextStyle(
+              color: Colors.grey.shade700,
+              fontSize: 12,
+              height: 1.35,
+            ),
           ),
         ],
       ),
@@ -635,16 +623,30 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
   Widget _payrollHintCard() {
     return Card(
       elevation: 0,
-      color: Colors.orange.withOpacity(0.08),
+      color: Colors.deepPurple.withOpacity(0.07),
       child: Padding(
         padding: const EdgeInsets.all(12),
-        child: Text(
-          'ข้อมูลโบนัส/วันลา/ขาด จะถูกบันทึกไว้ในแอปเพื่อใช้คำนวณรอบเงินเดือน และจะพยายามส่งไป backend หาก backend รองรับแล้ว',
-          style: TextStyle(
-            fontSize: 12,
-            color: Colors.orange.shade900,
-            fontWeight: FontWeight.w600,
-          ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(
+              Icons.info_outline,
+              size: 18,
+              color: Colors.deepPurple.shade700,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'ข้อมูลนี้ใช้สำหรับอัปเดตโปรไฟล์พนักงาน และเป็นข้อมูลประกอบการคำนวณเงินเดือนโดยระบบหลังบ้าน',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Colors.deepPurple.shade900,
+                  fontWeight: FontWeight.w600,
+                  height: 1.35,
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -683,13 +685,27 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  _field('ชื่อ', firstNameCtrl),
-                  _field('นามสกุล', lastNameCtrl),
-                  _field('ตำแหน่ง', positionCtrl),
                   _field(
-                    'User ID (ถ้ามี)',
+                    'ชื่อ',
+                    firstNameCtrl,
+                    hint: 'เช่น สมชาย',
+                  ),
+                  _field(
+                    'นามสกุล',
+                    lastNameCtrl,
+                    hint: 'เช่น ใจดี',
+                  ),
+                  _field(
+                    'ตำแหน่ง',
+                    positionCtrl,
+                    hint: 'เช่น ผู้ช่วยทันตแพทย์',
+                  ),
+                  _field(
+                    'รหัสผู้ใช้ที่ผูกบัญชี (ถ้ามี)',
                     linkedUserIdCtrl,
                     hint: 'เช่น usr_xxxxx',
+                    helperText:
+                        'ใช้เมื่อพนักงานมีบัญชีสำหรับเข้าใช้งานแอปหรือสแกนเวลา',
                   ),
                   _typeSelector(),
                   if (!isParttime) ...[
@@ -710,7 +726,7 @@ class _EditEmployeeScreenState extends State<EditEmployeeScreen> {
                   ],
                   if (isParttime) ...[
                     _field(
-                      'ค่าจ้าง/ชั่วโมง (บาท/ชม.)',
+                      'ค่าจ้างต่อชั่วโมง (บาท/ชม.)',
                       hourlyWageCtrl,
                       type: const TextInputType.numberWithOptions(decimal: true),
                       formatters: [_moneyFormatter],

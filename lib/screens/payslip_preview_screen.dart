@@ -1,25 +1,9 @@
 // lib/screens/payslip_preview_screen.dart
 //
-// ✅ PRODUCTION — Backend-only payslip preview
-// --------------------------------------------------
-// Flutter responsibilities:
-// - Load closed payroll / payslipSummary from backend
-// - Display backend values only
-// - Generate PDF from backend values only
-//
-// Flutter must NOT:
-// - Calculate payroll
-// - Calculate SSO
-// - Calculate OT pay
-// - Calculate net pay
-// - Recompute payslip mismatch
-//
-// Backend owns payroll calculation:
-// payroll_service/controllers/payrollCloseController.js
+// PRODUCTION — Backend-only Payslip Preview
 
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:http/http.dart' as http;
@@ -51,7 +35,11 @@ class _ClinicBrand {
   });
 
   factory _ClinicBrand.fromMap(Map<String, dynamic> m) {
-    final c = (m['clinic'] is Map) ? Map<String, dynamic>.from(m['clinic']) : m;
+    final dynamic rawClinic = m['clinic'];
+    final c = rawClinic is Map
+        ? Map<String, dynamic>.from(rawClinic)
+        : Map<String, dynamic>.from(m);
+
     return _ClinicBrand(
       clinicId: (c['clinicId'] ?? c['id'] ?? c['_id'] ?? '').toString(),
       name: (c['name'] ?? '').toString(),
@@ -66,7 +54,10 @@ class _ClinicBrand {
 class PayslipPreviewScreen extends StatefulWidget {
   final EmployeeModel emp;
 
-  const PayslipPreviewScreen({super.key, required this.emp});
+  const PayslipPreviewScreen({
+    super.key,
+    required this.emp,
+  });
 
   @override
   State<PayslipPreviewScreen> createState() => _PayslipPreviewScreenState();
@@ -95,70 +86,22 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
 
   bool _loading = true;
   late DateTime _selectedMonth;
+
   _ClinicBrand? _clinic;
-  String? _error;
   PayslipSummaryModel? _summary;
+
+  String? _error;
   bool _remoteTried = false;
 
   pw.Font? _pdfFontRegular;
   pw.Font? _pdfFontBold;
 
-  void _log(String message, [Object? data]) {
-    if (!kDebugMode) return;
-    try {
-      if (data == null) {
-        debugPrint('[PAYSLIP_PREVIEW] $message');
-      } else if (data is String) {
-        debugPrint('[PAYSLIP_PREVIEW] $message: $data');
-      } else {
-        debugPrint('[PAYSLIP_PREVIEW] $message: ${jsonEncode(data)}');
-      }
-    } catch (_) {
-      debugPrint('[PAYSLIP_PREVIEW] $message: $data');
-    }
-  }
-
-  void _logSummary(String label, PayslipSummaryModel? s) {
-    if (!kDebugMode || s == null) return;
-
-    _log(label, {
-      'month': s.month,
-      'source': s.source,
-      'isClosedPayroll': s.isClosedPayroll,
-      'salary': s.salary,
-      'socialSecurity': s.socialSecurity,
-      'ot': s.ot,
-      'commission': s.commission,
-      'bonus': s.bonus,
-      'leaveDeduction': s.leaveDeduction,
-      'tax': s.tax,
-      'netPay': s.netPay,
-      'grossBaseModeApplied': s.grossBaseModeApplied,
-      'lineItems': s.lineItems
-          .map(
-            (e) => {
-              'keyName': e.keyName,
-              'label': e.label,
-              'amount': e.amount,
-              'sign': e.sign,
-            },
-          )
-          .toList(),
-    });
-  }
-
   @override
   void initState() {
     super.initState();
+
     final now = DateTime.now();
     _selectedMonth = DateTime(now.year, now.month, 1);
-
-    _log('INIT', {
-      'selectedMonth': _monthKey(_selectedMonth),
-      'employeeName': widget.emp.fullName,
-      'employeeStaffId': widget.emp.staffId,
-      'employeeId': widget.emp.id,
-    });
 
     _bootstrap();
   }
@@ -247,18 +190,14 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
   Future<void> _pickMonth() async {
     final picked = await _pickMonthDialog();
     if (picked == null) return;
-
     if (!mounted) return;
+
     setState(() {
       _loading = true;
       _selectedMonth = DateTime(picked.year, picked.month, 1);
       _summary = null;
       _remoteTried = false;
       _error = null;
-    });
-
-    _log('MONTH PICKED', {
-      'selectedMonth': _monthKey(_selectedMonth),
     });
 
     await _bootstrap();
@@ -272,34 +211,16 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
       _error = null;
     });
 
-    _log('BOOTSTRAP START', {
-      'month': _monthKey(_selectedMonth),
-      'employeeName': widget.emp.fullName,
-      'safePayrollEmployeeId': _safeStaffIdForPayrollOrNull(),
-    });
-
     try {
       await _loadPdfFonts();
       await _loadClinicBrand();
       await _loadRemoteClosedMonth();
-    } catch (e, st) {
-      _log('BOOTSTRAP ERROR', {
-        'error': e.toString(),
-        'stack': st.toString(),
-      });
-      _error = 'โหลดข้อมูลสลิปไม่สำเร็จ';
+    } catch (_) {
+      _error = 'โหลดข้อมูลสลิปไม่สำเร็จ กรุณาลองใหม่อีกครั้ง';
     }
 
     if (!mounted) return;
     setState(() => _loading = false);
-
-    _log('BOOTSTRAP DONE', {
-      'month': _monthKey(_selectedMonth),
-      'hasSummary': _summary != null,
-      'error': _error,
-      'remoteTried': _remoteTried,
-    });
-    _logSummary('BOOTSTRAP SUMMARY', _summary);
   }
 
   Future<void> _loadPdfFonts() async {
@@ -313,58 +234,36 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
 
       _pdfFontRegular = pw.Font.ttf(dataRegular);
       _pdfFontBold = pw.Font.ttf(dataBold);
-
-      _log('PDF FONTS LOADED');
-    } catch (e) {
+    } catch (_) {
       _pdfFontRegular = null;
       _pdfFontBold = null;
-      _log('PDF FONTS LOAD FAILED', e.toString());
     }
   }
 
   Future<String> _getTokenRobust() async {
     try {
       final t = await AuthStorage.getToken();
-      if (t != null && t.trim().isNotEmpty) {
-        _log('TOKEN FOUND FROM AuthStorage', {
-          'length': t.trim().length,
-          'preview': t.trim().length >= 16
-              ? '${t.trim().substring(0, 16)}...'
-              : t.trim(),
-        });
-        return t.trim();
-      }
-    } catch (e) {
-      _log('TOKEN READ FROM AuthStorage FAILED', e.toString());
-    }
+      if (t != null && t.trim().isNotEmpty) return t.trim();
+    } catch (_) {}
 
     final prefs = await SharedPreferences.getInstance();
+
     for (final k in _tokenKeys) {
       final v = (prefs.getString(k) ?? '').trim();
-      if (v.isNotEmpty && v.toLowerCase() != 'null') {
-        _log('TOKEN FOUND FROM SharedPreferences', {
-          'key': k,
-          'length': v.length,
-          'preview': v.length >= 16 ? '${v.substring(0, 16)}...' : v,
-        });
-        return v;
-      }
+      if (v.isNotEmpty && v.toLowerCase() != 'null') return v;
     }
 
-    _log('TOKEN NOT FOUND');
     return '';
   }
 
   Future<String> _getClinicIdRobust() async {
     final prefs = await SharedPreferences.getInstance();
+
     for (final k in _clinicIdKeys) {
       final v = (prefs.getString(k) ?? '').trim();
-      if (v.isNotEmpty && v.toLowerCase() != 'null') {
-        _log('CLINIC ID FOUND', {'key': k, 'clinicId': v});
-        return v;
-      }
+      if (v.isNotEmpty && v.toLowerCase() != 'null') return v;
     }
-    _log('CLINIC ID NOT FOUND');
+
     return '';
   }
 
@@ -380,56 +279,27 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
     final token = await _getTokenRobust();
     final clinicId = await _getClinicIdRobust();
 
-    _log('LOAD CLINIC BRAND START', {
-      'clinicId': clinicId,
-      'hasToken': token.isNotEmpty,
-    });
-
-    if (clinicId.isEmpty || token.isEmpty) {
-      _log('LOAD CLINIC BRAND SKIPPED', {
-        'reason': clinicId.isEmpty ? 'clinicId empty' : 'token empty',
-      });
-      return;
-    }
+    if (clinicId.isEmpty || token.isEmpty) return;
 
     try {
       final uri = Uri.parse('$_payrollBaseUrl/clinics/$clinicId');
-      _log('CLINIC GET REQUEST', {
-        'url': uri.toString(),
-      });
-
-      final resp =
-          await http.get(uri, headers: {'Authorization': 'Bearer $token'});
-
-      _log('CLINIC GET RESPONSE', {
-        'statusCode': resp.statusCode,
-        'url': uri.toString(),
-        'body': resp.body,
-      });
+      final resp = await http.get(
+        uri,
+        headers: {'Authorization': 'Bearer $token'},
+      ).timeout(const Duration(seconds: 15));
 
       if (resp.statusCode >= 400) return;
 
       final decoded = json.decode(resp.body);
-      if (decoded is Map<String, dynamic>) {
-        final c = _ClinicBrand.fromMap(decoded);
-        _log('CLINIC PARSED', {
-          'clinicId': c.clinicId,
-          'name': c.name,
-          'phone': c.phone,
-          'address': c.address,
-          'brandAbbr': c.brandAbbr,
-          'brandColor': c.brandColor,
-        });
+      if (decoded is Map) {
+        final c = _ClinicBrand.fromMap(
+          Map<String, dynamic>.from(decoded),
+        );
 
         if (!mounted) return;
         setState(() => _clinic = c);
       }
-    } catch (e, st) {
-      _log('LOAD CLINIC BRAND ERROR', {
-        'error': e.toString(),
-        'stack': st.toString(),
-      });
-    }
+    } catch (_) {}
   }
 
   bool _hasPayrollEmployeeId(String v) => v.trim().isNotEmpty;
@@ -443,10 +313,6 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
       tryGetString(() => (widget.emp as dynamic).staff_id),
     ].where((e) => e.isNotEmpty).toList();
 
-    _log('PAYROLL EMPLOYEE ID CANDIDATES', {
-      'candidates': candidates,
-    });
-
     for (final c in candidates) {
       if (_hasPayrollEmployeeId(c)) return c;
     }
@@ -455,44 +321,29 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
   }
 
   Map<String, dynamic>? _extractClosedRowFromDecoded(dynamic decoded) {
-    if (decoded is! Map) {
-      _log('EXTRACT CLOSED ROW FAILED', {
-        'reason': 'decoded is not Map',
-        'runtimeType': decoded.runtimeType.toString(),
-      });
-      return null;
-    }
+    if (decoded is! Map) return null;
 
     final m = Map<String, dynamic>.from(decoded);
-
-    _log('EXTRACT CLOSED ROW ROOT KEYS', {
-      'keys': m.keys.toList(),
-    });
 
     final candidates = [
       m['payslipSummary'],
       m['row'],
-      m['data'],
       m['payrollClose'],
+      m['data'],
       if (m['data'] is Map) (m['data'] as Map)['payslipSummary'],
       if (m['data'] is Map) (m['data'] as Map)['row'],
       if (m['data'] is Map) (m['data'] as Map)['payrollClose'],
     ];
 
-    for (int i = 0; i < candidates.length; i++) {
-      final c = candidates[i];
+    for (final c in candidates) {
       if (c is Map) {
-        final row = Map<String, dynamic>.from(c);
-        _log('EXTRACT CLOSED ROW SUCCESS FROM CANDIDATE', {
-          'candidateIndex': i,
-          'keys': row.keys.toList(),
-          'row': row,
-        });
-        return row;
+        return Map<String, dynamic>.from(
+          c.map((k, v) => MapEntry(k.toString(), v)),
+        );
       }
     }
 
-    final looksLikeRow = m.containsKey('amounts') ||
+    final looksLikeSummary = m.containsKey('amounts') ||
         m.containsKey('salary') ||
         m.containsKey('socialSecurity') ||
         m.containsKey('ot') ||
@@ -503,20 +354,7 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
         m.containsKey('netPay') ||
         m.containsKey('grossBase');
 
-    if (looksLikeRow) {
-      _log('EXTRACT CLOSED ROW SUCCESS FROM ROOT MAP', {
-        'keys': m.keys.toList(),
-        'row': m,
-      });
-      return m;
-    }
-
-    _log('EXTRACT CLOSED ROW FAILED', {
-      'reason': 'no known row shape found',
-      'root': m,
-    });
-
-    return null;
+    return looksLikeSummary ? m : null;
   }
 
   Future<Map<String, dynamic>?> _fetchClosedMonth({
@@ -538,74 +376,22 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
       ),
     ];
 
-    _log('FETCH CLOSED MONTH START', {
-      'employeeId': employeeId,
-      'monthKey': monthKey,
-      'candidateUrls': candidates.map((e) => e.toString()).toList(),
-    });
-
     for (final u in candidates) {
       try {
-        _log('GET CLOSED MONTH REQUEST', {
-          'url': u.toString(),
-          'headers': {
-            'Authorization': 'Bearer ***',
-            'Content-Type': headers['Content-Type'],
-          },
-        });
+        final resp = await http
+            .get(u, headers: headers)
+            .timeout(const Duration(seconds: 15));
 
-        final resp =
-            await http.get(u, headers: headers).timeout(const Duration(seconds: 15));
-
-        _log('GET CLOSED MONTH RESPONSE', {
-          'url': u.toString(),
-          'statusCode': resp.statusCode,
-          'body': resp.body,
-        });
-
-        if (resp.statusCode == 404) {
-          _log('GET CLOSED MONTH NOT FOUND', {'url': u.toString()});
-          continue;
-        }
-
-        if (resp.statusCode != 200) {
-          _log('GET CLOSED MONTH NON-200', {
-            'url': u.toString(),
-            'statusCode': resp.statusCode,
-          });
-          continue;
-        }
+        if (resp.statusCode == 404) continue;
+        if (resp.statusCode != 200) continue;
 
         final decoded = json.decode(resp.body);
-        _log('GET CLOSED MONTH DECODED', {
-          'url': u.toString(),
-          'decodedType': decoded.runtimeType.toString(),
-          'decoded': decoded,
-        });
-
         final row = _extractClosedRowFromDecoded(decoded);
-        if (row != null) {
-          _log('GET CLOSED MONTH FINAL ROW', {
-            'url': u.toString(),
-            'row': row,
-          });
-          return row;
-        }
 
-        _log('GET CLOSED MONTH ROW NOT EXTRACTED', {'url': u.toString()});
-      } catch (e, st) {
-        _log('GET CLOSED MONTH ERROR', {
-          'url': u.toString(),
-          'error': e.toString(),
-          'stack': st.toString(),
-        });
-      }
+        if (row != null) return row;
+      } catch (_) {}
     }
 
-    _log('FETCH CLOSED MONTH FAILED', {
-      'employeeId': employeeId,
-      'monthKey': monthKey,
-    });
     return null;
   }
 
@@ -614,24 +400,22 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
     final monthKey = _monthKey(_selectedMonth);
     final staffId = _safeStaffIdForPayrollOrNull();
 
-    _log('LOAD REMOTE CLOSED MONTH START', {
-      'monthKey': monthKey,
-      'staffId': staffId,
-      'hasToken': token.isNotEmpty,
-    });
-
-    if (token.isEmpty || staffId == null || staffId.isEmpty) {
+    if (token.isEmpty) {
       if (!mounted) return;
       setState(() {
         _remoteTried = true;
         _summary = null;
-        _error = 'ไม่พบ token หรือ employeeId สำหรับโหลดสลิป';
+        _error = 'ไม่พบสิทธิ์เข้าใช้งาน กรุณาออกจากระบบแล้วเข้าใหม่';
       });
+      return;
+    }
 
-      _log('LOAD REMOTE CLOSED MONTH SKIPPED', {
-        'reason': token.isEmpty ? 'token empty' : 'staffId empty',
-        'monthKey': monthKey,
-        'staffId': staffId,
+    if (staffId == null || staffId.isEmpty) {
+      if (!mounted) return;
+      setState(() {
+        _remoteTried = true;
+        _summary = null;
+        _error = 'ไม่พบข้อมูลพนักงานสำหรับโหลดสลิป';
       });
       return;
     }
@@ -648,27 +432,18 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
       if (!mounted) return;
       setState(() {
         _summary = null;
-        _error = 'ไม่พบข้อมูลงวดปิดจริงสำหรับเดือนนี้';
-      });
-
-      _log('LOAD REMOTE CLOSED MONTH NO ROW', {
-        'monthKey': monthKey,
-        'staffId': staffId,
+        _error = 'ยังไม่มีสลิปเงินเดือนที่ปิดงวดแล้วสำหรับเดือนนี้';
       });
       return;
     }
 
-    _log('LOAD REMOTE CLOSED MONTH ROW RECEIVED', row);
-
     final summary = PayslipSummaryModel.fromMap(row);
-    _logSummary('SUMMARY FROM MAP', summary);
 
     if (!mounted) return;
     setState(() {
       _summary = summary;
+      _error = null;
     });
-
-    _logSummary('SUMMARY SETSTATE DONE', _summary);
   }
 
   String _abbrFromName(String name) {
@@ -688,6 +463,7 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
 
     final a = parts[0].isNotEmpty ? parts[0][0] : 'C';
     final b = parts[1].isNotEmpty ? parts[1][0] : 'L';
+
     return ('$a$b').toUpperCase();
   }
 
@@ -725,6 +501,7 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
         final r = (i >> 16) & 0xFF;
         final g = (i >> 8) & 0xFF;
         final b = i & 0xFF;
+
         return PdfColor(r / 255.0, g / 255.0, b / 255.0);
       }
     } catch (_) {}
@@ -738,6 +515,7 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
     final y = d.year.toString().padLeft(4, '0');
     final m = d.month.toString().padLeft(2, '0');
     final dd = d.day.toString().padLeft(2, '0');
+
     return '$y-$m-$dd';
   }
 
@@ -752,12 +530,14 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
     final m = monthStart.month.toString().padLeft(2, '0');
     final c = clinicId.isNotEmpty ? clinicId : 'CLN';
     final e = empId.isNotEmpty ? empId : 'EMP';
+
     return 'PS-$y$m-$c-$e';
   }
 
   String _safeEmpId() {
     final staffId = _safeStaffIdForPayrollOrNull();
     if (staffId != null && staffId.isNotEmpty) return staffId;
+
     return widget.emp.id.trim();
   }
 
@@ -779,6 +559,18 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
     return '';
   }
 
+  String _summarySourceText(PayslipSummaryModel? summary) {
+    if (summary == null) {
+      return _remoteTried ? 'ไม่พบข้อมูลงวดนี้' : 'กำลังโหลดข้อมูล';
+    }
+
+    if (summary.isClosedPayroll) {
+      return 'งวดเงินเดือนที่ปิดแล้ว';
+    }
+
+    return 'ข้อมูลจากระบบเงินเดือน';
+  }
+
   Widget _brandHeaderCard(Color csPrimary) {
     final clinicName = (_clinic?.name.trim().isNotEmpty == true)
         ? _clinic!.name.trim()
@@ -792,10 +584,6 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
       _clinic?.brandColor,
       fallback: csPrimary,
     );
-
-    final srcText = (_summary?.isClosedPayroll == true)
-        ? 'ใช้ข้อมูลงวดปิดจริง'
-        : (_remoteTried ? (_summary?.source ?? 'ไม่พบข้อมูล') : 'กำลังเตรียมข้อมูล...');
 
     return Card(
       elevation: 1.5,
@@ -837,7 +625,7 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    'Payslip • ${_fmtMonthShort(_selectedMonth)}',
+                    'สลิปเงินเดือน • ${_fmtMonthShort(_selectedMonth)}',
                     style: TextStyle(
                       color: Colors.black.withOpacity(0.65),
                       fontWeight: FontWeight.w600,
@@ -850,7 +638,7 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
                   ),
                   const SizedBox(height: 6),
                   Text(
-                    srcText,
+                    _summarySourceText(_summary),
                     style: TextStyle(
                       color: Colors.black.withOpacity(0.55),
                       fontWeight: FontWeight.w600,
@@ -915,8 +703,6 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
   }
 
   pw.Document _buildPdf(PayslipSummaryModel summary) {
-    _logSummary('PDF BUILD INPUT SUMMARY', summary);
-
     final pdf = pw.Document();
 
     final clinicId = _clinic?.clinicId.trim() ?? '';
@@ -948,30 +734,6 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
     final themeData = (_pdfFontRegular != null && _pdfFontBold != null)
         ? pw.ThemeData.withFont(base: _pdfFontRegular!, bold: _pdfFontBold!)
         : null;
-
-    _log('PDF BUILD META', {
-      'clinicId': clinicId,
-      'clinicName': clinicName,
-      'abbr': abbr,
-      'issueDate': issueDate,
-      'period': period,
-      'empId': empId,
-      'empPos': empPos,
-      'empBranch': empBranch,
-      'payslipNo': payslipNo,
-      'lineItems': summary.lineItems
-          .map(
-            (e) => {
-              'keyName': e.keyName,
-              'label': e.label,
-              'amount': e.amount,
-              'sign': e.sign,
-              'included': e.amount > 0 || e.keyName == 'salary',
-            },
-          )
-          .toList(),
-      'netPay': summary.netPay,
-    });
 
     pdf.addPage(
       pw.MultiPage(
@@ -1022,10 +784,10 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
                       ),
                     ),
                     pw.SizedBox(height: 8),
-                    _kv('Payslip No.', payslipNo, bold: true),
-                    _kv('Issue Date', issueDate),
-                    _kv('Payroll Period', period),
-                    _kv('Source', summary.source),
+                    _kv('เลขที่สลิป', payslipNo, bold: true),
+                    _kv('วันที่ออกเอกสาร', issueDate),
+                    _kv('งวดเงินเดือน', period),
+                    _kv('แหล่งข้อมูล', 'ระบบเงินเดือน'),
                   ],
                 ),
               ),
@@ -1033,26 +795,26 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
           ),
           pw.SizedBox(height: 12),
           pw.Divider(),
-          _section('Employee Info'),
-          _kv('Name', widget.emp.fullName, bold: true),
-          if (empId.isNotEmpty) _kv('Employee ID', empId),
-          if (empPos.isNotEmpty) _kv('Position', empPos),
-          _kv('Employment Type', _isPartTime() ? 'Part-time' : 'Full-time'),
-          if (empBranch.isNotEmpty) _kv('Branch/Clinic', empBranch),
+          _section('ข้อมูลพนักงาน'),
+          _kv('ชื่อ-นามสกุล', widget.emp.fullName, bold: true),
+          if (empId.isNotEmpty) _kv('รหัสพนักงาน', empId),
+          if (empPos.isNotEmpty) _kv('ตำแหน่ง', empPos),
+          _kv('ประเภทพนักงาน', _isPartTime() ? 'Part-time' : 'Full-time'),
+          if (empBranch.isNotEmpty) _kv('สาขา/คลินิก', empBranch),
           pw.Divider(),
-          _section('Summary'),
+          _section('สรุปรายการ'),
           for (final item in summary.lineItems)
             if (item.amount > 0 || item.keyName == 'salary')
               _kv(
                 item.label,
-                '${item.sign}${_money(item.amount)} THB',
+                '${item.sign}${_money(item.amount)} บาท',
               ),
           pw.Divider(),
-          _kv('เงินรับจริง', '${_money(summary.netPay)} THB', bold: true),
-          _signatureLine(label: 'Approved by (Signature)'),
+          _kv('เงินรับจริง', '${_money(summary.netPay)} บาท', bold: true),
+          _signatureLine(label: 'ผู้อนุมัติ'),
           pw.SizedBox(height: 14),
           pw.Text(
-            'Generated by Clinic Payroll • This document is for record purpose.',
+            'เอกสารนี้สร้างจากระบบ Clinic Smart Staff',
             style: pw.TextStyle(fontSize: 8.5, color: PdfColors.grey600),
           ),
         ],
@@ -1063,8 +825,6 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
   }
 
   Widget _buildSummaryCard(PayslipSummaryModel summary) {
-    _logSummary('SUMMARY CARD INPUT', summary);
-
     return Card(
       margin: const EdgeInsets.fromLTRB(12, 0, 12, 8),
       elevation: 1,
@@ -1118,19 +878,38 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
     );
   }
 
+  Widget _buildErrorState() {
+    final msg = _error ?? 'ไม่พบข้อมูลสำหรับสร้างสลิป';
+
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.receipt_long_outlined, size: 46),
+            const SizedBox(height: 12),
+            Text(
+              msg,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: _bootstrap,
+              icon: const Icon(Icons.refresh),
+              label: const Text('ลองโหลดใหม่'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final summary = _summary;
-
-    _log('BUILD', {
-      'loading': _loading,
-      'error': _error,
-      'hasSummary': summary != null,
-      'selectedMonth': _monthKey(_selectedMonth),
-      'remoteTried': _remoteTried,
-    });
-    _logSummary('BUILD SUMMARY', summary);
 
     return Scaffold(
       appBar: AppBar(
@@ -1153,52 +932,35 @@ class _PayslipPreviewScreenState extends State<PayslipPreviewScreen> {
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
-          : _error != null
-              ? Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Text(_error!, textAlign: TextAlign.center),
-                  ),
-                )
-              : summary == null
-                  ? const Center(child: Text('ไม่พบข้อมูลสำหรับสร้างสลิป'))
-                  : Column(
-                      children: [
-                        Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.all(12),
-                          color: cs.primary.withOpacity(0.08),
-                          child: Text(
-                            'เดือนที่เลือก: ${_fmtMonthShort(_selectedMonth)}',
-                            style: const TextStyle(fontWeight: FontWeight.bold),
-                          ),
-                        ),
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-                          child: _brandHeaderCard(cs.primary),
-                        ),
-                        _buildSummaryCard(summary),
-                        const SizedBox(height: 4),
-                        Expanded(
-                          child: PdfPreview(
-                            key: ValueKey(_pdfPreviewKey(summary)),
-                            canChangePageFormat: false,
-                            canChangeOrientation: false,
-                            build: (format) {
-                              _log('PDF PREVIEW BUILD TRIGGERED', {
-                                'pageFormat': format.toString(),
-                                'selectedMonth': _monthKey(_selectedMonth),
-                              });
-                              _logSummary(
-                                'PDF PREVIEW CURRENT SUMMARY',
-                                summary,
-                              );
-                              return _buildPdf(summary).save();
-                            },
-                          ),
-                        ),
-                      ],
+          : summary == null || _error != null
+              ? _buildErrorState()
+              : Column(
+                  children: [
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(12),
+                      color: cs.primary.withOpacity(0.08),
+                      child: Text(
+                        'เดือนที่เลือก: ${_fmtMonthShort(_selectedMonth)}',
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
                     ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+                      child: _brandHeaderCard(cs.primary),
+                    ),
+                    _buildSummaryCard(summary),
+                    const SizedBox(height: 4),
+                    Expanded(
+                      child: PdfPreview(
+                        key: ValueKey(_pdfPreviewKey(summary)),
+                        canChangePageFormat: false,
+                        canChangeOrientation: false,
+                        build: (_) => _buildPdf(summary).save(),
+                      ),
+                    ),
+                  ],
+                ),
     );
   }
 }

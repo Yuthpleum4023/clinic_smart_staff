@@ -54,11 +54,11 @@ class WorkTimeEntry {
   });
 
   Map<String, dynamic> toMap() => {
-    'date': date,
-    'start': start,
-    'end': end,
-    'breakMinutes': breakMinutes,
-  };
+        'date': date,
+        'start': start,
+        'end': end,
+        'breakMinutes': breakMinutes,
+      };
 
   factory WorkTimeEntry.fromMap(Map<String, dynamic> map) {
     return WorkTimeEntry(
@@ -125,6 +125,18 @@ class _ManualOtSaveResult {
   bool get isDuplicate => statusCode == 409;
 }
 
+class _ManualAttendanceSaveResult {
+  final bool ok;
+  final int statusCode;
+  final String message;
+
+  const _ManualAttendanceSaveResult({
+    required this.ok,
+    required this.statusCode,
+    required this.message,
+  });
+}
+
 class EmployeeDetailScreen extends StatefulWidget {
   final String clinicId;
   final EmployeeModel employee;
@@ -163,6 +175,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
   bool _savingTax = false;
 
   bool _workEntriesLoaded = false;
+  bool _savingManualAttendance = false;
 
   List<WorkHourEntry> _allWorkEntries = [];
   DateTime? workDate;
@@ -200,9 +213,6 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
   Map<String, dynamic>? _closedPayslipSummary;
   bool _recalculatingClosedPayroll = false;
 
-  // ✅ Backend preview for open month.
-  // Important for part-time: normal wage must come from backend Attendance
-  // instead of local manual hours only.
   bool _loadingPayrollPreview = false;
   String _payrollPreviewError = '';
   Map<String, dynamic>? _payrollPreviewRow;
@@ -246,18 +256,6 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     final v = _clinicSsoMaxWageBase;
     if (v == null || v <= 0) return 17500.0;
     return v;
-  }
-
-  bool get _effectiveClinicSsoEnabled {
-    return _clinicSsoEnabled != false;
-  }
-
-  double _computeSsoFromClinicConfig(double salaryBase) {
-    if (!_effectiveClinicSsoEnabled) return 0.0;
-    final contributableBase = salaryBase
-        .clamp(0.0, _effectiveClinicSsoMaxWageBase)
-        .toDouble();
-    return contributableBase * _effectiveClinicSsoRate;
   }
 
   String get _employeeTaxModeKey => 'employee_tax_mode_${emp.id}';
@@ -522,9 +520,9 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
   }
 
   Map<String, String> _headers(String token) => {
-    'Content-Type': 'application/json',
-    'Authorization': 'Bearer $token',
-  };
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $token',
+      };
 
   Map<String, dynamic> _asMap(dynamic v) {
     if (v is Map) {
@@ -818,8 +816,6 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
           _closedPayslipSummary = null;
         });
 
-        // ✅ Month is not closed yet.
-        // Load backend payroll preview so part-time hours come from Attendance.
         await _loadPayrollPreviewForSelectedMonth();
 
         return;
@@ -899,31 +895,21 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
         'clinicId': clinicId,
         'employeeId': employeeId,
         'month': monthKey,
-
-        // Backend expects this format.
         'taxMode': _taxMode == _EmployeeTaxMode.withholding
             ? 'WITHHOLDING'
             : 'NO_WITHHOLDING',
-
-        // Full-time uses staff_service salary first; this is fallback only.
         'grossBase': emp.isPartTime ? 0.0 : emp.baseSalary,
-
-        // ✅ Production payroll hint:
-        // Backend still uses staff_service as source of truth when available.
-        // These fields are fallback only when staff_service is rate-limited/down.
         'employmentType': emp.isPartTime ? 'parttime' : 'fulltime',
         'isPartTime': emp.isPartTime,
         'hourlyRate': emp.isPartTime ? emp.hourlyWage : 0.0,
         'hourlyWage': emp.isPartTime ? emp.hourlyWage : 0.0,
-
         'bonus': emp.bonus,
         'otherAllowance': 0.0,
         'otherDeduction': emp.isPartTime ? 0.0 : emp.absentDeduction(),
         'pvdEmployeeMonthly': 0.0,
-
         if (linkedUserId.isNotEmpty) 'employeeUserId': linkedUserId,
 
-        // Migration fallback only. Backend attendance wins for part-time.
+        // Fallback input only. Backend Attendance is still the source of truth.
         if (emp.isPartTime) 'regularWorkHours': totalWorkHours,
         if (emp.isPartTime) 'regularWorkMinutes': (totalWorkHours * 60).round(),
       });
@@ -1063,9 +1049,8 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
             : 'NO_WITHHOLDING',
         employeeUserId: linkedUserId.isEmpty ? null : linkedUserId,
         regularWorkHours: emp.isPartTime ? totalWorkHours : null,
-        regularWorkMinutes: emp.isPartTime
-            ? (totalWorkHours * 60).round()
-            : null,
+        regularWorkMinutes:
+            emp.isPartTime ? (totalWorkHours * 60).round() : null,
       );
 
       if (!mounted || _disposed) return;
@@ -1162,6 +1147,10 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       otDate = null;
       otStart = null;
       otEnd = null;
+      workTimeDate = null;
+      workStart = null;
+      workEnd = null;
+      workDate = null;
       isHolidayX2 = false;
     });
 
@@ -1241,8 +1230,8 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
 
       final statusParam =
           (_backendOtStatus.trim().isEmpty || _backendOtStatus == 'all')
-          ? ''
-          : '&status=${Uri.encodeQueryComponent(_backendOtStatus)}';
+              ? ''
+              : '&status=${Uri.encodeQueryComponent(_backendOtStatus)}';
 
       final candidates = <String>[
         '/overtime?month=$monthKey&principalId=$staffId$statusParam',
@@ -1294,7 +1283,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
         final m = approvedAny is num
             ? approvedAny.toInt()
             : int.tryParse('${approvedAny ?? minutesAny}') ??
-                  (minutesAny is num ? minutesAny.toInt() : 0);
+                (minutesAny is num ? minutesAny.toInt() : 0);
 
         final mul = (r['multiplier'] is num)
             ? (r['multiplier'] as num).toDouble()
@@ -1325,8 +1314,8 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
         _backendOtError = e.toString().contains('NO_TOKEN')
             ? 'ไม่พบสิทธิ์เข้าใช้งาน กรุณาออกจากระบบแล้วเข้าใหม่'
             : e.toString().contains('NO_STAFF_ID')
-            ? 'ไม่พบข้อมูลพนักงานสำหรับโหลด OT'
-            : 'โหลด OT จากระบบไม่สำเร็จ';
+                ? 'ไม่พบข้อมูลพนักงานสำหรับโหลด OT'
+                : 'โหลด OT จากระบบไม่สำเร็จ';
       });
     }
   }
@@ -1406,9 +1395,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     }
 
     if (statusCode == 400) {
-      return backendMessage.isNotEmpty
-          ? backendMessage
-          : 'ข้อมูล OT ไม่ถูกต้อง';
+      return backendMessage.isNotEmpty ? backendMessage : 'ข้อมูล OT ไม่ถูกต้อง';
     }
 
     if (statusCode == 401) {
@@ -1430,6 +1417,37 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     return backendMessage.isNotEmpty
         ? backendMessage
         : 'บันทึก OT เข้าระบบไม่สำเร็จ';
+  }
+
+  String _friendlyManualAttendanceError({
+    required int statusCode,
+    required String backendMessage,
+  }) {
+    if (statusCode == 400) {
+      return backendMessage.isNotEmpty
+          ? backendMessage
+          : 'ข้อมูลเวลาเข้างาน-ออกงานไม่ถูกต้อง';
+    }
+
+    if (statusCode == 401) {
+      return 'สิทธิ์หมดอายุ กรุณาออกจากระบบแล้วเข้าใหม่';
+    }
+
+    if (statusCode == 403) {
+      return 'ไม่มีสิทธิ์บันทึกเวลาแทนพนักงาน';
+    }
+
+    if (statusCode == 404) {
+      return 'ยังไม่สามารถเชื่อมต่อระบบบันทึกเวลาแทนพนักงานได้';
+    }
+
+    if (statusCode >= 500) {
+      return 'ระบบมีปัญหา กรุณาลองใหม่อีกครั้ง';
+    }
+
+    return backendMessage.isNotEmpty
+        ? backendMessage
+        : 'บันทึกเวลาแทนพนักงานไม่สำเร็จ';
   }
 
   Future<_ManualOtSaveResult> _createOtManualViaApi({
@@ -1537,6 +1555,147 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     );
 
     return _ManualOtSaveResult(
+      ok: false,
+      statusCode: lastStatusCode,
+      message: friendly,
+    );
+  }
+
+  Future<_ManualAttendanceSaveResult> _createManualAttendanceViaApi({
+    required String workDate,
+    required String startHHmm,
+    required String endHHmm,
+    required int breakMinutes,
+  }) async {
+    final staffId = _resolveStaffIdForPayroll();
+
+    if (staffId.trim().isEmpty) {
+      return const _ManualAttendanceSaveResult(
+        ok: false,
+        statusCode: 0,
+        message: 'ไม่พบข้อมูลพนักงานสำหรับบันทึกเวลา',
+      );
+    }
+
+    final token = await _getToken();
+    if (token == null || token.trim().isEmpty) {
+      return const _ManualAttendanceSaveResult(
+        ok: false,
+        statusCode: 401,
+        message: 'ไม่พบสิทธิ์เข้าใช้งาน กรุณาออกจากระบบแล้วเข้าใหม่',
+      );
+    }
+
+    final clinicId = await _resolveClinicId();
+    if (clinicId == null || clinicId.trim().isEmpty) {
+      return const _ManualAttendanceSaveResult(
+        ok: false,
+        statusCode: 400,
+        message: 'ไม่พบข้อมูลคลินิก',
+      );
+    }
+
+    final minutes = _minutesBetween(startHHmm, endHHmm) - breakMinutes;
+    if (minutes <= 0 || minutes > 24 * 60) {
+      return const _ManualAttendanceSaveResult(
+        ok: false,
+        statusCode: 400,
+        message: 'ช่วงเวลาเข้างาน-ออกงานไม่ถูกต้อง',
+      );
+    }
+
+    final body = _appendEmployeeIdentityToBody({
+      'clinicId': clinicId,
+      'workDate': workDate,
+      'date': workDate,
+      'attendanceDate': workDate,
+      'start': startHHmm,
+      'end': endHHmm,
+      'startTime': startHHmm,
+      'endTime': endHHmm,
+      'checkInTime': startHHmm,
+      'checkOutTime': endHHmm,
+      'clockInTime': startHHmm,
+      'clockOutTime': endHHmm,
+      'breakMinutes': breakMinutes,
+      'minutes': minutes,
+      'workMinutes': minutes,
+      'totalMinutes': minutes,
+      'regularWorkMinutes': minutes,
+      'status': 'completed',
+      'attendanceStatus': 'completed',
+      'source': 'manual_admin',
+      'createdByAdmin': true,
+      'note': 'Admin manual attendance entry',
+      'employmentType': emp.isPartTime ? 'parttime' : 'fulltime',
+      'isPartTime': emp.isPartTime,
+      if (emp.isPartTime) 'hourlyRate': emp.hourlyWage,
+      if (emp.isPartTime) 'hourlyWage': emp.hourlyWage,
+    });
+
+    final candidates = <String>[
+      '/attendance/admin/manual',
+      '/api/attendance/admin/manual',
+      '/attendance/manual',
+      '/api/attendance/manual',
+      '/attendance/sessions/manual',
+      '/api/attendance/sessions/manual',
+      '/attendance/check-in-checkout/manual',
+      '/api/attendance/check-in-checkout/manual',
+    ];
+
+    int lastStatusCode = 0;
+    String lastMessage = '';
+
+    for (final p in candidates) {
+      try {
+        final res = await http.post(
+          _uri(p),
+          headers: _headers(token),
+          body: jsonEncode(body),
+        );
+
+        lastStatusCode = res.statusCode;
+        lastMessage = _extractBackendMessage(res);
+
+        if (res.statusCode == 200 || res.statusCode == 201) {
+          return _ManualAttendanceSaveResult(
+            ok: true,
+            statusCode: res.statusCode,
+            message: 'บันทึกเวลาเข้างาน-ออกงานแทนพนักงานแล้ว',
+          );
+        }
+
+        if (res.statusCode == 400 ||
+            res.statusCode == 401 ||
+            res.statusCode == 403 ||
+            res.statusCode == 409) {
+          final friendly = _friendlyManualAttendanceError(
+            statusCode: res.statusCode,
+            backendMessage: lastMessage,
+          );
+
+          return _ManualAttendanceSaveResult(
+            ok: false,
+            statusCode: res.statusCode,
+            message: friendly,
+          );
+        }
+
+        if (res.statusCode == 404) {
+          continue;
+        }
+      } catch (e) {
+        lastMessage = e.toString();
+      }
+    }
+
+    final friendly = _friendlyManualAttendanceError(
+      statusCode: lastStatusCode,
+      backendMessage: lastMessage,
+    );
+
+    return _ManualAttendanceSaveResult(
       ok: false,
       statusCode: lastStatusCode,
       message: friendly,
@@ -1819,9 +1978,9 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
 
           if (a != b) {
             if (!mounted || _disposed) return;
-            ScaffoldMessenger.of(
-              context,
-            ).showSnackBar(const SnackBar(content: Text('PIN ไม่ตรงกัน')));
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('PIN ไม่ตรงกัน')),
+            );
             return;
           }
 
@@ -2022,7 +2181,10 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     required double withholdingAmount,
     required double netAfterTax,
     required bool hasClosedPayroll,
+    required bool hasBackendPayrollPreview,
   }) {
+    final hasBackendValue = hasClosedPayroll || hasBackendPayrollPreview;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -2047,13 +2209,13 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
           onChanged: hasClosedPayroll
               ? null
               : !_isEditUnlocked
-              ? null
-              : (v) async {
-                  if (v == null) return;
-                  if (!mounted || _disposed) return;
-                  setState(() => _taxMode = v);
-                  await _loadClosedPayrollForSelectedMonth();
-                },
+                  ? null
+                  : (v) async {
+                      if (v == null) return;
+                      if (!mounted || _disposed) return;
+                      setState(() => _taxMode = v);
+                      await _loadClosedPayrollForSelectedMonth();
+                    },
         ),
         const SizedBox(height: 10),
         if (_taxMode == _EmployeeTaxMode.withholding) ...[
@@ -2080,20 +2242,27 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
           ),
         ),
         const SizedBox(height: 10),
-        Text(
-          _taxMode == _EmployeeTaxMode.none
-              ? 'ภาษี: ไม่หัก'
-              : 'ภาษีหัก ณ ที่จ่าย: -${withholdingAmount.toStringAsFixed(2)} บาท',
-        ),
-        Text(
-          'สุทธิหลังภาษี: ${netAfterTax.toStringAsFixed(2)} บาท',
-          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          'ฐานคำนวณสุทธิก่อนภาษี: ${totalMonthPayBeforeTax.toStringAsFixed(2)} บาท',
-          style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
-        ),
+        if (hasBackendValue) ...[
+          Text(
+            _taxMode == _EmployeeTaxMode.none
+                ? 'ภาษี: ไม่หัก'
+                : 'ภาษีหัก ณ ที่จ่าย: -${withholdingAmount.toStringAsFixed(2)} บาท',
+          ),
+          Text(
+            'สุทธิหลังภาษี: ${netAfterTax.toStringAsFixed(2)} บาท',
+            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'ฐานคำนวณสุทธิก่อนภาษี: ${totalMonthPayBeforeTax.toStringAsFixed(2)} บาท',
+            style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+          ),
+        ] else ...[
+          Text(
+            'ยังไม่มีพรีวิวจาก backend สำหรับเดือนนี้',
+            style: TextStyle(fontSize: 12, color: Colors.orange.shade700),
+          ),
+        ],
         if (hasClosedPayroll)
           const Padding(
             padding: EdgeInsets.only(top: 8),
@@ -2215,9 +2384,8 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
             detailOtHours: 0,
             employeeUserId: linkedUserId.isEmpty ? null : linkedUserId,
             regularWorkHours: isParttime ? regularWorkHoursInput : null,
-            regularWorkMinutes: isParttime
-                ? (regularWorkHoursInput * 60).round()
-                : null,
+            regularWorkMinutes:
+                isParttime ? (regularWorkHoursInput * 60).round() : null,
             workItems: null,
           ),
         ),
@@ -2255,8 +2423,6 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
   String get _workTimeEntriesKey => 'work_time_entries_${emp.id}';
 
   Future<void> _loadWorkEntriesIfNeeded() async {
-    if (!emp.isPartTime) return;
-
     if (!mounted || _disposed) return;
     setState(() => _workEntriesLoaded = false);
 
@@ -2371,7 +2537,10 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
   }
 
   Future<void> _addWorkEntry() async {
-    if (!emp.isPartTime) return;
+    if (!emp.isPartTime) {
+      _snack('การใส่จำนวนชั่วโมงโดยตรงใช้เฉพาะพนักงานรายชั่วโมง');
+      return;
+    }
 
     if (!_isEditUnlocked) {
       _snack('ต้องปลดล็อกโหมดแก้ไขก่อน');
@@ -2436,14 +2605,19 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
   }
 
   Future<void> _pickWorkTimeDate() async {
-    final now = DateTime.now();
+    final first = _monthStart(selectedMonth);
+    final last = _monthEnd(selectedMonth);
+
+    final initial = workTimeDate != null && _isSameMonth(workTimeDate!, selectedMonth)
+        ? workTimeDate!
+        : first;
 
     final picked = await showDatePicker(
       context: context,
-      initialDate: workTimeDate ?? now,
-      firstDate: DateTime(now.year - 5, 1, 1),
-      lastDate: DateTime(now.year + 5, 12, 31),
-      helpText: 'เลือกวันที่ทำงาน (แบบเวลาเริ่ม-จบ)',
+      initialDate: initial,
+      firstDate: first,
+      lastDate: last,
+      helpText: 'เลือกวันที่เข้างาน-ออกงาน (${_fmtMonth(selectedMonth)})',
     );
 
     if (picked == null) return;
@@ -2456,7 +2630,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     final picked = await showTimePicker(
       context: context,
       initialTime: workStart ?? const TimeOfDay(hour: 9, minute: 0),
-      helpText: 'เวลาเริ่มงาน',
+      helpText: 'เวลาเข้างาน',
     );
 
     if (picked == null) return;
@@ -2469,7 +2643,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     final picked = await showTimePicker(
       context: context,
       initialTime: workEnd ?? const TimeOfDay(hour: 18, minute: 0),
-      helpText: 'เวลาจบงาน',
+      helpText: 'เวลาออกงาน',
     );
 
     if (picked == null) return;
@@ -2489,7 +2663,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
   }
 
   Future<void> _addWorkTimeEntry() async {
-    if (!emp.isPartTime) return;
+    if (_savingManualAttendance) return;
 
     if (!_isEditUnlocked) {
       _snack('ต้องปลดล็อกโหมดแก้ไขก่อน');
@@ -2501,8 +2675,13 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       return;
     }
 
+    if (!_isSameMonth(workTimeDate!, selectedMonth)) {
+      _snack('วันที่ต้องอยู่ในเดือนที่เลือก (${_fmtMonth(selectedMonth)})');
+      return;
+    }
+
     if (workStart == null || workEnd == null) {
-      _snack('กรุณาเลือกเวลาเริ่ม/เวลาจบ');
+      _snack('กรุณาเลือกเวลาเข้างาน/ออกงาน');
       return;
     }
 
@@ -2521,20 +2700,40 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     }
 
     if (!mounted || _disposed) return;
+    setState(() => _savingManualAttendance = true);
 
-    setState(() {
-      _allWorkTimeEntries.add(entry);
-      workTimeDate = null;
-      workStart = null;
-      workEnd = null;
-      breakMinutesCtrl.text = '0';
-    });
+    try {
+      final result = await _createManualAttendanceViaApi(
+        workDate: entry.date,
+        startHHmm: entry.start,
+        endHHmm: entry.end,
+        breakMinutes: entry.breakMinutes,
+      );
 
-    await _persistWorkTimeEntries();
-    await _loadWorkEntriesIfNeeded();
-    await _loadClosedPayrollForSelectedMonth();
+      if (!mounted || _disposed) return;
 
-    _snack('บันทึกเวลาแล้ว (${h.toStringAsFixed(2)} ชม.)');
+      if (!result.ok) {
+        _snack(result.message);
+        return;
+      }
+
+      setState(() {
+        _allWorkTimeEntries.add(entry);
+        workTimeDate = null;
+        workStart = null;
+        workEnd = null;
+        breakMinutesCtrl.text = '0';
+      });
+
+      await _persistWorkTimeEntries();
+      await _loadWorkEntriesIfNeeded();
+      await _loadClosedPayrollForSelectedMonth();
+
+      _snack('บันทึกเวลาเข้างาน-ออกงานแทนพนักงานแล้ว ✅');
+    } finally {
+      if (!mounted || _disposed) return;
+      setState(() => _savingManualAttendance = false);
+    }
   }
 
   Future<void> _deleteWorkTimeEntry(
@@ -2566,7 +2765,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     await _loadWorkEntriesIfNeeded();
     await _loadClosedPayrollForSelectedMonth();
 
-    _snack('ลบรายการเวลาแล้ว');
+    _snack('ลบรายการเวลาในเครื่องแล้ว');
   }
 
   Future<void> _pickOtDate() async {
@@ -2683,8 +2882,8 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       final savedStatus = result.savedStatus.trim().toLowerCase();
       final visibleStatus =
           ['approved', 'pending', 'rejected'].contains(savedStatus)
-          ? savedStatus
-          : 'approved';
+              ? savedStatus
+              : 'approved';
 
       setState(() {
         otDate = null;
@@ -3017,27 +3216,6 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
 
     final legacyHours = _sumWorkHours(monthWorkEntries);
     final timeHours = _sumWorkTimeHours(monthWorkTimeEntries);
-    final totalWorkHours = legacyHours + timeHours;
-
-    final hourlyWage = emp.hourlyWage;
-
-    final localTotalOtHours = emp.totalOtHoursOfMonth(
-      selectedMonth.year,
-      selectedMonth.month,
-    );
-    final localTotalOtAmount = emp.totalOtAmountOfMonth(
-      selectedMonth.year,
-      selectedMonth.month,
-    );
-
-    final backendTotalOtHours = _backendApprovedMinutes / 60.0;
-
-    final otBaseHourlyEstimate = isParttime
-        ? hourlyWage
-        : (emp.baseSalary > 0 ? emp.baseSalary / 30.0 / 8.0 : 0.0);
-
-    final backendOtPayEstimate =
-        _backendApprovedWeightedHours * otBaseHourlyEstimate;
 
     final closedRow = _closedPayrollRow ?? <String, dynamic>{};
     final closedAmounts = _asMap(_closedPayslipSummary?['amounts']);
@@ -3071,6 +3249,8 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     final hasBackendPayrollPreview =
         !hasClosedPayroll && previewAmounts.isNotEmpty;
 
+    final hasBackendPayrollValue = hasClosedPayroll || hasBackendPayrollPreview;
+
     final previewSalary = _readNum(previewAmounts['salary']);
     final previewSso = _readNum(previewAmounts['socialSecurity']);
     final previewOt = _readNum(previewAmounts['ot']);
@@ -3089,148 +3269,78 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     final previewOtHours = _readNum(previewRow['displayOtHours']);
     final previewRegularWorkHours = _readNum(previewRegularWork['hours']);
 
-    final fallbackTotalOtHours = (!_loadingBackendOt && _backendOtError.isEmpty)
-        ? backendTotalOtHours
-        : 0.0;
-
-    final fallbackOtPay = (!_loadingBackendOt && _backendOtError.isEmpty)
-        ? backendOtPayEstimate
-        : 0.0;
-
-    final fallbackSsoAmount = isParttime
-        ? 0.0
-        : _computeSsoFromClinicConfig(emp.baseSalary);
-    final fallbackAbsentDeduction = isParttime ? 0.0 : emp.absentDeduction();
-
-    final normalPay = isParttime ? (totalWorkHours * hourlyWage) : 0.0;
-    final grossBaseFulltime = isParttime ? 0.0 : emp.baseSalary;
-
-    final fallbackAfterSsoAndLeaveNoOtFulltime = isParttime
-        ? 0.0
-        : (grossBaseFulltime - fallbackSsoAmount - fallbackAbsentDeduction)
-              .clamp(0.0, double.infinity)
-              .toDouble();
-
-    final fallbackTotalMonthPayFulltime = isParttime
-        ? 0.0
-        : (grossBaseFulltime -
-                  fallbackSsoAmount -
-                  fallbackAbsentDeduction +
-                  fallbackOtPay +
-                  emp.bonus)
-              .clamp(0.0, double.infinity)
-              .toDouble();
-
-    final fallbackTotalMonthPayParttime = isParttime
-        ? (normalPay + fallbackOtPay + emp.bonus)
-        : 0.0;
-
-    final fallbackGrossMonthlyForTax = isParttime
-        ? normalPay
-        : grossBaseFulltime;
-    final fallbackTotalMonthPayBeforeTax = isParttime
-        ? fallbackTotalMonthPayParttime
-        : fallbackTotalMonthPayFulltime;
-
-    final fallbackWithholdingPercent = _getWithholdingPercent();
-    final fallbackWithholdingAmount = _taxMode == _EmployeeTaxMode.withholding
-        ? fallbackTotalMonthPayBeforeTax * (fallbackWithholdingPercent / 100.0)
-        : 0.0;
-    final fallbackNetAfterTax =
-        fallbackTotalMonthPayBeforeTax - fallbackWithholdingAmount;
-
-    final totalOtHours = hasClosedPayroll
-        ? closedOtHours
-        : hasBackendPayrollPreview && previewOtHours > 0
-        ? previewOtHours
-        : fallbackTotalOtHours;
-
-    final otPay = hasClosedPayroll
-        ? closedOt
+    final shownSalary = hasClosedPayroll
+        ? closedSalary
         : hasBackendPayrollPreview
-        ? previewOt
-        : fallbackOtPay;
+            ? previewSalary
+            : 0.0;
 
-    final ssoAmount = hasClosedPayroll
+    final shownSso = hasClosedPayroll
         ? closedSso
         : hasBackendPayrollPreview
-        ? previewSso
-        : fallbackSsoAmount;
+            ? previewSso
+            : 0.0;
 
-    final absentDeduction = hasClosedPayroll
-        ? closedLeaveDeduction
+    final shownOt = hasClosedPayroll
+        ? closedOt
         : hasBackendPayrollPreview
-        ? previewLeaveDeduction
-        : fallbackAbsentDeduction;
+            ? previewOt
+            : 0.0;
 
     final shownBonus = hasClosedPayroll
         ? closedBonus
         : hasBackendPayrollPreview
-        ? previewBonus
-        : emp.bonus;
+            ? previewBonus
+            : 0.0;
 
-    final grossMonthlyForTax = hasClosedPayroll
-        ? closedSalary
+    final shownLeaveDeduction = hasClosedPayroll
+        ? closedLeaveDeduction
         : hasBackendPayrollPreview
-        ? previewSalary
-        : fallbackGrossMonthlyForTax;
+            ? previewLeaveDeduction
+            : 0.0;
 
-    final totalMonthPayBeforeTax = hasClosedPayroll
-        ? closedGrossBeforeTax
-        : hasBackendPayrollPreview
-        ? previewGrossBeforeTax
-        : fallbackTotalMonthPayBeforeTax;
-
-    final withholdingAmount = hasClosedPayroll
+    final shownTax = hasClosedPayroll
         ? closedTax
         : hasBackendPayrollPreview
-        ? previewTax
-        : fallbackWithholdingAmount;
+            ? previewTax
+            : 0.0;
 
-    final netAfterTax = hasClosedPayroll
+    final shownNetPay = hasClosedPayroll
         ? closedNetPay
         : hasBackendPayrollPreview
-        ? previewNetPay
-        : fallbackNetAfterTax;
+            ? previewNetPay
+            : 0.0;
 
-    final afterSsoAndLeaveNoOtFulltime = hasClosedPayroll
-        ? (closedSalary - closedSso - closedLeaveDeduction)
-              .clamp(0.0, double.infinity)
-              .toDouble()
-        : hasBackendPayrollPreview
-        ? (previewSalary - previewSso - previewLeaveDeduction)
-              .clamp(0.0, double.infinity)
-              .toDouble()
-        : fallbackAfterSsoAndLeaveNoOtFulltime;
-
-    final totalMonthPayFulltime = hasClosedPayroll
+    final shownGrossBeforeTax = hasClosedPayroll
         ? closedGrossBeforeTax
         : hasBackendPayrollPreview
-        ? previewGrossBeforeTax
-        : fallbackTotalMonthPayFulltime;
+            ? previewGrossBeforeTax
+            : 0.0;
 
-    final totalMonthPayParttime = hasClosedPayroll
-        ? closedGrossBeforeTax
+    final shownOtHours = hasClosedPayroll
+        ? closedOtHours
         : hasBackendPayrollPreview
-        ? previewGrossBeforeTax
-        : fallbackTotalMonthPayParttime;
+            ? previewOtHours
+            : 0.0;
 
-    final parttimeWorkHoursForDisplay =
-        hasClosedPayroll && closedRegularWorkHours > 0
+    final shownRegularWorkHours = hasClosedPayroll && closedRegularWorkHours > 0
         ? closedRegularWorkHours
         : hasBackendPayrollPreview && previewRegularWorkHours > 0
-        ? previewRegularWorkHours
-        : totalWorkHours;
-
-    final parttimeNormalPayForDisplay = hasClosedPayroll
-        ? closedSalary
-        : hasBackendPayrollPreview
-        ? previewSalary
-        : normalPay;
+            ? previewRegularWorkHours
+            : 0.0;
 
     final monthOtEntries = emp.otEntries
         .where((e) => e.isInMonth(selectedMonth.year, selectedMonth.month))
         .toList();
+
+    final localTotalOtHours = emp.totalOtHoursOfMonth(
+      selectedMonth.year,
+      selectedMonth.month,
+    );
+    final localTotalOtAmount = emp.totalOtAmountOfMonth(
+      selectedMonth.year,
+      selectedMonth.month,
+    );
 
     final bottomSafe = MediaQuery.of(context).viewPadding.bottom;
     final keyboard = MediaQuery.of(context).viewInsets.bottom;
@@ -3324,6 +3434,8 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                   ],
                 ),
                 const SizedBox(height: 8),
+
+                // ================= OT SUMMARY =================
                 Card(
                   child: Padding(
                     padding: const EdgeInsets.all(14),
@@ -3402,16 +3514,23 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                           Text(
                             ' • ชั่วโมงถ่วงน้ำหนัก: ${_backendApprovedWeightedHours.toStringAsFixed(2)} ชม.',
                           ),
-                          if (!hasClosedPayroll)
-                            Text(
-                              ' • พรีวิวค่า OT: ${backendOtPayEstimate.toStringAsFixed(2)} บาท',
+                          const SizedBox(height: 6),
+                          Text(
+                            'หมายเหตุ: ยอดเงิน OT จริงให้ยึดจาก backend preview/งวดที่ปิดแล้วเท่านั้น',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.grey.shade700,
+                              height: 1.35,
                             ),
+                          ),
                         ],
                       ],
                     ),
                   ),
                 ),
                 const SizedBox(height: 12),
+
+                // ================= PAYROLL SUMMARY =================
                 Card(
                   child: Padding(
                     padding: const EdgeInsets.all(14),
@@ -3453,7 +3572,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                           )
                         else
                           Text(
-                            'เดือนนี้ยังไม่ปิดงวด — ยอดด้านล่างเป็นพรีวิวจากข้อมูลที่บันทึกในระบบ เมื่อปิดงวด ระบบจะคำนวณยอดจริงอีกครั้ง',
+                            'เดือนนี้ยังไม่ปิดงวด — ยังไม่มีพรีวิวจาก backend',
                             style: TextStyle(
                               fontSize: 12,
                               color: Colors.orange.shade700,
@@ -3472,132 +3591,83 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                           ),
                         ],
                         const SizedBox(height: 10),
-                        if (!isParttime) ...[
-                          const Text('ประเภท: Full-time'),
-                          const SizedBox(height: 6),
-                          const Text('อัตราประกันสังคมของคลินิก (%)'),
-                          const SizedBox(height: 6),
-                          if (_loadingClinicPayrollConfig)
-                            const Padding(
-                              padding: EdgeInsets.only(bottom: 8),
-                              child: LinearProgressIndicator(minHeight: 3),
+                        Text(
+                          'ประเภท: ${isParttime ? 'Part-time' : 'Full-time'}',
+                          style: const TextStyle(fontWeight: FontWeight.w700),
+                        ),
+                        const SizedBox(height: 8),
+                        if (!hasBackendPayrollValue) ...[
+                          Text(
+                            'ยังไม่มีตัวเลขเงินเดือนจาก backend สำหรับเดือนนี้',
+                            style: TextStyle(
+                              color: Colors.grey.shade800,
+                              height: 1.35,
                             ),
-                          if (_clinicPayrollConfigError.isNotEmpty)
-                            Padding(
-                              padding: const EdgeInsets.only(bottom: 8),
-                              child: Text(
-                                _clinicPayrollConfigError,
-                                style: const TextStyle(
-                                  fontSize: 12,
-                                  color: Colors.orange,
-                                ),
-                              ),
-                            ),
-                          Column(
-                            crossAxisAlignment: CrossAxisAlignment.stretch,
-                            children: [
-                              TextField(
-                                controller: ssoPercentCtrl,
-                                enabled:
-                                    !hasClosedPayroll &&
-                                    _isEditUnlocked &&
-                                    !_savingSso &&
-                                    !_loadingClinicPayrollConfig,
-                                keyboardType:
-                                    const TextInputType.numberWithOptions(
-                                      decimal: true,
-                                    ),
-                                inputFormatters: [_decimalFormatter],
-                                decoration: InputDecoration(
-                                  labelText: 'เช่น 5.00',
-                                  helperText:
-                                      'เพดานฐานค่าจ้าง: ${_effectiveClinicSsoMaxWageBase.toStringAsFixed(0)} บาท',
-                                  border: const OutlineInputBorder(),
-                                ),
-                              ),
-                              const SizedBox(height: 8),
-                              ElevatedButton(
-                                onPressed:
-                                    hasClosedPayroll ||
-                                        _savingSso ||
-                                        _loadingClinicPayrollConfig
-                                    ? null
-                                    : _saveSsoPercentFromUI,
-                                child: Text(
-                                  _savingSso ? 'กำลังบันทึก...' : 'บันทึก',
-                                ),
-                              ),
-                            ],
                           ),
-                          const SizedBox(height: 10),
+                          const SizedBox(height: 6),
                           Text(
-                            'เงินเดือนฐาน: ${grossMonthlyForTax.toStringAsFixed(2)} บาท',
-                          ),
-                          Text(
-                            'หักประกันสังคม: -${ssoAmount.toStringAsFixed(2)} บาท',
-                          ),
-                          Text(
-                            'หักวันลา/ขาด: -${absentDeduction.toStringAsFixed(2)} บาท',
-                          ),
-                          const Divider(height: 18),
-                          Text(
-                            'ชั่วโมง OT รวม: ${totalOtHours.toStringAsFixed(2)} ชม.',
-                          ),
-                          Text('ค่า OT รวม: ${otPay.toStringAsFixed(2)} บาท'),
-                          Text('โบนัส: ${shownBonus.toStringAsFixed(2)} บาท'),
-                          const SizedBox(height: 10),
-                          Text(
-                            'ยอดหลังหักประกันสังคมและหักลา/ขาด (ไม่รวม OT/โบนัส): ${afterSsoAndLeaveNoOtFulltime.toStringAsFixed(2)} บาท',
-                          ),
-                          Text(
-                            'ยอดรวมก่อนภาษี: ${totalMonthPayFulltime.toStringAsFixed(2)} บาท',
-                            style: const TextStyle(
-                              fontWeight: FontWeight.bold,
-                              fontSize: 16,
+                            'กรุณารีเฟรชข้อมูล หรือเปิดพรีวิวสลิปเพื่อให้ backend คำนวณ',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.grey.shade700,
                             ),
                           ),
                         ] else ...[
-                          const Text('ประเภท: Part-time'),
-                          const SizedBox(height: 6),
-                          Text(
-                            'อัตราค่าจ้าง: ${hourlyWage.toStringAsFixed(2)} บาท/ชม.',
-                          ),
-                          Text(
-                            'ชั่วโมงทำงานปกติรวม: ${parttimeWorkHoursForDisplay.toStringAsFixed(2)} ชม.',
-                          ),
-                          if (_loadingPayrollPreview)
-                            const Padding(
-                              padding: EdgeInsets.only(top: 4),
-                              child: Text(
-                                'กำลังโหลดชั่วโมงทำงานจาก backend...',
+                          if (isParttime) ...[
+                            Text(
+                              'อัตราค่าจ้าง: ${emp.hourlyWage.toStringAsFixed(2)} บาท/ชม.',
+                            ),
+                            Text(
+                              'ชั่วโมงทำงานปกติรวม: ${shownRegularWorkHours.toStringAsFixed(2)} ชม.',
+                            ),
+                            if (_loadingPayrollPreview)
+                              const Padding(
+                                padding: EdgeInsets.only(top: 4),
+                                child: Text(
+                                  'กำลังโหลดชั่วโมงทำงานจาก backend...',
+                                  style: TextStyle(fontSize: 12),
+                                ),
+                              ),
+                            if (hasBackendPayrollPreview || hasClosedPayroll)
+                              const Text(
+                                ' • จาก backend attendance/check-in checkout',
                                 style: TextStyle(fontSize: 12),
                               ),
-                            ),
-                          if (hasBackendPayrollPreview)
-                            const Text(
-                              ' • จาก backend attendance/check-in checkout',
-                              style: TextStyle(fontSize: 12),
-                            ),
-                          if (timeHours > 0)
-                            Text(
-                              ' • จากเวลาเริ่ม-จบที่บันทึกในเครื่อง: ${timeHours.toStringAsFixed(2)} ชม.',
-                            ),
-                          if (legacyHours > 0)
-                            Text(
-                              ' • จากแบบเดิมในเครื่อง (ชั่วโมง): ${legacyHours.toStringAsFixed(2)} ชม.',
-                            ),
+                            if (timeHours > 0)
+                              Text(
+                                ' • รายการเวลาในเครื่องนี้: ${timeHours.toStringAsFixed(2)} ชม.',
+                                style: const TextStyle(fontSize: 12),
+                              ),
+                            if (legacyHours > 0)
+                              Text(
+                                ' • รายการชั่วโมงแบบเดิมในเครื่อง: ${legacyHours.toStringAsFixed(2)} ชม.',
+                                style: const TextStyle(fontSize: 12),
+                              ),
+                          ] else ...[
+                            const Text('เงินเดือนฐานรายเดือนจาก backend/staff service'),
+                          ],
+                          const SizedBox(height: 10),
                           Text(
-                            'ค่าแรงปกติรวม: ${parttimeNormalPayForDisplay.toStringAsFixed(2)} บาท',
+                            isParttime
+                                ? 'ค่าแรงปกติรวม: ${shownSalary.toStringAsFixed(2)} บาท'
+                                : 'เงินเดือนฐาน: ${shownSalary.toStringAsFixed(2)} บาท',
                           ),
-                          const SizedBox(height: 6),
                           Text(
-                            'ชั่วโมง OT รวม: ${totalOtHours.toStringAsFixed(2)} ชม.',
+                            'หักประกันสังคม: -${shownSso.toStringAsFixed(2)} บาท',
                           ),
-                          Text('ค่า OT รวม: ${otPay.toStringAsFixed(2)} บาท'),
-                          Text('โบนัส: ${shownBonus.toStringAsFixed(2)} บาท'),
+                          if (!isParttime)
+                            Text(
+                              'หักวันลา/ขาด: -${shownLeaveDeduction.toStringAsFixed(2)} บาท',
+                            ),
                           const Divider(height: 18),
                           Text(
-                            'รวมทั้งเดือน (ก่อนหักภาษี): ${totalMonthPayParttime.toStringAsFixed(2)} บาท',
+                            'ชั่วโมง OT รวม: ${shownOtHours.toStringAsFixed(2)} ชม.',
+                          ),
+                          Text('ค่า OT รวม: ${shownOt.toStringAsFixed(2)} บาท'),
+                          Text('โบนัส: ${shownBonus.toStringAsFixed(2)} บาท'),
+                          const SizedBox(height: 10),
+                          Text(
+                            'ยอดรวมก่อนภาษี: ${shownGrossBeforeTax.toStringAsFixed(2)} บาท',
                             style: const TextStyle(
                               fontWeight: FontWeight.bold,
                               fontSize: 16,
@@ -3606,10 +3676,11 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                         ],
                         const SizedBox(height: 14),
                         _taxModeCard(
-                          totalMonthPayBeforeTax: totalMonthPayBeforeTax,
-                          withholdingAmount: withholdingAmount,
-                          netAfterTax: netAfterTax,
+                          totalMonthPayBeforeTax: shownGrossBeforeTax,
+                          withholdingAmount: shownTax,
+                          netAfterTax: shownNetPay,
                           hasClosedPayroll: hasClosedPayroll,
+                          hasBackendPayrollPreview: hasBackendPayrollPreview,
                         ),
                         const SizedBox(height: 14),
                         SizedBox(
@@ -3624,10 +3695,9 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                             onPressed: () async {
                               await _openTaxSummaryOrPreview(
                                 isParttime: isParttime,
-                                grossBaseFallback: grossBaseFulltime,
-                                leaveDeductionInput: fallbackAbsentDeduction,
-                                regularWorkHoursInput:
-                                    parttimeWorkHoursForDisplay,
+                                grossBaseFallback: emp.baseSalary,
+                                leaveDeductionInput: emp.absentDeduction(),
+                                regularWorkHoursInput: shownRegularWorkHours,
                               );
                             },
                           ),
@@ -3659,7 +3729,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                           const SizedBox(height: 6),
                           Text(
                             _isEditUnlocked
-                                ? 'ใช้เมื่อมีการสแกนเวลา OT หรือข้อมูลเงินเดือนเปลี่ยนหลังปิดงวด'
+                                ? 'ใช้เมื่อมีการสแกนเวลา OT/attendance หรือข้อมูลเงินเดือนเปลี่ยนหลังปิดงวด'
                                 : 'ต้องปลดล็อกโหมดแก้ไขก่อนจึงจะคำนวณงวดใหม่ได้',
                             style: TextStyle(
                               fontSize: 12,
@@ -3674,187 +3744,180 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                   ),
                 ),
                 const SizedBox(height: 12),
-                if (isParttime) ...[
-                  Card(
-                    child: Padding(
-                      padding: const EdgeInsets.all(14),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
+
+                // ================= MANUAL ATTENDANCE FOR ALL EMPLOYEES =================
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'บันทึกเวลาเข้างาน-ออกงานแทนพนักงาน',
+                          style: TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        const SizedBox(height: 10),
+                        Text(
+                          'ใช้สำหรับกรณีพนักงานสแกนไม่ได้ ลืมสแกน หรือไม่มีอุปกรณ์ '
+                          'ระบบหลังบ้านจะนำเวลาไปตรวจตามนโยบายคลินิก และใช้คำนวณเงินเดือน/OT ตามประเภทพนักงาน',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.grey.shade700,
+                            height: 1.35,
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        if (!_workEntriesLoaded)
+                          const Center(child: CircularProgressIndicator())
+                        else ...[
                           const Text(
-                            'บันทึกชั่วโมงทำงาน (Part-time)',
-                            style: TextStyle(fontWeight: FontWeight.bold),
+                            'บันทึกจากเวลาเริ่ม-จบ',
+                            style: TextStyle(fontWeight: FontWeight.w700),
                           ),
-                          const SizedBox(height: 10),
-                          Text(
-                            'หมายเหตุ: ถ้ามีพนักงานสแกนเข้า-ออก ระบบเงินเดือนจะใช้ชั่วโมงจาก backend attendance เป็นหลัก',
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: Colors.grey.shade700,
-                              height: 1.35,
+                          const SizedBox(height: 8),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: [
+                              OutlinedButton(
+                                onPressed: _pickWorkTimeDate,
+                                child: Text(
+                                  workTimeDate == null
+                                      ? 'เลือกวันที่'
+                                      : _fmtDate(workTimeDate!),
+                                ),
+                              ),
+                              OutlinedButton(
+                                onPressed: _pickWorkStart,
+                                child: Text(
+                                  workStart == null
+                                      ? 'เวลาเข้างาน'
+                                      : _fmtTOD(workStart!),
+                                ),
+                              ),
+                              OutlinedButton(
+                                onPressed: _pickWorkEnd,
+                                child: Text(
+                                  workEnd == null
+                                      ? 'เวลาออกงาน'
+                                      : _fmtTOD(workEnd!),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: TextField(
+                                  controller: breakMinutesCtrl,
+                                  enabled: _isEditUnlocked &&
+                                      !_savingManualAttendance,
+                                  keyboardType: TextInputType.number,
+                                  inputFormatters: [
+                                    FilteringTextInputFormatter.digitsOnly,
+                                  ],
+                                  decoration: const InputDecoration(
+                                    labelText: 'พัก (นาที)',
+                                    border: OutlineInputBorder(),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              ElevatedButton(
+                                onPressed: _savingManualAttendance
+                                    ? null
+                                    : _addWorkTimeEntry,
+                                child: Text(
+                                  _savingManualAttendance
+                                      ? 'กำลังบันทึก...'
+                                      : 'เพิ่ม',
+                                ),
+                              ),
+                            ],
+                          ),
+                          if (!_isEditUnlocked)
+                            const Padding(
+                              padding: EdgeInsets.only(top: 8),
+                              child: Text(
+                                'หมายเหตุ: ต้องปลดล็อกโหมดแก้ไขก่อนถึงจะบันทึกได้',
+                                style: TextStyle(fontSize: 12),
+                              ),
                             ),
+                          const SizedBox(height: 12),
+                          const Divider(),
+                          const Text(
+                            'รายการที่บันทึกจากเครื่องนี้ในเดือนนี้',
+                            style: TextStyle(fontWeight: FontWeight.w700),
                           ),
-                          const SizedBox(height: 10),
-                          if (!_workEntriesLoaded)
-                            const Center(child: CircularProgressIndicator())
-                          else ...[
+                          const SizedBox(height: 8),
+                          if (monthWorkTimeEntries.isNotEmpty) ...[
+                            ...List.generate(monthWorkTimeEntries.length, (i) {
+                              final e = monthWorkTimeEntries[i];
+
+                              return ListTile(
+                                dense: true,
+                                contentPadding: EdgeInsets.zero,
+                                title: Text('${e.date}  ${e.start}-${e.end}'),
+                                subtitle: Text(
+                                  'พัก ${e.breakMinutes} นาที • ${e.hours.toStringAsFixed(2)} ชม.',
+                                ),
+                                trailing: IconButton(
+                                  tooltip: 'ลบรายการจากเครื่องนี้',
+                                  onPressed: () => _deleteWorkTimeEntry(
+                                    i,
+                                    monthWorkTimeEntries,
+                                  ),
+                                  icon: const Icon(Icons.delete_outline),
+                                ),
+                              );
+                            }),
+                            const SizedBox(height: 8),
+                            Text(
+                              'หมายเหตุ: การลบตรงนี้ลบเฉพาะรายการที่แสดงในเครื่องนี้ หากต้องแก้ข้อมูลที่ส่งเข้า backend แล้ว ให้ใช้ flow แก้ไข attendance ฝั่งระบบหลังบ้าน',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.grey.shade700,
+                                height: 1.35,
+                              ),
+                            ),
+                          ] else
+                            const Text('ยังไม่มีข้อมูลในเดือนนี้'),
+                          if (isParttime && monthWorkEntries.isNotEmpty) ...[
+                            const SizedBox(height: 12),
+                            const Divider(),
                             const Text(
-                              'แบบใหม่: เวลาเริ่ม-จบ (คำนวณชั่วโมงอัตโนมัติ)',
+                              'รายการชั่วโมงแบบเดิม (เฉพาะรายชั่วโมง)',
+                              style: TextStyle(fontWeight: FontWeight.w700),
                             ),
-                            const SizedBox(height: 8),
-                            Wrap(
-                              spacing: 8,
-                              runSpacing: 8,
-                              children: [
-                                OutlinedButton(
-                                  onPressed: _pickWorkTimeDate,
-                                  child: Text(
-                                    workTimeDate == null
-                                        ? 'เลือกวันที่'
-                                        : _fmtDate(workTimeDate!),
-                                  ),
-                                ),
-                                OutlinedButton(
-                                  onPressed: _pickWorkStart,
-                                  child: Text(
-                                    workStart == null
-                                        ? 'เวลาเริ่ม'
-                                        : _fmtTOD(workStart!),
-                                  ),
-                                ),
-                                OutlinedButton(
-                                  onPressed: _pickWorkEnd,
-                                  child: Text(
-                                    workEnd == null
-                                        ? 'เวลาจบ'
-                                        : _fmtTOD(workEnd!),
-                                  ),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 8),
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: TextField(
-                                    controller: breakMinutesCtrl,
-                                    enabled: _isEditUnlocked,
-                                    keyboardType: TextInputType.number,
-                                    inputFormatters: [
-                                      FilteringTextInputFormatter.digitsOnly,
-                                    ],
-                                    decoration: const InputDecoration(
-                                      labelText: 'พัก (นาที)',
-                                      border: OutlineInputBorder(),
-                                    ),
-                                  ),
-                                ),
-                                const SizedBox(width: 10),
-                                ElevatedButton(
-                                  onPressed: _addWorkTimeEntry,
-                                  child: const Text('เพิ่ม'),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 12),
-                            const Divider(),
-                            const Text('แบบเดิม: ใส่จำนวนชั่วโมง'),
-                            const SizedBox(height: 8),
-                            Wrap(
-                              spacing: 8,
-                              runSpacing: 8,
-                              children: [
-                                OutlinedButton(
-                                  onPressed: _pickWorkDate,
-                                  child: Text(
-                                    workDate == null
-                                        ? 'เลือกวันที่'
-                                        : _fmtDate(workDate!),
-                                  ),
-                                ),
-                                SizedBox(
-                                  width: 150,
-                                  child: TextField(
-                                    controller: workHoursCtrl,
-                                    enabled: _isEditUnlocked,
-                                    keyboardType:
-                                        const TextInputType.numberWithOptions(
-                                          decimal: true,
-                                        ),
-                                    inputFormatters: [_decimalFormatter],
-                                    decoration: const InputDecoration(
-                                      labelText: 'ชั่วโมง',
-                                      border: OutlineInputBorder(),
-                                    ),
-                                  ),
-                                ),
-                                ElevatedButton(
-                                  onPressed: _addWorkEntry,
-                                  child: const Text('เพิ่ม'),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 12),
-                            const Divider(),
-                            const Text('รายการในเดือนนี้'),
-                            const SizedBox(height: 8),
-                            if (monthWorkTimeEntries.isNotEmpty) ...[
-                              const Text('• จากเวลาเริ่ม-จบ'),
-                              const SizedBox(height: 6),
-                              ...List.generate(monthWorkTimeEntries.length, (
-                                i,
-                              ) {
-                                final e = monthWorkTimeEntries[i];
+                            const SizedBox(height: 6),
+                            ...List.generate(monthWorkEntries.length, (i) {
+                              final e = monthWorkEntries[i];
 
-                                return ListTile(
-                                  dense: true,
-                                  contentPadding: EdgeInsets.zero,
-                                  title: Text('${e.date}  ${e.start}-${e.end}'),
-                                  subtitle: Text(
-                                    'พัก ${e.breakMinutes} นาที • ${e.hours.toStringAsFixed(2)} ชม.',
-                                  ),
-                                  trailing: IconButton(
-                                    onPressed: () => _deleteWorkTimeEntry(
-                                      i,
-                                      monthWorkTimeEntries,
-                                    ),
-                                    icon: const Icon(Icons.delete_outline),
-                                  ),
-                                );
-                              }),
-                              const SizedBox(height: 8),
-                            ],
-                            if (monthWorkEntries.isNotEmpty) ...[
-                              const Text('• จากแบบเดิม (ชั่วโมง)'),
-                              const SizedBox(height: 6),
-                              ...List.generate(monthWorkEntries.length, (i) {
-                                final e = monthWorkEntries[i];
-
-                                return ListTile(
-                                  dense: true,
-                                  contentPadding: EdgeInsets.zero,
-                                  title: Text(e.date),
-                                  subtitle: Text(
-                                    '${e.hours.toStringAsFixed(2)} ชม.',
-                                  ),
-                                  trailing: IconButton(
-                                    onPressed: () =>
-                                        _deleteWorkEntry(i, monthWorkEntries),
-                                    icon: const Icon(Icons.delete_outline),
-                                  ),
-                                );
-                              }),
-                            ],
-                            if (monthWorkEntries.isEmpty &&
-                                monthWorkTimeEntries.isEmpty)
-                              const Text('ยังไม่มีข้อมูลในเดือนนี้'),
+                              return ListTile(
+                                dense: true,
+                                contentPadding: EdgeInsets.zero,
+                                title: Text(e.date),
+                                subtitle: Text(
+                                  '${e.hours.toStringAsFixed(2)} ชม.',
+                                ),
+                                trailing: IconButton(
+                                  tooltip: 'ลบรายการชั่วโมงจากเครื่องนี้',
+                                  onPressed: () =>
+                                      _deleteWorkEntry(i, monthWorkEntries),
+                                  icon: const Icon(Icons.delete_outline),
+                                ),
+                              );
+                            }),
                           ],
                         ],
-                      ),
+                      ],
                     ),
                   ),
-                  const SizedBox(height: 12),
-                ],
+                ),
+                const SizedBox(height: 12),
+
+                // ================= MANUAL OT =================
                 Card(
                   child: Padding(
                     padding: const EdgeInsets.all(14),
@@ -3934,6 +3997,8 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                   ),
                 ),
                 const SizedBox(height: 12),
+
+                // ================= BACKEND OT LIST =================
                 Card(
                   child: Padding(
                     padding: const EdgeInsets.all(14),
@@ -3985,23 +4050,20 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                                       runSpacing: 8,
                                       children: [
                                         OutlinedButton.icon(
-                                          onPressed: _isEditUnlocked
-                                              ? () => _approveBackendOtRow(i)
-                                              : null,
+                                          onPressed: () =>
+                                              _approveBackendOtRow(i),
                                           icon: const Icon(Icons.check),
                                           label: const Text('อนุมัติ'),
                                         ),
                                         OutlinedButton.icon(
-                                          onPressed: _isEditUnlocked
-                                              ? () => _rejectBackendOtRow(i)
-                                              : null,
+                                          onPressed: () =>
+                                              _rejectBackendOtRow(i),
                                           icon: const Icon(Icons.close),
                                           label: const Text('ปฏิเสธ'),
                                         ),
                                         OutlinedButton.icon(
-                                          onPressed: _isEditUnlocked
-                                              ? () => _deleteBackendOtRow(i)
-                                              : null,
+                                          onPressed: () =>
+                                              _deleteBackendOtRow(i),
                                           icon: const Icon(
                                             Icons.delete_outline,
                                           ),
@@ -4020,6 +4082,8 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                   ),
                 ),
                 const SizedBox(height: 12),
+
+                // ================= LEGACY LOCAL OT =================
                 Card(
                   child: Padding(
                     padding: const EdgeInsets.all(14),
