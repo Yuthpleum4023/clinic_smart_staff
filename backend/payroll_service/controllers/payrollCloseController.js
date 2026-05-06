@@ -57,20 +57,24 @@ const TaxYTD = require("../models/TaxYTD");
 const Overtime = require("../models/Overtime");
 const Clinic = require("../models/Clinic");
 
-// ✅ Attendance is optional-safe because some deployments may use
-// models/Attendance.js or models/attendance.js.
-// Payroll must not crash if the model file name differs during migration.
+// ✅ Attendance model used by attendanceController.js.
+// Production source of truth for check-in / check-out rows.
 let Attendance = null;
 try {
-  Attendance = require("../models/Attendance");
-} catch (e1) {
+  Attendance = require("../models/AttendanceSession");
+} catch (e0) {
   try {
-    Attendance = require("../models/attendance");
-  } catch (e2) {
-    console.log("⚠️ Attendance model not loaded for payroll:", {
-      Attendance: e1?.message,
-      attendance: e2?.message,
-    });
+    Attendance = require("../models/Attendance");
+  } catch (e1) {
+    try {
+      Attendance = require("../models/attendance");
+    } catch (e2) {
+      console.log("⚠️ Attendance model not loaded for payroll:", {
+        AttendanceSession: e0?.message,
+        Attendance: e1?.message,
+        attendance: e2?.message,
+      });
+    }
   }
 }
 
