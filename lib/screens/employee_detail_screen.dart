@@ -200,6 +200,15 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
   Map<String, dynamic>? _closedPayslipSummary;
   bool _recalculatingClosedPayroll = false;
 
+  // ✅ Backend preview for open month.
+  // Important for part-time: normal wage must come from backend Attendance
+  // instead of local manual hours only.
+  bool _loadingPayrollPreview = false;
+  String _payrollPreviewError = '';
+  Map<String, dynamic>? _payrollPreviewRow;
+  Map<String, dynamic>? _payrollPreviewSummary;
+  Map<String, dynamic>? _payrollPreviewInputs;
+
   String _backendOtStatus = 'approved';
 
   int _backendApprovedMinutes = 0;
@@ -369,6 +378,16 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       if (v != null) out['user_id'] = v.toString();
     } catch (_) {}
 
+    try {
+      final v = (emp as dynamic).assignmentId;
+      if (v != null) out['assignmentId'] = v.toString();
+    } catch (_) {}
+
+    try {
+      final v = (emp as dynamic).shiftNeedId;
+      if (v != null) out['shiftNeedId'] = v.toString();
+    } catch (_) {}
+
     return out;
   }
 
@@ -530,6 +549,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
 
     final linkedUserId = _resolveLinkedUserId();
     final staffId = _resolveStaffIdForPayroll();
+    final empMap = _empMapSafe();
 
     if (linkedUserId.isNotEmpty) {
       out['linkedUserId'] = linkedUserId;
@@ -542,6 +562,18 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       out['staffId'] = staffId;
       out['employeeId'] = staffId;
       out['principalId'] = staffId;
+    }
+
+    final assignmentId = (empMap['assignmentId'] ?? '').toString().trim();
+    if (assignmentId.isNotEmpty) {
+      out['assignmentId'] = assignmentId;
+      out['workAssignmentId'] = assignmentId;
+    }
+
+    final shiftNeedId = (empMap['shiftNeedId'] ?? '').toString().trim();
+    if (shiftNeedId.isNotEmpty) {
+      out['shiftNeedId'] = shiftNeedId;
+      out['clinicShiftNeedId'] = shiftNeedId;
     }
 
     return out;
@@ -731,6 +763,11 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       _closedPayrollError = '';
       _closedPayrollRow = null;
       _closedPayslipSummary = null;
+
+      _payrollPreviewError = '';
+      _payrollPreviewRow = null;
+      _payrollPreviewSummary = null;
+      _payrollPreviewInputs = null;
     });
 
     try {
@@ -781,6 +818,10 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
           _closedPayslipSummary = null;
         });
 
+        // ✅ Month is not closed yet.
+        // Load backend payroll preview so part-time hours come from Attendance.
+        await _loadPayrollPreviewForSelectedMonth();
+
         return;
       }
 
@@ -795,6 +836,11 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
         _closedPayrollError = '';
         _closedPayrollRow = row;
         _closedPayslipSummary = payslipSummary;
+
+        _payrollPreviewError = '';
+        _payrollPreviewRow = null;
+        _payrollPreviewSummary = null;
+        _payrollPreviewInputs = null;
       });
     } catch (_) {
       if (!mounted || _disposed) return;
@@ -804,6 +850,134 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
         _closedPayrollError = 'โหลดข้อมูลงวดเงินเดือนไม่สำเร็จ';
         _closedPayrollRow = null;
         _closedPayslipSummary = null;
+
+        _payrollPreviewError = '';
+        _payrollPreviewRow = null;
+        _payrollPreviewSummary = null;
+        _payrollPreviewInputs = null;
+      });
+    }
+  }
+
+  Future<void> _loadPayrollPreviewForSelectedMonth() async {
+    if (!mounted || _disposed) return;
+
+    setState(() {
+      _loadingPayrollPreview = true;
+      _payrollPreviewError = '';
+      _payrollPreviewRow = null;
+      _payrollPreviewSummary = null;
+      _payrollPreviewInputs = null;
+    });
+
+    try {
+      final token = await _getToken();
+      if (token == null || token.trim().isEmpty) {
+        throw Exception('NO_TOKEN');
+      }
+
+      final clinicId = await _resolveClinicId();
+      if (clinicId == null || clinicId.trim().isEmpty) {
+        throw Exception('NO_CLINIC_ID');
+      }
+
+      final employeeId = _resolveStaffIdForPayroll();
+      if (employeeId.isEmpty) {
+        throw Exception('NO_EMPLOYEE_ID');
+      }
+
+      final monthKey = _fmtMonth(selectedMonth);
+      final linkedUserId = _resolveLinkedUserId();
+
+      final monthWorkEntries = _monthWorkEntries(selectedMonth);
+      final monthWorkTimeEntries = _monthWorkTimeEntries(selectedMonth);
+      final totalWorkHours =
+          _sumWorkHours(monthWorkEntries) +
+          _sumWorkTimeHours(monthWorkTimeEntries);
+
+      final body = _appendEmployeeIdentityToBody({
+        'clinicId': clinicId,
+        'employeeId': employeeId,
+        'month': monthKey,
+
+        // Backend expects this format.
+        'taxMode': _taxMode == _EmployeeTaxMode.withholding
+            ? 'WITHHOLDING'
+            : 'NO_WITHHOLDING',
+
+        // Full-time uses staff_service salary first; this is fallback only.
+        'grossBase': emp.isPartTime ? 0.0 : emp.baseSalary,
+
+        'bonus': emp.bonus,
+        'otherAllowance': 0.0,
+        'otherDeduction': emp.isPartTime ? 0.0 : emp.absentDeduction(),
+        'pvdEmployeeMonthly': 0.0,
+
+        if (linkedUserId.isNotEmpty) 'employeeUserId': linkedUserId,
+
+        // Migration fallback only. Backend attendance wins for part-time.
+        if (emp.isPartTime) 'regularWorkHours': totalWorkHours,
+        if (emp.isPartTime) 'regularWorkMinutes': (totalWorkHours * 60).round(),
+      });
+
+      final candidates = <String>[
+        '/payroll-close/preview/$employeeId/$monthKey',
+        '/api/payroll-close/preview/$employeeId/$monthKey',
+      ];
+
+      http.Response? okRes;
+
+      for (final p in candidates) {
+        final res = await http.post(
+          _uri(p),
+          headers: _headers(token),
+          body: jsonEncode(body),
+        );
+
+        if (res.statusCode == 200) {
+          okRes = res;
+          break;
+        }
+
+        if (res.statusCode == 401 || res.statusCode == 403) {
+          okRes = res;
+          break;
+        }
+      }
+
+      if (okRes == null) throw Exception('NO_PREVIEW_RESPONSE');
+
+      if (okRes.statusCode != 200) {
+        throw Exception('PREVIEW_${okRes.statusCode}');
+      }
+
+      final decoded = jsonDecode(okRes.body);
+      if (decoded is! Map) throw Exception('BAD_PREVIEW_PAYLOAD');
+
+      final row = _asMap(decoded['row']);
+      final payslipSummary = _asMap(decoded['payslipSummary']);
+      final payrollInputsResolved = _asMap(decoded['payrollInputsResolved']);
+
+      if (!mounted || _disposed) return;
+
+      setState(() {
+        _loadingPayrollPreview = false;
+        _payrollPreviewError = '';
+        _payrollPreviewRow = row;
+        _payrollPreviewSummary = payslipSummary;
+        _payrollPreviewInputs = payrollInputsResolved;
+      });
+    } catch (e) {
+      if (!mounted || _disposed) return;
+
+      setState(() {
+        _loadingPayrollPreview = false;
+        _payrollPreviewError = e.toString().contains('NO_TOKEN')
+            ? 'ไม่พบสิทธิ์เข้าใช้งาน กรุณาออกจากระบบแล้วเข้าใหม่'
+            : 'โหลดพรีวิวเงินเดือนจาก backend ไม่สำเร็จ';
+        _payrollPreviewRow = null;
+        _payrollPreviewSummary = null;
+        _payrollPreviewInputs = null;
       });
     }
   }
@@ -1334,10 +1508,6 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
             backendMessage: lastMessage,
           );
 
-          debugPrint(
-            '[MANUAL_OT_SAVE_STOP] $p -> ${res.statusCode}: ${res.body}',
-          );
-
           return _ManualOtSaveResult(
             ok: false,
             statusCode: res.statusCode,
@@ -1350,7 +1520,6 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
         }
       } catch (e) {
         lastMessage = e.toString();
-        debugPrint('[MANUAL_OT_SAVE_EXCEPTION] $p -> $e');
       }
     }
 
@@ -1788,6 +1957,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       });
 
       _snack('บันทึกค่า SSO ของคลินิกแล้ว');
+      await _loadClosedPayrollForSelectedMonth();
     } catch (_) {
       _snack('บันทึกค่า SSO ไม่สำเร็จ');
     } finally {
@@ -1829,6 +1999,8 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       FocusScope.of(context).unfocus();
       setState(() {});
       _snack('บันทึกรูปแบบภาษีแล้ว');
+
+      await _loadClosedPayrollForSelectedMonth();
     } catch (_) {
       _snack('บันทึกไม่สำเร็จ');
     } finally {
@@ -1868,10 +2040,11 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
               ? null
               : !_isEditUnlocked
               ? null
-              : (v) {
+              : (v) async {
                   if (v == null) return;
                   if (!mounted || _disposed) return;
                   setState(() => _taxMode = v);
+                  await _loadClosedPayrollForSelectedMonth();
                 },
         ),
         const SizedBox(height: 10),
@@ -2221,6 +2394,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
 
     await _persistWorkEntries();
     await _loadWorkEntriesIfNeeded();
+    await _loadClosedPayrollForSelectedMonth();
 
     _snack('บันทึกชั่วโมงทำงานแล้ว (${hours.toStringAsFixed(2)} ชม.)');
   }
@@ -2248,6 +2422,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
 
     await _persistWorkEntries();
     await _loadWorkEntriesIfNeeded();
+    await _loadClosedPayrollForSelectedMonth();
 
     _snack('ลบรายการชั่วโมงทำงานแล้ว');
   }
@@ -2286,7 +2461,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     final picked = await showTimePicker(
       context: context,
       initialTime: workEnd ?? const TimeOfDay(hour: 18, minute: 0),
-      helpText: 'เวลาเลิกงาน',
+      helpText: 'เวลาจบงาน',
     );
 
     if (picked == null) return;
@@ -2349,6 +2524,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
 
     await _persistWorkTimeEntries();
     await _loadWorkEntriesIfNeeded();
+    await _loadClosedPayrollForSelectedMonth();
 
     _snack('บันทึกเวลาแล้ว (${h.toStringAsFixed(2)} ชม.)');
   }
@@ -2380,6 +2556,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
 
     await _persistWorkTimeEntries();
     await _loadWorkEntriesIfNeeded();
+    await _loadClosedPayrollForSelectedMonth();
 
     _snack('ลบรายการเวลาแล้ว');
   }
@@ -2823,8 +3000,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
       ],
     );
   }
-
-  @override
+    @override
   Widget build(BuildContext context) {
     final bool isParttime = emp.isPartTime;
 
@@ -2869,6 +3045,41 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     final closedNetPay = _readNum(closedAmounts['netPay']);
     final closedOtHours = _readNum(closedRow['displayOtHours']);
     final closedGrossBeforeTax = _readNum(closedRow['displayGrossBeforeTax']);
+
+    final closedSnapshot = _asMap(closedRow['snapshot']);
+    final closedRegularWorkPayableHours = _readNum(
+      closedSnapshot['regularWorkPayableHours'],
+    );
+    final closedRegularWorkHours = closedRegularWorkPayableHours > 0
+        ? closedRegularWorkPayableHours
+        : _readNum(closedSnapshot['regularWorkHours']);
+
+    final previewRow = _payrollPreviewRow ?? <String, dynamic>{};
+    final previewSummary = _payrollPreviewSummary ?? <String, dynamic>{};
+    final previewInputs = _payrollPreviewInputs ?? <String, dynamic>{};
+    final previewAmounts = _asMap(previewSummary['amounts']);
+    final previewRegularWork = _asMap(previewInputs['regularWork']);
+
+    final hasBackendPayrollPreview =
+        !hasClosedPayroll && previewAmounts.isNotEmpty;
+
+    final previewSalary = _readNum(previewAmounts['salary']);
+    final previewSso = _readNum(previewAmounts['socialSecurity']);
+    final previewOt = _readNum(previewAmounts['ot']);
+    final previewBonus = _readNum(previewAmounts['bonus']);
+    final previewLeaveDeduction = _readNum(previewAmounts['leaveDeduction']);
+    final previewTax = _readNum(previewAmounts['tax']);
+    final previewNetPay = _readNum(previewAmounts['netPay']);
+
+    final previewGrossBeforeTaxFromSummary = _readNum(
+      previewAmounts['grossBeforeTax'],
+    );
+    final previewGrossBeforeTax = previewGrossBeforeTaxFromSummary > 0
+        ? previewGrossBeforeTaxFromSummary
+        : _readNum(previewRow['displayGrossBeforeTax']);
+
+    final previewOtHours = _readNum(previewRow['displayOtHours']);
+    final previewRegularWorkHours = _readNum(previewRegularWork['hours']);
 
     final fallbackTotalOtHours = (!_loadingBackendOt && _backendOtError.isEmpty)
         ? backendTotalOtHours
@@ -2922,37 +3133,92 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
 
     final totalOtHours = hasClosedPayroll
         ? closedOtHours
+        : hasBackendPayrollPreview && previewOtHours > 0
+        ? previewOtHours
         : fallbackTotalOtHours;
-    final otPay = hasClosedPayroll ? closedOt : fallbackOtPay;
-    final ssoAmount = hasClosedPayroll ? closedSso : fallbackSsoAmount;
+
+    final otPay = hasClosedPayroll
+        ? closedOt
+        : hasBackendPayrollPreview
+        ? previewOt
+        : fallbackOtPay;
+
+    final ssoAmount = hasClosedPayroll
+        ? closedSso
+        : hasBackendPayrollPreview
+        ? previewSso
+        : fallbackSsoAmount;
+
     final absentDeduction = hasClosedPayroll
         ? closedLeaveDeduction
+        : hasBackendPayrollPreview
+        ? previewLeaveDeduction
         : fallbackAbsentDeduction;
-    final shownBonus = hasClosedPayroll ? closedBonus : emp.bonus;
+
+    final shownBonus = hasClosedPayroll
+        ? closedBonus
+        : hasBackendPayrollPreview
+        ? previewBonus
+        : emp.bonus;
+
     final grossMonthlyForTax = hasClosedPayroll
         ? closedSalary
+        : hasBackendPayrollPreview
+        ? previewSalary
         : fallbackGrossMonthlyForTax;
+
     final totalMonthPayBeforeTax = hasClosedPayroll
         ? closedGrossBeforeTax
+        : hasBackendPayrollPreview
+        ? previewGrossBeforeTax
         : fallbackTotalMonthPayBeforeTax;
+
     final withholdingAmount = hasClosedPayroll
         ? closedTax
+        : hasBackendPayrollPreview
+        ? previewTax
         : fallbackWithholdingAmount;
-    final netAfterTax = hasClosedPayroll ? closedNetPay : fallbackNetAfterTax;
+
+    final netAfterTax = hasClosedPayroll
+        ? closedNetPay
+        : hasBackendPayrollPreview
+        ? previewNetPay
+        : fallbackNetAfterTax;
 
     final afterSsoAndLeaveNoOtFulltime = hasClosedPayroll
         ? (closedSalary - closedSso - closedLeaveDeduction)
+              .clamp(0.0, double.infinity)
+              .toDouble()
+        : hasBackendPayrollPreview
+        ? (previewSalary - previewSso - previewLeaveDeduction)
               .clamp(0.0, double.infinity)
               .toDouble()
         : fallbackAfterSsoAndLeaveNoOtFulltime;
 
     final totalMonthPayFulltime = hasClosedPayroll
         ? closedGrossBeforeTax
+        : hasBackendPayrollPreview
+        ? previewGrossBeforeTax
         : fallbackTotalMonthPayFulltime;
 
     final totalMonthPayParttime = hasClosedPayroll
         ? closedGrossBeforeTax
+        : hasBackendPayrollPreview
+        ? previewGrossBeforeTax
         : fallbackTotalMonthPayParttime;
+
+    final parttimeWorkHoursForDisplay =
+        hasClosedPayroll && closedRegularWorkHours > 0
+        ? closedRegularWorkHours
+        : hasBackendPayrollPreview && previewRegularWorkHours > 0
+        ? previewRegularWorkHours
+        : totalWorkHours;
+
+    final parttimeNormalPayForDisplay = hasClosedPayroll
+        ? closedSalary
+        : hasBackendPayrollPreview
+        ? previewSalary
+        : normalPay;
 
     final monthOtEntries = emp.otEntries
         .where((e) => e.isInMonth(selectedMonth.year, selectedMonth.month))
@@ -3093,10 +3359,14 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
 
                                 setState(() => _backendOtStatus = v);
                                 await _loadBackendOtForSelectedMonth();
+                                await _loadClosedPayrollForSelectedMonth();
                               },
                             ),
                             OutlinedButton.icon(
-                              onPressed: _loadBackendOtForSelectedMonth,
+                              onPressed: () async {
+                                await _loadBackendOtForSelectedMonth();
+                                await _loadClosedPayrollForSelectedMonth();
+                              },
                               icon: const Icon(Icons.refresh),
                               label: const Text('รีเฟรช'),
                             ),
@@ -3145,7 +3415,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                           style: const TextStyle(fontWeight: FontWeight.bold),
                         ),
                         const SizedBox(height: 8),
-                        if (_loadingClosedPayroll)
+                        if (_loadingClosedPayroll || _loadingPayrollPreview)
                           const LinearProgressIndicator(minHeight: 3)
                         else if (_closedPayrollError.isNotEmpty)
                           Text(
@@ -3164,6 +3434,15 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                               fontWeight: FontWeight.w600,
                             ),
                           )
+                        else if (hasBackendPayrollPreview)
+                          Text(
+                            'เดือนนี้ยังไม่ปิดงวด — ยอดด้านล่างเป็นพรีวิวจาก backend และข้อมูล attendance ล่าสุด',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.green.shade700,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          )
                         else
                           Text(
                             'เดือนนี้ยังไม่ปิดงวด — ยอดด้านล่างเป็นพรีวิวจากข้อมูลที่บันทึกในระบบ เมื่อปิดงวด ระบบจะคำนวณยอดจริงอีกครั้ง',
@@ -3173,6 +3452,17 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                               fontWeight: FontWeight.w600,
                             ),
                           ),
+                        if (_payrollPreviewError.isNotEmpty &&
+                            !hasClosedPayroll) ...[
+                          const SizedBox(height: 6),
+                          Text(
+                            _payrollPreviewError,
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: Colors.orange,
+                            ),
+                          ),
+                        ],
                         const SizedBox(height: 10),
                         if (!isParttime) ...[
                           const Text('ประเภท: Full-time'),
@@ -3265,18 +3555,31 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                             'อัตราค่าจ้าง: ${hourlyWage.toStringAsFixed(2)} บาท/ชม.',
                           ),
                           Text(
-                            'ชั่วโมงทำงานปกติรวม: ${totalWorkHours.toStringAsFixed(2)} ชม.',
+                            'ชั่วโมงทำงานปกติรวม: ${parttimeWorkHoursForDisplay.toStringAsFixed(2)} ชม.',
                           ),
+                          if (_loadingPayrollPreview)
+                            const Padding(
+                              padding: EdgeInsets.only(top: 4),
+                              child: Text(
+                                'กำลังโหลดชั่วโมงทำงานจาก backend...',
+                                style: TextStyle(fontSize: 12),
+                              ),
+                            ),
+                          if (hasBackendPayrollPreview)
+                            const Text(
+                              ' • จาก backend attendance/check-in checkout',
+                              style: TextStyle(fontSize: 12),
+                            ),
                           if (timeHours > 0)
                             Text(
-                              ' • จากเวลาเริ่ม-จบ: ${timeHours.toStringAsFixed(2)} ชม.',
+                              ' • จากเวลาเริ่ม-จบที่บันทึกในเครื่อง: ${timeHours.toStringAsFixed(2)} ชม.',
                             ),
                           if (legacyHours > 0)
                             Text(
-                              ' • จากแบบเดิม (ชั่วโมง): ${legacyHours.toStringAsFixed(2)} ชม.',
+                              ' • จากแบบเดิมในเครื่อง (ชั่วโมง): ${legacyHours.toStringAsFixed(2)} ชม.',
                             ),
                           Text(
-                            'ค่าแรงปกติรวม: ${normalPay.toStringAsFixed(2)} บาท',
+                            'ค่าแรงปกติรวม: ${parttimeNormalPayForDisplay.toStringAsFixed(2)} บาท',
                           ),
                           const SizedBox(height: 6),
                           Text(
@@ -3315,7 +3618,8 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                                 isParttime: isParttime,
                                 grossBaseFallback: grossBaseFulltime,
                                 leaveDeductionInput: fallbackAbsentDeduction,
-                                regularWorkHoursInput: totalWorkHours,
+                                regularWorkHoursInput:
+                                    parttimeWorkHoursForDisplay,
                               );
                             },
                           ),
@@ -3372,6 +3676,15 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                           const Text(
                             'บันทึกชั่วโมงทำงาน (Part-time)',
                             style: TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                          const SizedBox(height: 10),
+                          Text(
+                            'หมายเหตุ: ถ้ามีพนักงานสแกนเข้า-ออก ระบบเงินเดือนจะใช้ชั่วโมงจาก backend attendance เป็นหลัก',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.grey.shade700,
+                              height: 1.35,
+                            ),
                           ),
                           const SizedBox(height: 10),
                           if (!_workEntriesLoaded)
