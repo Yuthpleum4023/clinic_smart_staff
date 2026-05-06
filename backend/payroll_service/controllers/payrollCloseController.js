@@ -45,9 +45,11 @@
 // - recalculateClosedMonth() recalculates from latest approved/locked OT
 //
 // ✅ Production patch 2:
-// - part-time Attendance query now supports assignment/shift/job references
-// - if strict Attendance query cannot find rows, fallback searches clinic+month and deep-matches ids
-// - supports old/migrated Attendance schemas with nested ids
+// - part-time Attendance query supports AttendanceSession real schema
+// - supports principalId/userId for fingerprint rows where staffId=""
+// - avoids querying ObjectId fields with usr_* strings
+// - fallback searches clinic+month then direct-safe matches known ids only
+// - removes unsafe full-document deep recursion to avoid stack overflow
 // - avoids touching full-time salary/OT flow
 //
 
@@ -387,7 +389,7 @@ function extractRegularWorkSummary(body) {
 // ================= PART-TIME ATTENDANCE REGULAR WORK =================
 // ✅ Production goal:
 // - Part-time payroll must calculate normal wage from backend attendance
-// - Fingerprint/check-in checkout creates Attendance rows
+// - Fingerprint/check-in checkout creates AttendanceSession rows
 // - Payroll preview/close reads those rows directly
 // - Full-time flow remains unchanged
 
@@ -452,13 +454,45 @@ function monthRangeBangkok(monthKey) {
   };
 }
 
+function isMongoObjectIdString(v) {
+  return /^[a-fA-F0-9]{24}$/.test(safeStr(v));
+}
+
+function normalizeComparableId(v) {
+  if (v === undefined || v === null) return "";
+
+  if (typeof v === "string" || typeof v === "number") {
+    return safeStr(v);
+  }
+
+  if (typeof v === "object") {
+    if (v instanceof Date) return "";
+
+    if (v._id) return normalizeComparableId(v._id);
+    if (v.id) return normalizeComparableId(v.id);
+
+    // Mongo ObjectId / BSON ObjectId
+    if (v._bsontype || v.constructor?.name === "ObjectId") {
+      return safeStr(v.toString());
+    }
+  }
+
+  return "";
+}
+
 function buildPayrollPersonIds({ employeeId, employee, body }) {
   return uniqueNonEmptyStrings([
     employeeId,
 
     body?.employeeUserId,
+    body?.linkedUserId,
+    body?.linked_user_id,
+    body?.principalUserId,
+    body?.principal_user_id,
     body?.userId,
+    body?.user_id,
     body?.staffId,
+    body?.employeeId,
     body?.workerId,
     body?.helperId,
     body?.principalId,
@@ -484,6 +518,7 @@ function buildPayrollPersonIds({ employeeId, employee, body }) {
     employee?.staffId,
     employee?.employeeId,
     employee?.userId,
+    employee?.user_id,
     employee?.linkedUserId,
     employee?.linked_user_id,
     employee?.principalId,
@@ -510,9 +545,11 @@ function buildPayrollPersonIds({ employeeId, employee, body }) {
 
 function buildAttendancePersonOr(personIds) {
   const ids = uniqueNonEmptyStrings(personIds);
+  const objectIdIds = ids.filter(isMongoObjectIdString);
 
-  const fields = [
-    // Normal payroll/staff/user identity fields
+  // ✅ String / mixed identity fields.
+  // These can safely receive usr_* and ObjectId-like staff ids.
+  const stringIdentityFields = [
     "staffId",
     "employeeId",
     "userId",
@@ -529,21 +566,31 @@ function buildAttendancePersonOr(personIds) {
     "ownerId",
     "createdBy",
 
-    // Nested staff/user objects
     "staff.id",
-    "staff._id",
     "employee.id",
-    "employee._id",
     "user.id",
-    "user._id",
     "helper.id",
-    "helper._id",
     "worker.id",
-    "worker._id",
     "provider.id",
-    "provider._id",
 
-    // ✅ Part-time / marketplace / shift assignment identity fields
+    "attendance.staffId",
+    "attendance.employeeId",
+    "attendance.userId",
+    "attendance.helperId",
+    "session.staffId",
+    "session.employeeId",
+    "session.userId",
+    "session.helperId",
+    "request.staffId",
+    "request.employeeId",
+    "request.userId",
+    "request.helperId",
+  ];
+
+  // ✅ ObjectId reference fields.
+  // Query these only with valid 24-hex ObjectId strings to avoid
+  // CastError: Cast to ObjectId failed for value "usr_*" at path "shiftId".
+  const objectRefFields = [
     "assignmentId",
     "workAssignmentId",
     "shiftNeedId",
@@ -554,41 +601,26 @@ function buildAttendancePersonOr(personIds) {
     "bookingId",
     "contractId",
 
-    // Nested assignment/shift/job objects
-    "assignment.id",
+    "staff._id",
+    "employee._id",
+    "user._id",
+    "helper._id",
+    "worker._id",
+    "provider._id",
+
     "assignment._id",
-    "workAssignment.id",
     "workAssignment._id",
-    "shiftNeed.id",
     "shiftNeed._id",
-    "clinicShiftNeed.id",
     "clinicShiftNeed._id",
-    "shift.id",
     "shift._id",
-    "job.id",
     "job._id",
-    "need.id",
     "need._id",
-    "booking.id",
     "booking._id",
 
-    // Some schemas store refs under attendance/session/request
-    "attendance.staffId",
-    "attendance.employeeId",
-    "attendance.userId",
-    "attendance.helperId",
     "attendance.assignmentId",
     "attendance.shiftNeedId",
-    "session.staffId",
-    "session.employeeId",
-    "session.userId",
-    "session.helperId",
     "session.assignmentId",
     "session.shiftNeedId",
-    "request.staffId",
-    "request.employeeId",
-    "request.userId",
-    "request.helperId",
     "request.assignmentId",
     "request.shiftNeedId",
   ];
@@ -596,7 +628,13 @@ function buildAttendancePersonOr(personIds) {
   const ors = [];
 
   for (const id of ids) {
-    for (const f of fields) {
+    for (const f of stringIdentityFields) {
+      ors.push({ [f]: id });
+    }
+  }
+
+  for (const id of objectIdIds) {
+    for (const f of objectRefFields) {
       ors.push({ [f]: id });
     }
   }
@@ -809,55 +847,9 @@ function summarizeAttendanceItem(row, minutes) {
   };
 }
 
-function normalizeComparableId(v) {
-  if (v === undefined || v === null) return "";
-
-  if (typeof v === "string" || typeof v === "number") {
-    return safeStr(v);
-  }
-
-  if (typeof v === "object") {
-    if (v instanceof Date) return "";
-
-    if (v._id) return normalizeComparableId(v._id);
-    if (v.id) return normalizeComparableId(v.id);
-
-    // Mongo ObjectId / BSON ObjectId
-    if (v._bsontype || v.constructor?.name === "ObjectId") {
-      return safeStr(v.toString());
-    }
-  }
-
-  return "";
-}
-
-function valueMatchesAnyPayrollId(value, idSet, seen = new WeakSet(), depth = 0) {
-  if (value === undefined || value === null) return false;
-  if (depth > 8) return false;
-
+function valueMatchesAnyPayrollId(value, idSet) {
   const comparable = normalizeComparableId(value);
-  if (comparable && idSet.has(comparable)) return true;
-
-  if (Array.isArray(value)) {
-    return value.some((x) =>
-      valueMatchesAnyPayrollId(x, idSet, seen, depth + 1)
-    );
-  }
-
-  if (typeof value === "object") {
-    if (value instanceof Date) return false;
-
-    if (seen.has(value)) return false;
-    seen.add(value);
-
-    for (const child of Object.values(value)) {
-      if (valueMatchesAnyPayrollId(child, idSet, seen, depth + 1)) {
-        return true;
-      }
-    }
-  }
-
-  return false;
+  return Boolean(comparable && idSet.has(comparable));
 }
 
 function rowMatchesAnyPayrollIdentifier(row, personIds) {
@@ -869,6 +861,9 @@ function rowMatchesAnyPayrollIdentifier(row, personIds) {
 
   if (!idSet.size || !row) return false;
 
+  // ✅ Direct-safe match only.
+  // Do not recursively scan whole document because BSON/ObjectId internals
+  // can cause stack overflow on some deployments.
   const directPaths = [
     "staffId",
     "employeeId",
@@ -917,17 +912,39 @@ function rowMatchesAnyPayrollIdentifier(row, personIds) {
     "job.id",
     "need._id",
     "need.id",
+
+    "attendance.staffId",
+    "attendance.employeeId",
+    "attendance.userId",
+    "attendance.helperId",
+    "attendance.assignmentId",
+    "attendance.shiftNeedId",
+    "session.staffId",
+    "session.employeeId",
+    "session.userId",
+    "session.helperId",
+    "session.assignmentId",
+    "session.shiftNeedId",
+    "request.staffId",
+    "request.employeeId",
+    "request.userId",
+    "request.helperId",
+    "request.assignmentId",
+    "request.shiftNeedId",
   ];
 
   for (const p of directPaths) {
     const v = getByPath(row, p);
+
+    if (Array.isArray(v)) {
+      if (v.some((x) => valueMatchesAnyPayrollId(x, idSet))) return true;
+      continue;
+    }
+
     if (valueMatchesAnyPayrollId(v, idSet)) return true;
   }
 
-  // ✅ Last safety net:
-  // Some old Attendance rows have unknown nested shape.
-  // We deep-match only against known payroll identifiers.
-  return valueMatchesAnyPayrollId(row, idSet);
+  return false;
 }
 
 function mergeAttendanceRowsUnique(rows) {
@@ -941,7 +958,13 @@ function mergeAttendanceRowsUnique(rows) {
         safeStr(row?.workDate || row?.date || row?.attendanceDate),
         safeStr(row?.checkInAt || row?.clockInAt || row?.startAt),
         safeStr(row?.checkOutAt || row?.clockOutAt || row?.endAt),
-        safeStr(row?.staffId || row?.employeeId || row?.userId || row?.helperId),
+        safeStr(
+          row?.staffId ||
+            row?.employeeId ||
+            row?.principalId ||
+            row?.userId ||
+            row?.helperId
+        ),
       ].join("|");
 
     if (!key || seen.has(key)) continue;
@@ -1000,6 +1023,8 @@ async function getAttendanceRegularWorkSummaryForMonth({
       hours: 0,
       source: "attendance_model_missing",
       count: 0,
+      strictCount: 0,
+      fallbackCount: 0,
       payableCount: 0,
       items: [],
       personIds: [],
@@ -1012,6 +1037,8 @@ async function getAttendanceRegularWorkSummaryForMonth({
       hours: 0,
       source: "attendance_missing_query_keys",
       count: 0,
+      strictCount: 0,
+      fallbackCount: 0,
       payableCount: 0,
       items: [],
       personIds: [],
@@ -1032,6 +1059,8 @@ async function getAttendanceRegularWorkSummaryForMonth({
       hours: 0,
       source: "attendance_missing_person_ids",
       count: 0,
+      strictCount: 0,
+      fallbackCount: 0,
       payableCount: 0,
       items: [],
       personIds,
@@ -1069,10 +1098,10 @@ async function getAttendanceRegularWorkSummaryForMonth({
 
   // ✅ Production fallback:
   // If strict query cannot find payable rows, fetch clinic+month rows then
-  // match identifiers in JS. This catches old/migrated schemas where fields
-  // are nested or named as shiftNeedId / assignmentId / jobId.
+  // match direct known identifiers in JS. This catches rows like:
+  // principalId="usr_xxx", userId="usr_xxx", staffId="".
   if (strictRows.length === 0 || strictPayable.totalMinutes <= 0) {
-    queryMode = "fallback_clinic_month_deep_match";
+    queryMode = "fallback_clinic_month_direct_match";
 
     const fallbackQuery = {
       $and: [{ $or: clinicOr }, { $or: monthOr }],
@@ -2468,7 +2497,10 @@ function buildPayrollClosePayload(c) {
       grossBaseSource: c.salaryProfile.grossBaseSource,
       employmentTypeResolved: c.salaryProfile.employmentType,
       hourlyRateResolved: c.salaryProfile.hourlyRate,
+      hourlyRateSource: c.salaryProfile.hourlyRateSource || "",
       monthlySalaryFromStaff: c.salaryProfile.monthlySalaryFromStaff,
+      monthlySalaryResolved: c.salaryProfile.monthlySalaryResolved,
+      monthlySalarySource: c.salaryProfile.monthlySalarySource || "",
 
       regularWorkMinutes: c.salaryProfile.regularWork.minutes,
       regularWorkHours: c.salaryProfile.regularWork.hours,
@@ -2591,7 +2623,10 @@ function buildResponsePayload({
       grossBaseSource: c.salaryProfile.grossBaseSource,
       employmentType: c.salaryProfile.employmentType,
       hourlyRate: c.salaryProfile.hourlyRate,
+      hourlyRateSource: c.salaryProfile.hourlyRateSource || "",
       monthlySalaryFromStaff: c.salaryProfile.monthlySalaryFromStaff,
+      monthlySalaryResolved: c.salaryProfile.monthlySalaryResolved,
+      monthlySalarySource: c.salaryProfile.monthlySalarySource || "",
       regularWork: c.salaryProfile.regularWork,
       attendanceRegularWork: c.salaryProfile.attendanceRegularWork || null,
       bodyRegularWork: c.salaryProfile.bodyRegularWork || null,
