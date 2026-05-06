@@ -44,6 +44,12 @@
 // - lock OT records after payroll close to prevent accidental mutation
 // - recalculateClosedMonth() recalculates from latest approved/locked OT
 //
+// ✅ Production patch 2:
+// - part-time Attendance query now supports assignment/shift/job references
+// - if strict Attendance query cannot find rows, fallback searches clinic+month and deep-matches ids
+// - supports old/migrated Attendance schemas with nested ids
+// - avoids touching full-time salary/OT flow
+//
 
 const axios = require("axios");
 const PayrollClose = require("../models/PayrollClose");
@@ -453,6 +459,22 @@ function buildPayrollPersonIds({ employeeId, employee, body }) {
     body?.helperId,
     body?.principalId,
 
+    // ✅ Part-time / marketplace / shift assignment ids
+    body?.assignmentId,
+    body?.workAssignmentId,
+    body?.shiftNeedId,
+    body?.clinicShiftNeedId,
+    body?.shiftId,
+    body?.jobId,
+    body?.needId,
+    body?.bookingId,
+    body?.contractId,
+
+    firstValueByPaths(body, ["assignment._id", "assignment.id"]),
+    firstValueByPaths(body, ["shiftNeed._id", "shiftNeed.id"]),
+    firstValueByPaths(body, ["shift._id", "shift.id"]),
+    firstValueByPaths(body, ["job._id", "job.id"]),
+
     employee?._id,
     employee?.id,
     employee?.staffId,
@@ -463,6 +485,22 @@ function buildPayrollPersonIds({ employeeId, employee, body }) {
     employee?.principalId,
     employee?.helperId,
     employee?.workerId,
+
+    // ✅ Employee/staff service may return assignment references for part-time
+    employee?.assignmentId,
+    employee?.workAssignmentId,
+    employee?.shiftNeedId,
+    employee?.clinicShiftNeedId,
+    employee?.shiftId,
+    employee?.jobId,
+    employee?.needId,
+    employee?.bookingId,
+    employee?.contractId,
+
+    firstValueByPaths(employee, ["assignment._id", "assignment.id"]),
+    firstValueByPaths(employee, ["shiftNeed._id", "shiftNeed.id"]),
+    firstValueByPaths(employee, ["shift._id", "shift.id"]),
+    firstValueByPaths(employee, ["job._id", "job.id"]),
   ]);
 }
 
@@ -470,6 +508,7 @@ function buildAttendancePersonOr(personIds) {
   const ids = uniqueNonEmptyStrings(personIds);
 
   const fields = [
+    // Normal payroll/staff/user identity fields
     "staffId",
     "employeeId",
     "userId",
@@ -480,13 +519,74 @@ function buildAttendancePersonOr(personIds) {
     "workerId",
     "providerId",
     "assignedStaffId",
+    "assignedUserId",
+    "staffUserId",
+    "memberId",
+    "ownerId",
+    "createdBy",
 
+    // Nested staff/user objects
     "staff.id",
     "staff._id",
     "employee.id",
     "employee._id",
     "user.id",
     "user._id",
+    "helper.id",
+    "helper._id",
+    "worker.id",
+    "worker._id",
+    "provider.id",
+    "provider._id",
+
+    // ✅ Part-time / marketplace / shift assignment identity fields
+    "assignmentId",
+    "workAssignmentId",
+    "shiftNeedId",
+    "clinicShiftNeedId",
+    "shiftId",
+    "jobId",
+    "needId",
+    "bookingId",
+    "contractId",
+
+    // Nested assignment/shift/job objects
+    "assignment.id",
+    "assignment._id",
+    "workAssignment.id",
+    "workAssignment._id",
+    "shiftNeed.id",
+    "shiftNeed._id",
+    "clinicShiftNeed.id",
+    "clinicShiftNeed._id",
+    "shift.id",
+    "shift._id",
+    "job.id",
+    "job._id",
+    "need.id",
+    "need._id",
+    "booking.id",
+    "booking._id",
+
+    // Some schemas store refs under attendance/session/request
+    "attendance.staffId",
+    "attendance.employeeId",
+    "attendance.userId",
+    "attendance.helperId",
+    "attendance.assignmentId",
+    "attendance.shiftNeedId",
+    "session.staffId",
+    "session.employeeId",
+    "session.userId",
+    "session.helperId",
+    "session.assignmentId",
+    "session.shiftNeedId",
+    "request.staffId",
+    "request.employeeId",
+    "request.userId",
+    "request.helperId",
+    "request.assignmentId",
+    "request.shiftNeedId",
   ];
 
   const ors = [];
@@ -705,6 +805,180 @@ function summarizeAttendanceItem(row, minutes) {
   };
 }
 
+function normalizeComparableId(v) {
+  if (v === undefined || v === null) return "";
+
+  if (typeof v === "string" || typeof v === "number") {
+    return safeStr(v);
+  }
+
+  if (typeof v === "object") {
+    if (v instanceof Date) return "";
+
+    if (v._id) return normalizeComparableId(v._id);
+    if (v.id) return normalizeComparableId(v.id);
+
+    // Mongo ObjectId / BSON ObjectId
+    if (v._bsontype || v.constructor?.name === "ObjectId") {
+      return safeStr(v.toString());
+    }
+  }
+
+  return "";
+}
+
+function valueMatchesAnyPayrollId(value, idSet, seen = new WeakSet(), depth = 0) {
+  if (value === undefined || value === null) return false;
+  if (depth > 8) return false;
+
+  const comparable = normalizeComparableId(value);
+  if (comparable && idSet.has(comparable)) return true;
+
+  if (Array.isArray(value)) {
+    return value.some((x) =>
+      valueMatchesAnyPayrollId(x, idSet, seen, depth + 1)
+    );
+  }
+
+  if (typeof value === "object") {
+    if (value instanceof Date) return false;
+
+    if (seen.has(value)) return false;
+    seen.add(value);
+
+    for (const child of Object.values(value)) {
+      if (valueMatchesAnyPayrollId(child, idSet, seen, depth + 1)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function rowMatchesAnyPayrollIdentifier(row, personIds) {
+  const idSet = new Set(
+    uniqueNonEmptyStrings(personIds)
+      .map(normalizeComparableId)
+      .filter(Boolean)
+  );
+
+  if (!idSet.size || !row) return false;
+
+  const directPaths = [
+    "staffId",
+    "employeeId",
+    "userId",
+    "principalId",
+    "employeeUserId",
+    "linkedUserId",
+    "helperId",
+    "workerId",
+    "providerId",
+    "assignedStaffId",
+    "assignedUserId",
+    "staffUserId",
+
+    "assignmentId",
+    "workAssignmentId",
+    "shiftNeedId",
+    "clinicShiftNeedId",
+    "shiftId",
+    "jobId",
+    "needId",
+    "bookingId",
+    "contractId",
+
+    "staff._id",
+    "staff.id",
+    "employee._id",
+    "employee.id",
+    "user._id",
+    "user.id",
+    "helper._id",
+    "helper.id",
+    "worker._id",
+    "worker.id",
+    "assignment._id",
+    "assignment.id",
+    "workAssignment._id",
+    "workAssignment.id",
+    "shiftNeed._id",
+    "shiftNeed.id",
+    "clinicShiftNeed._id",
+    "clinicShiftNeed.id",
+    "shift._id",
+    "shift.id",
+    "job._id",
+    "job.id",
+    "need._id",
+    "need.id",
+  ];
+
+  for (const p of directPaths) {
+    const v = getByPath(row, p);
+    if (valueMatchesAnyPayrollId(v, idSet)) return true;
+  }
+
+  // ✅ Last safety net:
+  // Some old Attendance rows have unknown nested shape.
+  // We deep-match only against known payroll identifiers.
+  return valueMatchesAnyPayrollId(row, idSet);
+}
+
+function mergeAttendanceRowsUnique(rows) {
+  const out = [];
+  const seen = new Set();
+
+  for (const row of rows || []) {
+    const key =
+      safeStr(row?._id) ||
+      [
+        safeStr(row?.workDate || row?.date || row?.attendanceDate),
+        safeStr(row?.checkInAt || row?.clockInAt || row?.startAt),
+        safeStr(row?.checkOutAt || row?.clockOutAt || row?.endAt),
+        safeStr(row?.staffId || row?.employeeId || row?.userId || row?.helperId),
+      ].join("|");
+
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(row);
+  }
+
+  return out;
+}
+
+function attendanceSortForPayroll() {
+  return {
+    workDate: 1,
+    date: 1,
+    attendanceDate: 1,
+    checkInAt: 1,
+    checkedInAt: 1,
+    clockInAt: 1,
+    inAt: 1,
+    startAt: 1,
+    createdAt: 1,
+  };
+}
+
+function getAttendancePayableItems(rows) {
+  let totalMinutes = 0;
+  const payableItems = [];
+
+  for (const row of rows || []) {
+    const completed = isAttendanceCompletedForPayroll(row);
+    const minutes = extractAttendanceWorkedMinutes(row);
+
+    if (!completed || minutes <= 0) continue;
+
+    totalMinutes += minutes;
+    payableItems.push(summarizeAttendanceItem(row, minutes));
+  }
+
+  return { totalMinutes, payableItems };
+}
+
 async function getAttendanceRegularWorkSummaryForMonth({
   clinicId,
   monthKey,
@@ -760,111 +1034,82 @@ async function getAttendanceRegularWorkSummaryForMonth({
     };
   }
 
-  const q = {
-    $and: [
-      { $or: buildAttendanceClinicOr(cId) },
-      { $or: personOr },
-      { $or: buildAttendanceMonthOr(mKey) },
-    ],
+  const monthOr = buildAttendanceMonthOr(mKey);
+  const clinicOr = buildAttendanceClinicOr(cId);
+
+  const strictQuery = {
+    $and: [{ $or: clinicOr }, { $or: personOr }, { $or: monthOr }],
   };
 
-  const rows = await Attendance.find(q)
-    .select({
-      _id: 1,
-      clinicId: 1,
-      staffId: 1,
-      employeeId: 1,
-      userId: 1,
-      principalId: 1,
-      employeeUserId: 1,
-      linkedUserId: 1,
-      helperId: 1,
-      workerId: 1,
-      providerId: 1,
-      assignedStaffId: 1,
-      workDate: 1,
-      date: 1,
-      attendanceDate: 1,
-      monthKey: 1,
-      payrollMonth: 1,
-      attendanceMonth: 1,
-      workMonth: 1,
-      checkInAt: 1,
-      checkedInAt: 1,
-      clockInAt: 1,
-      inAt: 1,
-      startAt: 1,
-      startTime: 1,
-      checkInTime: 1,
-      clockInTime: 1,
-      timeIn: 1,
-      checkOutAt: 1,
-      checkedOutAt: 1,
-      clockOutAt: 1,
-      outAt: 1,
-      endAt: 1,
-      endTime: 1,
-      checkOutTime: 1,
-      clockOutTime: 1,
-      timeOut: 1,
-      regularWorkMinutes: 1,
-      normalWorkMinutes: 1,
-      workMinutes: 1,
-      totalWorkMinutes: 1,
-      totalMinutes: 1,
-      workedMinutes: 1,
-      durationMinutes: 1,
-      minutes: 1,
-      regularWorkHours: 1,
-      normalWorkHours: 1,
-      workHours: 1,
-      totalWorkHours: 1,
-      totalHours: 1,
-      workedHours: 1,
-      durationHours: 1,
-      hours: 1,
-      breakMinutes: 1,
-      status: 1,
-      attendanceStatus: 1,
-      state: 1,
-      lifecycleStatus: 1,
-      createdAt: 1,
-      updatedAt: 1,
-    })
-    .sort({
-      workDate: 1,
-      date: 1,
-      attendanceDate: 1,
-      checkInAt: 1,
-      clockInAt: 1,
-      startAt: 1,
-      createdAt: 1,
-    })
-    .lean();
+  let strictRows = [];
+  let fallbackRows = [];
+  let queryMode = "strict";
 
-  let totalMinutes = 0;
-  const payableItems = [];
-
-  for (const row of rows) {
-    const completed = isAttendanceCompletedForPayroll(row);
-    const minutes = extractAttendanceWorkedMinutes(row);
-
-    if (!completed || minutes <= 0) continue;
-
-    totalMinutes += minutes;
-    payableItems.push(summarizeAttendanceItem(row, minutes));
+  try {
+    strictRows = await Attendance.find(strictQuery)
+      .setOptions({ strictQuery: false })
+      .sort(attendanceSortForPayroll())
+      .limit(2000)
+      .lean();
+  } catch (e) {
+    console.log("[PAYROLL_PARTTIME_ATTENDANCE_WORK][STRICT_FAILED]", {
+      clinicId: cId,
+      employeeId: staffId,
+      monthKey: mKey,
+      error: e.message,
+    });
+    strictRows = [];
   }
+
+  const strictPayable = getAttendancePayableItems(strictRows);
+
+  // ✅ Production fallback:
+  // If strict query cannot find payable rows, fetch clinic+month rows then
+  // match identifiers in JS. This catches old/migrated schemas where fields
+  // are nested or named as shiftNeedId / assignmentId / jobId.
+  if (strictRows.length === 0 || strictPayable.totalMinutes <= 0) {
+    queryMode = "fallback_clinic_month_deep_match";
+
+    const fallbackQuery = {
+      $and: [{ $or: clinicOr }, { $or: monthOr }],
+    };
+
+    try {
+      const broadRows = await Attendance.find(fallbackQuery)
+        .setOptions({ strictQuery: false })
+        .sort(attendanceSortForPayroll())
+        .limit(5000)
+        .lean();
+
+      fallbackRows = broadRows.filter((row) =>
+        rowMatchesAnyPayrollIdentifier(row, personIds)
+      );
+    } catch (e) {
+      console.log("[PAYROLL_PARTTIME_ATTENDANCE_WORK][FALLBACK_FAILED]", {
+        clinicId: cId,
+        employeeId: staffId,
+        monthKey: mKey,
+        error: e.message,
+      });
+      fallbackRows = [];
+    }
+  }
+
+  const rows = mergeAttendanceRowsUnique([...strictRows, ...fallbackRows]);
+  const { totalMinutes, payableItems } = getAttendancePayableItems(rows);
 
   const result = {
     minutes: totalMinutes,
     hours: round2(totalMinutes / 60),
     source:
       totalMinutes > 0
-        ? "attendance.checkin_checkout"
+        ? `attendance.checkin_checkout.${queryMode}`
         : rows.length > 0
-        ? "attendance.no_completed_payable_records"
-        : "attendance.no_records",
+        ? `attendance.no_completed_payable_records.${queryMode}`
+        : `attendance.no_records.${queryMode}`,
     count: rows.length,
+    strictCount: strictRows.length,
+    fallbackCount: fallbackRows.length,
     payableCount: payableItems.length,
     items: payableItems.slice(0, 31),
     personIds,
@@ -876,6 +1121,8 @@ async function getAttendanceRegularWorkSummaryForMonth({
     monthKey: mKey,
     source: result.source,
     matchedRows: result.count,
+    strictRows: result.strictCount,
+    fallbackRows: result.fallbackCount,
     payableRows: result.payableCount,
     minutes: result.minutes,
     hours: result.hours,
