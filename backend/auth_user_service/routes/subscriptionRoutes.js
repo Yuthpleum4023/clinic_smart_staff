@@ -1,18 +1,81 @@
 // backend/auth_user_service/routes/subscriptionRoutes.js
+//
+// ✅ PRODUCTION SUBSCRIPTION ROUTES — CLINIC LEVEL
+// ------------------------------------------------------
+// ✅ Premium belongs to clinicId, not employee/helper user.
+// ✅ Controller handles role/security checks internally.
+// ✅ This route supports:
+//    - Authenticated user checking own clinic subscription
+//    - Admin/clinic owner/system activating/cancelling
+//    - Internal service checking subscription by clinicId
+//
+// Routes:
+// GET  /subscription/me
+// GET  /subscription/check?clinicId=cln_xxx
+// POST /subscription/activate
+// POST /subscription/cancel
+//
+
 const router = require("express").Router();
 const ctrl = require("../controllers/subscriptionController");
 
-// ✅ สมมติ auth middleware ของ auth_user_service ชื่อ auth และ requireRole มีอยู่แล้ว
-// ถ้าของท่านชื่อไม่ตรง เปลี่ยน import ให้ตรงโปรเจกต์จริง
-const { auth, requireRole } = require("../middleware/auth");
+const { auth } = require("../middleware/auth");
 
-// ดู subscription ของตัวเอง
+function s(v) {
+  return String(v || "").trim();
+}
+
+function isInternalRequest(req) {
+  const expected = s(process.env.INTERNAL_SERVICE_KEY);
+  if (!expected) return false;
+
+  const k1 = s(req.headers?.["x-internal-service-key"]);
+  const k2 = s(req.headers?.["x-internal-key"]);
+  const k3 = s(req.headers?.["internal-service-key"]);
+
+  return [k1, k2, k3].some((v) => v && v === expected);
+}
+
+// ✅ Allow either:
+// - normal authenticated user via JWT
+// - internal service via INTERNAL_SERVICE_KEY
+function authOrInternal(req, res, next) {
+  if (isInternalRequest(req)) {
+    req.user = {
+      userId: "system",
+      role: "system",
+    };
+    return next();
+  }
+
+  return auth(req, res, next);
+}
+
+// ✅ ดู subscription ของคลินิกตัวเอง
+// employee/admin ที่ผูก clinicId จะเห็นสถานะของ clinic นั้น
+// helper ที่ไม่มี clinicId ถาวรอาจได้ free/null
 router.get("/me", auth, ctrl.me);
 
-// ✅ เปิด premium (หลังจ่ายเงิน) — แนะนำให้ admin หรือ system/internal เรียก
-router.post("/activate", auth, requireRole(["admin"]), ctrl.activate);
+// ✅ internal/admin check by clinicId
+// ใช้สำหรับ payroll_service / attendanceController / helper shift context
+router.get("/check", authOrInternal, ctrl.check);
 
-// ยกเลิก (admin ยกเลิกให้ user หรือ user ยกเลิกของตัวเองก็ได้ — ตอนนี้ให้ admin ก่อน)
-router.post("/cancel", auth, requireRole(["admin"]), ctrl.cancel);
+// ✅ เปิด Premium ให้คลินิก
+// body preferred:
+// {
+//   clinicId,
+//   months,
+//   externalRef,
+//   amount,
+//   meta
+// }
+//
+// หมายเหตุ:
+// ไม่ใส่ requireRole ตรง route เพื่อไม่ให้ role clinic_owner/clinic_admin ถูกบล็อกผิด
+// controller จะเป็นคนเช็กสิทธิ์ละเอียดเอง
+router.post("/activate", authOrInternal, ctrl.activate);
+
+// ✅ ยกเลิก Premium ของคลินิก
+router.post("/cancel", authOrInternal, ctrl.cancel);
 
 module.exports = router;
