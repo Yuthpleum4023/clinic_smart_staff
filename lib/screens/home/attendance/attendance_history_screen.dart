@@ -52,8 +52,9 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
 
   String get _activeShiftId => _showSelectedShiftOnly ? _initialShiftId : '';
 
-  String get _activeShiftLabel =>
-      _initialShiftLabel.trim().isNotEmpty ? _initialShiftLabel.trim() : 'กะที่เลือก';
+  String get _activeShiftLabel => _initialShiftLabel.trim().isNotEmpty
+      ? _initialShiftLabel.trim()
+      : 'กะที่เลือก';
 
   Uri _payrollUri(String path, {Map<String, String>? qs}) {
     final base = ApiConfig.payrollBaseUrl.replaceAll(RegExp(r'\/+$'), '');
@@ -69,9 +70,9 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
   }
 
   Map<String, String> _headers() => <String, String>{
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ${widget.token}',
-      };
+    'Content-Type': 'application/json',
+    'Authorization': 'Bearer ${widget.token}',
+  };
 
   String _s(dynamic v) => (v ?? '').toString().trim();
 
@@ -209,8 +210,9 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
   }
 
   String _approvalStatus(Map<String, dynamic> s) {
-    return _s(s['approvalStatus'] ?? s['approval'] ?? s['requestStatus'])
-        .toLowerCase();
+    return _s(
+      s['approvalStatus'] ?? s['approval'] ?? s['requestStatus'],
+    ).toLowerCase();
   }
 
   bool _isPendingManual(Map<String, dynamic> s) {
@@ -238,7 +240,69 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
     return double.tryParse('${v ?? ''}') ?? 0.0;
   }
 
+  int _positiveMinutes(dynamic v) {
+    final n = _readNum(v);
+    if (!n.isFinite) return 0;
+    final minutes = n.floor();
+    return minutes > 0 ? minutes : 0;
+  }
+
+  int _helperApprovedExtraMinutes(Map<String, dynamic> s) {
+    return _positiveMinutes(s['helperExtraApprovedMinutes']);
+  }
+
+  int _helperOutsideShiftMinutes(Map<String, dynamic> s) {
+    return _positiveMinutes(s['helperOutsideShiftMinutes']);
+  }
+
+  int _helperActualWorkedMinutes(Map<String, dynamic> s) {
+    return _positiveMinutes(s['helperActualWorkedMinutes']);
+  }
+
+  int _helperBaseShiftMinutes(Map<String, dynamic> s) {
+    return _positiveMinutes(s['helperBaseShiftMinutes']);
+  }
+
+  int _helperPayableMinutes(Map<String, dynamic> s) {
+    // ✅ Helper only:
+    // Backend now sends workedMinutes as payable minutes:
+    // base shift minutes + approved extra minutes.
+    final worked = _positiveMinutes(s['workedMinutes']);
+    if (worked > 0) return worked;
+
+    // Fallback for partially hydrated rows.
+    final base = _helperBaseShiftMinutes(s);
+    final approvedExtra = _helperApprovedExtraMinutes(s);
+    final total = base + approvedExtra;
+    if (total > 0) return total;
+
+    return 0;
+  }
+
+  String _minutesAsHoursText(int minutes) {
+    if (minutes <= 0) return '-';
+    return '${(minutes / 60.0).toStringAsFixed(2)} ชม.';
+  }
+
+  String _helperExtraStatusText(Map<String, dynamic> s) {
+    final outside = _helperOutsideShiftMinutes(s);
+    final approved = _helperApprovedExtraMinutes(s);
+
+    if (outside <= 0) return '';
+    if (approved >= outside) return 'อนุมัติเวลาเกินกะแล้ว';
+    if (approved > 0) return 'อนุมัติบางส่วน • รออนุมัติส่วนที่เหลือ';
+    return 'มีเวลานอกกะ รอผู้ดูแลอนุมัติ';
+  }
+
   int _firstPositiveMinutes(Map<String, dynamic> s) {
+    // ✅ Helper only:
+    // Use backend payable minutes first, so helper history does not show
+    // raw scan duration when checkout is outside the shift.
+    if (_isHelper) {
+      final helperPayable = _helperPayableMinutes(s);
+      if (helperPayable > 0) return helperPayable;
+    }
+
     final minuteKeys = [
       'regularWorkMinutes',
       'normalWorkMinutes',
@@ -251,7 +315,7 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
     ];
 
     for (final k in minuteKeys) {
-      final n = _readNum(s[k]).floor();
+      final n = _positiveMinutes(s[k]);
       if (n > 0) return n;
     }
 
@@ -306,13 +370,15 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
   }
 
   String _workDateText(Map<String, dynamic> s) {
-    final workDate = s['workDate'] ??
+    final workDate =
+        s['workDate'] ??
         s['date'] ??
         s['day'] ??
         s['attendanceDate'] ??
         s['workDay'];
 
-    final d = _parseDateAny(workDate) ??
+    final d =
+        _parseDateAny(workDate) ??
         _parseDateAny(_checkInValue(s)) ??
         _parseDateAny(s['createdAt']) ??
         _parseDateAny(s['updatedAt']);
@@ -493,9 +559,11 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
   DateTimeRange _effectiveRange() {
     final now = DateTime.now();
     final end = DateTime(now.year, now.month, now.day, 23, 59, 59);
-    final start = DateTime(now.year, now.month, now.day).subtract(
-      Duration(days: (_quickDays <= 0 ? 30 : _quickDays) - 1),
-    );
+    final start = DateTime(
+      now.year,
+      now.month,
+      now.day,
+    ).subtract(Duration(days: (_quickDays <= 0 ? 30 : _quickDays) - 1));
 
     return DateTimeRange(start: start, end: end);
   }
@@ -504,10 +572,13 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
     if (_from == null && _to == null) return _effectiveRange();
 
     final now = DateTime.now();
-    final from = _from ??
-        DateTime(now.year, now.month, now.day).subtract(
-          const Duration(days: 29),
-        );
+    final from =
+        _from ??
+        DateTime(
+          now.year,
+          now.month,
+          now.day,
+        ).subtract(const Duration(days: 29));
     final to = _to ?? now;
 
     final start = DateTime(from.year, from.month, from.day);
@@ -550,16 +621,20 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
         .toList();
 
     list.sort((a, b) {
-      final da = _workDateForFilter(a) ?? DateTime.fromMillisecondsSinceEpoch(0);
-      final db = _workDateForFilter(b) ?? DateTime.fromMillisecondsSinceEpoch(0);
+      final da =
+          _workDateForFilter(a) ?? DateTime.fromMillisecondsSinceEpoch(0);
+      final db =
+          _workDateForFilter(b) ?? DateTime.fromMillisecondsSinceEpoch(0);
 
       final cmpDate = db.compareTo(da);
       if (cmpDate != 0) return cmpDate;
 
-      final ca = _parseDateAny(_checkInValue(a)) ??
+      final ca =
+          _parseDateAny(_checkInValue(a)) ??
           _parseDateAny(a['createdAt']) ??
           DateTime.fromMillisecondsSinceEpoch(0);
-      final cb = _parseDateAny(_checkInValue(b)) ??
+      final cb =
+          _parseDateAny(_checkInValue(b)) ??
           _parseDateAny(b['createdAt']) ??
           DateTime.fromMillisecondsSinceEpoch(0);
 
@@ -1174,11 +1249,7 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
       ),
       child: Text(
         text,
-        style: TextStyle(
-          fontSize: 11,
-          color: fg,
-          fontWeight: FontWeight.w900,
-        ),
+        style: TextStyle(fontSize: 11, color: fg, fontWeight: FontWeight.w900),
       ),
     );
   }
@@ -1193,6 +1264,13 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
     final shiftId = _sessionShiftId(s);
     final displayShift = _displayShiftText(s);
     final clinicText = _displayClinicText(s);
+
+    final helperPayableMinutes = _helperPayableMinutes(s);
+    final helperActualMinutes = _helperActualWorkedMinutes(s);
+    final helperBaseMinutes = _helperBaseShiftMinutes(s);
+    final helperOutsideMinutes = _helperOutsideShiftMinutes(s);
+    final helperApprovedExtraMinutes = _helperApprovedExtraMinutes(s);
+    final helperExtraStatus = _helperExtraStatusText(s);
 
     await showModalBottomSheet(
       context: context,
@@ -1266,6 +1344,75 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
                               value: shiftId,
                               valueWeight: FontWeight.w700,
                             ),
+                          if (_isHelper && helperPayableMinutes > 0)
+                            _detailRow(
+                              label: 'เวลาคิดค่าจ้าง',
+                              value: _minutesAsHoursText(helperPayableMinutes),
+                              valueColor: Colors.green.shade800,
+                            ),
+                          if (_isHelper && helperActualMinutes > 0)
+                            _detailRow(
+                              label: 'เวลาสแกนจริง',
+                              value: _minutesAsHoursText(helperActualMinutes),
+                              valueWeight: FontWeight.w700,
+                            ),
+                          if (_isHelper && helperBaseMinutes > 0)
+                            _detailRow(
+                              label: 'เวลาตามกะ',
+                              value: _minutesAsHoursText(helperBaseMinutes),
+                              valueWeight: FontWeight.w700,
+                            ),
+                          if (_isHelper && helperOutsideMinutes > 0)
+                            _detailRow(
+                              label: 'เวลานอกกะ',
+                              value: _minutesAsHoursText(helperOutsideMinutes),
+                              valueColor:
+                                  helperApprovedExtraMinutes >=
+                                      helperOutsideMinutes
+                                  ? Colors.green.shade800
+                                  : Colors.orange.shade800,
+                            ),
+                          if (_isHelper && helperApprovedExtraMinutes > 0)
+                            _detailRow(
+                              label: 'เวลาเกินกะที่อนุมัติ',
+                              value: _minutesAsHoursText(
+                                helperApprovedExtraMinutes,
+                              ),
+                              valueColor: Colors.green.shade800,
+                            ),
+                          if (_isHelper && helperExtraStatus.isNotEmpty) ...[
+                            const SizedBox(height: 8),
+                            Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color:
+                                    helperApprovedExtraMinutes >=
+                                        helperOutsideMinutes
+                                    ? Colors.green.shade50
+                                    : Colors.orange.shade50,
+                                borderRadius: BorderRadius.circular(14),
+                                border: Border.all(
+                                  color:
+                                      helperApprovedExtraMinutes >=
+                                          helperOutsideMinutes
+                                      ? Colors.green.shade100
+                                      : Colors.orange.shade100,
+                                ),
+                              ),
+                              child: Text(
+                                helperExtraStatus,
+                                style: TextStyle(
+                                  color:
+                                      helperApprovedExtraMinutes >=
+                                          helperOutsideMinutes
+                                      ? Colors.green.shade800
+                                      : Colors.orange.shade800,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                            ),
+                          ],
                           if (manualReason.isNotEmpty)
                             _detailRow(
                               label: 'เหตุผล / หมายเหตุ',
@@ -1300,9 +1447,7 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
                               decoration: BoxDecoration(
                                 color: Colors.red.shade50,
                                 borderRadius: BorderRadius.circular(14),
-                                border: Border.all(
-                                  color: Colors.red.shade100,
-                                ),
+                                border: Border.all(color: Colors.red.shade100),
                               ),
                               child: Text(
                                 'รายการนี้เป็นคำขอแก้ไขเวลาที่ไม่ผ่านการอนุมัติ',
@@ -1321,9 +1466,7 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
                               decoration: BoxDecoration(
                                 color: Colors.red.shade50,
                                 borderRadius: BorderRadius.circular(14),
-                                border: Border.all(
-                                  color: Colors.red.shade100,
-                                ),
+                                border: Border.all(color: Colors.red.shade100),
                               ),
                               child: Text(
                                 'รายการนี้ยังไม่มีเวลาเช็กเอาท์ และไม่ใช่รายการของวันนี้',
@@ -1402,7 +1545,9 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
                 ? 'กำลังแสดงเฉพาะกะ: $_activeShiftLabel'
                 : 'กำลังแสดงประวัติทุกกะในช่วงเวลานี้',
             style: TextStyle(
-              color: showingShift ? Colors.green.shade800 : Colors.blue.shade800,
+              color: showingShift
+                  ? Colors.green.shade800
+                  : Colors.blue.shade800,
               fontWeight: FontWeight.w800,
             ),
           ),
@@ -1447,281 +1592,310 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _err.isNotEmpty
-              ? Center(
+          ? Center(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Card(
                   child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Card(
-                      child: Padding(
-                        padding: const EdgeInsets.all(14),
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Text(
-                              'ไม่พร้อมใช้งาน',
-                              style: TextStyle(fontWeight: FontWeight.w900),
-                            ),
-                            const SizedBox(height: 10),
-                            Text(
-                              _err,
-                              textAlign: TextAlign.center,
-                              style: TextStyle(color: Colors.grey.shade700),
-                            ),
-                            const SizedBox(height: 12),
-                            SizedBox(
-                              width: double.infinity,
-                              child: OutlinedButton.icon(
-                                onPressed: _load,
-                                icon: const Icon(Icons.refresh),
-                                label: const Text('ลองใหม่'),
-                              ),
-                            ),
-                          ],
+                    padding: const EdgeInsets.all(14),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Text(
+                          'ไม่พร้อมใช้งาน',
+                          style: TextStyle(fontWeight: FontWeight.w900),
                         ),
-                      ),
+                        const SizedBox(height: 10),
+                        Text(
+                          _err,
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: Colors.grey.shade700),
+                        ),
+                        const SizedBox(height: 12),
+                        SizedBox(
+                          width: double.infinity,
+                          child: OutlinedButton.icon(
+                            onPressed: _load,
+                            icon: const Icon(Icons.refresh),
+                            label: const Text('ลองใหม่'),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
-                )
-              : Column(
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
-                      child: Card(
-                        child: Padding(
-                          padding: const EdgeInsets.all(12),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
+                ),
+              ),
+            )
+          : Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+                  child: Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'ช่วงเวลา',
+                            style: TextStyle(
+                              fontWeight: FontWeight.w900,
+                              fontSize: 14,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          _shiftFilterCard(),
+                          if (_isHelper && _initialShiftId.isNotEmpty)
+                            const SizedBox(height: 10),
+                          SingleChildScrollView(
+                            scrollDirection: Axis.horizontal,
+                            child: Row(
+                              children: [
+                                _chip(
+                                  '7 วัน',
+                                  _from == null &&
+                                      _to == null &&
+                                      _quickDays == 7,
+                                  () => _setQuick(7),
+                                ),
+                                _chip(
+                                  '30 วัน',
+                                  _from == null &&
+                                      _to == null &&
+                                      _quickDays == 30,
+                                  () => _setQuick(30),
+                                ),
+                                _chip(
+                                  '90 วัน',
+                                  _from == null &&
+                                      _to == null &&
+                                      _quickDays == 90,
+                                  () => _setQuick(90),
+                                ),
+                                _chip(
+                                  'เลือกเอง',
+                                  _from != null || _to != null,
+                                  () {
+                                    if (_from == null && _to == null) {
+                                      setState(() {
+                                        _from = DateTime.now().subtract(
+                                          const Duration(days: 29),
+                                        );
+                                        _to = DateTime.now();
+                                        _showSelectedShiftOnly = false;
+                                      });
+                                      _load();
+                                    }
+                                  },
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          Row(
                             children: [
-                              const Text(
-                                'ช่วงเวลา',
-                                style: TextStyle(
-                                  fontWeight: FontWeight.w900,
-                                  fontSize: 14,
+                              Expanded(
+                                child: OutlinedButton.icon(
+                                  onPressed: _pickFrom,
+                                  icon: const Icon(Icons.date_range),
+                                  label: Text(
+                                    'เริ่ม: ${_from == null ? _ymd(r.start) : _ymd(_from!)}',
+                                  ),
                                 ),
                               ),
-                              const SizedBox(height: 8),
-                              _shiftFilterCard(),
-                              if (_isHelper && _initialShiftId.isNotEmpty)
-                                const SizedBox(height: 10),
-                              SingleChildScrollView(
-                                scrollDirection: Axis.horizontal,
-                                child: Row(
-                                  children: [
-                                    _chip(
-                                      '7 วัน',
-                                      _from == null &&
-                                          _to == null &&
-                                          _quickDays == 7,
-                                      () => _setQuick(7),
-                                    ),
-                                    _chip(
-                                      '30 วัน',
-                                      _from == null &&
-                                          _to == null &&
-                                          _quickDays == 30,
-                                      () => _setQuick(30),
-                                    ),
-                                    _chip(
-                                      '90 วัน',
-                                      _from == null &&
-                                          _to == null &&
-                                          _quickDays == 90,
-                                      () => _setQuick(90),
-                                    ),
-                                    _chip(
-                                      'เลือกเอง',
-                                      _from != null || _to != null,
-                                      () {
-                                        if (_from == null && _to == null) {
-                                          setState(() {
-                                            _from = DateTime.now().subtract(
-                                              const Duration(days: 29),
-                                            );
-                                            _to = DateTime.now();
-                                            _showSelectedShiftOnly = false;
-                                          });
-                                          _load();
-                                        }
-                                      },
-                                    ),
-                                  ],
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: OutlinedButton.icon(
+                                  onPressed: _pickTo,
+                                  icon: const Icon(Icons.event),
+                                  label: Text(
+                                    'ถึง: ${_to == null ? _ymd(r.end) : _ymd(_to!)}',
+                                  ),
                                 ),
-                              ),
-                              const SizedBox(height: 10),
-                              Row(
-                                children: [
-                                  Expanded(
-                                    child: OutlinedButton.icon(
-                                      onPressed: _pickFrom,
-                                      icon: const Icon(Icons.date_range),
-                                      label: Text(
-                                        'เริ่ม: ${_from == null ? _ymd(r.start) : _ymd(_from!)}',
-                                      ),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: OutlinedButton.icon(
-                                      onPressed: _pickTo,
-                                      icon: const Icon(Icons.event),
-                                      label: Text(
-                                        'ถึง: ${_to == null ? _ymd(r.end) : _ymd(_to!)}',
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 8),
-                              Text(
-                                'แสดง: ${_ymd(r.start)} ถึง ${_ymd(r.end)} • พบ ${list.length} รายการ',
-                                style: TextStyle(color: Colors.grey.shade700),
                               ),
                             ],
                           ),
-                        ),
+                          const SizedBox(height: 8),
+                          Text(
+                            'แสดง: ${_ymd(r.start)} ถึง ${_ymd(r.end)} • พบ ${list.length} รายการ',
+                            style: TextStyle(color: Colors.grey.shade700),
+                          ),
+                        ],
                       ),
                     ),
-                    Expanded(
-                      child: list.isEmpty
-                          ? Center(
-                              child: Text(
-                                _isHelper && _showSelectedShiftOnly
-                                    ? 'ไม่พบรายการของกะที่เลือกในช่วงเวลานี้'
-                                    : 'ไม่พบรายการในช่วงเวลานี้',
-                                style: TextStyle(color: Colors.grey.shade700),
+                  ),
+                ),
+                Expanded(
+                  child: list.isEmpty
+                      ? Center(
+                          child: Text(
+                            _isHelper && _showSelectedShiftOnly
+                                ? 'ไม่พบรายการของกะที่เลือกในช่วงเวลานี้'
+                                : 'ไม่พบรายการในช่วงเวลานี้',
+                            style: TextStyle(color: Colors.grey.shade700),
+                          ),
+                        )
+                      : ListView.builder(
+                          padding: const EdgeInsets.fromLTRB(12, 0, 12, 16),
+                          itemCount: list.length,
+                          itemBuilder: (context, i) {
+                            final s = list[i];
+
+                            final dateText = _workDateText(s);
+                            final ci = _fmtHM(_checkInValue(s));
+                            final co = _fmtHM(_checkOutValue(s));
+
+                            final mainValue = _mainValueText(s);
+                            final shiftText = _displayShiftText(s);
+                            final clinicText = _displayClinicText(s);
+                            final manualReason = _manualReasonText(s);
+
+                            final helperListOutsideMinutes =
+                                _helperOutsideShiftMinutes(s);
+                            final helperListApprovedExtraMinutes =
+                                _helperApprovedExtraMinutes(s);
+                            final helperListExtraStatus =
+                                _helperExtraStatusText(s);
+
+                            return Card(
+                              elevation: 0.6,
+                              color: _cardBgColor(s),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(18),
+                                side: BorderSide(
+                                  color: _cardBorderColor(s),
+                                  width: 1,
+                                ),
                               ),
-                            )
-                          : ListView.builder(
-                              padding: const EdgeInsets.fromLTRB(12, 0, 12, 16),
-                              itemCount: list.length,
-                              itemBuilder: (context, i) {
-                                final s = list[i];
-
-                                final dateText = _workDateText(s);
-                                final ci = _fmtHM(_checkInValue(s));
-                                final co = _fmtHM(_checkOutValue(s));
-
-                                final mainValue = _mainValueText(s);
-                                final shiftText = _displayShiftText(s);
-                                final clinicText = _displayClinicText(s);
-                                final manualReason = _manualReasonText(s);
-
-                                return Card(
-                                  elevation: 0.6,
-                                  color: _cardBgColor(s),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(18),
-                                    side: BorderSide(
-                                      color: _cardBorderColor(s),
-                                      width: 1,
+                              child: ListTile(
+                                contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 14,
+                                  vertical: 10,
+                                ),
+                                leading: CircleAvatar(
+                                  backgroundColor: Colors.purple.shade50,
+                                  child: Text(
+                                    dateText.length >= 10
+                                        ? dateText.substring(8, 10)
+                                        : '--',
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w900,
                                     ),
                                   ),
-                                  child: ListTile(
-                                    contentPadding: const EdgeInsets.symmetric(
-                                      horizontal: 14,
-                                      vertical: 10,
-                                    ),
-                                    leading: CircleAvatar(
-                                      backgroundColor: Colors.purple.shade50,
-                                      child: Text(
-                                        dateText.length >= 10
-                                            ? dateText.substring(8, 10)
-                                            : '--',
-                                        style: const TextStyle(
-                                          fontWeight: FontWeight.w900,
+                                ),
+                                title: Text(
+                                  dateText,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w900,
+                                    fontSize: 17,
+                                  ),
+                                ),
+                                subtitle: Padding(
+                                  padding: const EdgeInsets.only(top: 4),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        'เข้า $ci • ออก $co',
+                                        style: TextStyle(
+                                          color: Colors.grey.shade800,
+                                          fontSize: 15,
                                         ),
                                       ),
-                                    ),
-                                    title: Text(
-                                      dateText,
-                                      style: const TextStyle(
-                                        fontWeight: FontWeight.w900,
-                                        fontSize: 17,
-                                      ),
-                                    ),
-                                    subtitle: Padding(
-                                      padding: const EdgeInsets.only(top: 4),
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
+                                      if (_isHelper) ...[
+                                        const SizedBox(height: 4),
+                                        Text(
+                                          'คลินิก: $clinicText',
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                            color: Colors.grey.shade700,
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w800,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 3),
+                                        Text(
+                                          'กะงาน: $shiftText',
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                            color: Colors.grey.shade600,
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
+                                        if (helperListExtraStatus
+                                            .isNotEmpty) ...[
+                                          const SizedBox(height: 3),
                                           Text(
-                                            'เข้า $ci • ออก $co',
+                                            helperListApprovedExtraMinutes >=
+                                                    helperListOutsideMinutes
+                                                ? 'เวลาเกินกะ: ${_minutesAsHoursText(helperListApprovedExtraMinutes)} • อนุมัติแล้ว'
+                                                : 'เวลาเกินกะ: ${_minutesAsHoursText(helperListOutsideMinutes)} • รออนุมัติ',
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
                                             style: TextStyle(
-                                              color: Colors.grey.shade800,
-                                              fontSize: 15,
+                                              color:
+                                                  helperListApprovedExtraMinutes >=
+                                                      helperListOutsideMinutes
+                                                  ? Colors.green.shade700
+                                                  : Colors.orange.shade800,
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.w800,
                                             ),
                                           ),
-                                          if (_isHelper) ...[
-                                            const SizedBox(height: 4),
-                                            Text(
-                                              'คลินิก: $clinicText',
-                                              maxLines: 1,
-                                              overflow: TextOverflow.ellipsis,
-                                              style: TextStyle(
-                                                color: Colors.grey.shade700,
-                                                fontSize: 12,
-                                                fontWeight: FontWeight.w800,
-                                              ),
-                                            ),
-                                            const SizedBox(height: 3),
-                                            Text(
-                                              'กะงาน: $shiftText',
-                                              maxLines: 1,
-                                              overflow: TextOverflow.ellipsis,
-                                              style: TextStyle(
-                                                color: Colors.grey.shade600,
-                                                fontSize: 12,
-                                                fontWeight: FontWeight.w700,
-                                              ),
-                                            ),
-                                          ],
-                                          if (manualReason.isNotEmpty) ...[
-                                            const SizedBox(height: 4),
-                                            Text(
-                                              _shortText(manualReason, max: 90),
-                                              maxLines: 2,
-                                              overflow: TextOverflow.ellipsis,
-                                              style: TextStyle(
-                                                color: Colors.grey.shade700,
-                                                fontSize: 12,
-                                                fontWeight: FontWeight.w600,
-                                              ),
-                                            ),
-                                          ],
-                                          const SizedBox(height: 8),
-                                          _statusBadge(s),
                                         ],
-                                      ),
-                                    ),
-                                    trailing: ConstrainedBox(
-                                      constraints:
-                                          const BoxConstraints(maxWidth: 96),
-                                      child: Text(
-                                        mainValue,
-                                        textAlign: TextAlign.end,
-                                        maxLines: 2,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: TextStyle(
-                                          fontWeight: FontWeight.w900,
-                                          fontSize: 15,
-                                          color: _isPendingManual(s)
-                                              ? Colors.deepPurple.shade700
-                                              : _isRejectedManual(s)
-                                                  ? Colors.red.shade700
-                                                  : _isStaleOpen(s)
-                                                      ? Colors.red.shade700
-                                                      : Colors.black87,
+                                      ],
+                                      if (manualReason.isNotEmpty) ...[
+                                        const SizedBox(height: 4),
+                                        Text(
+                                          _shortText(manualReason, max: 90),
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                            color: Colors.grey.shade700,
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w600,
+                                          ),
                                         ),
-                                      ),
-                                    ),
-                                    onTap: () => _showDetailSheet(s),
+                                      ],
+                                      const SizedBox(height: 8),
+                                      _statusBadge(s),
+                                    ],
                                   ),
-                                );
-                              },
-                            ),
-                    ),
-                  ],
+                                ),
+                                trailing: ConstrainedBox(
+                                  constraints: const BoxConstraints(
+                                    maxWidth: 96,
+                                  ),
+                                  child: Text(
+                                    mainValue,
+                                    textAlign: TextAlign.end,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.w900,
+                                      fontSize: 15,
+                                      color: _isPendingManual(s)
+                                          ? Colors.deepPurple.shade700
+                                          : _isRejectedManual(s)
+                                          ? Colors.red.shade700
+                                          : _isStaleOpen(s)
+                                          ? Colors.red.shade700
+                                          : Colors.black87,
+                                    ),
+                                  ),
+                                ),
+                                onTap: () => _showDetailSheet(s),
+                              ),
+                            );
+                          },
+                        ),
                 ),
+              ],
+            ),
     );
   }
 }
