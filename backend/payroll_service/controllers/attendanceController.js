@@ -4700,6 +4700,119 @@ async function checkOut(req, res) {
 
     ensureSecurityFields(session);
 
+    // ✅ Helper should follow an approval flow similar to employee policy.
+    // If helper checks out after the assigned shift end, do NOT close the
+    // session immediately. Convert the checkout attempt into a manual
+    // checkout request so clinic admin can approve/reject it.
+    const helperShiftEndAt =
+      sessionRole === "helper" ? getShiftEndDateTime(shift) : null;
+
+    const helperCheckoutAfterShiftEndRequiresApproval =
+      sessionRole === "helper" &&
+      helperShiftEndAt &&
+      checkOutAt.getTime() > helperShiftEndAt.getTime();
+
+    if (helperCheckoutAfterShiftEndRequiresApproval) {
+      if (s(req.body?.deviceId)) session.deviceId = s(req.body?.deviceId);
+
+      session.outLat = Number.isFinite(lat) ? lat : session.outLat;
+      session.outLng = Number.isFinite(lng) ? lng : session.outLng;
+
+      if (!s(session.clinicName)) {
+        session.clinicName = s(
+          shift?.clinicName || extractClinicDisplayName(session)
+        );
+      }
+
+      if (!s(session.shiftName)) {
+        session.shiftName = s(shift?.title || extractShiftDisplayName(session));
+      }
+
+      setLocationSecurityMeta({
+        session,
+        phase: "out",
+        distanceMeters: Number.isFinite(outDistanceMeters)
+          ? outDistanceMeters
+          : null,
+        locationSource: outLocationSource,
+        mocked: outMocked,
+      });
+
+      maybeFlagDistanceRisk(
+        session,
+        Number.isFinite(outDistanceMeters) ? outDistanceMeters : null,
+        getEnforcedGeoRadius(policy)
+      );
+
+      addSuspiciousFlag(
+        session,
+        "HELPER_CHECKOUT_AFTER_SHIFT_END_REQUIRES_APPROVAL",
+        10
+      );
+
+      applyManualRequestFields(
+        session,
+        req,
+        "check_out",
+        null,
+        checkOutAt,
+        userId || principalId
+      );
+
+      session.checkOutMethod = method;
+      session.biometricVerifiedOut =
+        method === "biometric" ? biometricVerified : false;
+
+      if (!s(session.requestReasonCode)) {
+        session.requestReasonCode = "HELPER_CHECKOUT_AFTER_SHIFT_END";
+      }
+
+      if (!s(session.requestReasonText)) {
+        session.requestReasonText =
+          "ขออนุมัติเช็กเอาท์เกินเวลาสิ้นสุดกะงาน";
+      }
+
+      if (!s(session.reasonCode)) {
+        session.reasonCode = "HELPER_CHECKOUT_AFTER_SHIFT_END";
+      }
+
+      if (!s(session.reasonText)) {
+        session.reasonText = "เช็กเอาท์เกินเวลาสิ้นสุดกะงาน";
+      }
+
+      if (!s(session.note)) {
+        session.note = "ขออนุมัติเช็กเอาท์เกินเวลาสิ้นสุดกะงาน";
+      }
+
+      if (!s(session.manualReason)) {
+        session.manualReason = session.note;
+      }
+
+      session.riskScore = clampRisk(session.riskScore);
+
+      await session.save();
+
+      const hydratedPending = await hydrateOneSessionDisplayField(
+        session.toObject?.() || session
+      );
+
+      return res.status(200).json({
+        ok: true,
+        code: "HELPER_CHECKOUT_AFTER_SHIFT_END_REQUIRES_APPROVAL",
+        message:
+          "เช็กเอาท์เกินเวลาสิ้นสุดกะงาน ระบบส่งคำขอให้ผู้ดูแลอนุมัติแล้ว",
+        requiresApproval: true,
+        session: hydratedPending || session,
+        policy: buildPublicPolicy(policy, s(session.workDate)),
+        runtime: {
+          role: sessionRole,
+          clinicId: effectiveClinicId,
+          shift: shift || null,
+        },
+        routeHint: buildManualRequestRouteHint(session),
+      });
+    }
+
     session.checkOutAt = checkOutAt;
     session.status = "closed";
     session.checkOutMethod = method;
