@@ -150,15 +150,15 @@ class _HomeScreenState extends State<HomeScreen> {
   String get _displayAttendanceStatusLine {
     final previousPendingLine = _hasPreviousPendingBlock
         ? (_attPreviousPendingMessage.trim().isNotEmpty
-            ? _attPreviousPendingMessage.trim()
-            : 'ยังมีรายการลงเวลาจากวันก่อนค้างอยู่ กรุณาแก้ไขและรออนุมัติก่อน')
+              ? _attPreviousPendingMessage.trim()
+              : 'ยังมีรายการลงเวลาจากวันก่อนค้างอยู่ กรุณาแก้ไขและรออนุมัติก่อน')
         : '';
 
     final base = previousPendingLine.isNotEmpty
         ? previousPendingLine
         : (_attProgressText.trim().isNotEmpty
-            ? _attProgressText.trim()
-            : _attStatusLine.trim());
+              ? _attProgressText.trim()
+              : _attStatusLine.trim());
 
     if (_showSlowNetworkHint) {
       if (base.isEmpty) {
@@ -183,22 +183,24 @@ class _HomeScreenState extends State<HomeScreen> {
       _isHelper && _attendancePremiumEnabled && _helperTodayShifts.isNotEmpty;
 
   String get _selectedHelperShiftId {
-    final raw = (_selectedHelperShift?['_id'] ??
-            _selectedHelperShift?['id'] ??
-            _selectedHelperShift?['shiftId'] ??
-            '')
-        .toString()
-        .trim();
+    final raw =
+        (_selectedHelperShift?['_id'] ??
+                _selectedHelperShift?['id'] ??
+                _selectedHelperShift?['shiftId'] ??
+                '')
+            .toString()
+            .trim();
     return raw;
   }
 
   String get _selectedHelperShiftClinicId {
-    final raw = (_selectedHelperShift?['clinicId'] ??
-            _selectedHelperShift?['clinic']?['_id'] ??
-            _selectedHelperShift?['clinic']?['id'] ??
-            '')
-        .toString()
-        .trim();
+    final raw =
+        (_selectedHelperShift?['clinicId'] ??
+                _selectedHelperShift?['clinic']?['_id'] ??
+                _selectedHelperShift?['clinic']?['id'] ??
+                '')
+            .toString()
+            .trim();
     return raw;
   }
 
@@ -240,9 +242,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _snack(String msg) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg)),
-    );
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
   void _tapLog(String msg) {
@@ -284,44 +284,49 @@ class _HomeScreenState extends State<HomeScreen> {
         ? Map<String, dynamic>.from(pendingContextAny)
         : <String, dynamic>{};
 
-    final previousSessionId = (data['previousSessionId'] ??
-            previous['_id'] ??
-            previous['sessionId'] ??
-            pendingContext['_id'] ??
-            pendingContext['sessionId'] ??
-            '')
-        .toString()
-        .trim();
+    final previousSessionId =
+        (data['previousSessionId'] ??
+                previous['_id'] ??
+                previous['sessionId'] ??
+                pendingContext['_id'] ??
+                pendingContext['sessionId'] ??
+                '')
+            .toString()
+            .trim();
 
-    final previousWorkDate = (data['previousWorkDate'] ??
-            previous['workDate'] ??
-            pendingContext['workDate'] ??
-            '')
-        .toString()
-        .trim();
+    final previousWorkDate =
+        (data['previousWorkDate'] ??
+                previous['workDate'] ??
+                pendingContext['workDate'] ??
+                '')
+            .toString()
+            .trim();
 
-    final previousShiftId = (data['previousShiftId'] ??
-            previous['shiftId'] ??
-            pendingContext['shiftId'] ??
-            '')
-        .toString()
-        .trim();
+    final previousShiftId =
+        (data['previousShiftId'] ??
+                previous['shiftId'] ??
+                pendingContext['shiftId'] ??
+                '')
+            .toString()
+            .trim();
 
-    final previousClinicId = (data['previousClinicId'] ??
-            previous['clinicId'] ??
-            pendingContext['clinicId'] ??
-            '')
-        .toString()
-        .trim();
+    final previousClinicId =
+        (data['previousClinicId'] ??
+                previous['clinicId'] ??
+                pendingContext['clinicId'] ??
+                '')
+            .toString()
+            .trim();
 
-    final previousClinicName = (data['previousClinicName'] ??
-            previous['clinicName'] ??
-            previous['clinicLabel'] ??
-            pendingContext['clinicName'] ??
-            pendingContext['clinicLabel'] ??
-            '')
-        .toString()
-        .trim();
+    final previousClinicName =
+        (data['previousClinicName'] ??
+                previous['clinicName'] ??
+                previous['clinicLabel'] ??
+                pendingContext['clinicName'] ??
+                pendingContext['clinicLabel'] ??
+                '')
+            .toString()
+            .trim();
 
     final previousMessage = (data['message'] ?? '').toString().trim();
     final action = (data['action'] ?? '').toString().trim();
@@ -424,8 +429,9 @@ class _HomeScreenState extends State<HomeScreen> {
   String _formatAttendanceLocationSummary() {
     final hasCoords = _attLat != null && _attLng != null;
     final acc = _attAccuracyMeters;
-    final accText =
-        acc == null ? '' : ' • ความแม่นยำประมาณ ${acc.toStringAsFixed(0)} ม.';
+    final accText = acc == null
+        ? ''
+        : ' • ความแม่นยำประมาณ ${acc.toStringAsFixed(0)} ม.';
 
     if (_attLocationLoading || _checkingAttendanceLocation) {
       return 'กำลังตรวจสอบตำแหน่งปัจจุบัน...';
@@ -473,10 +479,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     try {
-      _setAttendanceLocationState(
-        loading: true,
-        error: '',
-      );
+      _setAttendanceLocationState(loading: true, error: '');
 
       final serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
@@ -630,12 +633,13 @@ class _HomeScreenState extends State<HomeScreen> {
   String _helperShiftClinicName(Map<String, dynamic> sh) {
     final clinicAny = sh['clinic'];
     if (clinicAny is Map) {
-      final name = (clinicAny['name'] ??
-              clinicAny['clinicName'] ??
-              clinicAny['title'] ??
-              '')
-          .toString()
-          .trim();
+      final name =
+          (clinicAny['name'] ??
+                  clinicAny['clinicName'] ??
+                  clinicAny['title'] ??
+                  '')
+              .toString()
+              .trim();
       if (name.isNotEmpty) return name;
     }
 
@@ -651,17 +655,14 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   String _helperShiftDate(Map<String, dynamic> sh) {
-    final raw =
-        (sh['date'] ?? sh['workDate'] ?? sh['day'] ?? '').toString().trim();
+    final raw = (sh['date'] ?? sh['workDate'] ?? sh['day'] ?? '')
+        .toString()
+        .trim();
     return _humanYmd(raw);
   }
 
   String _helperShiftStart(Map<String, dynamic> sh) {
-    return (sh['start'] ??
-            sh['startTime'] ??
-            sh['from'] ??
-            sh['begin'] ??
-            '')
+    return (sh['start'] ?? sh['startTime'] ?? sh['from'] ?? sh['begin'] ?? '')
         .toString()
         .trim();
   }
@@ -687,10 +688,7 @@ class _HomeScreenState extends State<HomeScreen> {
     return 'fallback:$clinicId|$date|$start|$end';
   }
 
-  bool _sameShiftIdentity(
-    Map<String, dynamic>? a,
-    Map<String, dynamic>? b,
-  ) {
+  bool _sameShiftIdentity(Map<String, dynamic>? a, Map<String, dynamic>? b) {
     if (a == null || b == null) return false;
     return _helperShiftIdentityKey(a) == _helperShiftIdentityKey(b);
   }
@@ -771,8 +769,9 @@ class _HomeScreenState extends State<HomeScreen> {
   }) {
     if (!mounted) return;
     setState(() {
-      _selectedHelperShift =
-          shift == null ? null : Map<String, dynamic>.from(shift);
+      _selectedHelperShift = shift == null
+          ? null
+          : Map<String, dynamic>.from(shift);
       if (touchedByUser) _helperShiftTouchedByUser = true;
       if (runtimeSelectionMode.trim().isNotEmpty) {
         _helperRuntimeShiftSelectionMode = runtimeSelectionMode.trim();
@@ -1041,9 +1040,11 @@ class _HomeScreenState extends State<HomeScreen> {
       _attUiPhase = phase;
       _attProgressText = progressText;
       if (clearErr) _attErr = '';
-      _bioLoading = phase == _AttendanceUiPhase.checkingInBio ||
+      _bioLoading =
+          phase == _AttendanceUiPhase.checkingInBio ||
           phase == _AttendanceUiPhase.checkingOutBio;
-      _attPosting = phase == _AttendanceUiPhase.checkingInSubmit ||
+      _attPosting =
+          phase == _AttendanceUiPhase.checkingInSubmit ||
           phase == _AttendanceUiPhase.checkingOutSubmit;
     });
   }
@@ -1404,10 +1405,7 @@ class _HomeScreenState extends State<HomeScreen> {
       }
 
       final headers = _authHeaders(token);
-      final candidates = <String>[
-        '/clinic-policy/me',
-        '/api/clinic-policy/me',
-      ];
+      final candidates = <String>['/clinic-policy/me', '/api/clinic-policy/me'];
 
       http.Response? last;
 
@@ -1511,17 +1509,17 @@ class _HomeScreenState extends State<HomeScreen> {
           throw Exception('missing clinic');
         }
 
-        u = _payrollUri('/shift-needs', qs: {
-          'status': 'open',
-          'clinicId': cid,
-        });
+        u = _payrollUri(
+          '/shift-needs',
+          qs: {'status': 'open', 'clinicId': cid},
+        );
         res = await _tryGet(u, headers: headers);
 
         if (res.statusCode == 404) {
-          u = _payrollUri('/api/shift-needs', qs: {
-            'status': 'open',
-            'clinicId': cid,
-          });
+          u = _payrollUri(
+            '/api/shift-needs',
+            qs: {'status': 'open', 'clinicId': cid},
+          );
           res = await _tryGet(u, headers: headers);
         }
 
@@ -1660,10 +1658,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (!mounted) return;
 
-    Navigator.of(context).pushNamedAndRemoveUntil(
-      AppRoutes.authGate,
-      (_) => false,
-    );
+    Navigator.of(
+      context,
+    ).pushNamedAndRemoveUntil(AppRoutes.authGate, (_) => false);
   }
 
   Future<void> _openTrustScoreFromHome() async {
@@ -1703,21 +1700,20 @@ class _HomeScreenState extends State<HomeScreen> {
 
     final selected = await Navigator.push<Map<String, dynamic>>(
       context,
-      MaterialPageRoute(
-        builder: (_) => const HelperMarketplaceScreen(),
-      ),
+      MaterialPageRoute(builder: (_) => const HelperMarketplaceScreen()),
     );
 
     if (!mounted || selected == null) return;
 
-    final helperName = ((selected['fullName'] ??
-                selected['name'] ??
-                selected['phone'] ??
-                selected['staffId'] ??
-                selected['userId'] ??
-                'ผู้ช่วย')
-            .toString())
-        .trim();
+    final helperName =
+        ((selected['fullName'] ??
+                    selected['name'] ??
+                    selected['phone'] ??
+                    selected['staffId'] ??
+                    selected['userId'] ??
+                    'ผู้ช่วย')
+                .toString())
+            .trim();
 
     _snack('เลือก $helperName แล้ว');
 
@@ -1727,8 +1723,8 @@ class _HomeScreenState extends State<HomeScreen> {
         builder: (_) => TrustScoreLookupScreen(
           initialHelper: selected,
           initialStaffId: (selected['staffId'] ?? '').toString(),
-          initialQuery:
-              (selected['fullName'] ?? selected['name'] ?? '').toString(),
+          initialQuery: (selected['fullName'] ?? selected['name'] ?? '')
+              .toString(),
         ),
       ),
     );
@@ -1782,9 +1778,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text(
-                    'กรุณากรอก PIN ของคลินิกเพื่อดูคะแนนผู้ช่วย',
-                  ),
+                  const Text('กรุณากรอก PIN ของคลินิกเพื่อดูคะแนนผู้ช่วย'),
                   const SizedBox(height: 10),
                   TextField(
                     controller: ctrl,
@@ -2007,9 +2001,9 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Map<String, String> _authHeaders(String token) => <String, String>{
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer $token',
-      };
+    'Content-Type': 'application/json',
+    'Authorization': 'Bearer $token',
+  };
 
   Map<String, dynamic> _attendancePayload({
     String? reasonCode,
@@ -2048,10 +2042,7 @@ class _HomeScreenState extends State<HomeScreen> {
       payload['note'] = note!.trim();
     }
 
-    final withLocation = _appendAttendanceLocation(
-      payload,
-      position: position,
-    );
+    final withLocation = _appendAttendanceLocation(payload, position: position);
 
     print('[ATTENDANCE][PAYLOAD] $withLocation');
     return withLocation;
@@ -2069,13 +2060,14 @@ class _HomeScreenState extends State<HomeScreen> {
 
   String _extractApiMessage(http.Response res) {
     final decoded = _decodeBodyMap(res.body);
-    final msg = (decoded['message'] ??
-            decoded['error'] ??
-            decoded['msg'] ??
-            decoded['detail'] ??
-            '')
-        .toString()
-        .trim();
+    final msg =
+        (decoded['message'] ??
+                decoded['error'] ??
+                decoded['msg'] ??
+                decoded['detail'] ??
+                '')
+            .toString()
+            .trim();
     return msg;
   }
 
@@ -2108,10 +2100,12 @@ class _HomeScreenState extends State<HomeScreen> {
 
   bool _sessionLooksOpen(Map<String, dynamic> s) {
     final status = (s['status'] ?? '').toString().trim().toLowerCase();
-    final hasIn =
-        _hasValue(s['checkInAt'] ?? s['checkinAt'] ?? s['checkInTime']);
-    final hasOut =
-        _hasValue(s['checkOutAt'] ?? s['checkoutAt'] ?? s['checkOutTime']);
+    final hasIn = _hasValue(
+      s['checkInAt'] ?? s['checkinAt'] ?? s['checkInTime'],
+    );
+    final hasOut = _hasValue(
+      s['checkOutAt'] ?? s['checkoutAt'] ?? s['checkOutTime'],
+    );
 
     if (status == 'open') return true;
     if (status == 'working') return true;
@@ -2126,10 +2120,12 @@ class _HomeScreenState extends State<HomeScreen> {
 
   bool _sessionLooksClosed(Map<String, dynamic> s) {
     final status = (s['status'] ?? '').toString().trim().toLowerCase();
-    final hasIn =
-        _hasValue(s['checkInAt'] ?? s['checkinAt'] ?? s['checkInTime']);
-    final hasOut =
-        _hasValue(s['checkOutAt'] ?? s['checkoutAt'] ?? s['checkOutTime']);
+    final hasIn = _hasValue(
+      s['checkInAt'] ?? s['checkinAt'] ?? s['checkInTime'],
+    );
+    final hasOut = _hasValue(
+      s['checkOutAt'] ?? s['checkoutAt'] ?? s['checkOutTime'],
+    );
 
     if (status == 'closed') return true;
     if (status == 'completed') return true;
@@ -2233,7 +2229,8 @@ class _HomeScreenState extends State<HomeScreen> {
       runtime['openSession'],
     ]);
 
-    final hasTopSessionCheckIn = topSession != null &&
+    final hasTopSessionCheckIn =
+        topSession != null &&
         (_hasValue(topSession['checkInAt']) ||
             _hasValue(topSession['checkinAt']) ||
             _hasValue(topSession['checkInTime']) ||
@@ -2280,7 +2277,8 @@ class _HomeScreenState extends State<HomeScreen> {
       runtime['openSession'],
     ]);
 
-    final hasTopSessionCheckOut = topSession != null &&
+    final hasTopSessionCheckOut =
+        topSession != null &&
         (_hasValue(topSession['checkOutAt']) ||
             _hasValue(topSession['checkoutAt']) ||
             _hasValue(topSession['checkOutTime']) ||
@@ -2420,10 +2418,10 @@ class _HomeScreenState extends State<HomeScreen> {
       final clinicNameForScreen = previousClinicName.trim().isNotEmpty
           ? previousClinicName.trim()
           : _attPreviousClinicName.trim().isNotEmpty
-              ? _attPreviousClinicName.trim()
-              : (_selectedHelperShift != null
-                  ? _helperShiftClinicName(_selectedHelperShift!)
-                  : '');
+          ? _attPreviousClinicName.trim()
+          : (_selectedHelperShift != null
+                ? _helperShiftClinicName(_selectedHelperShift!)
+                : '');
 
       final ok = await Navigator.push<bool>(
         context,
@@ -2465,7 +2463,8 @@ class _HomeScreenState extends State<HomeScreen> {
   }) async {
     if (!mounted) return;
 
-    final openManual = await showDialog<bool>(
+    final openManual =
+        await showDialog<bool>(
           context: context,
           builder: (ctx) {
             return AlertDialog(
@@ -2501,6 +2500,74 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Future<void> _showHelperCheckoutApprovalPendingDialog(
+    Map<String, dynamic> data,
+  ) async {
+    if (!mounted) return;
+
+    final apiMessage = (data['message'] ?? '').toString().trim();
+    final message = apiMessage.isNotEmpty
+        ? apiMessage
+        : 'เช็กเอาท์เกินเวลาสิ้นสุดกะงาน ระบบส่งคำขอให้ผู้ดูแลอนุมัติแล้ว';
+
+    setState(() {
+      _attErr = '';
+      _attCheckedIn = true;
+      _attCheckedOut = false;
+      _attStatusLine = message;
+    });
+
+    final openHistory =
+        await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (ctx) {
+            return AlertDialog(
+              title: const Text('ส่งคำขอรออนุมัติแล้ว'),
+              content: Text(
+                '$message\n\nรายการนี้จะยังไม่ถือว่าเช็กเอาท์เสร็จสิ้นจนกว่าผู้ดูแลจะอนุมัติ',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: const Text('ปิด'),
+                ),
+                ElevatedButton.icon(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  icon: const Icon(Icons.history),
+                  label: const Text('ดูประวัติ'),
+                ),
+              ],
+            );
+          },
+        ) ??
+        false;
+
+    if (!openHistory) return;
+
+    final token = await _getTokenAny();
+    if (token == null || token.isEmpty) {
+      _snack('เซสชันหมดอายุ กรุณาเข้าสู่ระบบอีกครั้ง');
+      return;
+    }
+
+    if (!mounted) return;
+
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => AttendanceHistoryScreen(
+          token: token,
+          role: _role,
+          clinicId: _clinicId,
+          staffId: _staffId,
+          initialShiftId: _isHelper ? _selectedHelperShiftId : '',
+          initialShiftLabel: _isHelper ? _selectedHelperShiftLabel : '',
+        ),
+      ),
+    );
+  }
+
   Future<void> _showPreviousAttendancePendingDialog({
     required String title,
     required String message,
@@ -2511,7 +2578,8 @@ class _HomeScreenState extends State<HomeScreen> {
   }) async {
     if (!mounted) return;
 
-    final openManual = await showDialog<bool>(
+    final openManual =
+        await showDialog<bool>(
           context: context,
           builder: (ctx) {
             return AlertDialog(
@@ -2609,18 +2677,12 @@ class _HomeScreenState extends State<HomeScreen> {
                           value: 'PERSONAL_REASON',
                           child: Text('ติดธุระส่วนตัว'),
                         ),
-                        DropdownMenuItem(
-                          value: 'SICK',
-                          child: Text('ไม่สบาย'),
-                        ),
+                        DropdownMenuItem(value: 'SICK', child: Text('ไม่สบาย')),
                         DropdownMenuItem(
                           value: 'EMERGENCY',
                           child: Text('เหตุฉุกเฉิน'),
                         ),
-                        DropdownMenuItem(
-                          value: 'OTHER',
-                          child: Text('อื่น ๆ'),
-                        ),
+                        DropdownMenuItem(value: 'OTHER', child: Text('อื่น ๆ')),
                       ],
                       onChanged: submitting
                           ? null
@@ -2753,7 +2815,8 @@ class _HomeScreenState extends State<HomeScreen> {
   }) async {
     if (!mounted) return;
 
-    final openPicker = await showDialog<bool>(
+    final openPicker =
+        await showDialog<bool>(
           context: context,
           builder: (ctx) {
             return AlertDialog(
@@ -2954,8 +3017,8 @@ class _HomeScreenState extends State<HomeScreen> {
                   subtitle: Text(
                     _isHelper
                         ? (_selectedHelperShift == null
-                            ? 'กรุณาเลือกกะก่อนส่งคำขอ'
-                            : 'กะที่เลือก: $_selectedHelperShiftLabel')
+                              ? 'กรุณาเลือกกะก่อนส่งคำขอ'
+                              : 'กะที่เลือก: $_selectedHelperShiftLabel')
                         : 'เลือกประเภทคำขอที่ต้องการส่งให้คลินิกอนุมัติ',
                   ),
                 );
@@ -3158,6 +3221,38 @@ class _HomeScreenState extends State<HomeScreen> {
       return _AttendanceSubmitResult.multipleOpenSessions;
     }
 
+    if (code == 'SHIFT_ALREADY_ENDED') {
+      final msg = apiMsg.isNotEmpty
+          ? apiMsg
+          : 'กะงานนี้สิ้นสุดแล้ว ไม่สามารถเช็กอินด้วยการสแกนได้ กรุณาส่งคำขอแก้ไขเวลาแทน';
+
+      await _showManualAttendanceRequiredDialog(
+        title: 'ต้องส่งคำขอแก้ไขเวลา',
+        message: msg,
+        manualRequestType: 'check_in',
+        initialReasonCode: 'OTHER',
+        initialReasonText: 'กะงานสิ้นสุดแล้ว ต้องขอแก้ไขเวลา',
+      );
+
+      return _AttendanceSubmitResult.manualRequired;
+    }
+
+    if (code == 'MANUAL_REQUIRED_AFTER_CUTOFF') {
+      final msg = apiMsg.isNotEmpty
+          ? apiMsg
+          : 'เลยเวลาที่อนุญาตให้เช็กเอาท์ด้วยการสแกนแล้ว กรุณาส่งคำขอแก้ไขเวลาแทน';
+
+      await _showManualAttendanceRequiredDialog(
+        title: 'ต้องส่งคำขอแก้ไขเวลา',
+        message: msg,
+        manualRequestType: isCheckIn ? 'check_in' : 'check_out',
+        initialReasonCode: isCheckIn ? 'OTHER' : 'FORGOT_CHECKOUT',
+        initialReasonText: msg,
+      );
+
+      return _AttendanceSubmitResult.manualRequired;
+    }
+
     if (code == 'MANUAL_REQUEST_PENDING') {
       final msg = apiMsg.isNotEmpty
           ? apiMsg
@@ -3347,8 +3442,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
           if (runtime['shift'] is Map) {
             final runtimeShift = Map<String, dynamic>.from(runtime['shift']);
-            final mode =
-                (runtime['shiftSelectionMode'] ?? '').toString().trim();
+            final mode = (runtime['shiftSelectionMode'] ?? '')
+                .toString()
+                .trim();
 
             if (_selectedHelperShift == null ||
                 !_helperShiftTouchedByUser ||
@@ -3364,7 +3460,8 @@ class _HomeScreenState extends State<HomeScreen> {
         final attendance =
             _mapFromAny(data['attendance']) ?? <String, dynamic>{};
         final pendingManualAny = attendance['pendingManualSession'];
-        final hasPendingManual = pendingManualAny is Map &&
+        final hasPendingManual =
+            pendingManualAny is Map &&
             Map<String, dynamic>.from(pendingManualAny).isNotEmpty;
 
         List<Map<String, dynamic>> sessions = <Map<String, dynamic>>[];
@@ -3381,7 +3478,9 @@ class _HomeScreenState extends State<HomeScreen> {
         }
 
         if (_isHelper && _selectedHelperShiftId.isNotEmpty) {
-          sessions = sessions.where(_sessionMatchesSelectedHelperShift).toList();
+          sessions = sessions
+              .where(_sessionMatchesSelectedHelperShift)
+              .toList();
         }
 
         Map<String, dynamic>? todayOpen;
@@ -3546,8 +3645,9 @@ class _HomeScreenState extends State<HomeScreen> {
             ? e.message.trim()
             : 'ยังมีรายการลงเวลาจากวันก่อนค้างอยู่ กรุณาแก้ไขและรออนุมัติก่อน';
 
-        final previousClinicName =
-            (e.data['previousClinicName'] ?? '').toString().trim();
+        final previousClinicName = (e.data['previousClinicName'] ?? '')
+            .toString()
+            .trim();
 
         await _showPreviousAttendancePendingDialog(
           title: 'ยังมีรายการวันก่อนค้างอยู่',
@@ -3613,7 +3713,7 @@ class _HomeScreenState extends State<HomeScreen> {
     Position? position,
   }) async {
     try {
-      await AttendanceApi.checkOut(
+      final data = await AttendanceApi.checkOut(
         token: token,
         workDate: _todayYmd(),
         shiftId: _isHelper ? _selectedHelperShiftId : null,
@@ -3624,6 +3724,17 @@ class _HomeScreenState extends State<HomeScreen> {
         lat: position?.latitude ?? _attLat,
         lng: position?.longitude ?? _attLng,
       );
+
+      final code = (data['code'] ?? '').toString().trim();
+      final requiresApproval = _isTruthy(data['requiresApproval']);
+
+      if (_isHelper &&
+          (code == 'HELPER_CHECKOUT_AFTER_SHIFT_END_REQUIRES_APPROVAL' ||
+              requiresApproval)) {
+        print('[ATTENDANCE][CHECKOUT][API] helper approval pending');
+        await _showHelperCheckoutApprovalPendingDialog(data);
+        return _AttendanceSubmitResult.manualRequired;
+      }
 
       print('[ATTENDANCE][CHECKOUT][API] success');
       return _AttendanceSubmitResult.success;
@@ -3637,8 +3748,9 @@ class _HomeScreenState extends State<HomeScreen> {
             ? e.message.trim()
             : 'ยังมีรายการลงเวลาจากวันก่อนค้างอยู่ กรุณาแก้ไขและรออนุมัติก่อน';
 
-        final previousClinicName =
-            (e.data['previousClinicName'] ?? '').toString().trim();
+        final previousClinicName = (e.data['previousClinicName'] ?? '')
+            .toString()
+            .trim();
 
         await _showPreviousAttendancePendingDialog(
           title: 'ยังมีรายการวันก่อนค้างอยู่',
@@ -3765,8 +3877,8 @@ class _HomeScreenState extends State<HomeScreen> {
         _AttendanceUiPhase.checkingInBio,
         progressText: _isHelper
             ? (_selectedHelperShift == null
-                ? 'กรุณาเลือกกะก่อน แล้วสแกนลายนิ้วมือ'
-                : 'กำลังสแกนสำหรับกะ: $_selectedHelperShiftLabel')
+                  ? 'กรุณาเลือกกะก่อน แล้วสแกนลายนิ้วมือ'
+                  : 'กำลังสแกนสำหรับกะ: $_selectedHelperShiftLabel')
             : 'กรุณาสแกนลายนิ้วมือ',
         clearErr: true,
       );
@@ -3806,8 +3918,8 @@ class _HomeScreenState extends State<HomeScreen> {
         progressText: _isHelper
             ? 'กำลังตรวจสอบกะงานและบันทึกเวลา'
             : (_attendanceNeedsLiveLocation
-                ? 'กำลังตรวจสอบตำแหน่งและบันทึกเวลา'
-                : 'กำลังบันทึกข้อมูล'),
+                  ? 'กำลังตรวจสอบตำแหน่งและบันทึกเวลา'
+                  : 'กำลังบันทึกข้อมูล'),
       );
       _startSlowNetworkHint();
 
@@ -3852,7 +3964,8 @@ class _HomeScreenState extends State<HomeScreen> {
       print('[ATTENDANCE][CHECKIN] FINALLY');
     }
   }
-    Future<void> _scanAndCheckOut() async {
+
+  Future<void> _scanAndCheckOut() async {
     _tapLog('SCAN_CHECKOUT');
     print('[ATTENDANCE] ROLE=$_role clinicId=$_clinicId staffId=$_staffId');
 
@@ -3921,8 +4034,8 @@ class _HomeScreenState extends State<HomeScreen> {
         _AttendanceUiPhase.checkingOutBio,
         progressText: _isHelper
             ? (_selectedHelperShift == null
-                ? 'กรุณาเลือกกะก่อน แล้วสแกนลายนิ้วมือ'
-                : 'กำลังเช็คเอาท์สำหรับกะ: $_selectedHelperShiftLabel')
+                  ? 'กรุณาเลือกกะก่อน แล้วสแกนลายนิ้วมือ'
+                  : 'กำลังเช็คเอาท์สำหรับกะ: $_selectedHelperShiftLabel')
             : 'กรุณาสแกนลายนิ้วมือ',
         clearErr: true,
       );
@@ -3962,8 +4075,8 @@ class _HomeScreenState extends State<HomeScreen> {
         progressText: _isHelper
             ? 'กำลังตรวจสอบ session ของกะที่เลือกและบันทึกเวลา'
             : (_attendanceNeedsLiveLocation
-                ? 'กำลังตรวจสอบตำแหน่งและบันทึกเวลา'
-                : 'กำลังบันทึกข้อมูล'),
+                  ? 'กำลังตรวจสอบตำแหน่งและบันทึกเวลา'
+                  : 'กำลังบันทึกข้อมูล'),
       );
       _startSlowNetworkHint();
 
@@ -3985,7 +4098,8 @@ class _HomeScreenState extends State<HomeScreen> {
         await _refreshAttendanceToday(silent: true);
       } else if (result == _AttendanceSubmitResult.previousAttendancePending) {
         await _refreshAttendanceToday(silent: true);
-      } else if (result == _AttendanceSubmitResult.earlyCheckoutReasonRequired) {
+      } else if (result ==
+          _AttendanceSubmitResult.earlyCheckoutReasonRequired) {
         _resetAttendanceUiPhase();
 
         final reason = await _showEarlyCheckoutReasonDialog();
@@ -4406,9 +4520,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 decoration: BoxDecoration(
                   color: Colors.green.withOpacity(0.08),
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                    color: Colors.green.withOpacity(0.25),
-                  ),
+                  border: Border.all(color: Colors.green.withOpacity(0.25)),
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -4434,8 +4546,9 @@ class _HomeScreenState extends State<HomeScreen> {
               children: [
                 Expanded(
                   child: ElevatedButton.icon(
-                    onPressed:
-                        _helperShiftLoading ? null : _showHelperShiftPicker,
+                    onPressed: _helperShiftLoading
+                        ? null
+                        : _showHelperShiftPicker,
                     icon: _helperShiftLoading
                         ? const SizedBox(
                             width: 18,
@@ -4446,8 +4559,8 @@ class _HomeScreenState extends State<HomeScreen> {
                     label: Text(
                       hasShifts
                           ? (_selectedHelperShift == null
-                              ? 'เลือกกะงาน'
-                              : 'เปลี่ยนกะงาน')
+                                ? 'เลือกกะงาน'
+                                : 'เปลี่ยนกะงาน')
                           : 'ดูกะงานวันนี้',
                     ),
                   ),
@@ -4512,12 +4625,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             if (label.isNotEmpty) ...[
               const SizedBox(height: 8),
-              Text(
-                label,
-                style: TextStyle(
-                  color: Colors.orange.shade900,
-                ),
-              ),
+              Text(label, style: TextStyle(color: Colors.orange.shade900)),
             ],
             const SizedBox(height: 12),
             Row(
@@ -4688,8 +4796,9 @@ class _HomeScreenState extends State<HomeScreen> {
                     contentPadding: EdgeInsets.zero,
                     leading: const Icon(Icons.local_hospital_outlined),
                     title: const Text('ประกาศงานของคลินิก'),
-                    subtitle:
-                        const Text('สร้าง ดู และจัดการประกาศงานของคลินิก'),
+                    subtitle: const Text(
+                      'สร้าง ดู และจัดการประกาศงานของคลินิก',
+                    ),
                     onTap: _openClinicNeedsMarket,
                   ),
                   const Divider(height: 1),
@@ -4764,8 +4873,9 @@ class _HomeScreenState extends State<HomeScreen> {
                 ListTile(
                   leading: const Icon(Icons.search),
                   title: const Text('ค้นหาผู้ช่วย'),
-                  subtitle:
-                      const Text('ค้นหาและเลือกผู้ช่วยเพื่อดูคะแนนก่อนจ้างงาน'),
+                  subtitle: const Text(
+                    'ค้นหาและเลือกผู้ช่วยเพื่อดูคะแนนก่อนจ้างงาน',
+                  ),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: _openHelperMarketplaceForClinicTrustScore,
                 ),
@@ -4832,8 +4942,9 @@ class _HomeScreenState extends State<HomeScreen> {
                         : _selectedHelperShiftLabel,
                   ),
                   trailing: const Icon(Icons.chevron_right),
-                  onTap:
-                      _attendancePremiumEnabled ? _showHelperShiftPicker : null,
+                  onTap: _attendancePremiumEnabled
+                      ? _showHelperShiftPicker
+                      : null,
                 ),
                 const Divider(height: 1),
                 ListTile(
@@ -4843,15 +4954,15 @@ class _HomeScreenState extends State<HomeScreen> {
                     _hasPreviousPendingBlock
                         ? 'มีรายการวันก่อนค้างอยู่ แตะเพื่อแก้ไขก่อน'
                         : (_attendancePremiumEnabled
-                            ? 'ส่งคำขอเช็คอินย้อนหลัง ลืมเช็คเอาท์ หรือแก้ไขเวลา'
-                            : 'เปิดแพ็กเกจพรีเมียมก่อนใช้งานเมนูนี้'),
+                              ? 'ส่งคำขอเช็คอินย้อนหลัง ลืมเช็คเอาท์ หรือแก้ไขเวลา'
+                              : 'เปิดแพ็กเกจพรีเมียมก่อนใช้งานเมนูนี้'),
                   ),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: _hasPreviousPendingBlock
                       ? _openPreviousPendingManualFix
                       : (_attendancePremiumEnabled
-                          ? _showManualRequestMenu
-                          : null),
+                            ? _showManualRequestMenu
+                            : null),
                 ),
               ],
             ),
@@ -4888,9 +4999,10 @@ class _HomeScreenState extends State<HomeScreen> {
                         )
                       : const Icon(Icons.chevron_right),
                   onTap:
-                      (_attendancePremiumEnabled && !_checkingAttendanceLocation)
-                          ? _checkAttendanceLocationNow
-                          : null,
+                      (_attendancePremiumEnabled &&
+                          !_checkingAttendanceLocation)
+                      ? _checkAttendanceLocationNow
+                      : null,
                 ),
                 const Divider(height: 1),
                 ListTile(
@@ -4900,15 +5012,15 @@ class _HomeScreenState extends State<HomeScreen> {
                     _hasPreviousPendingBlock
                         ? 'มีรายการวันก่อนค้างอยู่ แตะเพื่อแก้ไขก่อน'
                         : (_attendancePremiumEnabled
-                            ? 'ส่งคำขอกรณีลืมเช็คเอาท์ เช็คเอาท์ก่อนเวลา หรือแก้ไขเวลา'
-                            : 'เปิดแพ็กเกจพรีเมียมก่อนใช้งานเมนูนี้'),
+                              ? 'ส่งคำขอกรณีลืมเช็คเอาท์ เช็คเอาท์ก่อนเวลา หรือแก้ไขเวลา'
+                              : 'เปิดแพ็กเกจพรีเมียมก่อนใช้งานเมนูนี้'),
                   ),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: _hasPreviousPendingBlock
                       ? _openPreviousPendingManualFix
                       : (_attendancePremiumEnabled
-                          ? _showManualRequestMenu
-                          : null),
+                            ? _showManualRequestMenu
+                            : null),
                 ),
               ],
             ),
@@ -4947,7 +5059,10 @@ class _HomeScreenState extends State<HomeScreen> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(title, style: const TextStyle(fontWeight: FontWeight.w900)),
+                Text(
+                  title,
+                  style: const TextStyle(fontWeight: FontWeight.w900),
+                ),
                 const SizedBox(height: 10),
                 Text(message, style: TextStyle(color: Colors.grey.shade700)),
                 const SizedBox(height: 12),
@@ -4975,10 +5090,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final pages = <Widget>[
-      _homeTab(),
-      _myTab(),
-    ];
+    final pages = <Widget>[_homeTab(), _myTab()];
 
     return Scaffold(
       appBar: AppBar(
@@ -5012,10 +5124,7 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       body: SafeArea(
         bottom: true,
-        child: IndexedStack(
-          index: _tab,
-          children: pages,
-        ),
+        child: IndexedStack(index: _tab, children: pages),
       ),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _tab,
@@ -5175,151 +5284,145 @@ class _PayslipMonthDetailScreenState extends State<_PayslipMonthDetailScreen> {
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _err.isNotEmpty
-              ? Center(
+          ? Center(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Card(
                   child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Card(
-                      child: Padding(
-                        padding: const EdgeInsets.all(14),
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Text(
-                              'ยังไม่พร้อมใช้งาน',
-                              style: TextStyle(fontWeight: FontWeight.w900),
-                            ),
-                            const SizedBox(height: 10),
-                            Text(
-                              _err,
-                              style: TextStyle(color: Colors.grey.shade700),
-                            ),
-                            const SizedBox(height: 12),
-                            SizedBox(
-                              width: double.infinity,
-                              child: OutlinedButton.icon(
-                                onPressed: _load,
-                                icon: const Icon(Icons.refresh),
-                                label: const Text('ลองใหม่'),
-                              ),
-                            ),
-                          ],
+                    padding: const EdgeInsets.all(14),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Text(
+                          'ยังไม่พร้อมใช้งาน',
+                          style: TextStyle(fontWeight: FontWeight.w900),
                         ),
-                      ),
+                        const SizedBox(height: 10),
+                        Text(
+                          _err,
+                          style: TextStyle(color: Colors.grey.shade700),
+                        ),
+                        const SizedBox(height: 12),
+                        SizedBox(
+                          width: double.infinity,
+                          child: OutlinedButton.icon(
+                            onPressed: _load,
+                            icon: const Icon(Icons.refresh),
+                            label: const Text('ลองใหม่'),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
-                )
-              : ListView(
-                  padding: const EdgeInsets.all(12),
-                  children: [
-                    Card(
-                      child: Padding(
-                        padding: const EdgeInsets.all(14),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text(
-                              'สรุปรายการ',
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w900,
-                              ),
-                            ),
-                            const SizedBox(height: 10),
-                            _kv(
-                              'รายรับรวม',
-                              '฿${_fmtMoney(r?['grossMonthly'])}',
-                            ),
-                            _kv(
-                              'ภาษีหัก ณ ที่จ่าย',
-                              '฿${_fmtMoney(r?['withheldTaxMonthly'])}',
-                            ),
-                            _kv(
-                              'ประกันสังคม',
-                              '฿${_fmtMoney(r?['ssoEmployeeMonthly'])}',
-                            ),
-                            _kv(
-                              'กองทุนสำรองเลี้ยงชีพ',
-                              '฿${_fmtMoney(r?['pvdEmployeeMonthly'])}',
-                            ),
-                            const Divider(height: 16),
-                            _kv(
-                              'รับสุทธิ',
-                              '฿${_fmtMoney(r?['netPay'])}',
-                              bold: true,
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    Card(
-                      child: Padding(
-                        padding: const EdgeInsets.all(14),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text(
-                              'รายละเอียด OT',
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w900,
-                              ),
-                            ),
-                            const SizedBox(height: 10),
-                            _kv(
-                              'ค่า OT ที่รวมในงวดนี้',
-                              '฿${_fmtMoney(r?['otPay'])}',
-                            ),
-                            _kv(
-                              'เวลาที่อนุมัติรวม (นาที)',
-                              '${(r?['otApprovedMinutes'] ?? 0)}',
-                            ),
-                            _kv(
-                              'ชั่วโมงถ่วงน้ำหนัก',
-                              '${(r?['otApprovedWeightedHours'] ?? 0)}',
-                            ),
-                            _kv(
-                              'จำนวนรายการ',
-                              '${(r?['otApprovedCount'] ?? 0)}',
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    Card(
-                      child: Padding(
-                        padding: const EdgeInsets.all(14),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text(
-                              'องค์ประกอบของรายได้',
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w900,
-                              ),
-                            ),
-                            const SizedBox(height: 10),
-                            _kv(
-                              'เงินเดือนหรือฐานค่าจ้าง',
-                              '฿${_fmtMoney(r?['grossBase'])}',
-                            ),
-                            _kv('โบนัส', '฿${_fmtMoney(r?['bonus'])}'),
-                            _kv(
-                              'เงินเพิ่มอื่น ๆ',
-                              '฿${_fmtMoney(r?['otherAllowance'])}',
-                            ),
-                            _kv(
-                              'รายการหักอื่น ๆ',
-                              '฿${_fmtMoney(r?['otherDeduction'])}',
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ],
                 ),
+              ),
+            )
+          : ListView(
+              padding: const EdgeInsets.all(12),
+              children: [
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'สรุปรายการ',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        _kv('รายรับรวม', '฿${_fmtMoney(r?['grossMonthly'])}'),
+                        _kv(
+                          'ภาษีหัก ณ ที่จ่าย',
+                          '฿${_fmtMoney(r?['withheldTaxMonthly'])}',
+                        ),
+                        _kv(
+                          'ประกันสังคม',
+                          '฿${_fmtMoney(r?['ssoEmployeeMonthly'])}',
+                        ),
+                        _kv(
+                          'กองทุนสำรองเลี้ยงชีพ',
+                          '฿${_fmtMoney(r?['pvdEmployeeMonthly'])}',
+                        ),
+                        const Divider(height: 16),
+                        _kv(
+                          'รับสุทธิ',
+                          '฿${_fmtMoney(r?['netPay'])}',
+                          bold: true,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'รายละเอียด OT',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        _kv(
+                          'ค่า OT ที่รวมในงวดนี้',
+                          '฿${_fmtMoney(r?['otPay'])}',
+                        ),
+                        _kv(
+                          'เวลาที่อนุมัติรวม (นาที)',
+                          '${(r?['otApprovedMinutes'] ?? 0)}',
+                        ),
+                        _kv(
+                          'ชั่วโมงถ่วงน้ำหนัก',
+                          '${(r?['otApprovedWeightedHours'] ?? 0)}',
+                        ),
+                        _kv('จำนวนรายการ', '${(r?['otApprovedCount'] ?? 0)}'),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'องค์ประกอบของรายได้',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        _kv(
+                          'เงินเดือนหรือฐานค่าจ้าง',
+                          '฿${_fmtMoney(r?['grossBase'])}',
+                        ),
+                        _kv('โบนัส', '฿${_fmtMoney(r?['bonus'])}'),
+                        _kv(
+                          'เงินเพิ่มอื่น ๆ',
+                          '฿${_fmtMoney(r?['otherAllowance'])}',
+                        ),
+                        _kv(
+                          'รายการหักอื่น ๆ',
+                          '฿${_fmtMoney(r?['otherDeduction'])}',
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
     );
   }
 }
@@ -5429,73 +5532,70 @@ class _LocalPayrollScreenState extends State<LocalPayrollScreen> {
       body: isLoading
           ? const Center(child: CircularProgressIndicator())
           : employees.isEmpty
-              ? Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Text('ยังไม่มีข้อมูลพนักงานที่บันทึกไว้'),
-                      const SizedBox(height: 12),
-                      ElevatedButton.icon(
-                        onPressed: _goAddEmployee,
-                        icon: const Icon(Icons.add),
-                        label: const Text('เพิ่มพนักงานคนแรก'),
-                      ),
-                    ],
+          ? Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text('ยังไม่มีข้อมูลพนักงานที่บันทึกไว้'),
+                  const SizedBox(height: 12),
+                  ElevatedButton.icon(
+                    onPressed: _goAddEmployee,
+                    icon: const Icon(Icons.add),
+                    label: const Text('เพิ่มพนักงานคนแรก'),
                   ),
-                )
-              : RefreshIndicator(
-                  onRefresh: _refreshData,
-                  child: ListView.builder(
-                    itemCount: employees.length,
-                    itemBuilder: (context, index) {
-                      final emp = employees[index];
-                      return Card(
-                        margin: const EdgeInsets.symmetric(
-                          horizontal: 10,
-                          vertical: 5,
-                        ),
-                        child: ListTile(
-                          leading: const CircleAvatar(child: Icon(Icons.person)),
-                          title: Text(emp.fullName),
-                          subtitle: Text(_subtitle(emp)),
-                          onTap: () async {
-                            await Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (_) => EmployeeDetailScreen(
-                                  clinicId: '',
-                                  employee: emp,
-                                ),
-                              ),
-                            );
-                            await _refreshData();
-                          },
-                          trailing: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              IconButton(
-                                tooltip: 'ดูหรือพิมพ์สลิปเงินเดือน (PDF)',
-                                icon: const Icon(
-                                  Icons.picture_as_pdf,
-                                  color: Colors.red,
-                                ),
-                                onPressed: () => _openPayslipPreview(emp),
-                              ),
-                              IconButton(
-                                tooltip: 'ลบข้อมูลพนักงาน',
-                                icon: const Icon(
-                                  Icons.delete,
-                                  color: Colors.grey,
-                                ),
-                                onPressed: () => _deleteEmployee(index),
-                              ),
-                            ],
+                ],
+              ),
+            )
+          : RefreshIndicator(
+              onRefresh: _refreshData,
+              child: ListView.builder(
+                itemCount: employees.length,
+                itemBuilder: (context, index) {
+                  final emp = employees[index];
+                  return Card(
+                    margin: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 5,
+                    ),
+                    child: ListTile(
+                      leading: const CircleAvatar(child: Icon(Icons.person)),
+                      title: Text(emp.fullName),
+                      subtitle: Text(_subtitle(emp)),
+                      onTap: () async {
+                        await Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => EmployeeDetailScreen(
+                              clinicId: '',
+                              employee: emp,
+                            ),
                           ),
-                        ),
-                      );
-                    },
-                  ),
-                ),
+                        );
+                        await _refreshData();
+                      },
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          IconButton(
+                            tooltip: 'ดูหรือพิมพ์สลิปเงินเดือน (PDF)',
+                            icon: const Icon(
+                              Icons.picture_as_pdf,
+                              color: Colors.red,
+                            ),
+                            onPressed: () => _openPayslipPreview(emp),
+                          ),
+                          IconButton(
+                            tooltip: 'ลบข้อมูลพนักงาน',
+                            icon: const Icon(Icons.delete, color: Colors.grey),
+                            onPressed: () => _deleteEmployee(index),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
     );
   }
 }
