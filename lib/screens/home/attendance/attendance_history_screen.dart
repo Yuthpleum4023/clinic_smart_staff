@@ -247,62 +247,7 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
     return minutes > 0 ? minutes : 0;
   }
 
-  int _helperApprovedExtraMinutes(Map<String, dynamic> s) {
-    return _positiveMinutes(s['helperExtraApprovedMinutes']);
-  }
-
-  int _helperOutsideShiftMinutes(Map<String, dynamic> s) {
-    return _positiveMinutes(s['helperOutsideShiftMinutes']);
-  }
-
-  int _helperActualWorkedMinutes(Map<String, dynamic> s) {
-    return _positiveMinutes(s['helperActualWorkedMinutes']);
-  }
-
-  int _helperBaseShiftMinutes(Map<String, dynamic> s) {
-    return _positiveMinutes(s['helperBaseShiftMinutes']);
-  }
-
-  int _helperPayableMinutes(Map<String, dynamic> s) {
-    // ✅ Helper only:
-    // Backend now sends workedMinutes as payable minutes:
-    // base shift minutes + approved extra minutes.
-    final worked = _positiveMinutes(s['workedMinutes']);
-    if (worked > 0) return worked;
-
-    // Fallback for partially hydrated rows.
-    final base = _helperBaseShiftMinutes(s);
-    final approvedExtra = _helperApprovedExtraMinutes(s);
-    final total = base + approvedExtra;
-    if (total > 0) return total;
-
-    return 0;
-  }
-
-  String _minutesAsHoursText(int minutes) {
-    if (minutes <= 0) return '-';
-    return '${(minutes / 60.0).toStringAsFixed(2)} ชม.';
-  }
-
-  String _helperExtraStatusText(Map<String, dynamic> s) {
-    final outside = _helperOutsideShiftMinutes(s);
-    final approved = _helperApprovedExtraMinutes(s);
-
-    if (outside <= 0) return '';
-    if (approved >= outside) return 'อนุมัติเวลาเกินกะแล้ว';
-    if (approved > 0) return 'อนุมัติบางส่วน • รออนุมัติส่วนที่เหลือ';
-    return 'มีเวลานอกกะ รอผู้ดูแลอนุมัติ';
-  }
-
   int _firstPositiveMinutes(Map<String, dynamic> s) {
-    // ✅ Helper only:
-    // Use backend payable minutes first, so helper history does not show
-    // raw scan duration when checkout is outside the shift.
-    if (_isHelper) {
-      final helperPayable = _helperPayableMinutes(s);
-      if (helperPayable > 0) return helperPayable;
-    }
-
     final minuteKeys = [
       'regularWorkMinutes',
       'normalWorkMinutes',
@@ -1265,13 +1210,6 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
     final displayShift = _displayShiftText(s);
     final clinicText = _displayClinicText(s);
 
-    final helperPayableMinutes = _helperPayableMinutes(s);
-    final helperActualMinutes = _helperActualWorkedMinutes(s);
-    final helperBaseMinutes = _helperBaseShiftMinutes(s);
-    final helperOutsideMinutes = _helperOutsideShiftMinutes(s);
-    final helperApprovedExtraMinutes = _helperApprovedExtraMinutes(s);
-    final helperExtraStatus = _helperExtraStatusText(s);
-
     await showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -1344,75 +1282,6 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
                               value: shiftId,
                               valueWeight: FontWeight.w700,
                             ),
-                          if (_isHelper && helperPayableMinutes > 0)
-                            _detailRow(
-                              label: 'เวลาคิดค่าจ้าง',
-                              value: _minutesAsHoursText(helperPayableMinutes),
-                              valueColor: Colors.green.shade800,
-                            ),
-                          if (_isHelper && helperActualMinutes > 0)
-                            _detailRow(
-                              label: 'เวลาสแกนจริง',
-                              value: _minutesAsHoursText(helperActualMinutes),
-                              valueWeight: FontWeight.w700,
-                            ),
-                          if (_isHelper && helperBaseMinutes > 0)
-                            _detailRow(
-                              label: 'เวลาตามกะ',
-                              value: _minutesAsHoursText(helperBaseMinutes),
-                              valueWeight: FontWeight.w700,
-                            ),
-                          if (_isHelper && helperOutsideMinutes > 0)
-                            _detailRow(
-                              label: 'เวลานอกกะ',
-                              value: _minutesAsHoursText(helperOutsideMinutes),
-                              valueColor:
-                                  helperApprovedExtraMinutes >=
-                                      helperOutsideMinutes
-                                  ? Colors.green.shade800
-                                  : Colors.orange.shade800,
-                            ),
-                          if (_isHelper && helperApprovedExtraMinutes > 0)
-                            _detailRow(
-                              label: 'เวลาเกินกะที่อนุมัติ',
-                              value: _minutesAsHoursText(
-                                helperApprovedExtraMinutes,
-                              ),
-                              valueColor: Colors.green.shade800,
-                            ),
-                          if (_isHelper && helperExtraStatus.isNotEmpty) ...[
-                            const SizedBox(height: 8),
-                            Container(
-                              width: double.infinity,
-                              padding: const EdgeInsets.all(12),
-                              decoration: BoxDecoration(
-                                color:
-                                    helperApprovedExtraMinutes >=
-                                        helperOutsideMinutes
-                                    ? Colors.green.shade50
-                                    : Colors.orange.shade50,
-                                borderRadius: BorderRadius.circular(14),
-                                border: Border.all(
-                                  color:
-                                      helperApprovedExtraMinutes >=
-                                          helperOutsideMinutes
-                                      ? Colors.green.shade100
-                                      : Colors.orange.shade100,
-                                ),
-                              ),
-                              child: Text(
-                                helperExtraStatus,
-                                style: TextStyle(
-                                  color:
-                                      helperApprovedExtraMinutes >=
-                                          helperOutsideMinutes
-                                      ? Colors.green.shade800
-                                      : Colors.orange.shade800,
-                                  fontWeight: FontWeight.w800,
-                                ),
-                              ),
-                            ),
-                          ],
                           if (manualReason.isNotEmpty)
                             _detailRow(
                               label: 'เหตุผล / หมายเหตุ',
@@ -1750,13 +1619,6 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
                             final clinicText = _displayClinicText(s);
                             final manualReason = _manualReasonText(s);
 
-                            final helperListOutsideMinutes =
-                                _helperOutsideShiftMinutes(s);
-                            final helperListApprovedExtraMinutes =
-                                _helperApprovedExtraMinutes(s);
-                            final helperListExtraStatus =
-                                _helperExtraStatusText(s);
-
                             return Card(
                               elevation: 0.6,
                               color: _cardBgColor(s),
@@ -1826,27 +1688,6 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
                                             fontWeight: FontWeight.w700,
                                           ),
                                         ),
-                                        if (helperListExtraStatus
-                                            .isNotEmpty) ...[
-                                          const SizedBox(height: 3),
-                                          Text(
-                                            helperListApprovedExtraMinutes >=
-                                                    helperListOutsideMinutes
-                                                ? 'เวลาเกินกะ: ${_minutesAsHoursText(helperListApprovedExtraMinutes)} • อนุมัติแล้ว'
-                                                : 'เวลาเกินกะ: ${_minutesAsHoursText(helperListOutsideMinutes)} • รออนุมัติ',
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                            style: TextStyle(
-                                              color:
-                                                  helperListApprovedExtraMinutes >=
-                                                      helperListOutsideMinutes
-                                                  ? Colors.green.shade700
-                                                  : Colors.orange.shade800,
-                                              fontSize: 12,
-                                              fontWeight: FontWeight.w800,
-                                            ),
-                                          ),
-                                        ],
                                       ],
                                       if (manualReason.isNotEmpty) ...[
                                         const SizedBox(height: 4),
