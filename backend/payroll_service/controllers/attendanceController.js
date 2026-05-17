@@ -2988,6 +2988,59 @@ function computeWorkedMinutes(checkInAt, checkOutAt) {
   return clampMinutes(minutesDiff(checkInAt, checkOutAt));
 }
 
+// ✅ HELPER-ONLY PRODUCTION FIX:
+// Keep real scan time as-is, but for helper shift payment/history,
+// count workedMinutes only inside the assigned shift window.
+// Employee/staff logic is NOT changed, so employee OT/payroll flow stays intact.
+//
+// Example:
+// shift 11:00-14:00, helper scan 11:00-17:35
+// actual scan time is preserved in checkInAt/checkOutAt,
+// but helper workedMinutes becomes 180 minutes.
+function computeHelperShiftWorkedMinutes({
+  checkInAt,
+  checkOutAt,
+  shift = null,
+}) {
+  const actualMinutes = computeWorkedMinutes(checkInAt, checkOutAt);
+  if (actualMinutes <= 0) return 0;
+
+  const shiftStartAt = getShiftStartDateTime(shift);
+  const shiftEndAt = getShiftEndDateTime(shift);
+
+  if (!shiftStartAt || !shiftEndAt) {
+    return actualMinutes;
+  }
+
+  return computeWindowOverlapMinutes(
+    shiftStartAt,
+    shiftEndAt,
+    checkInAt,
+    checkOutAt
+  );
+}
+
+function computeHelperShiftWorkBreakdown({
+  checkInAt,
+  checkOutAt,
+  shift = null,
+}) {
+  const actualMinutes = computeWorkedMinutes(checkInAt, checkOutAt);
+  const baseShiftMinutes = computeHelperShiftWorkedMinutes({
+    checkInAt,
+    checkOutAt,
+    shift,
+  });
+
+  return {
+    actualMinutes,
+    baseShiftMinutes,
+    outsideShiftMinutes: clampMinutes(
+      Math.max(0, actualMinutes - baseShiftMinutes)
+    ),
+  };
+}
+
 function computeWindowOverlapMinutes(
   windowStartAt,
   windowEndAt,
@@ -3640,10 +3693,42 @@ async function recalcSessionByTimes({ session, policy, shift }) {
     role === "helper" ? computeLateMinutes(policy, shift, session.checkInAt) : 0;
 
   if (session.checkOutAt) {
-    session.workedMinutes = computeWorkedMinutes(
+    const actualWorkedMinutes = computeWorkedMinutes(
       session.checkInAt,
       session.checkOutAt
     );
+
+    if (role === "helper") {
+      const helperBreakdown = computeHelperShiftWorkBreakdown({
+        checkInAt: session.checkInAt,
+        checkOutAt: session.checkOutAt,
+        shift,
+      });
+
+      const approvedExtraMinutes = Math.min(
+        clampMinutes(session.helperExtraApprovedMinutes || 0),
+        helperBreakdown.outsideShiftMinutes
+      );
+
+      session.helperActualWorkedMinutes = helperBreakdown.actualMinutes;
+      session.helperBaseShiftMinutes = helperBreakdown.baseShiftMinutes;
+      session.helperOutsideShiftMinutes = helperBreakdown.outsideShiftMinutes;
+      session.helperExtraApprovedMinutes = approvedExtraMinutes;
+
+      // ✅ Helper hourly wage:
+      // - pay base shift time automatically
+      // - pay outside-shift time only when approved by admin
+      session.workedMinutes = clampMinutes(
+        helperBreakdown.baseShiftMinutes + approvedExtraMinutes
+      );
+
+      if (helperBreakdown.outsideShiftMinutes > approvedExtraMinutes) {
+        addSuspiciousFlag(session, "HELPER_OUTSIDE_SHIFT_TIME", 10);
+      }
+    } else {
+      // ✅ Employee/staff unchanged: keep actual scan duration for OT/payroll logic
+      session.workedMinutes = actualWorkedMinutes;
+    }
 
     const leftEarlyMinutes = detectLeftEarlyMinutes({
       shift,
@@ -5683,6 +5768,44 @@ async function approveManualRequest(req, res) {
 
     if (!s(session.shiftName)) {
       session.shiftName = s(shift?.title || extractShiftDisplayName(session));
+    }
+
+    // ✅ Helper extra time approval:
+    // If admin approves a helper manual checkout/edit/forgot checkout that extends
+    // beyond the assigned shift, approve the outside-shift minutes for hourly pay.
+    const manualRequestTypeBeforeClear = s(session.manualRequestType);
+    const canApproveHelperExtraTime =
+      roleOfSession === "helper" &&
+      ["check_out", "edit_both", "forgot_checkout"].includes(
+        manualRequestTypeBeforeClear
+      ) &&
+      session.checkInAt &&
+      session.checkOutAt;
+
+    if (canApproveHelperExtraTime) {
+      const helperBreakdown = computeHelperShiftWorkBreakdown({
+        checkInAt: session.checkInAt,
+        checkOutAt: session.checkOutAt,
+        shift,
+      });
+
+      if (helperBreakdown.outsideShiftMinutes > 0) {
+        session.helperActualWorkedMinutes = helperBreakdown.actualMinutes;
+        session.helperBaseShiftMinutes = helperBreakdown.baseShiftMinutes;
+        session.helperOutsideShiftMinutes = helperBreakdown.outsideShiftMinutes;
+
+        session.helperExtraApprovedMinutes =
+          helperBreakdown.outsideShiftMinutes;
+        session.helperExtraApprovedBy = actorUserId;
+        session.helperExtraApprovedAt = new Date();
+        session.helperExtraApprovedNote =
+          note || "Approved helper extra time from manual request";
+      } else {
+        session.helperExtraApprovedMinutes = 0;
+        session.helperExtraApprovedBy = "";
+        session.helperExtraApprovedAt = null;
+        session.helperExtraApprovedNote = "";
+      }
     }
 
     clearManualRequestFields(session);

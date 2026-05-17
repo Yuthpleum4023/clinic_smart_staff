@@ -236,6 +236,29 @@ const AttendanceSessionSchema = new mongoose.Schema(
     // Computed / reporting
     // ======================================================
     workedMinutes: { type: Number, default: 0 },
+
+    // ======================================================
+    // Helper extra time approval
+    // ======================================================
+    // ✅ ใช้เฉพาะ helper ที่คิดค่าจ้างรายชั่วโมงตามกะ
+    // - helperActualWorkedMinutes      = เวลาสแกนจริงทั้งหมด
+    // - helperBaseShiftMinutes         = เวลาที่อยู่ในช่วง shift
+    // - helperOutsideShiftMinutes      = เวลาที่อยู่นอก shift
+    // - helperExtraApprovedMinutes     = เวลานอก shift ที่ admin อนุมัติให้จ่ายเพิ่ม
+    //
+    // workedMinutes สำหรับ helper =
+    // helperBaseShiftMinutes + helperExtraApprovedMinutes
+    //
+    // employee/staff ไม่ใช้ชุด field นี้ เพื่อไม่กระทบ OT/payroll เดิม
+    helperActualWorkedMinutes: { type: Number, default: 0 },
+    helperBaseShiftMinutes: { type: Number, default: 0 },
+    helperOutsideShiftMinutes: { type: Number, default: 0 },
+
+    helperExtraApprovedMinutes: { type: Number, default: 0 },
+    helperExtraApprovedBy: { type: String, default: "" },
+    helperExtraApprovedAt: { type: Date, default: null },
+    helperExtraApprovedNote: { type: String, default: "" },
+
     lateMinutes: { type: Number, default: 0 },
     otMinutes: { type: Number, default: 0 },
 
