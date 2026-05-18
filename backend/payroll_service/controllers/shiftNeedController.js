@@ -382,9 +382,21 @@ async function loadClinicMapByClinicIds(ids = []) {
 function mergeClinicMeta({ needMeta, clinicMeta }) {
   const out = { ...needMeta };
 
-  if (!isValidLatLng(numOrNull(out.clinicLat), numOrNull(out.clinicLng))) {
-    out.clinicLat = clinicMeta?.clinicLat ?? null;
-    out.clinicLng = clinicMeta?.clinicLng ?? null;
+  // ✅ PRODUCTION FIX:
+  // Official Clinic location must win over old ShiftNeed snapshots.
+  // Why:
+  // - Existing/open ShiftNeed records may contain stale clinicLat/clinicLng.
+  // - Helper map, distance sorting, applicant ranking, and created Shift
+  //   should follow the latest clinic location set by clinic admin.
+  const officialLat = numOrNull(clinicMeta?.clinicLat);
+  const officialLng = numOrNull(clinicMeta?.clinicLng);
+
+  if (isValidLatLng(officialLat, officialLng)) {
+    out.clinicLat = officialLat;
+    out.clinicLng = officialLng;
+  } else if (!isValidLatLng(numOrNull(out.clinicLat), numOrNull(out.clinicLng))) {
+    out.clinicLat = null;
+    out.clinicLng = null;
   }
 
   const cName = s(clinicMeta?.clinicName);
