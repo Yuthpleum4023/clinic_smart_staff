@@ -48,6 +48,13 @@ try {
   Clinic = null;
 }
 
+let ClinicPolicy = null;
+try {
+  ClinicPolicy = require("../models/ClinicPolicy");
+} catch (_) {
+  ClinicPolicy = null;
+}
+
 // ---------------- helpers ----------------
 function normalizeRoles(r) {
   if (!r) return [];
@@ -285,97 +292,126 @@ function pickClinicMetaFromNeed(needDoc) {
   };
 }
 
-async function loadClinicMetaByClinicId(clinicId) {
-  if (!Clinic) {
-    return {
-      clinicLat: null,
-      clinicLng: null,
-      clinicName: "",
-      clinicPhone: "",
-      clinicAddress: "",
-      clinicDistrict: "",
-      clinicProvince: "",
-      clinicLocationLabel: "",
-    };
-  }
-
-  const cid = s(clinicId);
-  if (!cid) {
-    return {
-      clinicLat: null,
-      clinicLng: null,
-      clinicName: "",
-      clinicPhone: "",
-      clinicAddress: "",
-      clinicDistrict: "",
-      clinicProvince: "",
-      clinicLocationLabel: "",
-    };
-  }
-
-  const c = await Clinic.findOne({ clinicId: cid }).lean();
-  if (!c) {
-    return {
-      clinicLat: null,
-      clinicLng: null,
-      clinicName: "",
-      clinicPhone: "",
-      clinicAddress: "",
-      clinicDistrict: "",
-      clinicProvince: "",
-      clinicLocationLabel: "",
-    };
-  }
-
-  const lat0 = numOrNull(c.lat);
-  const lng0 = numOrNull(c.lng);
-  const district = s(c.district);
-  const province = s(c.province);
-  const address = s(c.address);
-
+function emptyClinicMeta() {
   return {
-    clinicLat: isValidLatLng(lat0, lng0) ? lat0 : null,
-    clinicLng: isValidLatLng(lat0, lng0) ? lng0 : null,
-    clinicName: s(c.name),
-    clinicPhone: s(c.phone),
-    clinicAddress: address,
-    clinicDistrict: district,
-    clinicProvince: province,
-    clinicLocationLabel:
-      s(c.locationLabel) ||
-      buildLocationLabel({ district, province, address }),
+    clinicLat: null,
+    clinicLng: null,
+    clinicName: "",
+    clinicPhone: "",
+    clinicAddress: "",
+    clinicDistrict: "",
+    clinicProvince: "",
+    clinicLocationLabel: "",
   };
 }
 
+async function loadClinicMetaByClinicId(clinicId) {
+  const cid = s(clinicId);
+  if (!cid) return emptyClinicMeta();
+
+  const m = await loadClinicMapByClinicIds([cid]);
+  return m.get(cid) || emptyClinicMeta();
+}
+
 async function loadClinicMapByClinicIds(ids = []) {
-  if (!Clinic) return new Map();
-
   const clean = [...new Set((ids || []).map((x) => s(x)).filter(Boolean))];
-  if (!clean.length) return new Map();
-
-  const rows = await Clinic.find({ clinicId: { $in: clean } }).lean();
   const m = new Map();
 
-  for (const r of rows || []) {
-    const lat0 = numOrNull(r.lat);
-    const lng0 = numOrNull(r.lng);
-    const district = s(r.district);
-    const province = s(r.province);
-    const address = s(r.address);
+  if (!clean.length) return m;
 
-    m.set(s(r.clinicId), {
-      clinicLat: isValidLatLng(lat0, lng0) ? lat0 : null,
-      clinicLng: isValidLatLng(lat0, lng0) ? lng0 : null,
-      clinicName: s(r.name),
-      clinicPhone: s(r.phone),
-      clinicAddress: address,
-      clinicDistrict: district,
-      clinicProvince: province,
-      clinicLocationLabel:
-        s(r.locationLabel) ||
-        buildLocationLabel({ district, province, address }),
-    });
+  if (Clinic) {
+    const rows = await Clinic.find({ clinicId: { $in: clean } }).lean();
+
+    for (const r of rows || []) {
+      const lat0 = numOrNull(r.lat);
+      const lng0 = numOrNull(r.lng);
+      const district = s(r.district);
+      const province = s(r.province);
+      const address = s(r.address);
+
+      m.set(s(r.clinicId), {
+        clinicLat: isValidLatLng(lat0, lng0) ? lat0 : null,
+        clinicLng: isValidLatLng(lat0, lng0) ? lng0 : null,
+        clinicName: s(r.name),
+        clinicPhone: s(r.phone),
+        clinicAddress: address,
+        clinicDistrict: district,
+        clinicProvince: province,
+        clinicLocationLabel:
+          s(r.locationLabel) ||
+          buildLocationLabel({ district, province, address }),
+      });
+    }
   }
+
+  // ✅ PRODUCTION FIX:
+  // ClinicPolicy is the source updated by ClinicLocationSettingsScreen.
+  // It must override Clinic/ShiftNeed snapshots for official location.
+  if (ClinicPolicy) {
+    const rows = await ClinicPolicy.find({ clinicId: { $in: clean } }).lean();
+
+    for (const r of rows || []) {
+      const cid = s(r.clinicId);
+      if (!cid) continue;
+
+      const existing = m.get(cid) || emptyClinicMeta();
+
+      const loc =
+        r.location && typeof r.location === "object" ? r.location : {};
+      const clinicLoc =
+        r.clinicLocation && typeof r.clinicLocation === "object"
+          ? r.clinicLocation
+          : {};
+
+      const lat0 =
+        numOrNull(r.clinicLat) ??
+        numOrNull(r.referenceLat) ??
+        numOrNull(loc.lat) ??
+        numOrNull(loc.latitude) ??
+        numOrNull(clinicLoc.lat) ??
+        numOrNull(clinicLoc.latitude);
+
+      const lng0 =
+        numOrNull(r.clinicLng) ??
+        numOrNull(r.referenceLng) ??
+        numOrNull(loc.lng) ??
+        numOrNull(loc.longitude) ??
+        numOrNull(clinicLoc.lng) ??
+        numOrNull(clinicLoc.longitude);
+
+      const district = s(loc.district || clinicLoc.district);
+      const province = s(loc.province || clinicLoc.province);
+      const address = s(
+        loc.address || loc.fullAddress || clinicLoc.address || clinicLoc.fullAddress
+      );
+      const label = s(
+        loc.label ||
+          loc.locationLabel ||
+          clinicLoc.label ||
+          clinicLoc.locationLabel
+      );
+
+      const hasPolicyLatLng = isValidLatLng(lat0, lng0);
+
+      m.set(cid, {
+        ...existing,
+        clinicLat: hasPolicyLatLng ? lat0 : existing.clinicLat ?? null,
+        clinicLng: hasPolicyLatLng ? lng0 : existing.clinicLng ?? null,
+        clinicAddress: address || existing.clinicAddress || "",
+        clinicDistrict: district || existing.clinicDistrict || "",
+        clinicProvince: province || existing.clinicProvince || "",
+        clinicLocationLabel:
+          label ||
+          existing.clinicLocationLabel ||
+          buildLocationLabel({
+            district: district || existing.clinicDistrict || "",
+            province: province || existing.clinicProvince || "",
+            address: address || existing.clinicAddress || "",
+          }),
+      });
+    }
+  }
+
   return m;
 }
 

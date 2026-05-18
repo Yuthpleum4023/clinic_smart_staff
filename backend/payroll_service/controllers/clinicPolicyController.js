@@ -1,6 +1,13 @@
 // backend/payroll_service/controllers/clinicPolicyController.js
 const ClinicPolicy = require("../models/ClinicPolicy");
 
+let Clinic = null;
+try {
+  Clinic = require("../models/Clinic");
+} catch (_) {
+  Clinic = null;
+}
+
 const ATTENDANCE_TIMEZONE = "Asia/Bangkok";
 const ENFORCED_REQUIRE_LOCATION = true;
 const ENFORCED_GEO_RADIUS_METERS = 200;
@@ -216,6 +223,78 @@ function defaultClinicLocation() {
     address: "",
     label: "",
   };
+}
+
+async function syncClinicOfficialLocationToClinicModel({
+  clinicId,
+  policy,
+  userId = "",
+}) {
+  try {
+    if (!Clinic) {
+      console.log("[CLINIC_POLICY][SYNC_CLINIC] Clinic model not available");
+      return;
+    }
+
+    const cid = normStr(clinicId);
+    if (!cid) return;
+
+    const ref = buildReferenceLocationFields(policy || {}, policy || {});
+    const loc = ref.location || {};
+
+    if (!hasUsableLocation(loc)) {
+      console.log(
+        "[CLINIC_POLICY][SYNC_CLINIC] skip: no usable policy location",
+        cid
+      );
+      return;
+    }
+
+    const update = {
+      lat: loc.lat,
+      lng: loc.lng,
+      district: normStr(loc.district),
+      province: normStr(loc.province),
+      address: normStr(loc.address),
+      locationLabel: normStr(loc.label),
+      location: {
+        lat: loc.lat,
+        lng: loc.lng,
+        district: normStr(loc.district),
+        province: normStr(loc.province),
+        address: normStr(loc.address),
+        label: normStr(loc.label),
+      },
+      clinicLocation: {
+        lat: loc.lat,
+        lng: loc.lng,
+        district: normStr(loc.district),
+        province: normStr(loc.province),
+        address: normStr(loc.address),
+        label: normStr(loc.label),
+      },
+      updatedBy: normStr(userId),
+      updatedAt: new Date(),
+    };
+
+    const result = await Clinic.updateOne(
+      { clinicId: cid },
+      { $set: update }
+    );
+
+    console.log("[CLINIC_POLICY][SYNC_CLINIC] done", {
+      clinicId: cid,
+      matchedCount: result?.matchedCount,
+      modifiedCount: result?.modifiedCount,
+      lat: loc.lat,
+      lng: loc.lng,
+    });
+  } catch (e) {
+    console.log(
+      "[CLINIC_POLICY][SYNC_CLINIC] failed =",
+      e?.message || String(e)
+    );
+  }
 }
 
 function buildReferenceLocationFields(raw = {}, fallback = {}) {
@@ -953,6 +1032,12 @@ async function updateMyClinicPolicy(req, res) {
     });
 
     await policyDoc.save();
+
+    await syncClinicOfficialLocationToClinicModel({
+      clinicId,
+      policy: policyDoc.toObject ? policyDoc.toObject() : policyDoc,
+      userId,
+    });
 
     const saved = await ClinicPolicy.findOne({ clinicId }).lean();
 
