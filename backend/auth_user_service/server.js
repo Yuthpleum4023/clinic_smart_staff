@@ -6,19 +6,116 @@ const express = require("express");
 const mongoose = require("mongoose");
 const dotenv = require("dotenv");
 const cors = require("cors");
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
+const mongoSanitize = require("express-mongo-sanitize");
+const hpp = require("hpp");
 const http = require("http");
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3101;
+const IS_PROD = process.env.NODE_ENV === "production";
+
+app.set("trust proxy", 1);
+app.disable("x-powered-by");
+
+function parseCorsOrigins(value) {
+  return String(value || "")
+    .split(",")
+    .map((v) => v.trim())
+    .filter(Boolean);
+}
+
+const allowedCorsOrigins = parseCorsOrigins(process.env.CORS_ORIGIN);
+const allowAllCorsInDev = !IS_PROD && allowedCorsOrigins.length === 0;
 
 // ===================================================
-// Middlewares
+// Security + Middlewares
 // ===================================================
-app.use(cors({ origin: process.env.CORS_ORIGIN || "*" }));
+app.use(
+  helmet({
+    crossOriginResourcePolicy: false,
+  })
+);
+
+const generalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: Number(process.env.RATE_LIMIT_MAX || 300),
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => req.path === "/health",
+  message: {
+    ok: false,
+    code: "RATE_LIMITED",
+    message: "Too many requests, please try again later.",
+  },
+});
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: Number(process.env.AUTH_RATE_LIMIT_MAX || 50),
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => req.method === "GET",
+  message: {
+    ok: false,
+    code: "AUTH_RATE_LIMITED",
+    message: "Too many authentication attempts, please try again later.",
+  },
+});
+
+app.use(generalLimiter);
+
+app.use(
+  cors({
+    origin(origin, callback) {
+      // Flutter mobile / server-to-server มักไม่มี Origin header
+      if (!origin) return callback(null, true);
+
+      if (allowAllCorsInDev) return callback(null, true);
+
+      if (allowedCorsOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error("Not allowed by CORS"));
+    },
+    credentials: false,
+    optionsSuccessStatus: 204,
+  })
+);
+
+// จำกัด brute-force เฉพาะ endpoint auth ที่พบบ่อย โดยไม่กระทบ health/route อื่น
+app.use(
+  [
+    "/login",
+    "/register",
+    "/forgot-password",
+    "/reset-password",
+    "/verify",
+    "/otp",
+    "/api/login",
+    "/api/register",
+    "/api/forgot-password",
+    "/api/reset-password",
+    "/api/verify",
+    "/api/otp",
+  ],
+  authLimiter
+);
+
 app.use(express.json({ limit: "2mb" }));
-app.use(express.urlencoded({ extended: true }));
+app.use(express.urlencoded({ extended: true, limit: "2mb" }));
+
+app.use(
+  mongoSanitize({
+    replaceWith: "_",
+  })
+);
+
+app.use(hpp());
 
 // ===================================================
 // Request Logger
@@ -136,7 +233,7 @@ app.use((err, req, res, next) => {
   if (res.headersSent) return next(err);
 
   res.status(500).json({
-    message: err.message || "Internal Server Error",
+    message: IS_PROD ? "Internal Server Error" : err.message || "Internal Server Error",
   });
 });
 
@@ -151,6 +248,7 @@ if (!MONGO_URI) {
 }
 
 mongoose.set("strictQuery", true);
+mongoose.set("sanitizeFilter", true);
 
 mongoose
   .connect(MONGO_URI, {
