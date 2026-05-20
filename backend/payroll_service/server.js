@@ -2,6 +2,10 @@
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
+const mongoSanitize = require("express-mongo-sanitize");
+const hpp = require("hpp");
 const mongoose = require("mongoose");
 const path = require("path");
 
@@ -15,13 +19,76 @@ try {
 
 const app = express();
 
+const IS_PROD = process.env.NODE_ENV === "production";
+
+// Render / reverse proxy: ให้ rate-limit อ่าน IP จริงจาก x-forwarded-for ได้ถูกต้อง
+app.set("trust proxy", 1);
+
+// ลดข้อมูล server fingerprint
+app.disable("x-powered-by");
+
+function parseCorsOrigins(value) {
+  return String(value || "")
+    .split(",")
+    .map((v) => v.trim())
+    .filter(Boolean);
+}
+
+const allowedCorsOrigins = parseCorsOrigins(process.env.CORS_ORIGIN);
+const allowAllCorsInDev = !IS_PROD && allowedCorsOrigins.length === 0;
+
+// -------------------- SECURITY MIDDLEWARE --------------------
+app.use(
+  helmet({
+    crossOriginResourcePolicy: false,
+  })
+);
+
+const generalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: Number(process.env.RATE_LIMIT_MAX || 300),
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => req.path === "/health" || req.path === "/",
+  message: {
+    ok: false,
+    code: "RATE_LIMITED",
+    message: "Too many requests, please try again later.",
+  },
+});
+
+app.use(generalLimiter);
+
 // -------------------- CORS --------------------
-app.use(cors({ origin: "*", credentials: false }));
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin) return callback(null, true);
+      if (allowAllCorsInDev) return callback(null, true);
+
+      if (allowedCorsOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error("Not allowed by CORS"));
+    },
+    credentials: false,
+    optionsSuccessStatus: 204,
+  })
+);
 
 // -------------------- BODY PARSERS (สำคัญมาก) --------------------
 // ✅ ป้องกัน req.body ว่าง/undefined ในบางเคส
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true, limit: "1mb" }));
+
+app.use(
+  mongoSanitize({
+    replaceWith: "_",
+  })
+);
+
+app.use(hpp());
 
 // -------------------- Response Helpers (LONG-TERM STABLE) --------------------
 // ✅ มาตรฐาน response ให้ค่อยๆ migrate routes ทีละตัวได้
@@ -160,7 +227,11 @@ app.get("/", (req, res) => {
 // POST https://payroll.../internal/bootstrap
 // Headers: x-internal-key: <INTERNAL_BOOTSTRAP_KEY>
 // Body: { userId, clinicId, role, fullName, phone, email }
-const INTERNAL_BOOTSTRAP_KEY = (process.env.INTERNAL_BOOTSTRAP_KEY || "").trim();
+const INTERNAL_BOOTSTRAP_KEY = (
+  process.env.INTERNAL_BOOTSTRAP_KEY ||
+  process.env.INTERNAL_SERVICE_KEY ||
+  ""
+).trim();
 
 function _pickStr(v) {
   const s = (v ?? "").toString().trim();
@@ -370,7 +441,7 @@ app.use((err, req, res, next) => {
   return res.status(500).json({
     ok: false,
     code: "INTERNAL_SERVER_ERROR",
-    message: err?.message || "unknown",
+    message: IS_PROD ? "Internal Server Error" : err?.message || "unknown",
   });
 });
 
