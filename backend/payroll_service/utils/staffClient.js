@@ -66,6 +66,12 @@ function buildHeaders(bearerToken = "") {
   return headers;
 }
 
+function hasInternalKeyConfigured() {
+  return !!s(
+    process.env.STAFF_SERVICE_INTERNAL_KEY || process.env.INTERNAL_SERVICE_KEY
+  );
+}
+
 async function readResponseBodySafe(response) {
   const raw = await response.text().catch(() => "");
 
@@ -480,10 +486,16 @@ async function getEmployeeByUserId(userId, bearerToken = "") {
     const b = baseUrl();
     const headers = buildHeaders(bearerToken);
 
-    const candidates = [
+    const candidates = [];
+
+    if (hasInternalKeyConfigured()) {
+      candidates.push(`${b}/api/employees/internal/by-user/${encodeURIComponent(u)}`);
+    }
+
+    candidates.push(
       `${b}/api/employees/by-user/${encodeURIComponent(u)}`,
-      `${b}/api/employees?userId=${encodeURIComponent(u)}`,
-    ];
+      `${b}/api/employees?userId=${encodeURIComponent(u)}`
+    );
 
     const r = await getFirstOk(candidates, headers, {
       allow404: true,
@@ -540,10 +552,16 @@ async function getEmployeeByStaffId(staffId, bearerToken = "") {
     const b = baseUrl();
     const headers = buildHeaders(bearerToken);
 
-    const candidates = [
+    const candidates = [];
+
+    if (hasInternalKeyConfigured()) {
+      candidates.push(`${b}/api/employees/internal/by-staff/${encodeURIComponent(id)}`);
+    }
+
+    candidates.push(
       `${b}/api/employees/by-staff/${encodeURIComponent(id)}`,
-      `${b}/api/employees/${encodeURIComponent(id)}`,
-    ];
+      `${b}/api/employees/${encodeURIComponent(id)}`
+    );
 
     const r = await getFirstOk(candidates, headers, {
       allow404: true,
