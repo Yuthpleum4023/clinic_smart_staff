@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:clinic_smart_staff/services/auth_service.dart';
 import 'package:http/http.dart' as http;
 
 import 'package:clinic_smart_staff/models/employee_model.dart';
@@ -1860,17 +1861,16 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
   }
 
   Future<void> _setOrChangePin() async {
-    final prefs = await SharedPreferences.getInstance();
-    final oldPin = (prefs.getString('app_edit_pin') ?? '').trim();
+    final hasPin = await AuthService.hasPin();
 
-    if (oldPin.isEmpty) {
+    if (!hasPin) {
       final ok = await _promptSetNewPin();
       if (!mounted || _disposed) return;
       _snack(ok ? 'ตั้งรหัส PIN แล้ว' : 'ยกเลิก');
       return;
     }
 
-    final verified = await _promptVerifyPin(oldPin, title: 'ยืนยันรหัสเดิม');
+    final verified = await _promptVerifyPin(title: 'ยืนยันรหัสเดิม');
     if (!mounted || _disposed) return;
 
     if (!verified) {
@@ -1884,19 +1884,17 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
   }
 
   Future<bool> _promptForPin() async {
-    final prefs = await SharedPreferences.getInstance();
-    final savedPin = (prefs.getString('app_edit_pin') ?? '').trim();
+    final hasPin = await AuthService.hasPin();
 
-    if (savedPin.isEmpty) {
+    if (!hasPin) {
       final setOk = await _promptSetNewPin();
       return setOk;
     }
 
-    return _promptVerifyPin(savedPin);
+    return _promptVerifyPin();
   }
 
-  Future<bool> _promptVerifyPin(
-    String savedPin, {
+  Future<bool> _promptVerifyPin({
     String title = 'ใส่รหัสเพื่อปลดล็อก',
   }) async {
     final TextEditingController pinCtrl = TextEditingController();
@@ -1914,9 +1912,13 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
           Navigator.of(ctx, rootNavigator: true).pop(v);
         }
 
-        void submit() {
-          final pass = pinCtrl.text.trim() == savedPin;
-          closeWith(pass);
+        Future<void> submit() async {
+          try {
+            final pass = await AuthService.verifyPin(pinCtrl.text.trim());
+            closeWith(pass);
+          } catch (_) {
+            closeWith(false);
+          }
         }
 
         return AlertDialog(
@@ -1939,7 +1941,12 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
               onPressed: () => closeWith(false),
               child: const Text('ยกเลิก'),
             ),
-            ElevatedButton(onPressed: submit, child: const Text('ยืนยัน')),
+            ElevatedButton(
+              onPressed: () {
+                submit();
+              },
+              child: const Text('ยืนยัน'),
+            ),
           ],
         );
       },
@@ -1985,10 +1992,23 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
             return;
           }
 
-          final prefs = await SharedPreferences.getInstance();
-          await prefs.setString('app_edit_pin', a);
+          try {
+            final saved = await AuthService.setPin(a);
+            if (!saved) {
+              if (!mounted || _disposed) return;
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('บันทึก PIN ไม่สำเร็จ')),
+              );
+              return;
+            }
 
-          closeWith(true);
+            closeWith(true);
+          } catch (e) {
+            if (!mounted || _disposed) return;
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('บันทึก PIN ไม่สำเร็จ: $e')),
+            );
+          }
         }
 
         return AlertDialog(
