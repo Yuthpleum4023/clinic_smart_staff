@@ -102,6 +102,10 @@ app.use(
     "/api/reset-password",
     "/api/verify",
     "/api/otp",
+    "/clinic-security/pin/set",
+    "/clinic-security/pin/verify",
+    "/api/clinic-security/pin/set",
+    "/api/clinic-security/pin/verify",
   ],
   authLimiter
 );
@@ -193,6 +197,9 @@ const helperRoutes = require("./routes/helperRoutes");
 // USER LINK SEARCH
 const userLinkSearchRoutes = require("./routes/userLinkSearchRoutes");
 
+// CLINIC SECURITY / PIN
+const clinicSecurityRoutes = require("./routes/clinicSecurityRoutes");
+
 // AUTH
 app.use("/", authRoutes);
 
@@ -213,6 +220,10 @@ app.use("/", helperRoutes);
 
 // USER LINK SEARCH
 app.use("/api/users", userLinkSearchRoutes);
+
+// CLINIC SECURITY / PIN
+app.use("/clinic-security", clinicSecurityRoutes);
+app.use("/api/clinic-security", clinicSecurityRoutes);
 
 // ===================================================
 // 404 Handler
