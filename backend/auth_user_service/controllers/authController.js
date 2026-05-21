@@ -1,4 +1,5 @@
 const bcrypt = require("bcryptjs");
+const crypto = require("crypto");
 const Clinic = require("../models/Clinic");
 const User = require("../models/User");
 const Invite = require("../models/Invite");
@@ -6,6 +7,10 @@ const ResetToken = require("../models/ResetToken");
 const { makeId } = require("../utils/id");
 const { signToken } = require("../utils/jwt");
 const { ensureEmployeeForUser } = require("../utils/staffServiceClient");
+const {
+  sendPasswordResetOtpEmail,
+  maskEmail,
+} = require("../services/emailService");
 
 const USER_PREFIX = (process.env.USER_ID_PREFIX || "usr_").toString();
 const CLINIC_PREFIX = (process.env.CLINIC_ID_PREFIX || "cln_").toString();
@@ -14,8 +19,10 @@ const EMP_PREFIX = (process.env.EMPLOYEE_ID_PREFIX || "emp_").toString();
 const RESET_TOKEN_TTL_MINUTES = Number(
   process.env.RESET_TOKEN_TTL_MINUTES || 10
 );
+const IS_PROD = process.env.NODE_ENV === "production";
 const RESET_LOG =
-  String(process.env.RESET_LOG || "true").toLowerCase() === "true";
+  String(process.env.RESET_LOG || (IS_PROD ? "false" : "true")).toLowerCase() ===
+  "true";
 
 const ROLE_ENUM = ["admin", "employee", "helper"];
 const PLAN_ENUM = ["free", "premium"];
@@ -1237,40 +1244,85 @@ async function reconcileEmployeeSelf(req, res) {
 ====================================================== */
 async function forgotPassword(req, res) {
   try {
-    const emailOrPhone = normStr(req.body?.emailOrPhone);
-    if (!emailOrPhone) {
+    const emailOrPhoneRaw = normStr(req.body?.emailOrPhone);
+    const emailOrPhoneLower = normLower(emailOrPhoneRaw);
+
+    if (!emailOrPhoneRaw) {
       return res.status(400).json({ message: "emailOrPhone required" });
     }
 
+    const genericOk = {
+      ok: true,
+      message:
+        "If this account has a verified email, a reset code will be sent.",
+    };
+
     const user = await User.findOne({
-      $or: [{ email: emailOrPhone }, { phone: emailOrPhone }],
+      $or: [
+        { email: emailOrPhoneRaw },
+        { email: emailOrPhoneLower },
+        { phone: emailOrPhoneRaw },
+      ],
     }).lean();
 
-    if (!user) return res.json({ ok: true });
-    if (user.isActive === false) return res.json({ ok: true });
+    if (!user || user.isActive === false) return res.json(genericOk);
+
+    const email = normLower(user.email);
+    if (!email) {
+      console.log("⚠️ forgotPassword skipped: user has no email", {
+        userId: user.userId,
+        phone: user.phone ? "***" : "",
+      });
+      return res.json(genericOk);
+    }
 
     await ResetToken.deleteMany({ userId: user.userId });
 
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const code = crypto.randomInt(100000, 1000000).toString();
+    const codeHash = await bcrypt.hash(code, 10);
     const expiresAt = new Date(
       Date.now() + RESET_TOKEN_TTL_MINUTES * 60 * 1000
     );
 
     await ResetToken.create({
       userId: user.userId,
-      code,
+      code: "",
+      codeHash,
       expiresAt,
     });
 
-    if (RESET_LOG) {
-      console.log("🔐 RESET OTP:", code, "userId:", user.userId);
+    const sent = await sendPasswordResetOtpEmail({
+      to: email,
+      code,
+      expiresInMinutes: RESET_TOKEN_TTL_MINUTES,
+    });
+
+    if (!sent.ok) {
+      console.log("⚠️ forgotPassword email not sent:", {
+        userId: user.userId,
+        reason: sent.reason,
+        to: maskEmail(email),
+      });
+
+      if (!IS_PROD && RESET_LOG) {
+        console.log("DEV RESET OTP:", code, "userId:", user.userId);
+      }
+
+      return res.json(genericOk);
     }
 
-    return res.json({ ok: true });
+    console.log("✅ forgotPassword email sent:", {
+      userId: user.userId,
+      to: sent.to,
+    });
+
+    return res.json(genericOk);
   } catch (e) {
+    console.log("❌ forgotPassword failed:", e?.message || e);
+
     return res.status(500).json({
       message: "forgotPassword failed",
-      error: e.message,
+      error: IS_PROD ? "Internal Server Error" : e.message,
     });
   }
 }
@@ -1294,20 +1346,43 @@ async function resetPassword(req, res) {
       });
     }
 
+    const emailOrPhoneLower = normLower(emailOrPhone);
+
     const user = await User.findOne({
-      $or: [{ email: emailOrPhone }, { phone: emailOrPhone }],
+      $or: [
+        { email: emailOrPhone },
+        { email: emailOrPhoneLower },
+        { phone: emailOrPhone },
+      ],
     });
 
-    if (!user) return res.status(400).json({ message: "invalid code" });
+    if (!user) return res.status(400).json({ message: "invalid or expired code" });
     if (!user.isActive) return res.status(403).json({ message: "User disabled" });
 
-    const token = await ResetToken.findOne({
+    const tokens = await ResetToken.find({
       userId: user.userId,
-      code,
       expiresAt: { $gt: new Date() },
-    });
+    })
+      .select("+code +codeHash")
+      .sort({ createdAt: -1 })
+      .limit(5);
 
-    if (!token) {
+    let matchedToken = null;
+
+    for (const token of tokens) {
+      if (token.codeHash) {
+        const ok = await bcrypt.compare(code, token.codeHash);
+        if (ok) {
+          matchedToken = token;
+          break;
+        }
+      } else if (token.code && token.code === code) {
+        matchedToken = token;
+        break;
+      }
+    }
+
+    if (!matchedToken) {
       return res.status(400).json({ message: "invalid or expired code" });
     }
 
@@ -1320,7 +1395,7 @@ async function resetPassword(req, res) {
   } catch (e) {
     return res.status(500).json({
       message: "resetPassword failed",
-      error: e.message,
+      error: IS_PROD ? "Internal Server Error" : e.message,
     });
   }
 }

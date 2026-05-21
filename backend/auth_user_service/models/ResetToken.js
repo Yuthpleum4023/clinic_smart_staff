@@ -4,16 +4,21 @@ const mongoose = require("mongoose");
 const ResetTokenSchema = new mongoose.Schema(
   {
     userId: { type: String, required: true, index: true },
-    code: { type: String, required: true }, // OTP 6 หลัก (string)
+
+    // Legacy field: kept for old tokens / migration compatibility.
+    // New production flow stores codeHash only.
+    code: { type: String, default: "", select: false },
+
+    // Production: store OTP hash, never store raw OTP as source of truth.
+    codeHash: { type: String, default: "", select: false },
+
     expiresAt: { type: Date, required: true, index: true },
   },
   { timestamps: true }
 );
 
-// ✅ TTL: ลบเอกสารหลัง expiresAt ถึงเวลา (MongoDB background task)
 ResetTokenSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
-
-// ✅ ป้องกันยิงรัว (optional): userId + code ซ้ำไม่เก็บซ้อน
 ResetTokenSchema.index({ userId: 1, code: 1 }, { unique: true });
 
-module.exports = mongoose.model("ResetToken", ResetTokenSchema);
+module.exports =
+  mongoose.models.ResetToken || mongoose.model("ResetToken", ResetTokenSchema);
