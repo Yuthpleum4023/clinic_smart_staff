@@ -1,4 +1,11 @@
 const nodemailer = require("nodemailer");
+const dns = require("dns");
+
+try {
+  dns.setDefaultResultOrder("ipv4first");
+} catch (_) {
+  // Node versions without setDefaultResultOrder can safely ignore this.
+}
 
 function s(v) {
   return String(v || "").trim();
@@ -47,6 +54,11 @@ function makeTransporter() {
     connectionTimeout: n(process.env.SMTP_CONNECTION_TIMEOUT_MS, 8000),
     greetingTimeout: n(process.env.SMTP_GREETING_TIMEOUT_MS, 8000),
     socketTimeout: n(process.env.SMTP_SOCKET_TIMEOUT_MS, 10000),
+
+    // Force DNS lookup to IPv4 because Render may not reach Gmail SMTP over IPv6.
+    lookup: (hostname, options, callback) => {
+      dns.lookup(hostname, { family: 4 }, callback);
+    },
 
     auth: {
       user: s(process.env.SMTP_USER),
