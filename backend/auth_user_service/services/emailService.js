@@ -1,11 +1,24 @@
-const nodemailer = require("nodemailer");
-const dns = require("dns");
+//
+// backend/auth_user_service/services/emailService.js
+//
+// ✅ PRODUCTION EMAIL SERVICE
+// ✅ Supports Brevo Transactional Email API over HTTPS
+// ✅ Avoids SMTP ports blocked on Render Free
+// ✅ Keeps the same public functions used by auth controllers:
+//    - isEmailConfigured()
+//    - maskEmail()
+//    - sendPasswordResetOtpEmail()
+//    - sendRecoveryEmailOtpEmail()
+//
+// Required Render env for Brevo:
+//   EMAIL_PROVIDER=brevo
+//   BREVO_API_KEY=xxxxxxxxxxxxxxxx
+//   EMAIL_FROM=Clinic Smart Staff <admin@smf-clinic-systems.com>
+//   APP_NAME=Clinic Smart Staff
+//   RESET_LOG=false
+//
 
-try {
-  dns.setDefaultResultOrder("ipv4first");
-} catch (_) {
-  // Node versions without setDefaultResultOrder can safely ignore this.
-}
+const https = require("https");
 
 function s(v) {
   return String(v || "").trim();
@@ -14,7 +27,7 @@ function s(v) {
 function b(v, fallback = false) {
   const x = String(v ?? "").trim().toLowerCase();
   if (!x) return fallback;
-  return ["true", "1", "yes", "y"].includes(x);
+  return ["true", "1", "yes", "y", "on"].includes(x);
 }
 
 function n(v, fallback) {
@@ -22,13 +35,20 @@ function n(v, fallback) {
   return Number.isFinite(x) ? x : fallback;
 }
 
-function isEmailConfigured() {
+function provider() {
+  return s(process.env.EMAIL_PROVIDER || "brevo").toLowerCase();
+}
+
+function isBrevoConfigured() {
   return !!(
-    s(process.env.SMTP_HOST) &&
-    s(process.env.SMTP_USER) &&
-    s(process.env.SMTP_PASS) &&
+    provider() === "brevo" &&
+    s(process.env.BREVO_API_KEY) &&
     s(process.env.EMAIL_FROM)
   );
+}
+
+function isEmailConfigured() {
+  return isBrevoConfigured();
 }
 
 function maskEmail(email) {
@@ -39,57 +59,213 @@ function maskEmail(email) {
   return `${visible}***@${domain}`;
 }
 
-async function resolveSmtpHostIPv4(hostname) {
-  const host = s(hostname);
-  if (!host) {
-    throw new Error("SMTP_HOST missing");
-  }
-
-  const result = await dns.promises.lookup(host, { family: 4 });
-
-  const address = s(result?.address || result);
-  if (!address || address.includes(":")) {
-    throw new Error(`SMTP IPv4 lookup failed for ${host}`);
-  }
-
-  console.log("📧 SMTP using IPv4:", { host, address });
-  return address;
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 }
 
-function makeTransporter(hostOverride = "") {
-  const port = n(process.env.SMTP_PORT, 587);
-  const secure = b(process.env.SMTP_SECURE, port === 465);
-  const smtpHost = s(process.env.SMTP_HOST);
-  const host = s(hostOverride) || smtpHost;
+function parseSender(rawFrom) {
+  const appName = s(process.env.APP_NAME || "Clinic Smart Staff");
+  const from = s(rawFrom || process.env.EMAIL_FROM);
 
-  return nodemailer.createTransport({
-    host,
-    port,
-    secure,
-    name: smtpHost,
+  // Supports: Clinic Smart Staff <admin@smf-clinic-systems.com>
+  const match = from.match(/^(.*?)<([^>]+)>$/);
 
-    // Render may fail when Node tries Gmail SMTP over IPv6.
-    // Force IPv4 and fail faster than the service-level request timeout.
-    family: 4,
-    connectionTimeout: n(process.env.SMTP_CONNECTION_TIMEOUT_MS, 8000),
-    greetingTimeout: n(process.env.SMTP_GREETING_TIMEOUT_MS, 8000),
-    socketTimeout: n(process.env.SMTP_SOCKET_TIMEOUT_MS, 10000),
+  if (match) {
+    const name = s(match[1]).replace(/^"|"$/g, "") || appName;
+    const email = s(match[2]);
+    return { name, email };
+  }
 
-    // Force DNS lookup to IPv4 because Render may not reach Gmail SMTP over IPv6.
-    lookup: (hostname, options, callback) => {
-      dns.lookup(hostname, { family: 4 }, callback);
-    },
+  return {
+    name: appName,
+    email: from,
+  };
+}
 
-    requireTLS: !secure,
-    tls: {
-      servername: smtpHost,
-    },
+function buildOtpEmailHtml({
+  appName,
+  heading,
+  intro,
+  otp,
+  expiresInMinutes,
+}) {
+  const safeApp = escapeHtml(appName);
+  const safeHeading = escapeHtml(heading);
+  const safeIntro = escapeHtml(intro);
+  const safeOtp = escapeHtml(otp);
+  const safeMinutes = escapeHtml(expiresInMinutes);
 
-    auth: {
-      user: s(process.env.SMTP_USER),
-      pass: s(process.env.SMTP_PASS),
-    },
+  return `
+    <div style="margin:0;padding:0;background:#f6f7fb;">
+      <div style="max-width:560px;margin:0 auto;padding:24px;">
+        <div style="background:#ffffff;border-radius:14px;padding:28px;font-family:Arial,'Helvetica Neue',sans-serif;line-height:1.6;color:#111827;border:1px solid #e5e7eb;">
+          <div style="font-size:14px;color:#16a34a;font-weight:700;margin-bottom:8px;">
+            ${safeApp}
+          </div>
+
+          <h2 style="margin:0 0 12px;font-size:22px;color:#111827;">
+            ${safeHeading}
+          </h2>
+
+          <p style="margin:0 0 16px;font-size:15px;color:#374151;">
+            ${safeIntro}
+          </p>
+
+          <div style="font-size:32px;font-weight:800;letter-spacing:6px;margin:20px 0;padding:18px 16px;text-align:center;background:#f3f4f6;border-radius:12px;color:#111827;">
+            ${safeOtp}
+          </div>
+
+          <p style="margin:0 0 8px;font-size:14px;color:#374151;">
+            รหัสนี้จะหมดอายุภายใน <b>${safeMinutes} นาที</b>
+          </p>
+
+          <p style="margin:14px 0 0;font-size:13px;color:#6b7280;">
+            หากคุณไม่ได้เป็นผู้ร้องขอ กรุณาไม่ต้องดำเนินการใด ๆ
+          </p>
+        </div>
+
+        <p style="font-family:Arial,'Helvetica Neue',sans-serif;text-align:center;font-size:12px;color:#9ca3af;margin-top:16px;">
+          This is an automated security email from ${safeApp}.
+        </p>
+      </div>
+    </div>
+  `;
+}
+
+function postJsonViaHttps({ hostname, path, headers, body, timeoutMs }) {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify(body);
+
+    const req = https.request(
+      {
+        hostname,
+        path,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Accept": "application/json",
+          "Content-Length": Buffer.byteLength(payload),
+          ...headers,
+        },
+        timeout: timeoutMs,
+      },
+      (res) => {
+        let data = "";
+
+        res.setEncoding("utf8");
+
+        res.on("data", (chunk) => {
+          data += chunk;
+        });
+
+        res.on("end", () => {
+          let parsed = null;
+
+          try {
+            parsed = data ? JSON.parse(data) : null;
+          } catch (_) {
+            parsed = { raw: data };
+          }
+
+          resolve({
+            statusCode: res.statusCode || 0,
+            headers: res.headers || {},
+            body: parsed,
+          });
+        });
+      }
+    );
+
+    req.on("timeout", () => {
+      req.destroy(new Error("Brevo API request timeout"));
+    });
+
+    req.on("error", reject);
+
+    req.write(payload);
+    req.end();
   });
+}
+
+async function sendBrevoTransactionalEmail({
+  to,
+  subject,
+  text,
+  html,
+  type = "email",
+}) {
+  const email = s(to);
+
+  if (!email) {
+    return { ok: false, reason: "missing_email" };
+  }
+
+  if (!isBrevoConfigured()) {
+    return { ok: false, reason: "email_not_configured" };
+  }
+
+  const sender = parseSender(process.env.EMAIL_FROM);
+
+  if (!sender.email || !sender.email.includes("@")) {
+    return { ok: false, reason: "invalid_email_from" };
+  }
+
+  const body = {
+    sender,
+    to: [{ email }],
+    subject: s(subject),
+    textContent: s(text),
+    htmlContent: s(html),
+  };
+
+  const timeoutMs = n(process.env.BREVO_TIMEOUT_MS, 12000);
+
+  const res = await postJsonViaHttps({
+    hostname: "api.brevo.com",
+    path: "/v3/smtp/email",
+    timeoutMs,
+    headers: {
+      "api-key": s(process.env.BREVO_API_KEY),
+    },
+    body,
+  });
+
+  if (res.statusCode < 200 || res.statusCode >= 300) {
+    const code = s(res.body?.code);
+    const message = s(res.body?.message || res.body?.raw || "unknown_error");
+
+    console.error("📧 Brevo send failed:", {
+      statusCode: res.statusCode,
+      code,
+      message,
+      type,
+      to: maskEmail(email),
+    });
+
+    throw new Error(
+      `Brevo send failed: HTTP ${res.statusCode}${code ? ` ${code}` : ""}`
+    );
+  }
+
+  const messageId = s(res.body?.messageId);
+
+  console.log("📧 Brevo email sent:", {
+    type,
+    to: maskEmail(email),
+    messageId: messageId || undefined,
+  });
+
+  return {
+    ok: true,
+    to: maskEmail(email),
+    provider: "brevo",
+    messageId: messageId || undefined,
+  };
 }
 
 async function sendPasswordResetOtpEmail({
@@ -108,9 +284,7 @@ async function sendPasswordResetOtpEmail({
     return { ok: false, reason: "email_not_configured" };
   }
 
-  const from = s(process.env.EMAIL_FROM);
   const appName = s(process.env.APP_NAME || "Clinic Smart Staff");
-
   const subject = `รหัสยืนยันการตั้งรหัสผ่านใหม่ - ${appName}`;
 
   const text = [
@@ -120,30 +294,21 @@ async function sendPasswordResetOtpEmail({
     `หากคุณไม่ได้เป็นผู้ร้องขอ กรุณาไม่ต้องดำเนินการใด ๆ`,
   ].join("\n");
 
-  const html = `
-    <div style="font-family:Arial,sans-serif;line-height:1.6;color:#111">
-      <h2>${appName}</h2>
-      <p>รหัสยืนยันการตั้งรหัสผ่านใหม่ของคุณคือ</p>
-      <div style="font-size:28px;font-weight:bold;letter-spacing:4px;margin:16px 0">
-        ${otp}
-      </div>
-      <p>รหัสนี้จะหมดอายุภายใน <b>${expiresInMinutes} นาที</b></p>
-      <p style="color:#555">หากคุณไม่ได้เป็นผู้ร้องขอ กรุณาไม่ต้องดำเนินการใด ๆ</p>
-    </div>
-  `;
+  const html = buildOtpEmailHtml({
+    appName,
+    heading: "รหัสยืนยันการตั้งรหัสผ่านใหม่",
+    intro: "ใช้รหัสด้านล่างเพื่อยืนยันการตั้งรหัสผ่านใหม่ของบัญชีคุณ",
+    otp,
+    expiresInMinutes,
+  });
 
-  const smtpHostIPv4 = await resolveSmtpHostIPv4(process.env.SMTP_HOST);
-  const transporter = makeTransporter(smtpHostIPv4);
-
-  await transporter.sendMail({
-    from,
+  return sendBrevoTransactionalEmail({
     to: email,
     subject,
     text,
     html,
+    type: "password_reset_otp",
   });
-
-  return { ok: true, to: maskEmail(email) };
 }
 
 async function sendRecoveryEmailOtpEmail({
@@ -162,9 +327,7 @@ async function sendRecoveryEmailOtpEmail({
     return { ok: false, reason: "email_not_configured" };
   }
 
-  const from = s(process.env.EMAIL_FROM);
   const appName = s(process.env.APP_NAME || "Clinic Smart Staff");
-
   const subject = `รหัสยืนยันอีเมลกู้คืนบัญชี - ${appName}`;
 
   const text = [
@@ -174,30 +337,21 @@ async function sendRecoveryEmailOtpEmail({
     `หากคุณไม่ได้เป็นผู้ร้องขอ กรุณาไม่ต้องดำเนินการใด ๆ`,
   ].join("\n");
 
-  const html = `
-    <div style="font-family:Arial,sans-serif;line-height:1.6;color:#111">
-      <h2>${appName}</h2>
-      <p>รหัสยืนยันอีเมลกู้คืนบัญชีของคุณคือ</p>
-      <div style="font-size:28px;font-weight:bold;letter-spacing:4px;margin:16px 0">
-        ${otp}
-      </div>
-      <p>รหัสนี้จะหมดอายุภายใน <b>${expiresInMinutes} นาที</b></p>
-      <p style="color:#555">หากคุณไม่ได้เป็นผู้ร้องขอ กรุณาไม่ต้องดำเนินการใด ๆ</p>
-    </div>
-  `;
+  const html = buildOtpEmailHtml({
+    appName,
+    heading: "รหัสยืนยันอีเมลกู้คืนบัญชี",
+    intro: "ใช้รหัสด้านล่างเพื่อยืนยันอีเมลกู้คืนบัญชีของคุณ",
+    otp,
+    expiresInMinutes,
+  });
 
-  const smtpHostIPv4 = await resolveSmtpHostIPv4(process.env.SMTP_HOST);
-  const transporter = makeTransporter(smtpHostIPv4);
-
-  await transporter.sendMail({
-    from,
+  return sendBrevoTransactionalEmail({
     to: email,
     subject,
     text,
     html,
+    type: "recovery_email_otp",
   });
-
-  return { ok: true, to: maskEmail(email) };
 }
 
 module.exports = {
