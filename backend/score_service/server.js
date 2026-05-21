@@ -219,7 +219,6 @@ async function start() {
   }
 
   mongoose.set("strictQuery", true);
-  mongoose.set("sanitizeFilter", true);
 
   await mongoose.connect(process.env.MONGO_URI);
   console.log("✅ MongoDB connected (score_service)");
