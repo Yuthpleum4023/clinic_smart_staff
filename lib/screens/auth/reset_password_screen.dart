@@ -14,7 +14,12 @@ import 'package:clinic_smart_staff/screens/home/home_screen.dart';
 import 'package:clinic_smart_staff/widgets/debug_only.dart';
 
 class ResetPasswordScreen extends StatefulWidget {
-  const ResetPasswordScreen({super.key});
+  final String initialId;
+
+  const ResetPasswordScreen({
+    super.key,
+    this.initialId = '',
+  });
 
   @override
   State<ResetPasswordScreen> createState() => _ResetPasswordScreenState();
@@ -31,6 +36,16 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
   static const int _cooldownSeconds = 60;
   int _cooldownLeft = 0;
   Timer? _cooldownTimer;
+
+  @override
+  void initState() {
+    super.initState();
+
+    final initial = widget.initialId.trim();
+    if (initial.isNotEmpty) {
+      _idCtrl.text = initial;
+    }
+  }
 
   @override
   void dispose() {
@@ -99,7 +114,7 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
     final id = _idCtrl.text.trim();
 
     if (id.isEmpty) {
-      _snack('กรอก Email หรือ Phone ก่อน');
+      _snack('กรอกอีเมลหรือเบอร์โทรที่ใช้สมัครก่อน');
       return;
     }
 
@@ -121,11 +136,11 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
         throw Exception('forgot failed: ${res.statusCode}');
       }
 
-      _snack('ส่งรหัส OTP แล้ว กรุณาตรวจสอบ OTP');
+      _snack('หากบัญชีนี้มีอีเมลกู้คืน ระบบจะส่งรหัสยืนยันไปทางอีเมล');
 
       _startCooldown();
     } catch (e) {
-      _snack('ขอ OTP ไม่สำเร็จ');
+      _snack('ขอรหัสยืนยันไม่สำเร็จ กรุณาลองใหม่');
     } finally {
       if (mounted) setState(() => _otpLoading = false);
     }
@@ -145,12 +160,12 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
     final pw = _pwCtrl.text.trim();
 
     if (id.isEmpty || code.isEmpty || pw.isEmpty) {
-      _snack('กรอก Email/Phone, OTP และรหัสใหม่ให้ครบ');
+      _snack('กรอกอีเมล/เบอร์โทร รหัสยืนยัน และรหัสใหม่ให้ครบ');
       return;
     }
 
-    if (pw.length < 4) {
-      _snack('รหัสใหม่ต้องอย่างน้อย 4 ตัวอักษร');
+    if (pw.length < 6) {
+      _snack('รหัสใหม่ต้องอย่างน้อย 6 ตัวอักษร');
       return;
     }
 
@@ -185,8 +200,9 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
   Widget build(BuildContext context) {
     final authUrl = ApiConfig.authBaseUrl;
 
-    final otpBtnText =
-        _cooldownLeft > 0 ? 'ขอรหัส OTP อีกครั้ง ($_cooldownLeft)' : 'ขอรหัส OTP';
+    final otpBtnText = _cooldownLeft > 0
+        ? 'ขอรหัสอีกครั้ง ($_cooldownLeft)'
+        : 'ขอรหัสยืนยันทางอีเมล';
 
     return Scaffold(
       appBar: AppBar(
@@ -209,10 +225,19 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
 
             const SizedBox(height: 12),
 
+            const Text(
+              'ระบบจะส่งรหัสยืนยันไปยังอีเมลกู้คืนของบัญชี '
+              'หากบัญชีสมัครด้วยเบอร์อย่างเดียวและยังไม่มีอีเมล '
+              'กรุณาติดต่อผู้ดูแลเพื่อผูกอีเมลก่อน',
+              style: TextStyle(height: 1.35, color: Colors.black54),
+            ),
+
+            const SizedBox(height: 12),
+
             TextField(
               controller: _idCtrl,
               decoration: const InputDecoration(
-                labelText: 'Email หรือ Phone',
+                labelText: 'อีเมลหรือเบอร์โทรที่ใช้สมัคร',
                 border: OutlineInputBorder(),
               ),
             ),
@@ -230,7 +255,7 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
                         height: 18,
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
-                    : const Icon(Icons.sms_outlined),
+                    : const Icon(Icons.email_outlined),
                 label: Text(otpBtnText),
               ),
             ),
@@ -241,7 +266,7 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
               controller: _codeCtrl,
               keyboardType: TextInputType.number,
               decoration: const InputDecoration(
-                labelText: 'รหัส OTP',
+                labelText: 'รหัสยืนยันจากอีเมล',
                 border: OutlineInputBorder(),
               ),
             ),

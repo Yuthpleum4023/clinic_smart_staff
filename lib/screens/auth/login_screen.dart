@@ -144,7 +144,9 @@ class _LoginScreenState extends State<LoginScreen> {
     if (result.sentOk) {
       Navigator.push(
         context,
-        MaterialPageRoute(builder: (_) => const ResetPasswordScreen()),
+        MaterialPageRoute(
+          builder: (_) => ResetPasswordScreen(initialId: result.emailOrPhone),
+        ),
       );
     }
   }
@@ -203,7 +205,7 @@ class _LoginScreenState extends State<LoginScreen> {
               controller: _idCtrl,
               textInputAction: TextInputAction.next,
               decoration: const InputDecoration(
-                labelText: 'Email หรือ Phone',
+                labelText: 'อีเมลหรือเบอร์โทรที่ใช้สมัคร',
                 border: OutlineInputBorder(),
               ),
             ),
@@ -271,7 +273,12 @@ class _LoginScreenState extends State<LoginScreen> {
 
 class _ForgotResult {
   final bool sentOk;
-  const _ForgotResult({required this.sentOk});
+  final String emailOrPhone;
+
+  const _ForgotResult({
+    required this.sentOk,
+    required this.emailOrPhone,
+  });
 }
 
 class _ForgotPasswordSheet extends StatefulWidget {
@@ -306,7 +313,7 @@ class _ForgotPasswordSheetState extends State<_ForgotPasswordSheet> {
 
     final id = _idCtrl.text.trim();
     if (id.isEmpty) {
-      setState(() => _err = 'กรอก Email/Phone');
+      setState(() => _err = 'กรอกอีเมลหรือเบอร์โทรที่ใช้สมัคร');
       return;
     }
 
@@ -329,10 +336,13 @@ class _ForgotPasswordSheetState extends State<_ForgotPasswordSheet> {
       }
 
       if (!mounted) return;
-      Navigator.pop(context, const _ForgotResult(sentOk: true));
+      Navigator.pop(
+        context,
+        _ForgotResult(sentOk: true, emailOrPhone: id),
+      );
     } catch (e) {
       if (!mounted) return;
-      setState(() => _err = 'ขอรีเซ็ตรหัสผ่านไม่สำเร็จ: $e');
+      setState(() => _err = 'ขอรหัสยืนยันไม่สำเร็จ กรุณาลองใหม่');
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -348,13 +358,21 @@ class _ForgotPasswordSheetState extends State<_ForgotPasswordSheet> {
           keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
           shrinkWrap: true,
           children: [
-            const Text('ลืมรหัสผ่าน',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900)),
+            const Text(
+              'ลืมรหัสผ่าน',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'กรอกอีเมลหรือเบอร์โทรที่ใช้สมัคร หากบัญชีนี้มีอีเมลกู้คืน '
+              'ระบบจะส่งรหัสยืนยันไปทางอีเมล',
+              style: TextStyle(height: 1.35, color: Colors.black54),
+            ),
             const SizedBox(height: 10),
             TextField(
               controller: _idCtrl,
               decoration: const InputDecoration(
-                labelText: 'Email หรือ Phone',
+                labelText: 'อีเมลหรือเบอร์โทรที่ใช้สมัคร',
                 border: OutlineInputBorder(),
               ),
             ),
@@ -380,7 +398,7 @@ class _ForgotPasswordSheetState extends State<_ForgotPasswordSheet> {
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
                     : const Icon(Icons.sms),
-                label: Text(_loading ? 'กำลังส่ง...' : 'ขอรหัส OTP'),
+                label: Text(_loading ? 'กำลังส่ง...' : 'ขอรหัสยืนยัน'),
               ),
             ),
           ],
@@ -471,7 +489,7 @@ class _SignupInviteSheetState extends State<_SignupInviteSheet> {
       final dataAny = jsonDecode(res.body);
       if (dataAny is! Map) throw Exception('รูปแบบผลลัพธ์ไม่ถูกต้อง');
 
-      final data = Map<String, dynamic>.from(dataAny as Map);
+      final data = Map<String, dynamic>.from(dataAny);
       final token = (data['token'] ?? data['jwt'] ?? '').toString().trim();
 
       if (token.isEmpty) {
@@ -662,7 +680,7 @@ class _SignupClinicAdminSheetState extends State<_SignupClinicAdminSheet> {
       final dataAny = jsonDecode(res.body);
       if (dataAny is! Map) throw Exception('รูปแบบผลลัพธ์ไม่ถูกต้อง');
 
-      final data = Map<String, dynamic>.from(dataAny as Map);
+      final data = Map<String, dynamic>.from(dataAny);
       final token = (data['token'] ?? data['jwt'] ?? '').toString().trim();
 
       if (token.isEmpty) throw Exception('สมัครสำเร็จ แต่ไม่พบ token');
