@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'package:clinic_smart_staff/screens/auth/recovery_email_screen.dart';
+
 class MyTab extends StatelessWidget {
   final bool isAttendanceUser;
   final bool attendancePremiumEnabled;
@@ -109,6 +111,43 @@ class MyTab extends StatelessWidget {
     );
   }
 
+
+  Widget _recoveryEmailCard(BuildContext context) {
+    return Card(
+      elevation: 0.4,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: Colors.purple.shade100),
+      ),
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 14,
+          vertical: 6,
+        ),
+        leading: CircleAvatar(
+          backgroundColor: Colors.purple.shade50,
+          child: Icon(Icons.mark_email_read_outlined, color: Colors.purple.shade700),
+        ),
+        title: const Text(
+          'อีเมลกู้คืนบัญชี',
+          style: TextStyle(fontWeight: FontWeight.w900),
+        ),
+        subtitle: const Text(
+          'เพิ่มหรือยืนยันอีเมลสำหรับรับรหัสเมื่อลืมรหัสผ่าน',
+        ),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => const RecoveryEmailScreen(),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   Widget _logoutCard() {
     return Card(
       elevation: 0.4,
@@ -169,6 +208,9 @@ class MyTab extends StatelessWidget {
       sections.add(_premiumSwitchCard());
       sections.add(_gap());
     }
+
+    sections.add(_recoveryEmailCard(context));
+    sections.add(_gap());
 
     sections.add(_logoutCard());
     sections.add(
