@@ -40,6 +40,14 @@ function makeTransporter() {
     host: s(process.env.SMTP_HOST),
     port,
     secure,
+
+    // Render may fail when Node tries Gmail SMTP over IPv6.
+    // Force IPv4 and fail faster than the service-level request timeout.
+    family: 4,
+    connectionTimeout: n(process.env.SMTP_CONNECTION_TIMEOUT_MS, 8000),
+    greetingTimeout: n(process.env.SMTP_GREETING_TIMEOUT_MS, 8000),
+    socketTimeout: n(process.env.SMTP_SOCKET_TIMEOUT_MS, 10000),
+
     auth: {
       user: s(process.env.SMTP_USER),
       pass: s(process.env.SMTP_PASS),

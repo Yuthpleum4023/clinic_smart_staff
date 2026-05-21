@@ -1368,6 +1368,8 @@ async function requestRecoveryEmailOtp(req, res) {
   } catch (e) {
     console.log("❌ requestRecoveryEmailOtp failed:", e?.message || e);
 
+    if (res.headersSent) return;
+
     return res.status(500).json({
       message: "requestRecoveryEmailOtp failed",
       error: IS_PROD ? "Internal Server Error" : e.message,
@@ -1528,6 +1530,8 @@ async function forgotPassword(req, res) {
     return res.json(genericOk);
   } catch (e) {
     console.log("❌ forgotPassword failed:", e?.message || e);
+
+    if (res.headersSent) return;
 
     return res.status(500).json({
       message: "forgotPassword failed",
