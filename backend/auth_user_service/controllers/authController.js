@@ -4,11 +4,13 @@ const Clinic = require("../models/Clinic");
 const User = require("../models/User");
 const Invite = require("../models/Invite");
 const ResetToken = require("../models/ResetToken");
+const RecoveryEmailToken = require("../models/RecoveryEmailToken");
 const { makeId } = require("../utils/id");
 const { signToken } = require("../utils/jwt");
 const { ensureEmployeeForUser } = require("../utils/staffServiceClient");
 const {
   sendPasswordResetOtpEmail,
+  sendRecoveryEmailOtpEmail,
   maskEmail,
 } = require("../services/emailService");
 
@@ -26,6 +28,17 @@ const RESET_LOG =
 
 const ROLE_ENUM = ["admin", "employee", "helper"];
 const PLAN_ENUM = ["free", "premium"];
+
+function isValidEmail(v) {
+  const email = normLower(v);
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+function maskMaybeEmail(v) {
+  const email = normLower(v);
+  return email ? maskEmail(email) : "";
+}
+
 
 function normStr(v) {
   return String(v || "").trim();
@@ -1239,6 +1252,202 @@ async function reconcileEmployeeSelf(req, res) {
   }
 }
 
+
+/* ======================================================
+   RECOVERY EMAIL
+====================================================== */
+async function getRecoveryEmailStatus(req, res) {
+  try {
+    const userId = normStr(req.user?.userId);
+
+    if (!userId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    const user = await User.findOne({ userId })
+      .select("userId email phone isActive")
+      .lean();
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const email = normLower(user.email);
+
+    return res.json({
+      ok: true,
+      hasEmail: !!email,
+      emailMasked: maskMaybeEmail(email),
+      phoneOnly: !email && !!normStr(user.phone),
+    });
+  } catch (e) {
+    return res.status(500).json({
+      message: "getRecoveryEmailStatus failed",
+      error: IS_PROD ? "Internal Server Error" : e.message,
+    });
+  }
+}
+
+async function requestRecoveryEmailOtp(req, res) {
+  try {
+    const userId = normStr(req.user?.userId);
+    const email = normLower(req.body?.email);
+
+    if (!userId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    if (!isValidEmail(email)) {
+      return res.status(400).json({ message: "invalid email" });
+    }
+
+    const user = await User.findOne({ userId });
+    if (!user) return res.status(404).json({ message: "User not found" });
+    if (user.isActive === false) {
+      return res.status(403).json({ message: "User disabled" });
+    }
+
+    const existing = await User.findOne({ email })
+      .select("userId")
+      .lean();
+
+    if (existing && normStr(existing.userId) !== userId) {
+      return res.status(409).json({
+        message: "This email is already used by another account",
+      });
+    }
+
+    await RecoveryEmailToken.deleteMany({ userId });
+
+    const code = crypto.randomInt(100000, 1000000).toString();
+    const codeHash = await bcrypt.hash(code, 10);
+    const expiresAt = new Date(
+      Date.now() + RESET_TOKEN_TTL_MINUTES * 60 * 1000
+    );
+
+    await RecoveryEmailToken.create({
+      userId,
+      email,
+      codeHash,
+      expiresAt,
+    });
+
+    const sent = await sendRecoveryEmailOtpEmail({
+      to: email,
+      code,
+      expiresInMinutes: RESET_TOKEN_TTL_MINUTES,
+    });
+
+    if (!sent.ok) {
+      console.log("⚠️ recovery email OTP not sent:", {
+        userId,
+        reason: sent.reason,
+        to: maskEmail(email),
+      });
+
+      if (!IS_PROD && RESET_LOG) {
+        console.log("DEV RECOVERY EMAIL OTP:", code, "userId:", userId);
+      }
+
+      return res.status(503).json({
+        message: "email service not available",
+        reason: sent.reason,
+      });
+    }
+
+    console.log("✅ recovery email OTP sent:", {
+      userId,
+      to: sent.to,
+    });
+
+    return res.json({
+      ok: true,
+      emailMasked: sent.to,
+      message: "verification code sent",
+    });
+  } catch (e) {
+    console.log("❌ requestRecoveryEmailOtp failed:", e?.message || e);
+
+    return res.status(500).json({
+      message: "requestRecoveryEmailOtp failed",
+      error: IS_PROD ? "Internal Server Error" : e.message,
+    });
+  }
+}
+
+async function verifyRecoveryEmailOtp(req, res) {
+  try {
+    const userId = normStr(req.user?.userId);
+    const email = normLower(req.body?.email);
+    const code = normStr(req.body?.code);
+
+    if (!userId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    if (!isValidEmail(email) || !code) {
+      return res.status(400).json({ message: "invalid payload" });
+    }
+
+    const tokens = await RecoveryEmailToken.find({
+      userId,
+      email,
+      expiresAt: { $gt: new Date() },
+    })
+      .select("+codeHash")
+      .sort({ createdAt: -1 })
+      .limit(5);
+
+    let matched = false;
+
+    for (const token of tokens) {
+      const ok = await bcrypt.compare(code, token.codeHash);
+      if (ok) {
+        matched = true;
+        break;
+      }
+    }
+
+    if (!matched) {
+      return res.status(400).json({ message: "invalid or expired code" });
+    }
+
+    const existing = await User.findOne({ email })
+      .select("userId")
+      .lean();
+
+    if (existing && normStr(existing.userId) !== userId) {
+      return res.status(409).json({
+        message: "This email is already used by another account",
+      });
+    }
+
+    await User.updateOne(
+      { userId },
+      {
+        $set: {
+          email,
+        },
+      }
+    );
+
+    await RecoveryEmailToken.deleteMany({ userId });
+
+    return res.json({
+      ok: true,
+      emailMasked: maskEmail(email),
+      message: "recovery email verified",
+    });
+  } catch (e) {
+    console.log("❌ verifyRecoveryEmailOtp failed:", e?.message || e);
+
+    return res.status(500).json({
+      message: "verifyRecoveryEmailOtp failed",
+      error: IS_PROD ? "Internal Server Error" : e.message,
+    });
+  }
+}
+
 /* ======================================================
    FORGOT PASSWORD
 ====================================================== */
@@ -1408,6 +1617,9 @@ module.exports = {
   registerClinicAdmin,
   registerWithInvite,
   reconcileEmployeeSelf,
+  getRecoveryEmailStatus,
+  requestRecoveryEmailOtp,
+  verifyRecoveryEmailOtp,
   forgotPassword,
   resetPassword,
 };

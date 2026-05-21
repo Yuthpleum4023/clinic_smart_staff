@@ -100,8 +100,62 @@ async function sendPasswordResetOtpEmail({
   return { ok: true, to: maskEmail(email) };
 }
 
+async function sendRecoveryEmailOtpEmail({
+  to,
+  code,
+  expiresInMinutes = 10,
+}) {
+  const email = s(to);
+  const otp = s(code);
+
+  if (!email || !otp) {
+    return { ok: false, reason: "missing_email_or_code" };
+  }
+
+  if (!isEmailConfigured()) {
+    return { ok: false, reason: "email_not_configured" };
+  }
+
+  const from = s(process.env.EMAIL_FROM);
+  const appName = s(process.env.APP_NAME || "Clinic Smart Staff");
+
+  const subject = `รหัสยืนยันอีเมลกู้คืนบัญชี - ${appName}`;
+
+  const text = [
+    `รหัสยืนยันอีเมลกู้คืนบัญชีของคุณคือ: ${otp}`,
+    ``,
+    `รหัสนี้จะหมดอายุภายใน ${expiresInMinutes} นาที`,
+    `หากคุณไม่ได้เป็นผู้ร้องขอ กรุณาไม่ต้องดำเนินการใด ๆ`,
+  ].join("\n");
+
+  const html = `
+    <div style="font-family:Arial,sans-serif;line-height:1.6;color:#111">
+      <h2>${appName}</h2>
+      <p>รหัสยืนยันอีเมลกู้คืนบัญชีของคุณคือ</p>
+      <div style="font-size:28px;font-weight:bold;letter-spacing:4px;margin:16px 0">
+        ${otp}
+      </div>
+      <p>รหัสนี้จะหมดอายุภายใน <b>${expiresInMinutes} นาที</b></p>
+      <p style="color:#555">หากคุณไม่ได้เป็นผู้ร้องขอ กรุณาไม่ต้องดำเนินการใด ๆ</p>
+    </div>
+  `;
+
+  const transporter = makeTransporter();
+
+  await transporter.sendMail({
+    from,
+    to: email,
+    subject,
+    text,
+    html,
+  });
+
+  return { ok: true, to: maskEmail(email) };
+}
+
 module.exports = {
   isEmailConfigured,
   maskEmail,
   sendPasswordResetOtpEmail,
+  sendRecoveryEmailOtpEmail,
 };

@@ -19,6 +19,12 @@ router.get("/me", auth, ctrl.me);
 // ✅ update my location
 router.patch("/users/me/location", auth, ctrl.updateMyLocation);
 
+// ✅ Recovery email for phone-only accounts
+router.get("/users/me/recovery-email/status", auth, ctrl.getRecoveryEmailStatus);
+router.post("/users/me/recovery-email/request", auth, ctrl.requestRecoveryEmailOtp);
+router.post("/users/me/recovery-email/verify", auth, ctrl.verifyRecoveryEmailOtp);
+
+
 // ✅ Multi-role switch (ออก token ใหม่ตาม activeRole)
 router.post("/switch-role", auth, ctrl.switchRole);
 

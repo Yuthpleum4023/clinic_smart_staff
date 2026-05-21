@@ -106,6 +106,10 @@ app.use(
     "/clinic-security/pin/verify",
     "/api/clinic-security/pin/set",
     "/api/clinic-security/pin/verify",
+    "/users/me/recovery-email/request",
+    "/users/me/recovery-email/verify",
+    "/api/users/me/recovery-email/request",
+    "/api/users/me/recovery-email/verify",
   ],
   authLimiter
 );
