@@ -39,14 +39,34 @@ function maskEmail(email) {
   return `${visible}***@${domain}`;
 }
 
-function makeTransporter() {
+async function resolveSmtpHostIPv4(hostname) {
+  const host = s(hostname);
+  if (!host) {
+    throw new Error("SMTP_HOST missing");
+  }
+
+  const result = await dns.promises.lookup(host, { family: 4 });
+
+  const address = s(result?.address || result);
+  if (!address || address.includes(":")) {
+    throw new Error(`SMTP IPv4 lookup failed for ${host}`);
+  }
+
+  console.log("📧 SMTP using IPv4:", { host, address });
+  return address;
+}
+
+function makeTransporter(hostOverride = "") {
   const port = n(process.env.SMTP_PORT, 587);
   const secure = b(process.env.SMTP_SECURE, port === 465);
+  const smtpHost = s(process.env.SMTP_HOST);
+  const host = s(hostOverride) || smtpHost;
 
   return nodemailer.createTransport({
-    host: s(process.env.SMTP_HOST),
+    host,
     port,
     secure,
+    name: smtpHost,
 
     // Render may fail when Node tries Gmail SMTP over IPv6.
     // Force IPv4 and fail faster than the service-level request timeout.
@@ -58,6 +78,11 @@ function makeTransporter() {
     // Force DNS lookup to IPv4 because Render may not reach Gmail SMTP over IPv6.
     lookup: (hostname, options, callback) => {
       dns.lookup(hostname, { family: 4 }, callback);
+    },
+
+    requireTLS: !secure,
+    tls: {
+      servername: smtpHost,
     },
 
     auth: {
@@ -107,7 +132,8 @@ async function sendPasswordResetOtpEmail({
     </div>
   `;
 
-  const transporter = makeTransporter();
+  const smtpHostIPv4 = await resolveSmtpHostIPv4(process.env.SMTP_HOST);
+  const transporter = makeTransporter(smtpHostIPv4);
 
   await transporter.sendMail({
     from,
@@ -160,7 +186,8 @@ async function sendRecoveryEmailOtpEmail({
     </div>
   `;
 
-  const transporter = makeTransporter();
+  const smtpHostIPv4 = await resolveSmtpHostIPv4(process.env.SMTP_HOST);
+  const transporter = makeTransporter(smtpHostIPv4);
 
   await transporter.sendMail({
     from,
