@@ -455,8 +455,7 @@ async function syncUserStaffIdFromEnsured(userLike, ensured) {
     ) {
       return userLike;
     }
-
-    await User.updateOne(
+        await User.updateOne(
       { userId: userLike.userId },
       { $set: { staffId: ensuredStaffId } }
     );
@@ -1376,7 +1375,6 @@ async function requestRecoveryEmailOtp(req, res) {
     });
   }
 }
-
 async function verifyRecoveryEmailOtp(req, res) {
   try {
     const userId = normStr(req.user?.userId);
@@ -1391,10 +1389,11 @@ async function verifyRecoveryEmailOtp(req, res) {
       return res.status(400).json({ message: "invalid payload" });
     }
 
+    const nowRecoveryEmailOtp = new Date();
+
     const tokens = await RecoveryEmailToken.find({
       userId,
       email,
-      expiresAt: { $gt: new Date() },
     })
       .select("+codeHash")
       .sort({ createdAt: -1 })
@@ -1403,6 +1402,14 @@ async function verifyRecoveryEmailOtp(req, res) {
     let matched = false;
 
     for (const token of tokens) {
+      if (!token?.expiresAt || token.expiresAt <= nowRecoveryEmailOtp) {
+        continue;
+      }
+
+      if (!token.codeHash) {
+        continue;
+      }
+
       const ok = await bcrypt.compare(code, token.codeHash);
       if (ok) {
         matched = true;
@@ -1572,9 +1579,10 @@ async function resetPassword(req, res) {
     if (!user) return res.status(400).json({ message: "invalid or expired code" });
     if (!user.isActive) return res.status(403).json({ message: "User disabled" });
 
+    const nowResetPasswordOtp = new Date();
+
     const tokens = await ResetToken.find({
       userId: user.userId,
-      expiresAt: { $gt: new Date() },
     })
       .select("+code +codeHash")
       .sort({ createdAt: -1 })
@@ -1583,6 +1591,10 @@ async function resetPassword(req, res) {
     let matchedToken = null;
 
     for (const token of tokens) {
+      if (!token?.expiresAt || token.expiresAt <= nowResetPasswordOtp) {
+        continue;
+      }
+
       if (token.codeHash) {
         const ok = await bcrypt.compare(code, token.codeHash);
         if (ok) {
@@ -1626,4 +1638,4 @@ module.exports = {
   verifyRecoveryEmailOtp,
   forgotPassword,
   resetPassword,
-};
+};       
