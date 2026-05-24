@@ -686,6 +686,30 @@ async function createNeed(req, res) {
     } = req.body || {};
 
     if (!date || !start || !end) bad("date/start/end required");
+
+    const startText = s(start);
+    const endText = s(end);
+
+    const timeToMinutes = (value) => {
+      if (typeof value !== "string") return null;
+
+      const match = value.match(/^([01]\d|2[0-3]):([0-5]\d)$/);
+      if (!match) return null;
+
+      return Number(match[1]) * 60 + Number(match[2]);
+    };
+
+    const startMin = timeToMinutes(startText);
+    const endMin = timeToMinutes(endText);
+
+    if (startMin == null || endMin == null) {
+      bad("รูปแบบเวลาไม่ถูกต้อง", 400);
+    }
+
+    if (endMin <= startMin) {
+      bad("เวลาสิ้นสุดต้องมากกว่าเวลาเริ่มต้น", 400);
+    }
+
     if (!hourlyRate || Number(hourlyRate) <= 0) bad("hourlyRate must be > 0");
     if (Number(requiredCount) <= 0) bad("requiredCount must be > 0");
 
@@ -715,8 +739,8 @@ async function createNeed(req, res) {
       title,
       role,
       date,
-      start,
-      end,
+      start: startText,
+      end: endText,
       hourlyRate: Number(hourlyRate),
       requiredCount: Number(requiredCount),
       note,
