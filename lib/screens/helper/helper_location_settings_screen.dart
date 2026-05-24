@@ -35,7 +35,12 @@ import 'package:clinic_smart_staff/services/auth_storage.dart';
 import 'package:clinic_smart_staff/services/settings_service.dart';
 
 class HelperLocationSettingsScreen extends StatefulWidget {
-  const HelperLocationSettingsScreen({super.key});
+  final bool returnToOpenNeedsAfterSync;
+
+  const HelperLocationSettingsScreen({
+    super.key,
+    this.returnToOpenNeedsAfterSync = false,
+  });
 
   @override
   State<HelperLocationSettingsScreen> createState() =>
@@ -562,6 +567,11 @@ class _HelperLocationSettingsScreenState
       if (res.statusCode >= 200 && res.statusCode < 300) {
         if (!mounted) return;
 
+        if (widget.returnToOpenNeedsAfterSync) {
+          Navigator.of(context).pop(true);
+          return;
+        }
+
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text("บันทึก + ส่งพิกัดขึ้นระบบแล้ว ✅")),
         );
@@ -637,10 +647,10 @@ class _HelperLocationSettingsScreenState
       width: double.infinity,
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerHighest.withOpacity(0.55),
+        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.55),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-          color: theme.colorScheme.outline.withOpacity(0.15),
+          color: theme.colorScheme.outline.withValues(alpha: 0.15),
         ),
       ),
       child: Column(

@@ -63,11 +63,11 @@ class _HelperOpenNeedsScreenState extends State<HelperOpenNeedsScreen> {
   }
 
   String _helperLocationSummary(AppLocation loc) {
-    final parts = <String>[
+    final parts = {
       if (_s(loc.label).isNotEmpty) _s(loc.label),
       if (_s(loc.district).isNotEmpty) _s(loc.district),
       if (_s(loc.province).isNotEmpty) _s(loc.province),
-    ].toSet().toList();
+    }.toList();
 
     if (parts.isNotEmpty) return parts.join(' • ');
     return 'lat ${loc.lat.toStringAsFixed(6)}, lng ${loc.lng.toStringAsFixed(6)}';
@@ -401,7 +401,9 @@ class _HelperOpenNeedsScreenState extends State<HelperOpenNeedsScreen> {
     await Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => const HelperLocationSettingsScreen(),
+        builder: (_) => const HelperLocationSettingsScreen(
+          returnToOpenNeedsAfterSync: true,
+        ),
       ),
     );
     await _loadHelperLocation();
