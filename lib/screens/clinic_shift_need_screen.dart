@@ -112,25 +112,32 @@ class _ClinicShiftNeedScreenState extends State<ClinicShiftNeedScreen> {
 
   void _recalcExpectedHours() {
     if (_start == null || _end == null) return;
+
     final startMin = _start!.hour * 60 + _start!.minute;
     final endMin = _end!.hour * 60 + _end!.minute;
-    final diff =
-        endMin >= startMin ? endMin - startMin : 24 * 60 - startMin + endMin;
+
+    if (endMin <= startMin) {
+      _expectedHoursCtrl.text = '0.00';
+      if (mounted) setState(() {});
+      return;
+    }
+
+    final diff = endMin - startMin;
     _expectedHoursCtrl.text = (diff / 60).toStringAsFixed(2);
     if (mounted) setState(() {});
   }
 
   bool _validateTime() {
     if (_start == null || _end == null) return false;
-    final s = _start!.hour * 60 + _start!.minute;
-    final e = _end!.hour * 60 + _end!.minute;
-    if (s == e) {
-      _snack('เวลาเริ่มและเวลาสิ้นสุดห้ามเท่ากัน');
+
+    final startMin = _start!.hour * 60 + _start!.minute;
+    final endMin = _end!.hour * 60 + _end!.minute;
+
+    if (endMin <= startMin) {
+      _snack('เวลาสิ้นสุดต้องมากกว่าเวลาเริ่มต้น');
       return false;
     }
-    if (e < s) {
-      _snack('หมายเหตุ: ช่วงเวลานี้เป็นแบบข้ามวัน');
-    }
+
     return true;
   }
 
