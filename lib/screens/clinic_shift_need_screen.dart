@@ -233,7 +233,9 @@ class _ClinicShiftNeedScreenState extends State<ClinicShiftNeedScreen> {
     await Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => const ClinicLocationSettingsScreen(),
+        builder: (_) => const ClinicLocationSettingsScreen(
+          returnToShiftNeedAfterSync: true,
+        ),
       ),
     );
 

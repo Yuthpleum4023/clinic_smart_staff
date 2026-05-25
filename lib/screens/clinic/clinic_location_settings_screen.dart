@@ -36,7 +36,12 @@ import 'package:clinic_smart_staff/services/auth_storage.dart';
 import 'package:clinic_smart_staff/services/settings_service.dart';
 
 class ClinicLocationSettingsScreen extends StatefulWidget {
-  const ClinicLocationSettingsScreen({super.key});
+  final bool returnToShiftNeedAfterSync;
+
+  const ClinicLocationSettingsScreen({
+    super.key,
+    this.returnToShiftNeedAfterSync = false,
+  });
 
   @override
   State<ClinicLocationSettingsScreen> createState() =>
@@ -585,11 +590,11 @@ class _ClinicLocationSettingsScreenState
         label: loc.label,
       );
 
-      print(
+      debugPrint(
         '[CLINIC_LOCATION][SYNC] lat=${loc.lat} lng=${loc.lng} '
         'district=${loc.district} province=${loc.province}',
       );
-      print(
+      debugPrint(
         '[CLINIC_LOCATION][SYNC] address=${loc.address} label=${loc.label}',
       );
 
@@ -617,8 +622,7 @@ class _ClinicLocationSettingsScreenState
         },
       };
 
-      print('[CLINIC_LOCATION][SYNC][BODY] ${jsonEncode(bodyMap)}');
-
+      debugPrint(('[CLINIC_LOCATION][SYNC][BODY] ${jsonEncode(bodyMap)}').toString());
       final res = await http.patch(
         uri,
         headers: {
@@ -629,12 +633,17 @@ class _ClinicLocationSettingsScreenState
         body: jsonEncode(bodyMap),
       ).timeout(const Duration(seconds: 15));
 
-      print(
+      debugPrint(
         '[CLINIC_LOCATION][SYNC][HTTP] status=${res.statusCode} body=${res.body}',
       );
 
       if (res.statusCode >= 200 && res.statusCode < 300) {
         if (!mounted) return;
+        if (widget.returnToShiftNeedAfterSync) {
+          Navigator.of(context).pop(true);
+          return;
+        }
+
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text("บันทึก + ส่งพิกัดคลินิกขึ้น policy แล้ว ✅"),
@@ -708,10 +717,10 @@ class _ClinicLocationSettingsScreenState
       width: double.infinity,
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerHighest.withOpacity(0.55),
+        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.55),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-          color: theme.colorScheme.outline.withOpacity(0.15),
+          color: theme.colorScheme.outline.withValues(alpha: 0.15),
         ),
       ),
       child: Column(
