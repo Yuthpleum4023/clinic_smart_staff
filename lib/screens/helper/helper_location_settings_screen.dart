@@ -36,10 +36,12 @@ import 'package:clinic_smart_staff/services/settings_service.dart';
 
 class HelperLocationSettingsScreen extends StatefulWidget {
   final bool returnToOpenNeedsAfterSync;
+  final bool returnToAvailabilityAfterSync;
 
   const HelperLocationSettingsScreen({
     super.key,
     this.returnToOpenNeedsAfterSync = false,
+    this.returnToAvailabilityAfterSync = false,
   });
 
   @override
@@ -567,7 +569,8 @@ class _HelperLocationSettingsScreenState
       if (res.statusCode >= 200 && res.statusCode < 300) {
         if (!mounted) return;
 
-        if (widget.returnToOpenNeedsAfterSync) {
+        if (widget.returnToOpenNeedsAfterSync ||
+            widget.returnToAvailabilityAfterSync) {
           Navigator.of(context).pop(true);
           return;
         }

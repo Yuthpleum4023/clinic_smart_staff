@@ -98,11 +98,11 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
   }
 
   String _locationSummary(AppLocation loc) {
-    final parts = <String>[
+    final parts = {
       if (_s(loc.label).isNotEmpty) _s(loc.label),
       if (_s(loc.district).isNotEmpty) _s(loc.district),
       if (_s(loc.province).isNotEmpty) _s(loc.province),
-    ].toSet().toList();
+    }.toList();
 
     if (parts.isNotEmpty) {
       return parts.join(' • ');
@@ -243,9 +243,9 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.12),
+        color: color.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: color.withOpacity(0.22)),
+        border: Border.all(color: color.withValues(alpha: 0.22)),
       ),
       child: Text(
         text,
@@ -431,6 +431,8 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
     final noteCtrl = TextEditingController();
 
     AppLocation? helperLocation = await _loadHelperLocation();
+    if (!mounted) return;
+
     bool useSavedLocation = _hasUsableAppLocation(helperLocation);
 
     final ok = await showModalBottomSheet<bool>(
@@ -491,7 +493,9 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
           await Navigator.push(
             context,
             MaterialPageRoute(
-              builder: (_) => const HelperLocationSettingsScreen(),
+              builder: (_) => const HelperLocationSettingsScreen(
+          returnToAvailabilityAfterSync: true,
+        ),
             ),
           );
 
@@ -703,7 +707,7 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
                         Text(
                           'Tip: หลังประกาศ คลินิกสามารถเห็นและจองเวลาว่างของคุณได้',
                           style: TextStyle(
-                            color: cs.onSurface.withOpacity(0.6),
+                            color: cs.onSurface.withValues(alpha: 0.6),
                             fontSize: 12,
                           ),
                         ),
@@ -847,7 +851,7 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
                     color: cs.surface,
                     borderRadius: BorderRadius.circular(14),
                     border: Border.all(
-                      color: cs.outlineVariant.withOpacity(0.5),
+                      color: cs.outlineVariant.withValues(alpha: 0.5),
                     ),
                   ),
                   child: Row(
@@ -965,7 +969,7 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
                                             'หมายเหตุของฉัน: ${_s(a.note)}',
                                             style: TextStyle(
                                               color: cs.onSurface
-                                                  .withOpacity(0.7),
+                                                  .withValues(alpha: 0.7),
                                             ),
                                           ),
                                         ],
@@ -975,7 +979,7 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
                                             'หมายเหตุจากคลินิก: ${_s(a.bookedNote)}',
                                             style: TextStyle(
                                               color: cs.onSurface
-                                                  .withOpacity(0.7),
+                                                  .withValues(alpha: 0.7),
                                             ),
                                           ),
                                         ],
@@ -1016,7 +1020,7 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 10),
           decoration: BoxDecoration(
-            color: active ? cs.primary.withOpacity(0.12) : Colors.transparent,
+            color: active ? cs.primary.withValues(alpha: 0.12) : Colors.transparent,
             borderRadius: BorderRadius.circular(12),
           ),
           child: Center(
@@ -1024,7 +1028,7 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
               text,
               style: TextStyle(
                 fontWeight: FontWeight.w900,
-                color: active ? cs.primary : cs.onSurface.withOpacity(0.7),
+                color: active ? cs.primary : cs.onSurface.withValues(alpha: 0.7),
               ),
             ),
           ),
