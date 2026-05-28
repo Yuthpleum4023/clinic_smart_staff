@@ -1047,6 +1047,7 @@ async function clearBookedAvailability(req, res) {
 // =====================================================
 // booking
 // =====================================================
+
 async function bookAvailability(req, res) {
   try {
     mustRoleAny(req, ["admin", "clinic_admin"]);
@@ -1061,6 +1062,16 @@ async function bookAvailability(req, res) {
     const body = req.body || {};
     const bookedAt = new Date();
 
+    const hourlyRateRaw = body.hourlyRate;
+    const hourlyRate =
+      typeof hourlyRateRaw === "number"
+        ? hourlyRateRaw
+        : parseFloat(String(hourlyRateRaw || "").trim() || "0") || 0;
+
+    if (!Number.isFinite(hourlyRate) || hourlyRate <= 0) {
+      bad("hourlyRate must be > 0", 400);
+    }
+
     const updated = await Availability.findOneAndUpdate(
       { _id: id, status: "open" },
       {
@@ -1070,14 +1081,7 @@ async function bookAvailability(req, res) {
           bookedAt,
 
           bookedNote: s(body.note),
-          bookedHourlyRate: (() => {
-            const v = body.hourlyRate;
-            const n =
-              typeof v === "number"
-                ? v
-                : parseFloat(String(v || "").trim() || "0") || 0;
-            return n;
-          })(),
+          bookedHourlyRate: hourlyRate,
 
           clinicClearedAt: null,
         },
@@ -1104,12 +1108,6 @@ async function bookAvailability(req, res) {
       body.clinicLng === undefined ? clinic?.lng : toNumOrNull(body.clinicLng);
 
     const shiftNote = s(body.note) || s(updated.note) || "";
-
-    const hourlyRateRaw = body.hourlyRate;
-    const hourlyRate =
-      typeof hourlyRateRaw === "number"
-        ? hourlyRateRaw
-        : parseFloat(String(hourlyRateRaw || "").trim() || "0") || 0;
 
     const shiftPayload = {
       clinicId,
@@ -1175,6 +1173,7 @@ async function bookAvailability(req, res) {
     });
   }
 }
+
 
 module.exports = {
   createAvailability,
