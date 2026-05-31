@@ -3971,6 +3971,197 @@ async function ensureCanViewSession(req, session) {
   return { ok: true };
 }
 
+
+function parseAdminManualHHmm(workDate, hhmm) {
+  const raw = s(hhmm);
+  const m = raw.match(/^([01]\d|2[0-3]):([0-5]\d)$/);
+  if (!isYmd(workDate) || !m) return null;
+
+  // Clinic Smart Staff currently operates for Thailand clinics.
+  // Store as Date using Thailand local business time.
+  return new Date(`${workDate}T${m[1]}:${m[2]}:00.000+07:00`);
+}
+
+function resolveAdminManualAttendanceIdentity(body) {
+  const staffId = s(body?.staffId || body?.employeeId);
+  const userId = s(
+    body?.userId ||
+      body?.linkedUserId ||
+      body?.employeeUserId ||
+      body?.principalUserId ||
+      body?.helperUserId ||
+      body?.helperId
+  );
+
+  const principalId = s(body?.principalId || staffId || userId);
+  const principalType = staffId ? "staff" : "user";
+
+  return {
+    principalId,
+    principalType,
+    staffId,
+    userId,
+  };
+}
+
+async function createAdminManualAttendance(req, res) {
+  try {
+    const role = s(req.user?.role);
+    if (!isAdminLike(role)) {
+      return res.status(403).json({ ok: false, message: "Forbidden (admin only)" });
+    }
+
+    const clinicId = s(req.user?.clinicId || req.body?.clinicId);
+    if (!clinicId) {
+      return res.status(400).json({ ok: false, message: "clinicId required" });
+    }
+
+    const workDate = s(req.body?.workDate || req.body?.date || req.body?.attendanceDate);
+    if (!isYmd(workDate)) {
+      return res.status(400).json({ ok: false, message: "workDate required (yyyy-MM-dd)" });
+    }
+
+    const startHHmm = s(
+      req.body?.startTime ||
+        req.body?.start ||
+        req.body?.checkInTime ||
+        req.body?.clockInTime
+    );
+
+    const endHHmm = s(
+      req.body?.endTime ||
+        req.body?.end ||
+        req.body?.checkOutTime ||
+        req.body?.clockOutTime
+    );
+
+    const checkInAt = parseAdminManualHHmm(workDate, startHHmm);
+    const checkOutAt = parseAdminManualHHmm(workDate, endHHmm);
+
+    if (!checkInAt || !checkOutAt || checkOutAt.getTime() <= checkInAt.getTime()) {
+      return res.status(400).json({
+        ok: false,
+        message: "Invalid manual attendance time range",
+      });
+    }
+
+    const breakMinutes = Math.max(0, Math.floor(n(req.body?.breakMinutes, 0)));
+    const rawWorkedMinutes = computeWorkedMinutes(checkInAt, checkOutAt);
+    const workedMinutes = Math.max(0, rawWorkedMinutes - breakMinutes);
+
+    if (workedMinutes <= 0 || workedMinutes > 24 * 60) {
+      return res.status(400).json({
+        ok: false,
+        message: "Invalid worked minutes",
+      });
+    }
+
+    const { principalId, principalType, staffId, userId } =
+      resolveAdminManualAttendanceIdentity(req.body);
+
+    if (!principalId) {
+      return res.status(400).json({
+        ok: false,
+        message: "principalId/staffId/userId required",
+      });
+    }
+
+    const existing = await AttendanceSession.findOne({
+      clinicId,
+      principalId,
+      workDate,
+      status: { $in: ["open", "closed", "pending_manual"] },
+    }).lean();
+
+    if (existing) {
+      return res.status(409).json({
+        ok: false,
+        code: "ATTENDANCE_ALREADY_EXISTS",
+        message: "Attendance already exists for this employee/date",
+        sessionId: String(existing._id || ""),
+      });
+    }
+
+    const policy = await getOrCreatePolicy(clinicId, userId || principalId);
+
+    const payload = {
+      clinicId,
+      principalId,
+      principalType,
+      staffId: staffId || "",
+      userId: userId || "",
+
+      helperUserId: userId || "",
+      actorUserId: userId || "",
+      assignedUserId: userId || "",
+      helperId: userId || "",
+
+      shiftId: null,
+      workDate,
+      checkInAt,
+      checkOutAt,
+      status: "closed",
+
+      checkInMethod: "manual",
+      checkOutMethod: "manual",
+      biometricVerifiedIn: false,
+      biometricVerifiedOut: false,
+
+      source: "manual",
+      manualReason: s(req.body?.note || "Admin manual attendance entry"),
+      reasonCode: s(req.body?.reasonCode),
+      reasonText: s(req.body?.reasonText || req.body?.note),
+
+      workedMinutes,
+      lateMinutes: 0,
+
+      approvalStatus: "approved",
+      approvedBy: s(req.user?.userId || req.user?.id),
+      approvedAt: new Date(),
+      approvalNote: s(req.body?.note || "Admin manual attendance entry"),
+
+      manualRequestType: "",
+      manualLocked: false,
+
+      policyVersion: Number(policy?.version || 0),
+
+      suspiciousFlags: [],
+      riskScore: 0,
+      securityMeta: {
+        inDistanceMeters: null,
+        outDistanceMeters: null,
+        inLocationSource: "admin_manual",
+        outLocationSource: "admin_manual",
+        inMocked: false,
+        outMocked: false,
+      },
+
+      ...getScheduleSnapshot({ policy, shift: null, workDate }),
+    };
+
+    const created = new AttendanceSession(payload);
+    ensureSecurityFields(created);
+    await created.save();
+
+    return res.status(201).json({
+      ok: true,
+      message: "Admin manual attendance created",
+      session: created,
+      attendance: created,
+      currentSessionId: String(created._id || ""),
+      policy: buildPublicPolicy(policy, workDate),
+    });
+  } catch (e) {
+    console.log("❌ admin manual attendance failed:", e?.message || e);
+    return res.status(500).json({
+      ok: false,
+      message: "admin manual attendance failed",
+      error: e.message,
+    });
+  }
+}
+
+
 async function checkIn(req, res) {
   try {
     const mockErr = rejectIfMockLocationAnywhere(req);
@@ -6271,6 +6462,7 @@ async function myDayPreview(req, res) {
 module.exports = {
   checkIn,
   checkOut,
+  createAdminManualAttendance,
   submitManualRequest,
   listMyManualRequests,
   listClinicManualRequests,

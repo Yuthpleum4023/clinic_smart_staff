@@ -155,6 +155,23 @@ router.get(
   listClinicSessions
 );
 
+
+// admin creates manual attendance directly for employee/staff/helper
+router.post(
+  "/admin/manual",
+  auth,
+  requireRole(ADMIN_ROLES),
+  useHandler(ctrl.createAdminManualAttendance, "createAdminManualAttendance")
+);
+
+// backward-compatible alias used by older Flutter candidates
+router.post(
+  "/manual",
+  auth,
+  requireRole(ADMIN_ROLES),
+  useHandler(ctrl.createAdminManualAttendance, "createAdminManualAttendance")
+);
+
 // clinic manual request queue
 router.get(
   "/manual-request/clinic",
