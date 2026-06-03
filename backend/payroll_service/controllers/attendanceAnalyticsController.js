@@ -65,6 +65,103 @@ function employeeCodeFromEmployee(emp) {
   return s(emp?.employeeCode || emp?.code || emp?.staffCode || emp?.staffId);
 }
 
+function authUserServiceBaseUrl() {
+  return s(
+    process.env.AUTH_USER_SERVICE_URL ||
+      process.env.AUTH_SERVICE_URL ||
+      "https://auth-user-service-afwu.onrender.com"
+  ).replace(/\/+$/, "");
+}
+
+function authorizationHeaderFromToken(bearerToken = "") {
+  const t = s(bearerToken);
+  if (!t) return "";
+  return /^Bearer\s+/i.test(t) ? t : `Bearer ${t}`;
+}
+
+async function getHelperProfileByUserIdForAnalytics(userId, bearerToken = "") {
+  const uid = s(userId);
+  if (!uid) return null;
+
+  const base = authUserServiceBaseUrl();
+  if (!base) return null;
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 8000);
+
+  try {
+    const headers = { Accept: "application/json" };
+    const authHeader = authorizationHeaderFromToken(bearerToken);
+    if (authHeader) headers.Authorization = authHeader;
+
+    const url = `${base}/helpers/by-userid/${encodeURIComponent(uid)}`;
+
+    const res = await fetch(url, {
+      method: "GET",
+      headers,
+      signal: ctrl.signal,
+    });
+
+    const raw = await res.text();
+    let data = null;
+
+    try {
+      data = raw ? JSON.parse(raw) : null;
+    } catch (_) {
+      data = null;
+    }
+
+    if (res.status === 404) return null;
+
+    if (!res.ok) {
+      if (process.env.DEBUG_ATTENDANCE_ANALYTICS === "true") {
+        console.warn("⚠️ helper profile lookup failed:", {
+          userId: uid.slice(0, 8),
+          status: res.status,
+          message: data?.message || raw?.slice(0, 120) || "",
+        });
+      }
+      return null;
+    }
+
+    const helper =
+      data?.helper ||
+      data?.data?.helper ||
+      data?.data ||
+      data?.user ||
+      data;
+
+    const fullName = s(
+      helper?.fullName ||
+        helper?.name ||
+        helper?.displayName ||
+        helper?.userName
+    );
+
+    if (!fullName) return null;
+
+    return {
+      userId: s(helper?.userId) || uid,
+      staffId: s(helper?.staffId),
+      fullName,
+      name: fullName,
+      displayName: fullName,
+      employmentType: "helper",
+      role: "helper",
+    };
+  } catch (e) {
+    if (process.env.DEBUG_ATTENDANCE_ANALYTICS === "true") {
+      console.warn("⚠️ helper profile lookup error:", {
+        userId: uid.slice(0, 8),
+        message: e?.message || String(e),
+      });
+    }
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function enrichTopRiskStaff(topRiskStaff, req) {
   const token = bearerTokenFromReq(req);
   const clinicId = String(
@@ -85,6 +182,10 @@ async function enrichTopRiskStaff(topRiskStaff, req) {
 
         if (!emp && userId) {
           emp = await getEmployeeByUserIdInternalOnly(userId, token, { clinicId });
+        }
+
+        if (!emp && userId) {
+          emp = await getHelperProfileByUserIdForAnalytics(userId, token);
         }
       } catch (e) {
         console.warn("⚠️ enrichTopRiskStaff lookup failed:", {
