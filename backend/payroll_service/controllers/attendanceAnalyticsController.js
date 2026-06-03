@@ -162,6 +162,72 @@ async function getHelperProfileByUserIdForAnalytics(userId, bearerToken = "") {
   }
 }
 
+
+const ANALYTICS_PERSON_CACHE = new Map();
+const ANALYTICS_PERSON_CACHE_TTL_MS = 30 * 60 * 1000;
+
+function analyticsPersonCacheKeys({ clinicId = "", principalId = "", staffId = "", userId = "" } = {}) {
+  const c = s(clinicId) || "no-clinic";
+  return [principalId, staffId, userId]
+    .map(s)
+    .filter(Boolean)
+    .map((v) => `${c}:${v}`);
+}
+
+function getAnalyticsPersonCache(ctx = {}) {
+  const now = Date.now();
+
+  for (const key of analyticsPersonCacheKeys(ctx)) {
+    const hit = ANALYTICS_PERSON_CACHE.get(key);
+
+    if (!hit) continue;
+
+    if (hit.expiresAt <= now) {
+      ANALYTICS_PERSON_CACHE.delete(key);
+      continue;
+    }
+
+    return hit.emp || null;
+  }
+
+  return null;
+}
+
+function setAnalyticsPersonCache(ctx = {}, emp = null) {
+  const displayName = displayNameFromEmployee(emp);
+  if (!displayName) return;
+
+  const employeeCode = employeeCodeFromEmployee(emp);
+  const cachedEmp = {
+    ...(emp || {}),
+    displayName,
+    fullName: displayName,
+    name: displayName,
+    employeeCode,
+  };
+
+  const value = {
+    emp: cachedEmp,
+    expiresAt: Date.now() + ANALYTICS_PERSON_CACHE_TTL_MS,
+  };
+
+  for (const key of analyticsPersonCacheKeys(ctx)) {
+    ANALYTICS_PERSON_CACHE.set(key, value);
+  }
+}
+
+function warnAnalyticsLookupFailed(source, e, { principalId = "", staffId = "", userId = "" } = {}) {
+  console.warn("⚠️ enrichTopRiskStaff lookup failed:", {
+    source,
+    principalId,
+    staffId,
+    userId,
+    status: e?.status || null,
+    message: e?.message || String(e),
+  });
+}
+
+
 async function enrichTopRiskStaff(topRiskStaff, req) {
   const token = bearerTokenFromReq(req);
   const clinicId = String(
@@ -170,30 +236,45 @@ async function enrichTopRiskStaff(topRiskStaff, req) {
 
   return Promise.all(
     topRiskStaff.map(async (item) => {
+      const principalId = s(item.principalId);
       const staffId = s(item.staffId);
       const userId = s(item.userId);
 
-      let emp = null;
+      const cacheCtx = { clinicId, principalId, staffId, userId };
+      let emp = getAnalyticsPersonCache(cacheCtx);
 
-      try {
-        if (staffId) {
+      if (!emp && staffId) {
+        try {
           emp = await getEmployeeByStaffIdInternalOnly(staffId, token, { clinicId });
+        } catch (e) {
+          warnAnalyticsLookupFailed("staff_service.by_staff", e, {
+            principalId,
+            staffId,
+            userId,
+          });
         }
+      }
 
-        if (!emp && userId) {
+      if (!emp && userId) {
+        try {
           emp = await getEmployeeByUserIdInternalOnly(userId, token, { clinicId });
+        } catch (e) {
+          warnAnalyticsLookupFailed("staff_service.by_user", e, {
+            principalId,
+            staffId,
+            userId,
+          });
         }
+      }
 
-        if (!emp && userId) {
-          emp = await getHelperProfileByUserIdForAnalytics(userId, token);
-        }
-      } catch (e) {
-        console.warn("⚠️ enrichTopRiskStaff lookup failed:", {
-          principalId: item.principalId,
-          staffId,
-          userId,
-          message: e?.message,
-        });
+      if (!emp && userId) {
+        emp = await getHelperProfileByUserIdForAnalytics(userId, token);
+      }
+
+      if (emp) {
+        setAnalyticsPersonCache(cacheCtx, emp);
+      } else {
+        emp = getAnalyticsPersonCache(cacheCtx);
       }
 
       const displayName = displayNameFromEmployee(emp);
@@ -204,6 +285,7 @@ async function enrichTopRiskStaff(topRiskStaff, req) {
 
       return {
         ...item,
+        principalId,
         staffId,
         userId,
         displayName,
