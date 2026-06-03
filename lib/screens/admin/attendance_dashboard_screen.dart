@@ -247,10 +247,7 @@ class _AttendanceDashboardScreenState extends State<AttendanceDashboardScreen> {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            CircleAvatar(
-              radius: 22,
-              child: Icon(icon, color: iconColor),
-            ),
+            CircleAvatar(radius: 22, child: Icon(icon, color: iconColor)),
             const SizedBox(width: 12),
             Expanded(
               child: Column(
@@ -295,46 +292,47 @@ class _AttendanceDashboardScreenState extends State<AttendanceDashboardScreen> {
       padding: const EdgeInsets.only(bottom: 8),
       child: Text(
         text,
-        style: const TextStyle(
-          fontSize: 16,
-          fontWeight: FontWeight.w900,
-        ),
+        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
       ),
     );
   }
 
+  String _shortId(String value) {
+    final v = value.trim();
+    if (v.isEmpty || v == '-' || v == 'null') return '-';
+    if (v.length <= 12) return v;
+    return '${v.substring(0, 8)}...${v.substring(v.length - 4)}';
+  }
+
   Widget _buildTopRiskCard(Map<String, dynamic> item, int index) {
     final principalId = '${item['principalId'] ?? '-'}';
+    final displayName = _shortId(principalId);
     final sessions = int.tryParse('${item['sessions'] ?? 0}') ?? 0;
     final riskScore = double.tryParse('${item['riskScore'] ?? 0}') ?? 0;
     final abnormal = int.tryParse('${item['abnormal'] ?? 0}') ?? 0;
 
     return Card(
       child: ListTile(
-        leading: CircleAvatar(
-          child: Text('${index + 1}'),
-        ),
+        leading: CircleAvatar(child: Text('${index + 1}')),
         title: Text(
-          principalId,
+          displayName,
           style: const TextStyle(fontWeight: FontWeight.w800),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
         ),
         subtitle: Text(
-          'sessions: $sessions • abnormal: $abnormal',
+          'ลงเวลา $sessions ครั้ง • ผิดปกติ $abnormal ครั้ง',
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
         ),
         trailing: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
-            const Text(
-              'Risk',
-              style: TextStyle(fontSize: 12),
-            ),
+            const Text('ความเสี่ยง', style: TextStyle(fontSize: 12)),
             Text(
               riskScore.toStringAsFixed(riskScore % 1 == 0 ? 0 : 1),
-              style: const TextStyle(
-                fontWeight: FontWeight.w900,
-                fontSize: 16,
-              ),
+              style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
             ),
           ],
         ),
@@ -365,10 +363,7 @@ class _AttendanceDashboardScreenState extends State<AttendanceDashboardScreen> {
                 children: [
                   const Text(
                     'เดือนที่กำลังดู',
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w700,
-                    ),
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
                   ),
                   const SizedBox(height: 6),
                   Text(
@@ -412,39 +407,39 @@ class _AttendanceDashboardScreenState extends State<AttendanceDashboardScreen> {
             ),
           ),
           const SizedBox(height: 12),
-          _sectionTitle('ภาพรวม Attendance'),
+          _sectionTitle('ภาพรวมการลงเวลา'),
           _summaryCard(
             icon: Icons.fact_check_outlined,
-            title: 'จำนวน Session ทั้งหมด',
+            title: 'จำนวนครั้งลงเวลาทั้งหมด',
             value: '$totalSessions',
-            subtitle: 'รวม session attendance ในเดือนนี้',
+            subtitle: 'รวมรายการลงเวลาในเดือนนี้',
           ),
           _summaryCard(
             icon: Icons.access_time,
             title: 'มาสาย',
             value: '$lateCount',
-            subtitle: 'จำนวนครั้งที่ lateMinutes มากกว่า 0',
+            subtitle: 'จำนวนครั้งที่เข้างานหลังเวลาที่กำหนด',
             iconColor: Colors.orange,
           ),
           _summaryCard(
             icon: Icons.logout,
             title: 'กลับก่อนเวลา',
             value: '$earlyLeaveCount',
-            subtitle: 'จำนวนครั้งที่ leftEarly เป็นจริง',
+            subtitle: 'จำนวนครั้งที่ออกงานก่อนเวลาที่กำหนด',
             iconColor: Colors.deepOrange,
           ),
           _summaryCard(
             icon: Icons.warning_amber_rounded,
-            title: 'Abnormal',
+            title: 'รายการผิดปกติ',
             value: '$abnormalCount',
-            subtitle: 'จำนวน session ที่ระบบมองว่าผิดปกติ',
+            subtitle: 'จำนวนรายการที่ระบบตรวจพบความผิดปกติ',
             iconColor: Colors.red,
           ),
           _summaryCard(
             icon: Icons.gpp_maybe_outlined,
-            title: 'Suspicious',
+            title: 'รายการน่าสงสัย',
             value: '$suspiciousCount',
-            subtitle: 'จำนวน session ที่มี suspiciousFlags',
+            subtitle: 'จำนวนรายการที่มีสัญญาณความเสี่ยง',
             iconColor: Colors.purple,
           ),
           _summaryCard(
@@ -463,13 +458,13 @@ class _AttendanceDashboardScreenState extends State<AttendanceDashboardScreen> {
           ),
           _summaryCard(
             icon: Icons.verified_outlined,
-            title: 'Attendance Rate',
+            title: 'อัตราการลงเวลาปกติ',
             value: '${(attendanceRate * 100).toStringAsFixed(0)}%',
-            subtitle: 'คำนวณจาก (totalSessions - abnormalCount) / totalSessions',
+            subtitle: 'คิดจากรายการลงเวลาที่ไม่ผิดปกติ',
             iconColor: Colors.teal,
           ),
           const SizedBox(height: 12),
-          _sectionTitle('Top Risk Staff'),
+          _sectionTitle('พนักงานที่มีความเสี่ยงสูง'),
           if (_topRiskStaff.isEmpty)
             Card(
               child: Padding(
@@ -512,7 +507,7 @@ class _AttendanceDashboardScreenState extends State<AttendanceDashboardScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Attendance Dashboard'),
+        title: const Text('แดชบอร์ดการลงเวลา'),
         actions: [
           IconButton(
             tooltip: 'รีเฟรช',
@@ -526,59 +521,59 @@ class _AttendanceDashboardScreenState extends State<AttendanceDashboardScreen> {
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error.isNotEmpty
-              ? ListView(
-                  padding: const EdgeInsets.all(16),
-                  children: [
-                    Card(
-                      child: Padding(
-                        padding: const EdgeInsets.all(16),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
+          ? ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'เกิดข้อผิดพลาด',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w900,
+                            fontSize: 18,
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        Text(_error),
+                        const SizedBox(height: 14),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
                           children: [
-                            const Text(
-                              'เกิดข้อผิดพลาด',
-                              style: TextStyle(
-                                fontWeight: FontWeight.w900,
-                                fontSize: 18,
-                              ),
+                            FilledButton.icon(
+                              onPressed: _bootstrap,
+                              icon: const Icon(Icons.refresh),
+                              label: const Text('ลองใหม่'),
                             ),
-                            const SizedBox(height: 10),
-                            Text(_error),
-                            const SizedBox(height: 14),
-                            Wrap(
-                              spacing: 8,
-                              runSpacing: 8,
-                              children: [
-                                FilledButton.icon(
-                                  onPressed: _bootstrap,
-                                  icon: const Icon(Icons.refresh),
-                                  label: const Text('ลองใหม่'),
-                                ),
-                                OutlinedButton.icon(
-                                  onPressed: _pickMonth,
-                                  icon: const Icon(Icons.calendar_month),
-                                  label: const Text('เปลี่ยนเดือน'),
-                                ),
-                              ],
+                            OutlinedButton.icon(
+                              onPressed: _pickMonth,
+                              icon: const Icon(Icons.calendar_month),
+                              label: const Text('เปลี่ยนเดือน'),
                             ),
                           ],
                         ),
-                      ),
+                      ],
                     ),
-                  ],
-                )
-              : Stack(
-                  children: [
-                    _buildBody(),
-                    if (_refreshing)
-                      const Positioned(
-                        top: 0,
-                        left: 0,
-                        right: 0,
-                        child: LinearProgressIndicator(minHeight: 2),
-                      ),
-                  ],
+                  ),
                 ),
+              ],
+            )
+          : Stack(
+              children: [
+                _buildBody(),
+                if (_refreshing)
+                  const Positioned(
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    child: LinearProgressIndicator(minHeight: 2),
+                  ),
+              ],
+            ),
     );
   }
 }
