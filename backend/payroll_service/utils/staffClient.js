@@ -666,6 +666,112 @@ async function listEmployeesDropdown(bearerToken = "") {
   });
 }
 
+
+// ======================================================
+// INTERNAL-ONLY LOOKUPS FOR SERVICE-TO-SERVICE USE
+// ใช้เฉพาะบาง flow ที่ต้องการบังคับ internal route เช่น attendance analytics
+// ✅ ไม่เปลี่ยน behavior เดิมของ getEmployeeByUserId/getEmployeeByStaffId
+// ✅ ไม่ลบ public fallback เดิม
+// ======================================================
+async function getEmployeeByUserIdInternalOnly(userId, bearerToken = "") {
+  const u = s(userId);
+  if (!u) {
+    throw makeError("Missing userId", 400, { message: "Missing userId" });
+  }
+
+  if (!hasInternalKeyConfigured()) {
+    throw makeError("Internal staff lookup is not configured", 503, {
+      message: "INTERNAL_SERVICE_KEY missing",
+    });
+  }
+
+  const tokenPart = tokenCacheKeyPart(bearerToken);
+  const cacheKey = `internal-user:${u}:${tokenPart}`;
+  const cached = getCache(cacheKey);
+  if (cached !== CACHE_MISS) return cached;
+
+  return withInflight(cacheKey, async () => {
+    const cachedAgain = getCache(cacheKey);
+    if (cachedAgain !== CACHE_MISS) return cachedAgain;
+
+    const b = baseUrl();
+    const headers = buildHeaders(bearerToken);
+    const url = `${b}/api/employees/internal/by-user/${encodeURIComponent(u)}`;
+
+    const r = await getFirstOk([url], headers, {
+      allow404: true,
+      timeoutMs: 10000,
+    });
+
+    if (!r.ok && r.status === 404) {
+      setCache(cacheKey, null, NULL_TTL_MS);
+      return null;
+    }
+
+    const employee =
+      normalizeEmployee(extractEmployee(r.data)) ||
+      normalizeEmployee(extractList(r.data)[0]);
+
+    if (!employee) {
+      setCache(cacheKey, null, NULL_TTL_MS);
+      return null;
+    }
+
+    setCache(cacheKey, employee, DEFAULT_TTL_MS);
+    return employee;
+  });
+}
+
+async function getEmployeeByStaffIdInternalOnly(staffId, bearerToken = "") {
+  const id = s(staffId);
+  if (!id) {
+    throw makeError("Missing staffId", 400, { message: "Missing staffId" });
+  }
+
+  if (!hasInternalKeyConfigured()) {
+    throw makeError("Internal staff lookup is not configured", 503, {
+      message: "INTERNAL_SERVICE_KEY missing",
+    });
+  }
+
+  const tokenPart = tokenCacheKeyPart(bearerToken);
+  const cacheKey = `internal-staff:${id}:${tokenPart}`;
+  const cached = getCache(cacheKey);
+  if (cached !== CACHE_MISS) return cached;
+
+  return withInflight(cacheKey, async () => {
+    const cachedAgain = getCache(cacheKey);
+    if (cachedAgain !== CACHE_MISS) return cachedAgain;
+
+    const b = baseUrl();
+    const headers = buildHeaders(bearerToken);
+    const url = `${b}/api/employees/internal/by-staff/${encodeURIComponent(id)}`;
+
+    const r = await getFirstOk([url], headers, {
+      allow404: true,
+      timeoutMs: 10000,
+    });
+
+    if (!r.ok && r.status === 404) {
+      setCache(cacheKey, null, NULL_TTL_MS);
+      return null;
+    }
+
+    const employee =
+      normalizeEmployee(extractEmployee(r.data)) ||
+      normalizeEmployee(extractList(r.data)[0]);
+
+    if (!employee) {
+      setCache(cacheKey, null, NULL_TTL_MS);
+      return null;
+    }
+
+    setCache(cacheKey, employee, DEFAULT_TTL_MS);
+    return employee;
+  });
+}
+
+
 // ======================================================
 // OPTIONAL HELPERS (debug/admin use)
 // ======================================================
@@ -686,6 +792,8 @@ function getStaffClientCacheStats() {
 module.exports = {
   getEmployeeByUserId,
   getEmployeeByStaffId,
+  getEmployeeByUserIdInternalOnly,
+  getEmployeeByStaffIdInternalOnly,
   listEmployeesDropdown,
   clearStaffClientCache,
   getStaffClientCacheStats,

@@ -1,7 +1,7 @@
 const AttendanceSession = require("../models/AttendanceSession");
 const {
-  getEmployeeByStaffId,
-  getEmployeeByUserId,
+  getEmployeeByStaffIdInternalOnly,
+  getEmployeeByUserIdInternalOnly,
 } = require("../utils/staffClient");
 
 function s(v) {
@@ -77,11 +77,11 @@ async function enrichTopRiskStaff(topRiskStaff, req) {
 
       try {
         if (staffId) {
-          emp = await getEmployeeByStaffId(staffId, token);
+          emp = await getEmployeeByStaffIdInternalOnly(staffId, token);
         }
 
         if (!emp && userId) {
-          emp = await getEmployeeByUserId(userId, token);
+          emp = await getEmployeeByUserIdInternalOnly(userId, token);
         }
       } catch (e) {
         console.warn("⚠️ enrichTopRiskStaff lookup failed:", {
