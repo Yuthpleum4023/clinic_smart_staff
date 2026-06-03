@@ -119,7 +119,10 @@ const generalLimiter = rateLimit({
   limit: Number(process.env.RATE_LIMIT_MAX || 300),
   standardHeaders: true,
   legacyHeaders: false,
-  skip: (req) => req.path === "/health" || hasValidInternalKey(req),
+  skip: (req) =>
+    req.path === "/health" ||
+    req.path.startsWith("/api/employees/internal/") ||
+    hasValidInternalKey(req),
   message: {
     ok: false,
     code: "RATE_LIMITED",
