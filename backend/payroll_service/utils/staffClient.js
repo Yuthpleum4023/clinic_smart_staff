@@ -673,8 +673,10 @@ async function listEmployeesDropdown(bearerToken = "") {
 // ✅ ไม่เปลี่ยน behavior เดิมของ getEmployeeByUserId/getEmployeeByStaffId
 // ✅ ไม่ลบ public fallback เดิม
 // ======================================================
-async function getEmployeeByUserIdInternalOnly(userId, bearerToken = "") {
+async function getEmployeeByUserIdInternalOnly(userId, bearerToken = "", options = {}) {
   const u = s(userId);
+  const clinicId = s(options?.clinicId);
+
   if (!u) {
     throw makeError("Missing userId", 400, { message: "Missing userId" });
   }
@@ -686,7 +688,7 @@ async function getEmployeeByUserIdInternalOnly(userId, bearerToken = "") {
   }
 
   const tokenPart = tokenCacheKeyPart(bearerToken);
-  const cacheKey = `internal-user:${u}:${tokenPart}`;
+  const cacheKey = `internal-user:${u}:${clinicId || "no-clinic"}:${tokenPart}`;
   const cached = getCache(cacheKey);
   if (cached !== CACHE_MISS) return cached;
 
@@ -696,7 +698,10 @@ async function getEmployeeByUserIdInternalOnly(userId, bearerToken = "") {
 
     const b = baseUrl();
     const headers = buildHeaders(bearerToken);
-    const url = `${b}/api/employees/internal/by-user/${encodeURIComponent(u)}`;
+    if (clinicId) headers["x-clinic-id"] = clinicId;
+
+    const q = clinicId ? `?clinicId=${encodeURIComponent(clinicId)}` : "";
+    const url = `${b}/api/employees/internal/by-user/${encodeURIComponent(u)}${q}`;
 
     const r = await getFirstOk([url], headers, {
       allow404: true,
@@ -722,8 +727,10 @@ async function getEmployeeByUserIdInternalOnly(userId, bearerToken = "") {
   });
 }
 
-async function getEmployeeByStaffIdInternalOnly(staffId, bearerToken = "") {
+async function getEmployeeByStaffIdInternalOnly(staffId, bearerToken = "", options = {}) {
   const id = s(staffId);
+  const clinicId = s(options?.clinicId);
+
   if (!id) {
     throw makeError("Missing staffId", 400, { message: "Missing staffId" });
   }
@@ -735,7 +742,7 @@ async function getEmployeeByStaffIdInternalOnly(staffId, bearerToken = "") {
   }
 
   const tokenPart = tokenCacheKeyPart(bearerToken);
-  const cacheKey = `internal-staff:${id}:${tokenPart}`;
+  const cacheKey = `internal-staff:${id}:${clinicId || "no-clinic"}:${tokenPart}`;
   const cached = getCache(cacheKey);
   if (cached !== CACHE_MISS) return cached;
 
@@ -745,7 +752,10 @@ async function getEmployeeByStaffIdInternalOnly(staffId, bearerToken = "") {
 
     const b = baseUrl();
     const headers = buildHeaders(bearerToken);
-    const url = `${b}/api/employees/internal/by-staff/${encodeURIComponent(id)}`;
+    if (clinicId) headers["x-clinic-id"] = clinicId;
+
+    const q = clinicId ? `?clinicId=${encodeURIComponent(clinicId)}` : "";
+    const url = `${b}/api/employees/internal/by-staff/${encodeURIComponent(id)}${q}`;
 
     const r = await getFirstOk([url], headers, {
       allow404: true,

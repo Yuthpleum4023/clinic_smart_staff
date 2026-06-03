@@ -67,6 +67,9 @@ function employeeCodeFromEmployee(emp) {
 
 async function enrichTopRiskStaff(topRiskStaff, req) {
   const token = bearerTokenFromReq(req);
+  const clinicId = String(
+    req?.user?.clinicId || req?.clinicId || req?.query?.clinicId || req?.body?.clinicId || ""
+  ).trim();
 
   return Promise.all(
     topRiskStaff.map(async (item) => {
@@ -77,11 +80,11 @@ async function enrichTopRiskStaff(topRiskStaff, req) {
 
       try {
         if (staffId) {
-          emp = await getEmployeeByStaffIdInternalOnly(staffId, token);
+          emp = await getEmployeeByStaffIdInternalOnly(staffId, token, { clinicId });
         }
 
         if (!emp && userId) {
-          emp = await getEmployeeByUserIdInternalOnly(userId, token);
+          emp = await getEmployeeByUserIdInternalOnly(userId, token, { clinicId });
         }
       } catch (e) {
         console.warn("⚠️ enrichTopRiskStaff lookup failed:", {
