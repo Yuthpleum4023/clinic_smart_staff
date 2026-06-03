@@ -228,6 +228,26 @@ async function clinicAnalytics(req, res) {
     const { summary, topRiskStaff } = buildSummaryFromSessions(sessions);
     const enrichedTopRiskStaff = await enrichTopRiskStaff(topRiskStaff, req);
 
+    if (process.env.DEBUG_ATTENDANCE_ANALYTICS === "true") {
+      const withName = enrichedTopRiskStaff.filter((x) => s(x.displayName)).length;
+      const withoutName = enrichedTopRiskStaff.length - withName;
+
+      console.log("[ATT_ANALYTICS][ENRICH_TOP_RISK]", {
+        clinicId,
+        month,
+        total: enrichedTopRiskStaff.length,
+        withName,
+        withoutName,
+        items: enrichedTopRiskStaff.map((x) => ({
+          principalId: s(x.principalId).slice(0, 8),
+          staffId: s(x.staffId).slice(0, 8),
+          userId: s(x.userId).slice(0, 8),
+          hasName: !!s(x.displayName),
+          roleLabel: s(x.roleLabel),
+        })),
+      });
+    }
+
     return res.json({
       ok: true,
       clinicId,
