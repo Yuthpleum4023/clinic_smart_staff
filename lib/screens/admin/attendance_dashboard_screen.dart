@@ -297,6 +297,14 @@ class _AttendanceDashboardScreenState extends State<AttendanceDashboardScreen> {
     );
   }
 
+  String _textFromAny(Map<String, dynamic> item, List<String> keys) {
+    for (final key in keys) {
+      final v = '${item[key] ?? ''}'.trim();
+      if (v.isNotEmpty && v != 'null') return v;
+    }
+    return '';
+  }
+
   String _shortId(String value) {
     final v = value.trim();
     if (v.isEmpty || v == '-' || v == 'null') return '-';
@@ -304,12 +312,48 @@ class _AttendanceDashboardScreenState extends State<AttendanceDashboardScreen> {
     return '${v.substring(0, 8)}...${v.substring(v.length - 4)}';
   }
 
+  String _riskStaffDisplayName(Map<String, dynamic> item) {
+    final name = _textFromAny(item, [
+      'displayName',
+      'staffName',
+      'employeeName',
+      'fullName',
+      'name',
+      'userName',
+    ]);
+
+    if (name.isNotEmpty) return name;
+
+    return _shortId('${item['principalId'] ?? '-'}');
+  }
+
   Widget _buildTopRiskCard(Map<String, dynamic> item, int index) {
-    final principalId = '${item['principalId'] ?? '-'}';
-    final displayName = _shortId(principalId);
+    final displayName = _riskStaffDisplayName(item);
+    final principalId = '${item['principalId'] ?? ''}'.trim();
+    final employeeCode = _textFromAny(item, [
+      'employeeCode',
+      'staffCode',
+      'code',
+    ]);
+    final roleLabel = _textFromAny(item, [
+      'roleLabel',
+      'employmentType',
+      'role',
+    ]);
+
     final sessions = int.tryParse('${item['sessions'] ?? 0}') ?? 0;
     final riskScore = double.tryParse('${item['riskScore'] ?? 0}') ?? 0;
     final abnormal = int.tryParse('${item['abnormal'] ?? 0}') ?? 0;
+
+    final idText = _shortId(principalId);
+
+    final subParts = <String>[
+      'ลงเวลา $sessions ครั้ง',
+      'ผิดปกติ $abnormal ครั้ง',
+      if (employeeCode.isNotEmpty) 'รหัส $employeeCode',
+      if (roleLabel.isNotEmpty) roleLabel,
+      if (displayName == idText) 'ID $idText',
+    ];
 
     return Card(
       child: ListTile(
@@ -321,7 +365,7 @@ class _AttendanceDashboardScreenState extends State<AttendanceDashboardScreen> {
           overflow: TextOverflow.ellipsis,
         ),
         subtitle: Text(
-          'ลงเวลา $sessions ครั้ง • ผิดปกติ $abnormal ครั้ง',
+          subParts.join(' • '),
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
         ),

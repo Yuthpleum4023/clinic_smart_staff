@@ -1,4 +1,8 @@
 const AttendanceSession = require("../models/AttendanceSession");
+const {
+  getEmployeeByStaffId,
+  getEmployeeByUserId,
+} = require("../utils/staffClient");
 
 function s(v) {
   return String(v || "").trim();
@@ -28,6 +32,82 @@ function monthRange(month) {
 function safeNumber(value) {
   const n = Number(value || 0);
   return Number.isFinite(n) ? n : 0;
+}
+
+
+function bearerTokenFromReq(req) {
+  const h = s(req.headers?.authorization || req.headers?.Authorization);
+  return h.replace(/^Bearer\s+/i, "").trim();
+}
+
+function roleLabelFromEmploymentType(v) {
+  const x = s(v).toLowerCase();
+  if (["parttime", "part_time", "part-time", "helper"].includes(x)) {
+    return "พาร์ทไทม์/ผู้ช่วย";
+  }
+  if (["fulltime", "full_time", "full-time", "employee"].includes(x)) {
+    return "พนักงานประจำ";
+  }
+  return "";
+}
+
+function displayNameFromEmployee(emp) {
+  return s(
+    emp?.fullName ||
+      emp?.name ||
+      emp?.displayName ||
+      emp?.employeeName ||
+      emp?.userName
+  );
+}
+
+function employeeCodeFromEmployee(emp) {
+  return s(emp?.employeeCode || emp?.code || emp?.staffCode || emp?.staffId);
+}
+
+async function enrichTopRiskStaff(topRiskStaff, req) {
+  const token = bearerTokenFromReq(req);
+
+  return Promise.all(
+    topRiskStaff.map(async (item) => {
+      const staffId = s(item.staffId);
+      const userId = s(item.userId);
+
+      let emp = null;
+
+      try {
+        if (staffId) {
+          emp = await getEmployeeByStaffId(staffId, token);
+        }
+
+        if (!emp && userId) {
+          emp = await getEmployeeByUserId(userId, token);
+        }
+      } catch (e) {
+        console.warn("⚠️ enrichTopRiskStaff lookup failed:", {
+          principalId: item.principalId,
+          staffId,
+          userId,
+          message: e?.message,
+        });
+      }
+
+      const displayName = displayNameFromEmployee(emp);
+      const employeeCode = employeeCodeFromEmployee(emp);
+      const roleLabel =
+        roleLabelFromEmploymentType(emp?.employmentType) ||
+        (staffId ? "พนักงาน" : "ผู้ช่วย");
+
+      return {
+        ...item,
+        staffId,
+        userId,
+        displayName,
+        employeeCode,
+        roleLabel,
+      };
+    })
+  );
 }
 
 function buildSummaryFromSessions(sessions) {
@@ -73,10 +153,20 @@ function buildSummaryFromSessions(sessions) {
     if (!staffRiskMap[principalId]) {
       staffRiskMap[principalId] = {
         principalId,
+        staffId: s(session.staffId),
+        userId: s(session.userId),
         sessions: 0,
         riskScore: 0,
         abnormal: 0,
       };
+    }
+
+    if (!staffRiskMap[principalId].staffId && s(session.staffId)) {
+      staffRiskMap[principalId].staffId = s(session.staffId);
+    }
+
+    if (!staffRiskMap[principalId].userId && s(session.userId)) {
+      staffRiskMap[principalId].userId = s(session.userId);
     }
 
     staffRiskMap[principalId].sessions += 1;
@@ -136,6 +226,7 @@ async function clinicAnalytics(req, res) {
     }).lean();
 
     const { summary, topRiskStaff } = buildSummaryFromSessions(sessions);
+    const enrichedTopRiskStaff = await enrichTopRiskStaff(topRiskStaff, req);
 
     return res.json({
       ok: true,
@@ -151,7 +242,7 @@ async function clinicAnalytics(req, res) {
         totalWorkedMinutes: summary.totalWorkedMinutes,
         attendanceRate: summary.attendanceRate,
       },
-      topRiskStaff,
+      topRiskStaff: enrichedTopRiskStaff,
     });
   } catch (err) {
     console.error("clinicAnalytics error:", err);
