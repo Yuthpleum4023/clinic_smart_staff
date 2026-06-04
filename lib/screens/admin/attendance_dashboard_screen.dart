@@ -35,6 +35,7 @@ class _AttendanceDashboardScreenState extends State<AttendanceDashboardScreen> {
   Map<String, dynamic> _raw = const {};
   Map<String, dynamic> _summary = const {};
   List<Map<String, dynamic>> _topRiskStaff = const [];
+  final Set<String> _resolvingNameKeys = <String>{};
 
   @override
   void initState() {
@@ -305,11 +306,32 @@ class _AttendanceDashboardScreenState extends State<AttendanceDashboardScreen> {
     return '';
   }
 
-  String _shortId(String value) {
-    final v = value.trim();
-    if (v.isEmpty || v == '-' || v == 'null') return '-';
-    if (v.length <= 12) return v;
-    return '${v.substring(0, 8)}...${v.substring(v.length - 4)}';
+  String _riskStaffKey(Map<String, dynamic> item) {
+    final parts = <String>[
+      '${item['principalId'] ?? ''}'.trim(),
+      '${item['staffId'] ?? ''}'.trim(),
+      '${item['userId'] ?? ''}'.trim(),
+    ].where((v) => v.isNotEmpty && v != 'null').toList();
+
+    return parts.join('|');
+  }
+
+  bool _boolVal(dynamic value) {
+    if (value is bool) return value;
+
+    final text = '$value'.trim().toLowerCase();
+    return text == 'true' || text == '1' || text == 'yes';
+  }
+
+  bool _riskStaffHasDisplayName(Map<String, dynamic> item) {
+    return _textFromAny(item, [
+      'displayName',
+      'staffName',
+      'employeeName',
+      'fullName',
+      'name',
+      'userName',
+    ]).isNotEmpty;
   }
 
   String _riskStaffDisplayName(Map<String, dynamic> item) {
@@ -324,12 +346,107 @@ class _AttendanceDashboardScreenState extends State<AttendanceDashboardScreen> {
 
     if (name.isNotEmpty) return name;
 
-    return _shortId('${item['principalId'] ?? '-'}');
+    return 'กำลังค้นหาชื่อ...';
+  }
+
+  Future<void> _resolveRiskStaffName(
+    Map<String, dynamic> item,
+    int index,
+  ) async {
+    final key = _riskStaffKey(item);
+
+    if (key.isEmpty || _token.trim().isEmpty) return;
+    if (_resolvingNameKeys.contains(key)) return;
+
+    setState(() {
+      _resolvingNameKeys.add(key);
+    });
+
+    try {
+      final service = AttendanceAnalyticsService(
+        baseUrl: ApiConfig.payrollBaseUrl,
+        token: _token,
+      );
+
+      final result = await service.resolveAnalyticsName(
+        principalId: '${item['principalId'] ?? ''}',
+        staffId: '${item['staffId'] ?? ''}',
+        userId: '${item['userId'] ?? ''}',
+        clinicId: _clinicId,
+      );
+
+      if (!mounted) return;
+
+      final updated = Map<String, dynamic>.from(item);
+
+      for (final field in [
+        'displayName',
+        'employeeCode',
+        'roleLabel',
+        'nameStatus',
+        'canResolveName',
+        'staffId',
+        'userId',
+        'principalId',
+      ]) {
+        if (result.containsKey(field)) {
+          updated[field] = result[field];
+        }
+      }
+
+      final resolvedName = _riskStaffDisplayName(updated);
+      final hasName = _riskStaffHasDisplayName(updated);
+
+      setState(() {
+        final next = List<Map<String, dynamic>>.from(_topRiskStaff);
+
+        var targetIndex = index;
+        if (targetIndex < 0 ||
+            targetIndex >= next.length ||
+            _riskStaffKey(next[targetIndex]) != key) {
+          targetIndex = next.indexWhere((x) => _riskStaffKey(x) == key);
+        }
+
+        if (targetIndex >= 0) {
+          next[targetIndex] = updated;
+          _topRiskStaff = next;
+        }
+      });
+
+      if (!hasName && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('ยังค้นหาชื่อไม่สำเร็จ กรุณาลองอีกครั้ง'),
+          ),
+        );
+      } else if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('พบชื่อ: $resolvedName')));
+      }
+    } catch (e) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('ค้นหาชื่อไม่สำเร็จ: $e')));
+    } finally {
+      if (mounted) {
+        setState(() {
+          _resolvingNameKeys.remove(key);
+        });
+      } else {
+        _resolvingNameKeys.remove(key);
+      }
+    }
   }
 
   Widget _buildTopRiskCard(Map<String, dynamic> item, int index) {
     final displayName = _riskStaffDisplayName(item);
-    final principalId = '${item['principalId'] ?? ''}'.trim();
+    final hasDisplayName = _riskStaffHasDisplayName(item);
+    final rowKey = _riskStaffKey(item);
+    final resolving = _resolvingNameKeys.contains(rowKey);
+
     final employeeCode = _textFromAny(item, [
       'employeeCode',
       'staffCode',
@@ -345,41 +462,72 @@ class _AttendanceDashboardScreenState extends State<AttendanceDashboardScreen> {
     final riskScore = double.tryParse('${item['riskScore'] ?? 0}') ?? 0;
     final abnormal = int.tryParse('${item['abnormal'] ?? 0}') ?? 0;
 
-    final idText = _shortId(principalId);
+    final canResolveName =
+        _boolVal(item['canResolveName']) ||
+        (!hasDisplayName && rowKey.isNotEmpty);
 
     final subParts = <String>[
       'ลงเวลา $sessions ครั้ง',
       'ผิดปกติ $abnormal ครั้ง',
       if (employeeCode.isNotEmpty) 'รหัส $employeeCode',
       if (roleLabel.isNotEmpty) roleLabel,
-      if (displayName == idText) 'ID $idText',
+      if (!hasDisplayName) 'ยังไม่แสดง ID เพื่อความถูกต้อง',
     ];
 
     return Card(
-      child: ListTile(
-        leading: CircleAvatar(child: Text('${index + 1}')),
-        title: Text(
-          displayName,
-          style: const TextStyle(fontWeight: FontWeight.w800),
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        ),
-        subtitle: Text(
-          subParts.join(' • '),
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
-        ),
-        trailing: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            const Text('ความเสี่ยง', style: TextStyle(fontSize: 12)),
-            Text(
-              riskScore.toStringAsFixed(riskScore % 1 == 0 ? 0 : 1),
-              style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+      child: Column(
+        children: [
+          ListTile(
+            leading: CircleAvatar(child: Text('${index + 1}')),
+            title: Text(
+              resolving ? 'กำลังค้นหาชื่อ...' : displayName,
+              style: const TextStyle(fontWeight: FontWeight.w800),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
             ),
-          ],
-        ),
+            subtitle: Text(
+              subParts.join(' • '),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+            trailing: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                const Text('คะแนนตรวจสอบเวลา', style: TextStyle(fontSize: 11)),
+                Text(
+                  riskScore.toStringAsFixed(riskScore % 1 == 0 ? 0 : 1),
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w900,
+                    fontSize: 16,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (!hasDisplayName && canResolveName)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: OutlinedButton.icon(
+                  onPressed: resolving
+                      ? null
+                      : () => _resolveRiskStaffName(item, index),
+                  icon: resolving
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.search),
+                  label: Text(
+                    resolving ? 'กำลังค้นหา...' : 'ค้นหาชื่ออีกครั้ง',
+                  ),
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }
