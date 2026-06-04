@@ -202,6 +202,13 @@ router.post(
 
 // clinic attendance analytics
 router.get(
+  "/analytics/resolve-name",
+  auth,
+  requireRole(["admin"]),
+  useHandler(analytics?.resolveAnalyticsName, "analytics.resolveAnalyticsName")
+);
+
+router.get(
   "/analytics/clinic",
   auth,
   requireRole(ADMIN_ROLES),

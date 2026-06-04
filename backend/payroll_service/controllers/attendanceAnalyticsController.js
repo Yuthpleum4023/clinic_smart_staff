@@ -282,6 +282,7 @@ async function enrichTopRiskStaff(topRiskStaff, req) {
       const roleLabel =
         roleLabelFromEmploymentType(emp?.employmentType) ||
         (staffId ? "พนักงาน" : "ผู้ช่วย");
+      const resolved = !!displayName;
 
       return {
         ...item,
@@ -291,6 +292,8 @@ async function enrichTopRiskStaff(topRiskStaff, req) {
         displayName,
         employeeCode,
         roleLabel,
+        nameStatus: resolved ? "resolved" : "pending",
+        canResolveName: !resolved && !!(staffId || userId),
       };
     })
   );
@@ -391,6 +394,113 @@ function buildSummaryFromSessions(sessions) {
 // =====================================================
 // CLINIC ANALYTICS
 // =====================================================
+
+
+async function resolveAnalyticsName(req, res) {
+  try {
+    const token = bearerTokenFromReq(req);
+    const clinicId = String(
+      req?.user?.clinicId || req?.clinicId || req?.query?.clinicId || req?.body?.clinicId || ""
+    ).trim();
+
+    const principalId = s(req?.query?.principalId || req?.body?.principalId);
+    const rawStaffId = s(req?.query?.staffId || req?.body?.staffId);
+    const rawUserId = s(req?.query?.userId || req?.body?.userId);
+
+    const staffId = rawStaffId || (principalId && !principalId.startsWith("usr_") ? principalId : "");
+    const userId = rawUserId || (principalId && principalId.startsWith("usr_") ? principalId : "");
+
+    if (!clinicId) {
+      return res.status(400).json({
+        ok: false,
+        nameStatus: "pending",
+        canResolveName: false,
+        message: "clinicId required",
+      });
+    }
+
+    if (!staffId && !userId) {
+      return res.status(400).json({
+        ok: false,
+        nameStatus: "pending",
+        canResolveName: false,
+        message: "staffId or userId required",
+      });
+    }
+
+    const cacheCtx = { clinicId, principalId, staffId, userId };
+    let emp = getAnalyticsPersonCache(cacheCtx);
+    const errors = [];
+
+    if (!emp && staffId) {
+      try {
+        emp = await getEmployeeByStaffIdInternalOnly(staffId, token, { clinicId });
+      } catch (e) {
+        errors.push({
+          source: "staff_service.by_staff",
+          status: e?.status || null,
+          message: e?.message || String(e),
+        });
+      }
+    }
+
+    if (!emp && userId) {
+      try {
+        emp = await getEmployeeByUserIdInternalOnly(userId, token, { clinicId });
+      } catch (e) {
+        errors.push({
+          source: "staff_service.by_user",
+          status: e?.status || null,
+          message: e?.message || String(e),
+        });
+      }
+    }
+
+    if (!emp && userId) {
+      emp = await getHelperProfileByUserIdForAnalytics(userId, token);
+    }
+
+    if (emp) {
+      setAnalyticsPersonCache(cacheCtx, emp);
+    } else {
+      emp = getAnalyticsPersonCache(cacheCtx);
+    }
+
+    const displayName = displayNameFromEmployee(emp);
+    const employeeCode = employeeCodeFromEmployee(emp);
+    const roleLabel =
+      roleLabelFromEmploymentType(emp?.employmentType) ||
+      (staffId ? "พนักงาน" : "ผู้ช่วย");
+
+    const resolved = !!displayName;
+
+    return res.status(resolved ? 200 : 202).json({
+      ok: true,
+      displayName: displayName || "",
+      employeeCode: employeeCode || "",
+      roleLabel,
+      nameStatus: resolved ? "resolved" : "pending",
+      canResolveName: !!(staffId || userId),
+      principalId,
+      staffId,
+      userId,
+      debug:
+        process.env.DEBUG_ATTENDANCE_ANALYTICS === "true"
+          ? { errors }
+          : undefined,
+    });
+  } catch (err) {
+    console.error("resolveAnalyticsName error:", err);
+    return res.status(500).json({
+      ok: false,
+      displayName: "",
+      nameStatus: "pending",
+      canResolveName: true,
+      message: err?.message || "resolve name failed",
+    });
+  }
+}
+
 
 async function clinicAnalytics(req, res) {
   try {
@@ -513,6 +623,7 @@ async function staffAnalytics(req, res) {
 }
 
 module.exports = {
+  resolveAnalyticsName,
   clinicAnalytics,
   staffAnalytics,
 };
