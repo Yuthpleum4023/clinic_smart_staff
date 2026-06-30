@@ -1363,8 +1363,8 @@ async function bulkApproveDay(req, res) {
 
 // ======================================================
 // ✅ DELETE
-// รองรับ manual และ manual_user
-// ไม่ให้ลบ auto attendance OT
+// รองรับ manual, manual_user และ attendance OT ที่ยังแก้ไขได้
+// ห้ามลบรายการที่ locked / approved / payroll closed ตาม canMutateStatus()
 // ======================================================
 async function removeOne(req, res) {
   try {
@@ -1398,10 +1398,20 @@ async function removeOne(req, res) {
 
     const src = s(ot.source);
 
-    if (!["manual", "manual_user"].includes(src)) {
-      return res
-        .status(409)
-        .json({ ok: false, message: "Cannot delete auto OT" });
+    // Allow admin to delete OT records that are still mutable.
+    // This is needed when clinic OT policy changes and a pending attendance OT
+    // must be removed/re-created from the latest policy.
+    //
+    // Safety is still enforced above by canMutateStatus(ot), so approved,
+    // locked, or payroll-closed OT records remain protected.
+    const deletableSources = ["manual", "manual_user", "attendance"];
+
+    if (!deletableSources.includes(src)) {
+      return res.status(409).json({
+        ok: false,
+        message: "Cannot delete this OT source",
+        source: src,
+      });
     }
 
     await Overtime.deleteOne({ _id: ot._id });
