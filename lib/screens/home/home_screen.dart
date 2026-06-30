@@ -2,6 +2,9 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+
+import 'package:clinic_smart_staff/api/api_client.dart';
+import 'package:clinic_smart_staff/api/api_config.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import 'package:geolocator/geolocator.dart';
@@ -10,7 +13,6 @@ import 'package:geolocator/geolocator.dart';
 import 'package:flutter/services.dart';
 import 'package:local_auth/local_auth.dart';
 
-import 'package:clinic_smart_staff/api/api_config.dart';
 import 'package:clinic_smart_staff/api/attendance_api.dart';
 import 'package:clinic_smart_staff/services/auth_storage.dart';
 import 'package:clinic_smart_staff/services/auth_service.dart';
@@ -5441,6 +5443,156 @@ class _LocalPayrollScreenState extends State<LocalPayrollScreen> {
   List<EmployeeModel> employees = [];
   bool isLoading = true;
 
+  ApiClient get _staffClient => ApiClient(baseUrl: ApiConfig.staffBaseUrl);
+
+  String _s(dynamic v) => (v ?? '').toString().trim();
+
+  double _toDouble(dynamic v) {
+    final raw = _s(v).replaceAll(',', '');
+    return double.tryParse(raw) ?? 0.0;
+  }
+
+  int _toInt(dynamic v) {
+    final raw = _s(v).replaceAll(',', '');
+    return int.tryParse(raw) ?? double.tryParse(raw)?.round() ?? 0;
+  }
+
+  String _backendEmploymentTypeToLocal(String raw) {
+    final t = raw.trim().toLowerCase();
+    return t == 'parttime' ? 'parttime' : 'fulltime';
+  }
+
+  List<String> _splitFullName(String fullName) {
+    final parts = fullName
+        .trim()
+        .split(RegExp(r'\s+'))
+        .where((e) => e.isNotEmpty)
+        .toList();
+
+    if (parts.isEmpty) return ['', ''];
+    if (parts.length == 1) return [parts.first, ''];
+    return [parts.first, parts.sublist(1).join(' ')];
+  }
+
+  EmployeeModel _employeeFromBackend(
+    Map<String, dynamic> raw, {
+    EmployeeModel? local,
+  }) {
+    final staffId = _s(raw['staffId']).isNotEmpty
+        ? _s(raw['staffId'])
+        : _s(raw['_id']);
+
+    final fullName = _s(raw['fullName']);
+    final split = _splitFullName(fullName);
+
+    final firstName = split[0].isNotEmpty ? split[0] : (local?.firstName ?? '');
+    final lastName = split[1].isNotEmpty ? split[1] : (local?.lastName ?? '');
+
+    final employmentType = _backendEmploymentTypeToLocal(
+      _s(raw['employmentType']),
+    );
+    final isParttime = employmentType == 'parttime';
+
+    return EmployeeModel(
+      id: staffId.isNotEmpty ? staffId : (local?.id ?? ''),
+      staffId: staffId.isNotEmpty ? staffId : (local?.staffId ?? ''),
+      linkedUserId: _s(raw['userId']).isNotEmpty
+          ? _s(raw['userId'])
+          : (local?.linkedUserId ?? ''),
+      employeeCode: _s(raw['employeeCode']).isNotEmpty
+          ? _s(raw['employeeCode'])
+          : (local?.employeeCode ?? ''),
+      firstName: firstName,
+      lastName: lastName,
+      position: _s(raw['position']).isNotEmpty
+          ? _s(raw['position'])
+          : ((local?.position ?? '').trim().isNotEmpty
+                ? local!.position
+                : 'Staff'),
+      employmentType: employmentType,
+      baseSalary: isParttime
+          ? 0.0
+          : _toDouble(
+              raw['monthlySalary'] ?? raw['baseSalary'] ?? local?.baseSalary,
+            ),
+      bonus: _toDouble(raw['bonus'] ?? local?.bonus),
+      absentDays: _toInt(raw['absentDays'] ?? local?.absentDays),
+      hourlyWage: isParttime
+          ? _toDouble(
+              raw['hourlyRate'] ?? raw['hourlyWage'] ?? local?.hourlyWage,
+            )
+          : 0.0,
+      otEntries: local?.otEntries ?? const [],
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> _fetchEmployeesFromBackend() async {
+    Object? lastError;
+
+    final candidates = <String>['/api/employees', '/employees'];
+
+    for (final path in candidates) {
+      try {
+        final res = await _staffClient.get(path, auth: true);
+
+        final dynamic items = res['items'];
+        if (items is List) {
+          return items
+              .whereType<Map>()
+              .map((e) => Map<String, dynamic>.from(e))
+              .where((e) => e['active'] != false)
+              .toList();
+        }
+
+        if (res['employee'] is Map) {
+          return [Map<String, dynamic>.from(res['employee'] as Map)];
+        }
+
+        if (res['data'] is List) {
+          return (res['data'] as List)
+              .whereType<Map>()
+              .map((e) => Map<String, dynamic>.from(e))
+              .where((e) => e['active'] != false)
+              .toList();
+        }
+
+        return [];
+      } catch (e) {
+        lastError = e;
+      }
+    }
+
+    throw Exception(lastError?.toString() ?? 'LOAD_EMPLOYEES_FAILED');
+  }
+
+  Future<void> _deactivateEmployeeOnBackend(EmployeeModel emp) async {
+    final employeeId = emp.staffId.trim().isNotEmpty
+        ? emp.staffId.trim()
+        : emp.id.trim();
+
+    if (employeeId.isEmpty) {
+      throw Exception('ไม่พบ employee id สำหรับปิดใช้งาน');
+    }
+
+    Object? lastError;
+
+    final candidates = <String>[
+      '/api/employees/$employeeId',
+      '/employees/$employeeId',
+    ];
+
+    for (final path in candidates) {
+      try {
+        await _staffClient.put(path, auth: true, body: {'active': false});
+        return;
+      } catch (e) {
+        lastError = e;
+      }
+    }
+
+    throw Exception(lastError?.toString() ?? 'DEACTIVATE_EMPLOYEE_FAILED');
+  }
+
   @override
   void initState() {
     super.initState();
@@ -5448,12 +5600,54 @@ class _LocalPayrollScreenState extends State<LocalPayrollScreen> {
   }
 
   Future<void> _refreshData() async {
-    final data = await StorageService.loadEmployees();
-    if (!mounted) return;
-    setState(() {
-      employees = data;
-      isLoading = false;
-    });
+    if (mounted) {
+      setState(() {
+        isLoading = true;
+      });
+    }
+
+    try {
+      final localList = await StorageService.loadEmployees();
+      final localMap = <String, EmployeeModel>{};
+
+      for (final e in localList) {
+        final key = e.staffId.trim().isNotEmpty
+            ? e.staffId.trim()
+            : e.id.trim();
+        if (key.isNotEmpty) {
+          localMap[key] = e;
+        }
+      }
+
+      final backendRows = await _fetchEmployeesFromBackend();
+
+      final merged = backendRows.map((raw) {
+        final key = _s(raw['staffId']).isNotEmpty
+            ? _s(raw['staffId'])
+            : _s(raw['_id']);
+        final local = localMap[key];
+        return _employeeFromBackend(raw, local: local);
+      }).toList();
+
+      await StorageService.saveEmployees(merged);
+
+      if (!mounted) return;
+      setState(() {
+        employees = merged;
+        isLoading = false;
+      });
+    } catch (e) {
+      final data = await StorageService.loadEmployees();
+      if (!mounted) return;
+      setState(() {
+        employees = data;
+        isLoading = false;
+      });
+
+      if (data.isEmpty) {
+        _snack('โหลดรายชื่อพนักงานจากระบบไม่สำเร็จ');
+      }
+    }
   }
 
   bool _isParttime(EmployeeModel e) =>
@@ -5477,8 +5671,12 @@ class _LocalPayrollScreenState extends State<LocalPayrollScreen> {
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('ยืนยันการลบ'),
-        content: Text('ต้องการลบ “${removed.fullName}” ใช่หรือไม่'),
+        title: const Text('ปิดใช้งานพนักงาน'),
+        content: Text(
+          'ต้องการปิดใช้งาน “${removed.fullName}” ใช่หรือไม่\n\n'
+          'รายชื่อนี้จะหายจากหน้าเงินเดือนหลัง refresh '
+          'แต่ประวัติเดิมจะยังอยู่ในระบบ',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
@@ -5486,7 +5684,7 @@ class _LocalPayrollScreenState extends State<LocalPayrollScreen> {
           ),
           ElevatedButton(
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('ลบข้อมูล'),
+            child: const Text('ปิดใช้งาน'),
           ),
         ],
       ),
@@ -5494,10 +5692,18 @@ class _LocalPayrollScreenState extends State<LocalPayrollScreen> {
 
     if (ok != true) return;
 
-    setState(() => employees.removeAt(index));
-    await StorageService.saveEmployees(employees);
-    await _refreshData();
-    _snack('ลบข้อมูลของ ${removed.fullName} เรียบร้อยแล้ว');
+    try {
+      await _deactivateEmployeeOnBackend(removed);
+
+      if (!mounted) return;
+      setState(() => employees.removeAt(index));
+      await StorageService.saveEmployees(employees);
+
+      _snack('ปิดใช้งาน ${removed.fullName} แล้ว');
+      await _refreshData();
+    } catch (e) {
+      _snack('ปิดใช้งานไม่สำเร็จ: $e');
+    }
   }
 
   Future<void> _goAddEmployee() async {
