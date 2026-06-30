@@ -10,6 +10,7 @@ const {
   rejectOne,
   bulkApproveMonth,
   bulkApproveDay,
+  recalculateAttendance,
   removeOne,
 
   // ✅ Standard user request OT
@@ -70,6 +71,17 @@ router.patch(
   auth,
   requireRole(ADMIN_ROLES),
   bulkApproveDay
+);
+
+// ------------------------------------------------------
+// RECALCULATE ATTENDANCE OT FROM LATEST POLICY
+// ต้องอยู่ก่อน /:id ไม่งั้น Express จะตี recalculate-attendance เป็น id
+// ------------------------------------------------------
+router.post(
+  "/recalculate-attendance",
+  auth,
+  requireRole(ADMIN_ROLES),
+  recalculateAttendance
 );
 
 // ------------------------------------------------------

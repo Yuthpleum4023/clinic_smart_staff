@@ -25,6 +25,7 @@
 const mongoose = require("mongoose");
 const Overtime = require("../models/Overtime");
 const ClinicPolicy = require("../models/ClinicPolicy");
+const AttendanceSession = require("../models/AttendanceSession");
 
 function s(v) {
   return String(v || "").trim();
@@ -52,6 +53,125 @@ function parseMonthOrNull(month) {
   const m = s(month);
   if (!isYm(m)) return null;
   return m;
+}
+
+
+function isHHmm(v) {
+  return /^([01]\d|2[0-3]):[0-5]\d$/.test(s(v));
+}
+
+function makeBangkokDateTime(workDate, hhmm) {
+  if (!isYmd(workDate) || !isHHmm(hhmm)) return null;
+  return new Date(`${workDate}T${s(hhmm)}:00.000+07:00`);
+}
+
+function formatBangkokHHmm(date) {
+  const d = date instanceof Date ? date : new Date(date);
+  if (!d || Number.isNaN(d.getTime())) return "";
+
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Bangkok",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(d);
+
+  const hour = parts.find((x) => x.type === "hour")?.value || "00";
+  const minute = parts.find((x) => x.type === "minute")?.value || "00";
+  return `${hour}:${minute}`;
+}
+
+function dateMax(a, b) {
+  return new Date(Math.max(a.getTime(), b.getTime()));
+}
+
+function dateMin(a, b) {
+  return new Date(Math.min(a.getTime(), b.getTime()));
+}
+
+function computeAttendanceOtByLatestPolicy(policy, session) {
+  const workDate = s(session?.workDate);
+  const checkInAt = session?.checkInAt ? new Date(session.checkInAt) : null;
+  const checkOutAt = session?.checkOutAt ? new Date(session.checkOutAt) : null;
+
+  if (
+    !isYmd(workDate) ||
+    !checkInAt ||
+    !checkOutAt ||
+    Number.isNaN(checkInAt.getTime()) ||
+    Number.isNaN(checkOutAt.getTime()) ||
+    checkOutAt.getTime() <= checkInAt.getTime()
+  ) {
+    return { minutes: 0, start: "", end: "", reason: "invalid_attendance_time" };
+  }
+
+  const otWindowStart = isHHmm(policy?.otWindowStart)
+    ? s(policy.otWindowStart)
+    : "18:00";
+
+  const otWindowEnd = isHHmm(policy?.otWindowEnd)
+    ? s(policy.otWindowEnd)
+    : "21:00";
+
+  const otStartAt = makeBangkokDateTime(workDate, otWindowStart);
+  let otEndAt = makeBangkokDateTime(workDate, otWindowEnd);
+
+  if (!otStartAt || !otEndAt) {
+    return { minutes: 0, start: "", end: "", reason: "invalid_ot_policy_time" };
+  }
+
+  // รองรับ OT ข้ามวัน เช่น 22:00-02:00
+  if (otEndAt.getTime() <= otStartAt.getTime()) {
+    otEndAt = new Date(otEndAt.getTime() + 24 * 60 * 60 * 1000);
+  }
+
+  const paidStartAt = dateMax(checkInAt, otStartAt);
+  const paidEndAt = dateMin(checkOutAt, otEndAt);
+
+  if (paidEndAt.getTime() <= paidStartAt.getTime()) {
+    return {
+      minutes: 0,
+      start: "",
+      end: "",
+      policyStart: otWindowStart,
+      policyEnd: otWindowEnd,
+      reason: "no_overlap_with_ot_window",
+    };
+  }
+
+  const minutes = clampMinutes((paidEndAt.getTime() - paidStartAt.getTime()) / 60000);
+
+  return {
+    minutes,
+    start: formatBangkokHHmm(paidStartAt),
+    end: formatBangkokHHmm(paidEndAt),
+    policyStart: otWindowStart,
+    policyEnd: otWindowEnd,
+    reason: "ok",
+  };
+}
+
+function buildTargetAttendanceOr({ principalId, staffId, userId }) {
+  const out = [];
+
+  if (principalId) out.push({ principalId });
+  if (staffId) {
+    out.push({ staffId });
+    out.push({ principalId: staffId });
+  }
+  if (userId) {
+    out.push({ userId });
+    out.push({ principalId: userId });
+  }
+
+  // de-duplicate
+  const seen = new Set();
+  return out.filter((x) => {
+    const key = JSON.stringify(x);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function canMutateStatus(ot) {
@@ -1361,6 +1481,243 @@ async function bulkApproveDay(req, res) {
   }
 }
 
+
+// ======================================================
+// ✅ RECALCULATE ATTENDANCE OT
+// คำนวณ OT จาก AttendanceSession ตาม ClinicPolicy ล่าสุด
+// ใช้สำหรับกรณี admin เปลี่ยน OT policy แล้วต้องสร้าง/update OT ใหม่
+// ======================================================
+async function recalculateAttendance(req, res) {
+  try {
+    const { clinicId, role, userId: actorId } = getPrincipal(req);
+
+    if (!clinicId) {
+      return res.status(401).json({ ok: false, message: "Missing clinicId" });
+    }
+
+    const policy = await getOrCreatePolicy(clinicId, actorId);
+
+    if (!canApproveOtByRole(policy, role)) {
+      return res.status(403).json({ ok: false, message: "Admin only" });
+    }
+
+    const workDate = s(req.body?.workDate || req.query?.workDate);
+    const month = parseMonthOrNull(req.body?.month || req.query?.month);
+
+    if (workDate && !isYmd(workDate)) {
+      return res.status(400).json({
+        ok: false,
+        message: "Invalid workDate. Use yyyy-MM-dd",
+      });
+    }
+
+    if (!workDate && !month) {
+      return res.status(400).json({
+        ok: false,
+        message: "workDate or month required",
+      });
+    }
+
+    const principalId = s(
+      req.body?.principalId ||
+        req.body?.employeeId ||
+        req.body?.staffId ||
+        req.body?.userId ||
+        req.query?.principalId ||
+        req.query?.employeeId ||
+        req.query?.staffId ||
+        req.query?.userId
+    );
+
+    const staffId = s(req.body?.staffId || req.body?.employeeId || req.query?.staffId || req.query?.employeeId);
+    const targetUserId = s(req.body?.userId || req.query?.userId);
+
+    const identityOr = buildTargetAttendanceOr({
+      principalId,
+      staffId,
+      userId: targetUserId,
+    });
+
+    if (!identityOr.length) {
+      return res.status(400).json({
+        ok: false,
+        message: "principalId, staffId, employeeId, or userId required",
+      });
+    }
+
+    const attendanceQuery = {
+      clinicId,
+      status: "closed",
+      checkInAt: { $ne: null },
+      checkOutAt: { $ne: null },
+      $or: identityOr,
+    };
+
+    if (workDate) {
+      attendanceQuery.workDate = workDate;
+    } else {
+      attendanceQuery.workDate = { $regex: `^${month}-` };
+    }
+
+    const sessions = await AttendanceSession.find(attendanceQuery).sort({
+      workDate: 1,
+      checkInAt: 1,
+      createdAt: 1,
+    });
+
+    let created = 0;
+    let updated = 0;
+    let removed = 0;
+    let skipped = 0;
+
+    const results = [];
+
+    for (const session of sessions) {
+      const sessionWorkDate = s(session.workDate);
+      const sessionPrincipalId = s(session.principalId || session.staffId || session.userId);
+      const calc = computeAttendanceOtByLatestPolicy(policy, session);
+
+      const existing = await Overtime.findOne({
+        clinicId,
+        source: "attendance",
+        $or: [
+          { attendanceSessionId: session._id },
+          {
+            principalId: sessionPrincipalId,
+            workDate: sessionWorkDate,
+          },
+        ],
+      });
+
+      const existingStatus = s(existing?.status);
+
+      // ไม่แตะรายการที่ approve/locked แล้ว เพื่อความปลอดภัยของ payroll/audit
+      if (existing && ["approved", "locked"].includes(existingStatus)) {
+        skipped += 1;
+        results.push({
+          workDate: sessionWorkDate,
+          attendanceSessionId: String(session._id),
+          action: "skipped_approved_or_locked",
+          status: existingStatus,
+          minutes: existing.minutes,
+        });
+        continue;
+      }
+
+      if (calc.minutes <= 0) {
+        if (existing) {
+          await Overtime.deleteOne({ _id: existing._id });
+          removed += 1;
+          results.push({
+            workDate: sessionWorkDate,
+            attendanceSessionId: String(session._id),
+            action: "removed_no_ot",
+            reason: calc.reason,
+          });
+        } else {
+          skipped += 1;
+          results.push({
+            workDate: sessionWorkDate,
+            attendanceSessionId: String(session._id),
+            action: "skipped_no_ot",
+            reason: calc.reason,
+          });
+        }
+        continue;
+      }
+
+      const multiplierRaw =
+        policy?.otMultiplier ??
+        policy?.normalOtMultiplier ??
+        policy?.defaultOtMultiplier ??
+        1.5;
+
+      const multiplier = Number.isFinite(Number(multiplierRaw))
+        ? Number(multiplierRaw)
+        : 1.5;
+
+      const payload = {
+        clinicId,
+        principalId: sessionPrincipalId,
+        principalType: s(session.principalType) || "staff",
+        staffId: s(session.staffId),
+        userId: s(session.userId),
+        workDate: sessionWorkDate,
+        monthKey: toMonthKey(sessionWorkDate),
+
+        start: calc.start,
+        end: calc.end,
+        startTime: calc.start,
+        endTime: calc.end,
+
+        minutes: clampMinutes(calc.minutes),
+        approvedMinutes: 0,
+        multiplier,
+
+        status: "pending",
+        source: "attendance",
+        attendanceSessionId: session._id,
+
+        approvedBy: "",
+        approvedAt: null,
+        rejectedBy: "",
+        rejectedAt: null,
+        rejectReason: "",
+
+        createdBy: s(actorId) || "admin",
+        note: `Recalculated from attendance using latest OT policy ${calc.policyStart}-${calc.policyEnd}`,
+      };
+
+      if (existing) {
+        existing.set(payload);
+        await existing.save();
+        updated += 1;
+        results.push({
+          workDate: sessionWorkDate,
+          attendanceSessionId: String(session._id),
+          overtimeId: String(existing._id),
+          action: "updated",
+          minutes: payload.minutes,
+          start: payload.start,
+          end: payload.end,
+        });
+      } else {
+        const createdDoc = await Overtime.create(payload);
+        created += 1;
+        results.push({
+          workDate: sessionWorkDate,
+          attendanceSessionId: String(session._id),
+          overtimeId: String(createdDoc._id),
+          action: "created",
+          minutes: payload.minutes,
+          start: payload.start,
+          end: payload.end,
+        });
+      }
+    }
+
+    return res.json({
+      ok: true,
+      action: "recalculate_attendance_ot",
+      clinicId,
+      workDate: workDate || "",
+      month: month || "",
+      policy: {
+        otWindowStart: s(policy?.otWindowStart),
+        otWindowEnd: s(policy?.otWindowEnd),
+      },
+      matchedSessions: sessions.length,
+      created,
+      updated,
+      removed,
+      skipped,
+      results,
+    });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+}
+
 // ======================================================
 // ✅ DELETE
 // รองรับ manual, manual_user และ attendance OT ที่ยังแก้ไขได้
@@ -1397,6 +1754,17 @@ async function removeOne(req, res) {
     }
 
     const src = s(ot.source);
+    const status = s(ot.status);
+
+    // Attendance OT comes from real scan data.
+    // If it has already been approved, do not delete it directly.
+    // Admin should reject/recalculate only while it is still pending/rejected.
+    if (src === "attendance" && status === "approved") {
+      return res.status(409).json({
+        ok: false,
+        message: "Cannot delete approved attendance OT",
+      });
+    }
 
     // Allow admin to delete OT records that are still mutable.
     // This is needed when clinic OT policy changes and a pending attendance OT
@@ -1438,6 +1806,7 @@ _assertFn("approveOne", approveOne);
 _assertFn("rejectOne", rejectOne);
 _assertFn("bulkApproveMonth", bulkApproveMonth);
 _assertFn("bulkApproveDay", bulkApproveDay);
+_assertFn("recalculateAttendance", recalculateAttendance);
 _assertFn("removeOne", removeOne);
 
 module.exports = {
@@ -1450,6 +1819,7 @@ module.exports = {
   rejectOne,
   bulkApproveMonth,
   bulkApproveDay,
+  recalculateAttendance,
   removeOne,
   sumApprovedMinutesForMonth,
   sumApprovedMinutesForDay,
