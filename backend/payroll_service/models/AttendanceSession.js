@@ -161,12 +161,13 @@ const AttendanceSessionSchema = new mongoose.Schema(
      * - ""              : ไม่มี manual request
      * - check_in        : ขอเช็คอินย้อนหลัง
      * - check_out       : ขอเช็คเอาท์ย้อนหลัง
+     * - edit_check_in   : ขอแก้เฉพาะเวลาเช็คอิน
      * - edit_both       : ขอแก้ทั้งเวลาเข้า/เวลาออก
      * - forgot_checkout : ลืมเช็คเอาท์
      */
     manualRequestType: {
       type: String,
-      enum: ["", "check_in", "check_out", "edit_both", "forgot_checkout"],
+      enum: ["", "check_in", "check_out", "edit_check_in", "edit_both", "forgot_checkout"],
       default: "",
       index: true,
     },
