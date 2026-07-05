@@ -5794,6 +5794,24 @@ async function submitManualRequest(req, res) {
       );
     }
 
+    if (targetSession && typeof targetSession.save !== "function") {
+      const targetId = targetSession._id || targetSession.id;
+
+      if (targetId) {
+        targetSession = await AttendanceSession.findById(targetId);
+      } else {
+        targetSession = null;
+      }
+
+      if (!targetSession) {
+        return res.status(404).json({
+          ok: false,
+          code: "SESSION_NOT_FOUND",
+          message: "ไม่พบรายการลงเวลาที่ต้องการแก้ไข กรุณารีเฟรชแล้วลองใหม่",
+        });
+      }
+    }
+
     applyManualRequestFields(
       targetSession,
       req,
