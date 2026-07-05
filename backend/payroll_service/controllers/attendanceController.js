@@ -5886,6 +5886,22 @@ async function submitManualRequest(req, res) {
       },
     });
   } catch (e) {
+    console.error("[attendance][manual-request][error]", {
+      name: e?.name,
+      message: e?.message,
+      code: e?.code,
+      stack: e?.stack,
+      body: {
+        workDate: s(req.body?.workDate),
+        manualRequestType: s(req.body?.manualRequestType),
+        reasonCode: s(req.body?.reasonCode),
+        clinicId: s(req.body?.clinicId),
+        staffId: s(req.body?.staffId),
+        requestedCheckInAt: s(req.body?.requestedCheckInAt),
+        requestedCheckOutAt: s(req.body?.requestedCheckOutAt),
+      },
+    });
+
     if (e?.code === 11000) {
       return res.status(409).json({
         ok: false,
