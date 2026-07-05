@@ -398,10 +398,6 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
     final hasIn = _hasIn(s);
     final hours = _calcHours(s);
 
-    if (_isPendingManual(s)) return 'รออนุมัติ';
-    if (_isRejectedManual(s)) return 'ไม่อนุมัติ';
-    if (_isApprovedManual(s) && !hasIn && !hasOut) return 'อนุมัติแล้ว';
-
     if (hasIn && hasOut) {
       if (hours > 0) return '${hours.toStringAsFixed(2)} ชม.';
       return 'เสร็จสิ้น';
@@ -411,6 +407,10 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
 
     if (hours > 0) return '${hours.toStringAsFixed(2)} ชม.';
 
+    if (_isPendingManual(s)) return 'รออนุมัติ';
+    if (_isRejectedManual(s)) return 'คำขอไม่อนุมัติ';
+    if (_isApprovedManual(s)) return 'อนุมัติแล้ว';
+
     return '-';
   }
 
@@ -418,14 +418,14 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
     final hasIn = _hasIn(s);
     final hasOut = _hasOut(s);
 
-    if (_isPendingManual(s)) return 'รออนุมัติ';
-    if (_isRejectedManual(s)) return 'ไม่อนุมัติ';
-    if (_isApprovedManual(s) && !hasIn && !hasOut) return 'อนุมัติแล้ว';
-
     if (hasIn && hasOut) return 'เสร็จสิ้น';
     if (hasIn && !hasOut) {
       return _isStaleOpen(s) ? 'ค้างเก่า' : 'กำลังทำงาน';
     }
+
+    if (_isPendingManual(s)) return 'รออนุมัติ';
+    if (_isRejectedManual(s)) return 'คำขอไม่อนุมัติ';
+    if (_isApprovedManual(s)) return 'อนุมัติแล้ว';
 
     final status = _statusCode(s);
     if (status == 'completed' || status == 'complete') return 'เสร็จสิ้น';
@@ -437,16 +437,14 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
     final hasIn = _hasIn(s);
     final hasOut = _hasOut(s);
 
-    if (_isPendingManual(s)) return Colors.deepPurple.shade700;
-    if (_isRejectedManual(s)) return Colors.red.shade700;
-    if (_isApprovedManual(s) && !hasIn && !hasOut) {
-      return Colors.blue.shade700;
-    }
-
     if (hasIn && hasOut) return Colors.green.shade700;
     if (hasIn && !hasOut) {
       return _isStaleOpen(s) ? Colors.red.shade700 : Colors.orange.shade700;
     }
+
+    if (_isPendingManual(s)) return Colors.deepPurple.shade700;
+    if (_isRejectedManual(s)) return Colors.red.shade700;
+    if (_isApprovedManual(s)) return Colors.blue.shade700;
 
     final status = _statusCode(s);
     if (status == 'completed' || status == 'complete') {
@@ -460,16 +458,14 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
     final hasIn = _hasIn(s);
     final hasOut = _hasOut(s);
 
-    if (_isPendingManual(s)) return Colors.deepPurple.shade50;
-    if (_isRejectedManual(s)) return Colors.red.shade50;
-    if (_isApprovedManual(s) && !hasIn && !hasOut) {
-      return Colors.blue.shade50;
-    }
-
     if (hasIn && hasOut) return Colors.green.shade50;
     if (hasIn && !hasOut) {
       return _isStaleOpen(s) ? Colors.red.shade50 : Colors.orange.shade50;
     }
+
+    if (_isPendingManual(s)) return Colors.deepPurple.shade50;
+    if (_isRejectedManual(s)) return Colors.red.shade50;
+    if (_isApprovedManual(s)) return Colors.blue.shade50;
 
     final status = _statusCode(s);
     if (status == 'completed' || status == 'complete') {
@@ -597,6 +593,156 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
           s['rejectReason'] ??
           s['note'] ??
           s['message'],
+    );
+  }
+
+  String _manualRequestTypeRaw(Map<String, dynamic> s) {
+    return _s(
+      s['manualRequestType'] ??
+          s['manualType'] ??
+          s['requestType'] ??
+          s['attendanceRequestType'],
+    ).toLowerCase();
+  }
+
+  bool _hasManualRequestInfo(Map<String, dynamic> s) {
+    final type = _manualRequestTypeRaw(s);
+    final approval = _approvalStatus(s);
+    return type.isNotEmpty ||
+        approval == 'pending' ||
+        approval == 'waiting' ||
+        approval == 'approved' ||
+        approval == 'rejected';
+  }
+
+  String _manualRequestTypeLabel(Map<String, dynamic> s) {
+    switch (_manualRequestTypeRaw(s)) {
+      case 'check_in':
+        return 'เช็คอินย้อนหลัง';
+      case 'edit_check_in':
+        return 'แก้ไขเวลาเช็คอิน';
+      case 'check_out':
+        return 'เช็คเอาท์ย้อนหลัง';
+      case 'forgot_checkout':
+        return 'ลืมเช็คเอาท์';
+      case 'edit_both':
+        return 'แก้ไขเวลาเข้า-ออก';
+      default:
+        return 'แก้ไขเวลา';
+    }
+  }
+
+  String _manualRequestStatusLabel(Map<String, dynamic> s) {
+    if (_isPendingManual(s)) return 'รออนุมัติ';
+    if (_isRejectedManual(s)) return 'ไม่อนุมัติ';
+    if (_isApprovedManual(s)) return 'อนุมัติแล้ว';
+    return '';
+  }
+
+  String _manualRequestSummaryText(Map<String, dynamic> s) {
+    if (!_hasManualRequestInfo(s)) return '';
+    final status = _manualRequestStatusLabel(s);
+    if (status.isEmpty) return '';
+    return 'คำขอ${_manualRequestTypeLabel(s)}: $status';
+  }
+
+  String _manualRejectReasonText(Map<String, dynamic> s) {
+    return _s(
+      s['rejectReason'] ??
+          s['rejectionReason'] ??
+          s['rejectNote'] ??
+          s['approvalNote'],
+    );
+  }
+
+  String _manualRequestNextStepText(Map<String, dynamic> s) {
+    if (!_isRejectedManual(s)) return '';
+
+    switch (_manualRequestTypeRaw(s)) {
+      case 'edit_check_in':
+        return 'หากต้องการแก้เวลาเข้าใหม่ ให้ส่งคำขอ “ขอแก้ไขเวลาเช็คอิน”';
+      case 'check_in':
+        return 'หากต้องการส่งใหม่ ให้เลือก “ขอเช็คอินย้อนหลัง”';
+      case 'check_out':
+        return 'หากต้องการส่งใหม่ ให้เลือก “ขอเช็คเอาท์ย้อนหลัง”';
+      case 'forgot_checkout':
+        return 'หากยังลืมเช็คเอาท์ ให้ส่งคำขอ “ลืมเช็คเอาท์” ใหม่';
+      case 'edit_both':
+        return 'หากต้องการแก้ทั้งเวลาเข้าและเวลาออก ให้ส่งคำขอ “ขอแก้ไขเวลาเข้า-ออก” ใหม่';
+      default:
+        return 'หากต้องการแก้ไขใหม่ กรุณาส่งคำขอแก้ไขเวลาอีกครั้ง';
+    }
+  }
+
+  Color _manualRequestStatusColor(Map<String, dynamic> s) {
+    if (_isRejectedManual(s)) return Colors.red.shade700;
+    if (_isPendingManual(s)) return Colors.deepPurple.shade700;
+    if (_isApprovedManual(s)) return Colors.blue.shade700;
+    return Colors.grey.shade700;
+  }
+
+  Color _manualRequestBgColor(Map<String, dynamic> s) {
+    if (_isRejectedManual(s)) return Colors.red.shade50;
+    if (_isPendingManual(s)) return Colors.deepPurple.shade50;
+    if (_isApprovedManual(s)) return Colors.blue.shade50;
+    return Colors.grey.shade50;
+  }
+
+  Widget _manualRequestNoticeCard(Map<String, dynamic> s) {
+    final summary = _manualRequestSummaryText(s);
+    if (summary.isEmpty) return const SizedBox.shrink();
+
+    final reason = _manualRejectReasonText(s);
+    final nextStep = _manualRequestNextStepText(s);
+    final fg = _manualRequestStatusColor(s);
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: _manualRequestBgColor(s),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: fg.withValues(alpha: 0.18)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            summary,
+            style: TextStyle(color: fg, fontWeight: FontWeight.w900),
+          ),
+          if (_isRejectedManual(s)) ...[
+            const SizedBox(height: 6),
+            Text(
+              'รายการลงเวลาจริงยังใช้เวลาเดิมตามระบบ',
+              style: TextStyle(
+                color: Colors.grey.shade800,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+          if (reason.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(
+              'เหตุผลจากคลินิก: $reason',
+              style: TextStyle(
+                color: Colors.grey.shade800,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+          if (nextStep.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(
+              nextStep,
+              style: TextStyle(
+                color: Colors.grey.shade800,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+        ],
+      ),
     );
   }
 
@@ -1287,45 +1433,9 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
                               label: 'เหตุผล / หมายเหตุ',
                               value: manualReason,
                             ),
-                          if (_isPendingManual(s)) ...[
+                          if (_hasManualRequestInfo(s)) ...[
                             const SizedBox(height: 8),
-                            Container(
-                              width: double.infinity,
-                              padding: const EdgeInsets.all(12),
-                              decoration: BoxDecoration(
-                                color: Colors.deepPurple.shade50,
-                                borderRadius: BorderRadius.circular(14),
-                                border: Border.all(
-                                  color: Colors.deepPurple.shade100,
-                                ),
-                              ),
-                              child: Text(
-                                'รายการนี้เป็นคำขอแก้ไขเวลาที่กำลังรอการอนุมัติ',
-                                style: TextStyle(
-                                  color: Colors.deepPurple.shade700,
-                                  fontWeight: FontWeight.w800,
-                                ),
-                              ),
-                            ),
-                          ],
-                          if (_isRejectedManual(s)) ...[
-                            const SizedBox(height: 8),
-                            Container(
-                              width: double.infinity,
-                              padding: const EdgeInsets.all(12),
-                              decoration: BoxDecoration(
-                                color: Colors.red.shade50,
-                                borderRadius: BorderRadius.circular(14),
-                                border: Border.all(color: Colors.red.shade100),
-                              ),
-                              child: Text(
-                                'รายการนี้เป็นคำขอแก้ไขเวลาที่ไม่ผ่านการอนุมัติ',
-                                style: TextStyle(
-                                  color: Colors.red.shade700,
-                                  fontWeight: FontWeight.w800,
-                                ),
-                              ),
-                            ),
+                            _manualRequestNoticeCard(s),
                           ],
                           if (_isStaleOpen(s)) ...[
                             const SizedBox(height: 8),
