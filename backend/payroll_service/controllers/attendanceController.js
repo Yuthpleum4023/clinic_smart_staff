@@ -123,7 +123,7 @@ function truthyBool(v) {
 
 function normalizeManualRequestType(v) {
   const t = s(v);
-  return ["check_in", "check_out", "edit_both", "forgot_checkout"].includes(t)
+  return ["check_in", "check_out", "edit_check_in", "edit_both", "forgot_checkout"].includes(t)
     ? t
     : "";
 }
@@ -2672,6 +2672,41 @@ function validateRequestedManualTimes({
   shift = null,
   workDate = "",
 }) {
+
+  // edit_check_in: correct only existing check-in time.
+  // Do not require or modify checkout time. This keeps OT/payroll checkout data safe.
+  if (s(manualRequestType) === "edit_check_in") {
+    if (!requestedCheckInAt) {
+      return {
+        status: 400,
+        body: {
+          ok: false,
+          code: "REQUESTED_CHECKIN_REQUIRED",
+          message: "requestedCheckInAt is required for check-in correction request",
+        },
+      };
+    }
+
+    const requestedInAt = new Date(requestedCheckInAt);
+    const existingOutAt = existingCheckOutAt ? new Date(existingCheckOutAt) : null;
+
+    if (
+      existingOutAt &&
+      !Number.isNaN(existingOutAt.getTime()) &&
+      requestedInAt.getTime() >= existingOutAt.getTime()
+    ) {
+      return {
+        status: 400,
+        body: {
+          ok: false,
+          code: "INVALID_CHECKIN_TIME",
+          message: "Requested check-in time must be before the existing check-out time",
+        },
+      };
+    }
+
+    return null;
+  }
   const effectiveCheckInAt = requestedCheckInAt || existingCheckInAt || null;
   const effectiveCheckOutAt = requestedCheckOutAt || existingCheckOutAt || null;
 
@@ -5120,7 +5155,7 @@ async function submitManualRequest(req, res) {
       return res.status(400).json({
         ok: false,
         message:
-          "manualRequestType required (check_in | check_out | edit_both | forgot_checkout)",
+          "manualRequestType required (check_in | check_out | edit_check_in | edit_both | forgot_checkout)",
       });
     }
 
@@ -5693,6 +5728,35 @@ async function submitManualRequest(req, res) {
       }
     }
 
+      if (manualRequestType === "edit_check_in") {
+        if (!targetSession) {
+          return res.status(409).json({
+            ok: false,
+            code: "CHECKIN_SESSION_REQUIRED",
+            message:
+              role === "helper"
+                ? "Check-in correction requires an existing session for this shift/date"
+                : "Check-in correction requires an existing session for this date",
+          });
+        }
+
+        if (!targetSession.checkInAt) {
+          return res.status(409).json({
+            ok: false,
+            code: "EXISTING_CHECKIN_REQUIRED",
+            message: "Check-in correction requires an existing check-in time",
+          });
+        }
+
+        if (!requestedCheckInAt) {
+          return res.status(400).json({
+            ok: false,
+            code: "REQUESTED_CHECKIN_REQUIRED",
+            message: "requestedCheckInAt is required for check-in correction request",
+          });
+        }
+      }
+
     if (manualRequestType === "edit_both") {
       if (!targetSession && !requestedCheckInAt) {
         return res.status(400).json({
@@ -5735,15 +5799,15 @@ async function submitManualRequest(req, res) {
       req,
       manualRequestType,
       requestedCheckInAt,
-      requestedCheckOutAt,
+        manualRequestType === "edit_check_in" ? null : requestedCheckOutAt,
       userId || resolvedPrincipalId
     );
 
     if (!s(targetSession.source)) targetSession.source = "manual";
     if (!s(targetSession.checkInMethod)) targetSession.checkInMethod = "manual";
-    if (!s(targetSession.checkOutMethod)) {
-      targetSession.checkOutMethod = "manual";
-    }
+      if (manualRequestType !== "edit_check_in" && !s(targetSession.checkOutMethod)) {
+        targetSession.checkOutMethod = "manual";
+      }
 
     targetSession.approvalStatus = policy.manualAttendanceRequireApproval
       ? "pending"
@@ -5753,7 +5817,7 @@ async function submitManualRequest(req, res) {
       const approvedManualTimeError = validateRequestedManualTimes({
         manualRequestType,
         requestedCheckInAt,
-        requestedCheckOutAt,
+          requestedCheckOutAt: manualRequestType === "edit_check_in" ? null : requestedCheckOutAt,
         existingCheckInAt: targetSession.checkInAt || null,
         existingCheckOutAt: targetSession.checkOutAt || null,
         role,
@@ -5767,7 +5831,9 @@ async function submitManualRequest(req, res) {
       }
 
       if (requestedCheckInAt) targetSession.checkInAt = requestedCheckInAt;
-      if (requestedCheckOutAt) targetSession.checkOutAt = requestedCheckOutAt;
+        if (manualRequestType !== "edit_check_in" && requestedCheckOutAt) {
+          targetSession.checkOutAt = requestedCheckOutAt;
+        }
       targetSession.status = targetSession.checkOutAt ? "closed" : "open";
       clearManualRequestFields(targetSession);
       await recalcSessionByTimes({ session: targetSession, policy, shift });
@@ -6035,10 +6101,15 @@ async function approveManualRequest(req, res) {
 
     const roleOfSession = inferRoleFromSession(session);
 
+      const manualRequestTypeForApproval = s(session.manualRequestType);
+
     const validateErr = validateRequestedManualTimes({
-      manualRequestType: s(session.manualRequestType),
+        manualRequestType: manualRequestTypeForApproval,
       requestedCheckInAt: session.requestedCheckInAt,
-      requestedCheckOutAt: session.requestedCheckOutAt,
+        requestedCheckOutAt:
+          manualRequestTypeForApproval === "edit_check_in"
+            ? null
+            : session.requestedCheckOutAt,
       existingCheckInAt: session.checkInAt || null,
       existingCheckOutAt: session.checkOutAt || null,
       role: roleOfSession,
@@ -6050,13 +6121,20 @@ async function approveManualRequest(req, res) {
       return res.status(validateErr.status).json(validateErr.body);
     }
 
-    if (session.requestedCheckInAt) {
-      session.checkInAt = session.requestedCheckInAt;
-    }
+      if (manualRequestTypeForApproval === "edit_check_in") {
+        if (session.requestedCheckInAt) {
+          session.checkInAt = session.requestedCheckInAt;
+        }
+        // Do not touch checkOutAt for check-in-only correction.
+      } else {
+        if (session.requestedCheckInAt) {
+          session.checkInAt = session.requestedCheckInAt;
+        }
 
-    if (session.requestedCheckOutAt) {
-      session.checkOutAt = session.requestedCheckOutAt;
-    }
+        if (session.requestedCheckOutAt) {
+          session.checkOutAt = session.requestedCheckOutAt;
+        }
+      }
 
     session.status = session.checkOutAt ? "closed" : "open";
     session.approvalStatus = "approved";
@@ -6077,7 +6155,7 @@ async function approveManualRequest(req, res) {
     // ✅ Helper extra time approval:
     // If admin approves a helper manual checkout/edit/forgot checkout that extends
     // beyond the assigned shift, approve the outside-shift minutes for hourly pay.
-    const manualRequestTypeBeforeClear = s(session.manualRequestType);
+      const manualRequestTypeBeforeClear = manualRequestTypeForApproval;
     const canApproveHelperExtraTime =
       roleOfSession === "helper" &&
       ["check_out", "edit_both", "forgot_checkout"].includes(
