@@ -2901,6 +2901,8 @@ class _HomeScreenState extends State<HomeScreen> {
     switch (type) {
       case 'check_in':
         return 'ขอเช็คอินย้อนหลัง';
+      case 'edit_check_in':
+        return 'ขอแก้ไขเวลาเช็คอิน';
       case 'check_out':
         return 'ขอเช็คเอาท์ย้อนหลัง';
       case 'forgot_checkout':
@@ -2915,6 +2917,8 @@ class _HomeScreenState extends State<HomeScreen> {
     switch (type) {
       case 'check_in':
         return 'ใช้เมื่อยังไม่มีรายการลงเวลา และต้องการขอเวลาเข้างาน';
+      case 'edit_check_in':
+        return 'ใช้เมื่อมีรายการลงเวลาอยู่แล้ว แต่ต้องการแก้เฉพาะเวลาเข้างาน';
       case 'check_out':
         return 'ใช้เมื่อมีเช็คอินอยู่แล้ว แต่ต้องการขอเวลาออกงาน';
       case 'forgot_checkout':
@@ -2929,6 +2933,8 @@ class _HomeScreenState extends State<HomeScreen> {
     switch (type) {
       case 'check_in':
         return Icons.login;
+      case 'edit_check_in':
+        return Icons.edit_note;
       case 'check_out':
         return Icons.logout;
       case 'forgot_checkout':
@@ -2999,6 +3005,7 @@ class _HomeScreenState extends State<HomeScreen> {
       builder: (ctx) {
         final types = <String>[
           'check_in',
+          'edit_check_in',
           'check_out',
           'forgot_checkout',
           'edit_both',

@@ -180,6 +180,8 @@ class _ClinicAttendanceApprovalScreenState
     switch (raw.trim()) {
       case 'check_in':
         return 'เช็คอินย้อนหลัง / เช็คอินก่อนเวลา';
+      case 'edit_check_in':
+        return 'แก้ไขเวลาเช็คอิน';
       case 'check_out':
         return 'เช็คเอาท์ย้อนหลัง';
       case 'edit_both':

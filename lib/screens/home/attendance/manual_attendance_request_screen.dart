@@ -22,7 +22,7 @@ class ManualAttendanceRequestScreen extends StatefulWidget {
   /// yyyy-MM-dd
   final String initialWorkDate;
 
-  /// check_in | check_out | edit_both | forgot_checkout
+  /// check_in | edit_check_in | check_out | edit_both | forgot_checkout
   final String initialManualRequestType;
 
   final String initialReasonCode;
@@ -81,6 +81,7 @@ class _ManualAttendanceRequestScreenState
 
   static const List<String> _types = [
     'check_in',
+    'edit_check_in',
     'check_out',
     'edit_both',
     'forgot_checkout',
@@ -88,6 +89,7 @@ class _ManualAttendanceRequestScreenState
 
   static const Map<String, String> _typeLabels = {
     'check_in': 'เช็คอินย้อนหลัง / เช็คอินก่อนเวลา',
+    'edit_check_in': 'ขอแก้ไขเวลาเช็คอิน',
     'check_out': 'เช็คเอาท์ย้อนหลัง',
     'edit_both': 'แก้ทั้งเวลาเข้าและเวลาออก',
     'forgot_checkout': 'ลืมเช็คเอาท์',
@@ -264,6 +266,15 @@ class _ManualAttendanceRequestScreenState
 
   String _extractApiMessage(http.Response res) {
     final decoded = _decodeBodyMap(res.body);
+    final code = (decoded['code'] ??
+            decoded['errorCode'] ??
+            decoded['statusCode'] ??
+            decoded['reason'] ??
+            '')
+        .toString()
+        .trim()
+        .toUpperCase();
+
     final msg = (decoded['message'] ??
             decoded['error'] ??
             decoded['msg'] ??
@@ -271,7 +282,45 @@ class _ManualAttendanceRequestScreenState
             '')
         .toString()
         .trim();
-    return msg;
+
+    final raw = '$code $msg'.toLowerCase();
+
+    if (code == 'SESSION_ALREADY_EXISTS' ||
+        raw.contains('session already exists') ||
+        raw.contains('use edit_both')) {
+      return 'วันนี้มีรายการลงเวลาอยู่แล้ว\n'
+          'หากต้องการแก้เฉพาะเวลาเข้า กรุณาเลือก “ขอแก้ไขเวลาเช็คอิน”\n'
+          'ไม่ใช่ “ขอเช็คอินย้อนหลัง”';
+    }
+
+    if (code == 'REQUESTED_CHECKIN_REQUIRED' ||
+        raw.contains('requestedcheckinat') ||
+        raw.contains('requested check-in') ||
+        raw.contains('requested check in')) {
+      return 'กรุณาระบุเวลาเข้างานที่ต้องการขอแก้ไข';
+    }
+
+    if (code == 'INVALID_CHECKIN_TIME' ||
+        raw.contains('check-in must be before') ||
+        raw.contains('check in must be before') ||
+        raw.contains('before checkout')) {
+      return 'เวลาเข้างานใหม่ต้องอยู่ก่อนเวลาออกงานเดิม';
+    }
+
+    if (code == 'CHECKIN_SESSION_REQUIRED') {
+      return 'ไม่พบรายการลงเวลาของวันนี้ กรุณาเลือกประเภทคำขอให้ถูกต้อง';
+    }
+
+    if (code == 'EXISTING_CHECKIN_REQUIRED') {
+      return 'รายการนี้ยังไม่มีเวลาเข้าเดิม จึงไม่สามารถขอแก้เฉพาะเวลาเข้าได้';
+    }
+
+    if (code == 'MANUAL_REQUEST_PENDING') {
+      return 'มีคำขอแก้ไขเวลาค้างอนุมัติอยู่แล้วสำหรับวันนี้ กรุณารอคลินิกตรวจสอบก่อน';
+    }
+
+    if (msg.isNotEmpty) return msg;
+    return 'ส่งคำขอไม่สำเร็จ กรุณาลองใหม่อีกครั้ง';
   }
 
   String _labelOfType(String type) {
@@ -290,7 +339,8 @@ class _ManualAttendanceRequestScreenState
   void _prefillTimesByType() {
     final now = TimeOfDay.now();
 
-    if (_manualRequestType == 'check_in') {
+    if (_manualRequestType == 'check_in' ||
+        _manualRequestType == 'edit_check_in') {
       _checkInTime ??= now;
     } else if (_manualRequestType == 'check_out' ||
         _manualRequestType == 'forgot_checkout') {
@@ -302,7 +352,9 @@ class _ManualAttendanceRequestScreenState
   }
 
   bool _needsCheckInTime() {
-    return _manualRequestType == 'check_in' || _manualRequestType == 'edit_both';
+    return _manualRequestType == 'check_in' ||
+        _manualRequestType == 'edit_check_in' ||
+        _manualRequestType == 'edit_both';
   }
 
   bool _needsCheckOutTime() {
