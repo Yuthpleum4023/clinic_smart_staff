@@ -3,6 +3,10 @@ PODS:
   - geolocator_apple (1.2.0):
     - Flutter
     - FlutterMacOS
+  - image_picker_ios (0.0.1):
+    - Flutter
+  - local_auth_ios (0.0.1):
+    - Flutter
   - printing (1.0.0):
     - Flutter
   - share_plus (0.0.1):
@@ -16,6 +20,8 @@ PODS:
 DEPENDENCIES:
   - Flutter (from `Flutter`)
   - geolocator_apple (from `.symlinks/plugins/geolocator_apple/darwin`)
+  - image_picker_ios (from `.symlinks/plugins/image_picker_ios/ios`)
+  - local_auth_ios (from `.symlinks/plugins/local_auth_ios/ios`)
   - printing (from `.symlinks/plugins/printing/ios`)
   - share_plus (from `.symlinks/plugins/share_plus/ios`)
   - shared_preferences_foundation (from `.symlinks/plugins/shared_preferences_foundation/darwin`)
@@ -26,6 +32,10 @@ EXTERNAL SOURCES:
     :path: Flutter
   geolocator_apple:
     :path: ".symlinks/plugins/geolocator_apple/darwin"
+  image_picker_ios:
+    :path: ".symlinks/plugins/image_picker_ios/ios"
+  local_auth_ios:
+    :path: ".symlinks/plugins/local_auth_ios/ios"
   printing:
     :path: ".symlinks/plugins/printing/ios"
   share_plus:
@@ -38,6 +48,8 @@ EXTERNAL SOURCES:
 SPEC CHECKSUMS:
   Flutter: cabc95a1d2626b1b06e7179b784ebcf0c0cde467
   geolocator_apple: ab36aa0e8b7d7a2d7639b3b4e48308394e8cef5e
+  image_picker_ios: e0ece4aa2a75771a7de3fa735d26d90817041326
+  local_auth_ios: f7a1841beef3151d140a967c2e46f30637cdf451
   printing: 54ff03f28fe9ba3aa93358afb80a8595a071dd07
   share_plus: 50da8cb520a8f0f65671c6c6a99b3617ed10a58a
   shared_preferences_foundation: 7036424c3d8ec98dfe75ff1667cb0cd531ec82bb
