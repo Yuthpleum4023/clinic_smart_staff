@@ -6,7 +6,7 @@ class AttendanceCard extends StatelessWidget {
   final String errText;
   final bool loading; // โหลดสถานะวันนี้
   final bool posting; // กำลังส่ง check-in / check-out
-  final bool bioLoading; // กำลังสแกนนิ้ว
+  final bool bioLoading; // กำลังยืนยันตัวตน
   final bool checkedIn;
   final bool checkedOut;
   final VoidCallback onCheckIn;
@@ -30,11 +30,9 @@ class AttendanceCard extends StatelessWidget {
     required this.onOpenHistory,
   });
 
-  bool get _canCheckIn =>
-      !bioLoading && !posting && !checkedIn && !checkedOut;
+  bool get _canCheckIn => !bioLoading && !posting && !checkedIn && !checkedOut;
 
-  bool get _canCheckOut =>
-      !bioLoading && !posting && checkedIn && !checkedOut;
+  bool get _canCheckOut => !bioLoading && !posting && checkedIn && !checkedOut;
 
   bool get _isBusyAction => bioLoading || posting;
 
@@ -45,7 +43,7 @@ class AttendanceCard extends StatelessWidget {
   bool get _highlightCheckOut => checkedIn && !checkedOut;
 
   String get _helperText {
-    if (bioLoading) return 'กำลังยืนยันลายนิ้วมือ...';
+    if (bioLoading) return 'กำลังยืนยันตัวตน...';
     if (posting) return 'กำลังบันทึกข้อมูล...';
     if (checkedOut) return 'วันนี้เช็คเอาท์เรียบร้อยแล้ว';
     if (checkedIn) return 'เช็คอินแล้ว สามารถกดเช็คเอาท์ได้';
@@ -104,11 +102,7 @@ class AttendanceCard extends StatelessWidget {
       ),
       child: Text(
         _badgeText,
-        style: TextStyle(
-          fontSize: 11,
-          color: fg,
-          fontWeight: FontWeight.w900,
-        ),
+        style: TextStyle(fontSize: 11, color: fg, fontWeight: FontWeight.w900),
       ),
     );
   }
@@ -293,10 +287,7 @@ class AttendanceCard extends StatelessWidget {
       color: _cardBgColor(),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(18),
-        side: BorderSide(
-          color: _cardBorderColor(),
-          width: 1,
-        ),
+        side: BorderSide(color: _cardBorderColor(), width: 1),
       ),
       child: Padding(
         padding: const EdgeInsets.all(14),
@@ -321,11 +312,8 @@ class AttendanceCard extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             Text(
-              'ยืนยันตัวตนด้วยลายนิ้วมือ แล้วกดเช็คอินหรือเช็คเอาท์เพื่อบันทึกเวลาทำงาน',
-              style: TextStyle(
-                color: Colors.grey.shade700,
-                height: 1.35,
-              ),
+              'ยืนยันตัวตนด้วย Face ID / Touch ID แล้วกดเช็คอินหรือเช็คเอาท์เพื่อบันทึกเวลาทำงาน',
+              style: TextStyle(color: Colors.grey.shade700, height: 1.35),
             ),
             const SizedBox(height: 12),
             _statusPanel(),

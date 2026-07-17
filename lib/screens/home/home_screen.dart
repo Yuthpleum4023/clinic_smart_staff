@@ -828,7 +828,7 @@ class _HomeScreenState extends State<HomeScreen> {
               if (i == 0) {
                 return const ListTile(
                   title: Text(
-                    'เลือกกะที่จะใช้สแกนลายนิ้วมือ',
+                    'เลือกกะที่จะใช้ยืนยันตัวตน',
                     style: TextStyle(fontWeight: FontWeight.w900),
                   ),
                   subtitle: Text(
@@ -1025,7 +1025,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     if (_selectedHelperShift == null || _selectedHelperShiftId.isEmpty) {
-      _snack('กรุณาเลือกกะก่อนสแกนลายนิ้วมือ');
+      _snack('กรุณาเลือกกะก่อนยืนยันตัวตน');
       return false;
     }
 
@@ -1916,7 +1916,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final c = code.toLowerCase().trim();
 
     if (c.contains('notenrolled')) {
-      return 'อุปกรณ์นี้ยังไม่ได้ตั้งค่าลายนิ้วมือ กรุณาตั้งค่าในเครื่องก่อนใช้งาน';
+      return 'อุปกรณ์นี้ยังไม่ได้ตั้งค่า Face ID / Touch ID กรุณาตั้งค่าในเครื่องก่อนใช้งาน';
     }
     if (c.contains('passcodenotset')) {
       return 'กรุณาตั้งรหัสล็อกหน้าจอก่อนใช้งาน';
@@ -1954,7 +1954,7 @@ class _HomeScreenState extends State<HomeScreen> {
       if (!canCheck && types.isEmpty) return false;
 
       if (types.contains(BiometricType.fingerprint)) return true;
-      if (types.contains(BiometricType.face)) return false;
+      if (types.contains(BiometricType.face)) return true;
 
       return true;
     } catch (_) {
@@ -1969,12 +1969,13 @@ class _HomeScreenState extends State<HomeScreen> {
       print('[BIO] hasFingerprintAvailable=$okToTry');
 
       if (!okToTry) {
-        _snack('อุปกรณ์นี้ไม่รองรับการยืนยันตัวตนด้วยลายนิ้วมือ');
+        _snack('อุปกรณ์นี้ไม่รองรับการยืนยันตัวตนด้วย Face ID / Touch ID');
         return false;
       }
 
       final ok = await _localAuth.authenticate(
-        localizedReason: 'ยืนยันตัวตนด้วยลายนิ้วมือเพื่อบันทึกเวลาทำงาน',
+        localizedReason:
+            'ยืนยันตัวตนด้วย Face ID / Touch ID เพื่อบันทึกเวลาทำงาน',
         options: const AuthenticationOptions(
           biometricOnly: true,
           stickyAuth: true,
@@ -2334,7 +2335,7 @@ class _HomeScreenState extends State<HomeScreen> {
         return 'วันนี้ยังไม่พบกะงานสำหรับการสแกน';
       }
       if (_selectedHelperShift == null) {
-        return 'กรุณาเลือกกะก่อนสแกนลายนิ้วมือ';
+        return 'กรุณาเลือกกะก่อนยืนยันตัวตน';
       }
       if (checkedIn && checkedOut) {
         return 'เช็คอินและเช็คเอาท์แล้วสำหรับกะที่เลือก';
@@ -3886,9 +3887,9 @@ class _HomeScreenState extends State<HomeScreen> {
         _AttendanceUiPhase.checkingInBio,
         progressText: _isHelper
             ? (_selectedHelperShift == null
-                  ? 'กรุณาเลือกกะก่อน แล้วสแกนลายนิ้วมือ'
+                  ? 'กรุณาเลือกกะก่อน แล้วยืนยันตัวตน'
                   : 'กำลังสแกนสำหรับกะ: $_selectedHelperShiftLabel')
-            : 'กรุณาสแกนลายนิ้วมือ',
+            : 'กรุณายืนยันตัวตน',
         clearErr: true,
       );
 
@@ -4043,9 +4044,9 @@ class _HomeScreenState extends State<HomeScreen> {
         _AttendanceUiPhase.checkingOutBio,
         progressText: _isHelper
             ? (_selectedHelperShift == null
-                  ? 'กรุณาเลือกกะก่อน แล้วสแกนลายนิ้วมือ'
+                  ? 'กรุณาเลือกกะก่อน แล้วยืนยันตัวตน'
                   : 'กำลังเช็คเอาท์สำหรับกะ: $_selectedHelperShiftLabel')
-            : 'กรุณาสแกนลายนิ้วมือ',
+            : 'กรุณายืนยันตัวตน',
         clearErr: true,
       );
 
@@ -4503,7 +4504,7 @@ class _HomeScreenState extends State<HomeScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-              'เลือกกะที่จะใช้สแกนลายนิ้วมือ',
+              'เลือกกะที่จะใช้ยืนยันตัวตน',
               style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
             ),
             const SizedBox(height: 6),
@@ -4664,12 +4665,12 @@ class _HomeScreenState extends State<HomeScreen> {
     if (!_isAttendanceUser) return const SizedBox.shrink();
 
     final title = compact
-        ? 'บริการบันทึกเวลาด้วยลายนิ้วมือ'
-        : 'พรีเมียม: บันทึกเวลางานด้วยลายนิ้วมือ';
+        ? 'บริการบันทึกเวลาด้วยFace ID / Touch ID'
+        : 'พรีเมียม: บันทึกเวลางานด้วยFace ID / Touch ID';
 
     final subtitle = _isHelper
-        ? 'ผู้ช่วยสามารถเลือกกะงานก่อนเช็คอินและเช็คเอาท์ด้วยลายนิ้วมือ เพื่อให้ระบบคำนวณชั่วโมงทำงานจริงได้แม่นยำยิ่งขึ้น'
-        : 'เช็คอินและเช็คเอาท์ด้วยลายนิ้วมือ พร้อมตรวจตำแหน่งปัจจุบัน เพื่อให้ระบบคำนวณชั่วโมงทำงานและ OT ได้อัตโนมัติ';
+        ? 'ผู้ช่วยสามารถเลือกกะงานก่อนเช็คอินและเช็คเอาท์ด้วยFace ID / Touch ID เพื่อให้ระบบคำนวณชั่วโมงทำงานจริงได้แม่นยำยิ่งขึ้น'
+        : 'เช็คอินและเช็คเอาท์ด้วยFace ID / Touch ID พร้อมตรวจตำแหน่งปัจจุบัน เพื่อให้ระบบคำนวณชั่วโมงทำงานและ OT ได้อัตโนมัติ';
 
     return PremiumGateCard(
       loading: _premiumLoading || _policyLoading,
@@ -4683,7 +4684,7 @@ class _HomeScreenState extends State<HomeScreen> {
           builder: (ctx) => AlertDialog(
             title: const Text('เปิดใช้งานบริการพรีเมียม'),
             content: const Text(
-              'ขณะนี้ระบบยังอยู่ในช่วงทดสอบและยังไม่เชื่อมต่อการชำระเงินจริง\nต้องการเปิดใช้งานฟีเจอร์บันทึกเวลาด้วยลายนิ้วมือหรือไม่',
+              'ขณะนี้ระบบยังอยู่ในช่วงทดสอบและยังไม่เชื่อมต่อการชำระเงินจริง\nต้องการเปิดใช้งานฟีเจอร์บันทึกเวลาด้วยFace ID / Touch IDหรือไม่',
             ),
             actions: [
               TextButton(
@@ -4944,7 +4945,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 const Divider(height: 1),
                 ListTile(
                   leading: const Icon(Icons.fingerprint),
-                  title: const Text('เลือกกะสำหรับสแกนลายนิ้วมือ'),
+                  title: const Text('เลือกกะสำหรับยืนยันตัวตน'),
                   subtitle: Text(
                     _selectedHelperShift == null
                         ? 'ยังไม่ได้เลือกกะ'

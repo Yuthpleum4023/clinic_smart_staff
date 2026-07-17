@@ -10,22 +10,22 @@ class BiometricService {
   bool _isFingerprintOnlyType(BiometricType t) {
     // ✅ รองรับหลายเวอร์ชันของ local_auth โดยไม่อ้าง touchID ตรงๆ
     // - Android: fingerprint
-    // - iOS: ถ้าเป็น TouchID บางเวอร์ชันอาจยังรายงานเป็น fingerprint
+    // - iOS: ถ้าเป็น Touch ID บางเวอร์ชันอาจยังรายงานเป็น fingerprint
     // - ถ้าเป็น FaceID-only: มักรายงานเป็น face / strong / weak (เราจะไม่อนุญาต)
-    return t == BiometricType.fingerprint;
+    return t == BiometricType.fingerprint || t == BiometricType.face;
   }
 
   String _friendlyBioError(String code) {
     final c = code.toLowerCase().trim();
 
     if (c.contains('notenrolled')) {
-      return 'ยังไม่ได้ตั้งค่าลายนิ้วมือในเครื่อง';
+      return 'ยังไม่ได้ตั้งค่า Face ID / Touch ID ในเครื่อง';
     }
     if (c.contains('passcodenotset')) {
       return 'กรุณาตั้งรหัสล็อกหน้าจอก่อนใช้งาน';
     }
     if (c.contains('notavailable')) {
-      return 'เครื่องนี้ยังไม่รองรับการยืนยันตัวตนด้วยลายนิ้วมือ';
+      return 'เครื่องนี้ยังไม่รองรับการยืนยันตัวตนด้วย Face ID / Touch ID';
     }
     if (c.contains('lockedout')) {
       return 'สแกนผิดหลายครั้ง ระบบล็อกชั่วคราว — ปลดล็อกด้วยรหัสหน้าจอก่อนแล้วลองใหม่';
@@ -76,8 +76,10 @@ class BiometricService {
 
   /// ✅ Fingerprint-only verify
   /// - ถ้าเครื่องมีแต่ FaceID/อย่างอื่น (ไม่มี fingerprint) -> return false
-  /// - reason default: ลายนิ้วมือเท่านั้น
-  Future<bool> verify({String reason = 'ยืนยันตัวตนด้วยลายนิ้วมือ'}) async {
+  /// - reason default: Face ID / Touch ID
+  Future<bool> verify({
+    String reason = 'ยืนยันตัวตนด้วย Face ID / Touch ID',
+  }) async {
     try {
       final supported = await _auth.isDeviceSupported();
       if (!supported) return false;
@@ -107,7 +109,7 @@ class BiometricService {
 
   // ✅ Optional: ถ้าหน้า UI อยากเอา error message ไปแสดงเอง (ไม่บังคับใช้)
   Future<String?> verifyWithMessage({
-    String reason = 'ยืนยันตัวตนด้วยลายนิ้วมือ',
+    String reason = 'ยืนยันตัวตนด้วย Face ID / Touch ID',
   }) async {
     try {
       final ok = await verify(reason: reason);

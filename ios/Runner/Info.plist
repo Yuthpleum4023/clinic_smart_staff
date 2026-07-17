@@ -32,7 +32,7 @@
 
 	<!-- ✅ เพิ่มสิทธิ์สำหรับ Face ID / Touch ID -->
 	<key>NSFaceIDUsageDescription</key>
-	<string>ใช้เพื่อยืนยันตัวตนก่อนบันทึกเวลาเข้าออกงานและดูสลิปเงินเดือน</string>
+	<string>แอปใช้ Face ID เพื่อยืนยันตัวตนก่อนเช็คอินและเช็คเอาท์</string>
 
 	<key>UIApplicationSceneManifest</key>
 	<dict>
