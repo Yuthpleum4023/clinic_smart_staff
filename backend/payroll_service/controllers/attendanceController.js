@@ -1894,16 +1894,60 @@ async function ensureSessionEmployeeAccess(req, session) {
     return { ok: true, employee: fallbackEmployee };
   }
 
-  const employee = normalizeEmployeeRecord(raw);
+  let employee = normalizeEmployeeRecord(raw);
   if (!employee) {
-    return buildCodeResponse(
-      404,
-      "SESSION_EMPLOYEE_NOT_FOUND",
-      "Employee not found for this session"
-    );
+    const fallbackClinicId = sessionClinicId || tokenClinicId;
+    const fallbackStaffId = sessionStaffId || tokenStaffId || bodyStaffId;
+    const fallbackUserId = sessionUserId || tokenUserId;
+
+    const sessionOwnedByToken =
+      (!!sessionStaffId && !!tokenStaffId && sessionStaffId === tokenStaffId) ||
+      (!!sessionUserId && !!tokenUserId && sessionUserId === tokenUserId);
+
+    const tokenUserOwnsStaffSession =
+      !tokenStaffId &&
+      !!sessionStaffId &&
+      !!sessionUserId &&
+      !!tokenUserId &&
+      sessionUserId === tokenUserId;
+
+    if (
+      fallbackClinicId &&
+      (fallbackStaffId || fallbackUserId) &&
+      (sessionOwnedByToken || tokenUserOwnsStaffSession)
+    ) {
+      console.warn(
+        "[ATTENDANCE][CHECKOUT] employee master missing; using session-owned fallback",
+        {
+          sessionId: s(session?._id),
+          clinicId: fallbackClinicId,
+          staffId: fallbackStaffId,
+          userId: fallbackUserId,
+          tokenHasStaffId: !!tokenStaffId,
+        }
+      );
+
+      employee = {
+        clinicId: fallbackClinicId,
+        staffId: fallbackStaffId,
+        userId: fallbackUserId,
+        role: fallbackStaffId ? "employee" : "helper",
+        isActive: true,
+        status: "active",
+        _fallbackFromSession: true,
+      };
+    } else {
+      return buildCodeResponse(
+        404,
+        "SESSION_EMPLOYEE_NOT_FOUND",
+        "Employee not found for this session"
+      );
+    }
   }
 
-  const allow = isEmployeeAttendanceAllowed(employee);
+  const allow = employee._fallbackFromSession
+    ? { ok: true }
+    : isEmployeeAttendanceAllowed(employee);
   if (!allow.ok) return buildCodeResponse(403, allow.code, allow.message);
 
   if (bodyStaffId && employee.staffId && employee.staffId !== bodyStaffId) {
