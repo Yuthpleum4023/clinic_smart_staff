@@ -7,14 +7,17 @@ const {
   updateMyClinicPolicy,
 } = require("../controllers/clinicPolicyController");
 
-// ✅ รองรับทั้ง admin และ clinic_admin
-const POLICY_ADMIN_ROLES = ["admin", "clinic_admin"];
+// ✅ Policy read/write split for production safety.
+// - GET /me: clinic members may read their clinic policy for attendance UI.
+// - PUT/PATCH /me: only clinic admins may update policy settings.
+const POLICY_READ_ROLES = ["admin", "clinic_admin", "employee", "staff", "helper"];
+const POLICY_WRITE_ROLES = ["admin", "clinic_admin"];
 
 // GET current clinic policy
 router.get(
   "/me",
   auth,
-  requireRole(POLICY_ADMIN_ROLES),
+  requireRole(POLICY_READ_ROLES),
   getMyClinicPolicy
 );
 
@@ -22,7 +25,7 @@ router.get(
 router.put(
   "/me",
   auth,
-  requireRole(POLICY_ADMIN_ROLES),
+  requireRole(POLICY_WRITE_ROLES),
   updateMyClinicPolicy
 );
 
@@ -30,7 +33,7 @@ router.put(
 router.patch(
   "/me",
   auth,
-  requireRole(POLICY_ADMIN_ROLES),
+  requireRole(POLICY_WRITE_ROLES),
   updateMyClinicPolicy
 );
 
