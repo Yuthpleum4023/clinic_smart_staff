@@ -209,6 +209,10 @@ function isEmployeeUser(userLike) {
   );
 }
 
+function looksLikeMongoObjectId(value) {
+  return /^[a-f0-9]{24}$/i.test(normStr(value));
+}
+
 function shouldAttemptEnsureEmployee(userLike) {
   if (!userLike) return false;
   if (!isEmployeeUser(userLike)) return false;
@@ -220,8 +224,17 @@ function shouldAttemptEnsureEmployee(userLike) {
   const staffId = normStr(userLike?.staffId);
   const provisionStatus = normLower(userLike?.employeeProvisionStatus);
 
-  if (staffId) return false;
-  if (provisionStatus === "ready") return false;
+  // Production-safe rule:
+  // - ObjectId staffId + ready = likely already provisioned.
+  // - Missing staffId, pending status, or legacy staffId such as stf_xxx
+  //   must be verified/ensured through staff_service.
+  if (
+    staffId &&
+    looksLikeMongoObjectId(staffId) &&
+    provisionStatus === "ready"
+  ) {
+    return false;
+  }
 
   return true;
 }
@@ -1194,12 +1207,19 @@ async function reconcileEmployeeSelf(req, res) {
       });
     }
 
-    if (normStr(user.staffId)) {
+    const currentStaffId = normStr(user.staffId);
+    const currentProvisionStatus = normLower(user.employeeProvisionStatus);
+
+    if (
+      currentStaffId &&
+      looksLikeMongoObjectId(currentStaffId) &&
+      currentProvisionStatus === "ready"
+    ) {
       return res.json({
         ok: true,
         skipped: true,
-        reason: "already_has_staff",
-        staffId: user.staffId,
+        reason: "already_has_valid_staff",
+        staffId: currentStaffId,
       });
     }
 
@@ -1638,4 +1658,4 @@ module.exports = {
   verifyRecoveryEmailOtp,
   forgotPassword,
   resetPassword,
-};       
+};
