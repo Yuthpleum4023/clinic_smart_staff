@@ -141,7 +141,7 @@ class PremiumGateCard extends StatelessWidget {
               child: ElevatedButton.icon(
                 onPressed: onUpgrade,
                 icon: const Icon(Icons.lock_open),
-                label: const Text('อัปเกรด Premium • 299 บาท'),
+                label: const Text('ทดลองใช้ Premium ฟรี'),
                 style: ElevatedButton.styleFrom(
                   minimumSize: const Size.fromHeight(48),
                   elevation: 0,
