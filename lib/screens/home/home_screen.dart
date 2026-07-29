@@ -1679,16 +1679,16 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (firstConfirmed != true || !mounted) return;
 
-    final confirmationController = TextEditingController();
-
     final finalConfirmed = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
       builder: (dialogContext) {
-        var canDelete = false;
+        var confirmationText = '';
 
         return StatefulBuilder(
           builder: (context, setDialogState) {
+            final canDelete = confirmationText.trim() == 'ลบบัญชี';
+
             return AlertDialog(
               title: const Text('ยืนยันการลบบัญชี'),
               content: Column(
@@ -1701,7 +1701,6 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   const SizedBox(height: 12),
                   TextField(
-                    controller: confirmationController,
                     autofocus: true,
                     decoration: const InputDecoration(
                       labelText: 'พิมพ์คำว่า ลบบัญชี',
@@ -1709,7 +1708,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                     onChanged: (value) {
                       setDialogState(() {
-                        canDelete = value.trim() == 'ลบบัญชี';
+                        confirmationText = value;
                       });
                     },
                   ),
@@ -1733,8 +1732,6 @@ class _HomeScreenState extends State<HomeScreen> {
         );
       },
     );
-
-    confirmationController.dispose();
 
     if (finalConfirmed != true || !mounted) return;
 
