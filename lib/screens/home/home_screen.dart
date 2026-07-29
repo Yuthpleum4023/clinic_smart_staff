@@ -1648,6 +1648,166 @@ class _HomeScreenState extends State<HomeScreen> {
     _snack('อัปเดตประกาศงานล่าสุดเรียบร้อยแล้ว');
   }
 
+  Future<void> _deleteMyAccount() async {
+    _tapLog('DELETE_ACCOUNT');
+
+    final firstConfirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('ลบบัญชีอย่างถาวร'),
+          content: const Text(
+            'บัญชีเข้าสู่ระบบของท่านจะถูกลบอย่างถาวรและไม่สามารถกู้คืนได้\n\n'
+            'ข้อมูลประวัติการทำงานที่คลินิกจำเป็นต้องเก็บ '
+            'อาจยังคงอยู่ตามข้อกำหนดทางบัญชี การจ้างงาน '
+            'และกฎหมายที่เกี่ยวข้อง',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('ยกเลิก'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: Colors.red),
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('ดำเนินการต่อ'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (firstConfirmed != true || !mounted) return;
+
+    final confirmationController = TextEditingController();
+
+    final finalConfirmed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        var canDelete = false;
+
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('ยืนยันการลบบัญชี'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'เพื่อยืนยัน กรุณาพิมพ์คำว่า “ลบบัญชี” '
+                    'ในช่องด้านล่าง',
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: confirmationController,
+                    autofocus: true,
+                    decoration: const InputDecoration(
+                      labelText: 'พิมพ์คำว่า ลบบัญชี',
+                      border: OutlineInputBorder(),
+                    ),
+                    onChanged: (value) {
+                      setDialogState(() {
+                        canDelete = value.trim() == 'ลบบัญชี';
+                      });
+                    },
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext, false),
+                  child: const Text('ยกเลิก'),
+                ),
+                FilledButton(
+                  style: FilledButton.styleFrom(backgroundColor: Colors.red),
+                  onPressed: canDelete
+                      ? () => Navigator.pop(dialogContext, true)
+                      : null,
+                  child: const Text('ลบบัญชีถาวร'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    confirmationController.dispose();
+
+    if (finalConfirmed != true || !mounted) return;
+
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const PopScope(
+        canPop: false,
+        child: AlertDialog(
+          content: Row(
+            children: [
+              SizedBox(
+                width: 22,
+                height: 22,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              SizedBox(width: 14),
+              Expanded(child: Text('กำลังลบบัญชี กรุณารอสักครู่')),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    try {
+      await AuthService.deleteMyAccount();
+
+      try {
+        await AuthStorage.clearToken();
+      } catch (_) {}
+
+      try {
+        await AppContextResolver.clear();
+      } catch (_) {}
+
+      if (!mounted) return;
+
+      Navigator.of(context, rootNavigator: true).pop();
+
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) {
+          return AlertDialog(
+            title: const Text('ลบบัญชีแล้ว'),
+            content: const Text('บัญชีเข้าสู่ระบบของท่านถูกลบเรียบร้อยแล้ว'),
+            actions: [
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('ตกลง'),
+              ),
+            ],
+          );
+        },
+      );
+
+      if (!mounted) return;
+
+      Navigator.of(
+        context,
+      ).pushNamedAndRemoveUntil(AppRoutes.authGate, (_) => false);
+    } catch (error) {
+      if (!mounted) return;
+
+      Navigator.of(context, rootNavigator: true).pop();
+
+      _snack(
+        'ไม่สามารถลบบัญชีได้ '
+        'กรุณาตรวจสอบอินเทอร์เน็ตแล้วลองใหม่อีกครั้ง',
+      );
+    }
+  }
+
   Future<void> _logout() async {
     _tapLog('LOGOUT');
 
@@ -5051,6 +5211,7 @@ class _HomeScreenState extends State<HomeScreen> {
       helperSection: helperSection,
       employeeSection: employeeSection,
       onTogglePremiumAttendance: (v) async => _setPremiumAttendanceEnabled(v),
+      onDeleteAccount: _deleteMyAccount,
       onLogout: _logout,
     );
   }

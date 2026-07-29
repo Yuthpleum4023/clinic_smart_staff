@@ -17,6 +17,7 @@ class MyTab extends StatelessWidget {
   final Widget? helperSection;
   final Widget? employeeSection;
   final ValueChanged<bool>? onTogglePremiumAttendance;
+  final VoidCallback onDeleteAccount;
   final VoidCallback onLogout;
 
   const MyTab({
@@ -34,6 +35,7 @@ class MyTab extends StatelessWidget {
     this.helperSection,
     this.employeeSection,
     this.onTogglePremiumAttendance,
+    required this.onDeleteAccount,
     required this.onLogout,
   });
 
@@ -64,10 +66,7 @@ class MyTab extends StatelessWidget {
         side: BorderSide(color: Colors.purple.shade100),
       ),
       child: ListTile(
-        contentPadding: const EdgeInsets.symmetric(
-          horizontal: 14,
-          vertical: 6,
-        ),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
         leading: CircleAvatar(
           backgroundColor: Colors.purple.shade50,
           child: Icon(Icons.history, color: Colors.purple.shade700),
@@ -91,9 +90,7 @@ class MyTab extends StatelessWidget {
   Widget _premiumSwitchCard() {
     return Card(
       elevation: 0.4,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-      ),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       child: SwitchListTile(
         title: const Text(
           'บันทึกเวลางานแบบพรีเมียม (ทดสอบ)',
@@ -104,13 +101,10 @@ class MyTab extends StatelessWidget {
         ),
         value: premiumAttendanceEnabled,
         onChanged: onTogglePremiumAttendance,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       ),
     );
   }
-
 
   Widget _recoveryEmailCard(BuildContext context) {
     return Card(
@@ -120,13 +114,13 @@ class MyTab extends StatelessWidget {
         side: BorderSide(color: Colors.purple.shade100),
       ),
       child: ListTile(
-        contentPadding: const EdgeInsets.symmetric(
-          horizontal: 14,
-          vertical: 6,
-        ),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
         leading: CircleAvatar(
           backgroundColor: Colors.purple.shade50,
-          child: Icon(Icons.mark_email_read_outlined, color: Colors.purple.shade700),
+          child: Icon(
+            Icons.mark_email_read_outlined,
+            color: Colors.purple.shade700,
+          ),
         ),
         title: const Text(
           'อีเมลกู้คืนบัญชี',
@@ -139,11 +133,36 @@ class MyTab extends StatelessWidget {
         onTap: () {
           Navigator.push(
             context,
-            MaterialPageRoute(
-              builder: (_) => const RecoveryEmailScreen(),
-            ),
+            MaterialPageRoute(builder: (_) => const RecoveryEmailScreen()),
           );
         },
+      ),
+    );
+  }
+
+  Widget _deleteAccountCard() {
+    return Card(
+      elevation: 0.4,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: Colors.red.shade200),
+      ),
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+        leading: Icon(
+          Icons.delete_forever_outlined,
+          color: Colors.red.shade700,
+        ),
+        title: Text(
+          'ลบบัญชี',
+          style: TextStyle(
+            fontWeight: FontWeight.w900,
+            color: Colors.red.shade700,
+          ),
+        ),
+        subtitle: const Text('ลบบัญชีเข้าสู่ระบบนี้อย่างถาวร'),
+        trailing: Icon(Icons.chevron_right, color: Colors.red.shade400),
+        onTap: onDeleteAccount,
       ),
     );
   }
@@ -151,14 +170,9 @@ class MyTab extends StatelessWidget {
   Widget _logoutCard() {
     return Card(
       elevation: 0.4,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-      ),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       child: ListTile(
-        contentPadding: const EdgeInsets.symmetric(
-          horizontal: 14,
-          vertical: 4,
-        ),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
         leading: const Icon(Icons.logout),
         title: const Text(
           'ออกจากระบบ',
@@ -212,10 +226,11 @@ class MyTab extends StatelessWidget {
     sections.add(_recoveryEmailCard(context));
     sections.add(_gap());
 
+    sections.add(_deleteAccountCard());
+    sections.add(_gap());
+
     sections.add(_logoutCard());
-    sections.add(
-      SizedBox(height: MediaQuery.of(context).padding.bottom + 8),
-    );
+    sections.add(SizedBox(height: MediaQuery.of(context).padding.bottom + 8));
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(12, 10, 12, 20),

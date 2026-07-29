@@ -19,6 +19,9 @@ router.get("/me", auth, ctrl.me);
 // ✅ update my location
 router.patch("/users/me/location", auth, ctrl.updateMyLocation);
 
+// ✅ Apple Guideline 5.1.1(v): self-service account deletion
+router.delete("/users/me", auth, ctrl.deleteMyAccount);
+
 // ✅ Recovery email for phone-only accounts
 router.get("/users/me/recovery-email/status", auth, ctrl.getRecoveryEmailStatus);
 router.post("/users/me/recovery-email/request", auth, ctrl.requestRecoveryEmailOtp);

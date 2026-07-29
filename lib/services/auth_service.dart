@@ -93,16 +93,33 @@ class AuthService {
     throw Exception('$code $msg'.trim());
   }
 
+  static Future<Map<String, dynamic>> _delete(
+    String path,
+    Map<String, dynamic> body,
+  ) async {
+    final request = http.Request('DELETE', _url(path));
+    request.headers.addAll(await _headers());
+    request.body = jsonEncode(body);
+
+    final streamed = await request.send().timeout(_timeout);
+    final res = await http.Response.fromStream(streamed);
+    final json = _decodeObject(res.body);
+
+    if (res.statusCode >= 200 && res.statusCode < 300) {
+      return json;
+    }
+
+    final code = (json['code'] ?? '').toString();
+    final msg = (json['message'] ?? res.body).toString();
+    throw Exception('$code $msg'.trim());
+  }
+
   static Future<Map<String, dynamic>> _post(
     String path,
     Map<String, dynamic> body,
   ) async {
     final res = await http
-        .post(
-          _url(path),
-          headers: await _headers(),
-          body: jsonEncode(body),
-        )
+        .post(_url(path), headers: await _headers(), body: jsonEncode(body))
         .timeout(_timeout);
 
     final json = _decodeObject(res.body);
@@ -139,9 +156,7 @@ class AuthService {
 
     if (!_isValidPin(cleaned)) return false;
 
-    final json = await _post('/clinic-security/pin/verify', {
-      'pin': cleaned,
-    });
+    final json = await _post('/clinic-security/pin/verify', {'pin': cleaned});
 
     final data = _dataMap(json);
 
@@ -154,13 +169,24 @@ class AuthService {
 
     if (!_isValidPin(cleaned)) return false;
 
-    final json = await _post('/clinic-security/pin/set', {
-      'pin': cleaned,
-    });
+    final json = await _post('/clinic-security/pin/set', {'pin': cleaned});
 
     final data = _dataMap(json);
 
     return _pickBool(json['ok']) || _pickBool(data['hasPin']);
+  }
+
+  static Future<void> deleteMyAccount() async {
+    final json = await _delete('/users/me', {'confirmation': 'DELETE'});
+
+    final ok = _pickBool(json['ok']);
+    final action = (json['action'] ?? '').toString();
+
+    if (!ok &&
+        action != 'account_deleted' &&
+        action != 'account_already_deleted') {
+      throw Exception('ACCOUNT_DELETE_FAILED');
+    }
   }
 
   // No backend reset endpoint yet. This only cleans old local PIN leftovers.

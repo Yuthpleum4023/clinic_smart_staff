@@ -5,6 +5,7 @@ const User = require("../models/User");
 const Invite = require("../models/Invite");
 const ResetToken = require("../models/ResetToken");
 const RecoveryEmailToken = require("../models/RecoveryEmailToken");
+const PasswordReset = require("../models/PasswordReset");
 const { makeId } = require("../utils/id");
 const { signToken } = require("../utils/jwt");
 const { ensureEmployeeForUser } = require("../utils/staffServiceClient");
@@ -1568,6 +1569,135 @@ async function forgotPassword(req, res) {
 }
 
 /* ======================================================
+   DELETE MY ACCOUNT
+   - Apple Guideline 5.1.1(v)
+   - Deletes the login account for every supported role
+   - Does not cascade-delete attendance/payroll/history records
+====================================================== */
+async function deleteMyAccount(req, res) {
+  try {
+    const userId = normStr(req.user?.userId);
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        code: "AUTH_REQUIRED",
+        message: "Missing token payload",
+      });
+    }
+
+    const confirmation = normStr(req.body?.confirmation);
+    if (confirmation !== "DELETE") {
+      return res.status(400).json({
+        ok: false,
+        code: "DELETE_CONFIRMATION_REQUIRED",
+        message: "Account deletion confirmation is required",
+      });
+    }
+
+    const user = await User.findOne({ userId })
+      .select("userId roles activeRole role clinicId staffId")
+      .lean();
+
+    // Idempotent response: the account no longer exists.
+    if (!user) {
+      return res.json({
+        ok: true,
+        action: "account_already_deleted",
+      });
+    }
+
+    const roles = normalizeRoles([
+      ...(Array.isArray(user.roles) ? user.roles : []),
+      user.activeRole,
+      user.role,
+    ]);
+
+    /*
+     * Remove authentication and recovery artefacts.
+     * Attendance, payroll, clinic and workforce records are intentionally
+     * retained for operational, accounting and employment-history purposes.
+     */
+    await Promise.all([
+      ResetToken.deleteMany({ userId }),
+      RecoveryEmailToken.deleteMany({ userId }),
+      PasswordReset.deleteMany({ userId }),
+    ]);
+
+    /*
+     * Anonymised tombstone:
+     * - prevents all future login
+     * - removes user-controlled personal information
+     * - frees the old phone/email for a future registration
+     * - preserves stable identifiers required by historical records
+     * - preserves Clinic.ownerUserId referential integrity
+     */
+    const deletionId = crypto.randomBytes(12).toString("hex");
+    const deletedAt = new Date();
+
+    const updated = await User.updateOne(
+      { userId },
+      {
+        $set: {
+          email: "",
+          phone: "",
+          passwordHash: await bcrypt.hash(
+            crypto.randomBytes(48).toString("hex"),
+            10
+          ),
+          fullName: "",
+          employeeCode: "",
+          location: {
+            lat: null,
+            lng: null,
+            district: "",
+            province: "",
+            address: "",
+            label: "",
+            updatedAt: deletedAt,
+          },
+          taxProfiles: [],
+          isActive: false,
+          plan: "free",
+          premiumUntil: null,
+          planUpdatedAt: deletedAt,
+          employeeProvisionStatus: "not_applicable",
+        },
+      }
+    );
+
+    if (!updated?.matchedCount) {
+      return res.status(409).json({
+        ok: false,
+        code: "ACCOUNT_DELETE_CONFLICT",
+        message: "Unable to delete account",
+      });
+    }
+
+    console.log("✅ account deleted and anonymised", {
+      userId,
+      deletionId,
+      roles,
+      clinicId: normStr(user.clinicId),
+      staffId: normStr(user.staffId),
+    });
+
+    return res.json({
+      ok: true,
+      action: "account_deleted",
+    });
+  } catch (e) {
+    console.error("❌ deleteMyAccount failed:", e?.message || e);
+
+    return res.status(500).json({
+      ok: false,
+      code: "ACCOUNT_DELETE_FAILED",
+      message: "Unable to delete account",
+      error: IS_PROD ? undefined : e.message,
+    });
+  }
+}
+
+/* ======================================================
    RESET PASSWORD
 ====================================================== */
 async function resetPassword(req, res) {
@@ -1658,4 +1788,5 @@ module.exports = {
   verifyRecoveryEmailOtp,
   forgotPassword,
   resetPassword,
+  deleteMyAccount,
 };
