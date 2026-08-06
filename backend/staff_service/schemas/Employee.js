@@ -53,6 +53,15 @@ const EmployeeSchema = new mongoose.Schema(
       default: "",
     },
 
+    // Historical/current user identities belonging to this employee
+    // within this clinic. Used for safe payroll attendance resolution
+    // when a helper previously used another account.
+    identityUserIds: {
+      type: [String],
+      default: [],
+      index: true,
+    },
+
     // --------------------------------------------------
     // Identity
     // --------------------------------------------------
@@ -207,6 +216,20 @@ EmployeeSchema.pre("validate", function normalizeEmployee(next) {
   this.clinicId = String(this.clinicId || "").trim();
   this.userId = String(this.userId || "").trim();
   this.linkedUserId = String(this.linkedUserId || "").trim();
+
+  const normalizedIdentityUserIds = Array.isArray(this.identityUserIds)
+    ? this.identityUserIds
+        .map((value) => String(value || "").trim())
+        .filter(Boolean)
+    : [];
+
+  this.identityUserIds = [
+    ...new Set([
+      ...normalizedIdentityUserIds,
+      this.userId,
+      this.linkedUserId,
+    ].filter(Boolean)),
+  ];
   this.fullName = String(this.fullName || "").trim();
   this.position = String(this.position || "Staff").trim();
   this.employeeCode = String(this.employeeCode || "").trim();

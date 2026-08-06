@@ -291,12 +291,38 @@ function normalizeUserLinkFields(input = {}) {
   };
 }
 
+function normalizeIdentityUserIds(...sources) {
+  const values = [];
+
+  for (const source of sources) {
+    if (Array.isArray(source)) {
+      values.push(...source);
+    } else {
+      values.push(source);
+    }
+  }
+
+  return [
+    ...new Set(
+      values
+        .map((value) => s(value))
+        .filter(Boolean)
+    ),
+  ];
+}
+
 function buildEmployeeCreatePayload(input = {}, opts = {}) {
   const userLink = normalizeUserLinkFields(input);
 
   const payload = {
     userId: userLink.userId,
     linkedUserId: userLink.linkedUserId,
+    identityUserIds: normalizeIdentityUserIds(
+      input.identityUserIds,
+      input.identity_user_ids,
+      userLink.userId,
+      userLink.linkedUserId
+    ),
     fullName: buildFullNameFromInput(input),
     position: s(input.position) || "Staff",
     employeeCode: s(input.employeeCode || input.employee_code),
@@ -409,6 +435,19 @@ function buildEmployeeUpdatePayload(input = {}, opts = {}) {
     const userLink = normalizeUserLinkFields(input);
     payload.userId = userLink.userId;
     payload.linkedUserId = userLink.linkedUserId;
+  }
+
+  if (
+    hasSchemaPath("identityUserIds") &&
+    hasAny(input, [
+      "identityUserIds",
+      "identity_user_ids",
+    ])
+  ) {
+    payload.identityUserIds = normalizeIdentityUserIds(
+      input.identityUserIds,
+      input.identity_user_ids
+    );
   }
 
   if (
@@ -1294,6 +1333,34 @@ exports.updateEmployee = async (req, res) => {
     const update = buildEmployeeUpdatePayload(req.body || {}, {
       forceClinicId: hasClinicIdField() ? s(req.user?.clinicId) : "",
     });
+
+    const userIdentityChanged =
+      Object.prototype.hasOwnProperty.call(
+        update,
+        "userId"
+      ) ||
+      Object.prototype.hasOwnProperty.call(
+        update,
+        "linkedUserId"
+      ) ||
+      Object.prototype.hasOwnProperty.call(
+        update,
+        "identityUserIds"
+      );
+
+    if (
+      hasSchemaPath("identityUserIds") &&
+      userIdentityChanged
+    ) {
+      update.identityUserIds = normalizeIdentityUserIds(
+        existing.identityUserIds,
+        existing.userId,
+        existing.linkedUserId,
+        update.identityUserIds,
+        update.userId,
+        update.linkedUserId
+      );
+    }
 
     if (Object.keys(update).length === 0) {
       return res.status(400).json({

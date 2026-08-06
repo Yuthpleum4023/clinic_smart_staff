@@ -275,6 +275,25 @@ function normalizeEmployee(employee) {
       ""
   );
 
+  const identityUserIds = [
+    ...new Set(
+      [
+        ...(Array.isArray(employee.identityUserIds)
+          ? employee.identityUserIds
+          : []),
+        ...(Array.isArray(employee.identity_user_ids)
+          ? employee.identity_user_ids
+          : []),
+        employee.userId,
+        employee.linkedUserId,
+        employee.linked_user_id,
+        userId,
+      ]
+        .map((value) => s(value))
+        .filter(Boolean)
+    ),
+  ];
+
   const staffId = s(
     employee.staffId ||
       employee.employeeCode ||
@@ -302,6 +321,7 @@ function normalizeEmployee(employee) {
         employee.user?.id ||
         ""
     ),
+    identityUserIds,
 
     fullName: s(employee.fullName || employee.name || ""),
     name: s(employee.name || employee.fullName || ""),

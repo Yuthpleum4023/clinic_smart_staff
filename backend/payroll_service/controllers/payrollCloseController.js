@@ -492,6 +492,13 @@ function buildPayrollPersonIds({ employeeId, employee, body }) {
   return uniqueNonEmptyStrings([
     employeeId,
 
+    // ✅ Employee identity aliases for historical/current accounts
+    ...(Array.isArray(body?.identityUserIds)
+      ? body.identityUserIds
+      : []),
+    ...(Array.isArray(body?.identity_user_ids)
+      ? body.identity_user_ids
+      : []),
     body?.employeeUserId,
     body?.linkedUserId,
     body?.linked_user_id,
@@ -525,6 +532,12 @@ function buildPayrollPersonIds({ employeeId, employee, body }) {
     employee?.id,
     employee?.staffId,
     employee?.employeeId,
+    ...(Array.isArray(employee?.identityUserIds)
+      ? employee.identityUserIds
+      : []),
+    ...(Array.isArray(employee?.identity_user_ids)
+      ? employee.identity_user_ids
+      : []),
     employee?.userId,
     employee?.user_id,
     employee?.linkedUserId,
