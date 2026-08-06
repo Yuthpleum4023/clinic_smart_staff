@@ -65,6 +65,7 @@ const PayrollClose = require("../models/PayrollClose");
 const TaxYTD = require("../models/TaxYTD");
 const Overtime = require("../models/Overtime");
 const Clinic = require("../models/Clinic");
+const Shift = require("../models/Shift");
 
 // ✅ Attendance model used by attendanceController.js.
 // Production source of truth for check-in / check-out rows.
@@ -1169,12 +1170,81 @@ async function getAttendanceRegularWorkSummaryForMonth({
       "01",
     ].join("-");
 
-    // Helper attendance uses durable user identity (usr_*) and is linked
-    // to a Shift. Do not include staffId here, so Employee attendance
-    // remains owned entirely by the existing payroll query path.
-    const helperUserIds = uniqueNonEmptyStrings(personIds).filter((id) =>
-      id.startsWith("usr_")
+    // Helper attendance uses the durable user identity stored on Shift.
+    //
+    // The staff/profile service can occasionally return a linked userId
+    // that differs from the helperUserId used by Shift attendance.
+    // Resolve the real helper identity from this employee's shifts in the
+    // selected month before querying AttendanceSession.
+    //
+    // Employee/staff payroll remains owned by the existing query path.
+    const helperUserIdSet = new Set(
+      uniqueNonEmptyStrings(personIds).filter((id) =>
+        id.startsWith("usr_")
+      )
     );
+
+    let helperIdentityShiftCount = 0;
+
+    try {
+      const helperIdentityShifts = await Shift.find({
+        clinicId: cId,
+        date: {
+          $gte: monthStartYmd,
+          $lt: nextMonthYmd,
+        },
+        $or: [
+          { staffId },
+          { employeeId: staffId },
+          { helperStaffId: staffId },
+          { assignedStaffId: staffId },
+        ],
+      })
+        .setOptions({ strictQuery: false })
+        .select({
+          helperUserId: 1,
+          userId: 1,
+          helperId: 1,
+          principalId: 1,
+          staffId: 1,
+          employeeId: 1,
+          date: 1,
+          status: 1,
+        })
+        .limit(500)
+        .lean();
+
+      helperIdentityShiftCount = helperIdentityShifts.length;
+
+      for (const shiftRow of helperIdentityShifts) {
+        const shiftIdentityCandidates = [
+          shiftRow?.helperUserId,
+          shiftRow?.userId,
+          shiftRow?.helperId,
+          shiftRow?.principalId,
+        ];
+
+        for (const candidate of shiftIdentityCandidates) {
+          const normalized = safeStr(candidate);
+
+          if (normalized.startsWith("usr_")) {
+            helperUserIdSet.add(normalized);
+          }
+        }
+      }
+    } catch (e) {
+      console.log(
+        "[PAYROLL_HELPER_IDENTITY][SHIFT_LOOKUP_FAILED]",
+        {
+          clinicId: cId,
+          employeeId: staffId,
+          monthKey: mKey,
+          error: e.message,
+        }
+      );
+    }
+
+    const helperUserIds = [...helperUserIdSet];
     const nativeIdentityOr = [];
 
     for (const id of helperUserIds) {
@@ -1183,6 +1253,14 @@ async function getAttendanceRegularWorkSummaryForMonth({
         { userId: id, principalType: "user" }
       );
     }
+
+    console.log("[PAYROLL_HELPER_IDENTITY]", {
+      clinicId: cId,
+      employeeId: staffId,
+      monthKey: mKey,
+      shiftCount: helperIdentityShiftCount,
+      helperUserIds,
+    });
 
     if (
       Number.isInteger(yearNumber) &&
