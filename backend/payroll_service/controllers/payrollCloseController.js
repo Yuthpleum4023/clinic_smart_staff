@@ -1245,9 +1245,79 @@ async function getAttendanceRegularWorkSummaryForMonth({
     }
 
     const helperUserIds = [...helperUserIdSet];
+
+    // ------------------------------------------------------------
+    // Helper Attendance Discovery
+    //
+    // AttendanceSession is the source of truth for actual work time.
+    // If Shift identity mapping is unavailable, discover helper users
+    // from closed shift attendance records in the selected month.
+    // Employee payroll path remains unchanged.
+    // ------------------------------------------------------------
+    try {
+      const discoveredAttendance = await Attendance.find({
+        clinicId: cId,
+        workDate: {
+          $gte: monthStartYmd,
+          $lt: nextMonthYmd,
+        },
+        principalType: "user",
+        status: "closed",
+        shiftId: { $ne: null },
+      })
+        .select({
+          principalId: 1,
+          userId: 1,
+          shiftId: 1,
+          workDate: 1,
+          status: 1,
+        })
+        .limit(2000)
+        .lean();
+
+      const discoveredIds = new Set();
+
+      for (const row of discoveredAttendance) {
+        [
+          row?.principalId,
+          row?.userId,
+        ].forEach((id) => {
+          const normalized = safeStr(id);
+
+          if (normalized.startsWith("usr_")) {
+            discoveredIds.add(normalized);
+          }
+        });
+      }
+
+      console.log("[PAYROLL_HELPER_ATTENDANCE_DISCOVERY]", {
+        clinicId: cId,
+        employeeId: staffId,
+        monthKey: mKey,
+        attendanceCount: discoveredAttendance.length,
+        discoveredIds: [...discoveredIds],
+      });
+
+      // Add discovered helper users.
+      // Native query below will still decide payable rows.
+      for (const id of discoveredIds) {
+        helperUserIds.push(id);
+      }
+    } catch (e) {
+      console.log(
+        "[PAYROLL_HELPER_ATTENDANCE_DISCOVERY_FAILED]",
+        {
+          clinicId: cId,
+          employeeId: staffId,
+          monthKey: mKey,
+          error: e.message,
+        }
+      );
+    }
+
     const nativeIdentityOr = [];
 
-    for (const id of helperUserIds) {
+    for (const id of [...new Set(helperUserIds)]) {
       nativeIdentityOr.push(
         { principalId: id, principalType: "user" },
         { userId: id, principalType: "user" }
