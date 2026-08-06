@@ -1135,8 +1135,106 @@ async function getAttendanceRegularWorkSummaryForMonth({
     }
   }
 
-  const rows = mergeAttendanceRowsUnique([...strictRows, ...fallbackRows]);
-  const { totalMinutes, payableItems } = getAttendancePayableItems(rows);
+  // ✅ AttendanceSession schema-native fallback
+  //
+  // AttendanceSession.workDate is stored as a yyyy-MM-dd string.
+  // The existing broad legacy fallback may fail while Mongoose casts
+  // mixed legacy fields. Use this narrow query only when the existing
+  // paths found no payable records.
+  //
+  // Employee rows already found by the existing path remain unchanged.
+  let nativeRows = [];
+
+  const existingRows = mergeAttendanceRowsUnique([
+    ...strictRows,
+    ...fallbackRows,
+  ]);
+  const existingPayable = getAttendancePayableItems(existingRows);
+
+  if (
+    existingRows.length === 0 ||
+    existingPayable.totalMinutes <= 0
+  ) {
+    const [yearNumber, monthNumber] = mKey
+      .split("-")
+      .map((value) => Number(value));
+
+    const monthStartYmd = `${mKey}-01`;
+    const nextMonthDate = new Date(
+      Date.UTC(yearNumber, monthNumber, 1)
+    );
+    const nextMonthYmd = [
+      nextMonthDate.getUTCFullYear(),
+      String(nextMonthDate.getUTCMonth() + 1).padStart(2, "0"),
+      "01",
+    ].join("-");
+
+    // Helper attendance uses durable user identity (usr_*) and is linked
+    // to a Shift. Do not include staffId here, so Employee attendance
+    // remains owned entirely by the existing payroll query path.
+    const helperUserIds = uniqueNonEmptyStrings(personIds).filter((id) =>
+      id.startsWith("usr_")
+    );
+    const nativeIdentityOr = [];
+
+    for (const id of helperUserIds) {
+      nativeIdentityOr.push(
+        { principalId: id, principalType: "user" },
+        { userId: id, principalType: "user" }
+      );
+    }
+
+    if (
+      Number.isInteger(yearNumber) &&
+      Number.isInteger(monthNumber) &&
+      monthNumber >= 1 &&
+      monthNumber <= 12 &&
+      nativeIdentityOr.length > 0
+    ) {
+      try {
+        nativeRows = await Attendance.find({
+          clinicId: cId,
+          workDate: {
+            $gte: monthStartYmd,
+            $lt: nextMonthYmd,
+          },
+          status: "closed",
+
+          // Helper-only boundary:
+          // Employee/staff attendance remains on the existing query path.
+          principalType: "user",
+          shiftId: { $ne: null },
+          $or: nativeIdentityOr,
+        })
+          .sort({ workDate: 1, checkInAt: 1 })
+          .limit(2000)
+          .lean();
+
+        if (nativeRows.length > 0) {
+          queryMode = "native_attendance_session_exact";
+        }
+      } catch (e) {
+        console.log(
+          "[PAYROLL_PARTTIME_ATTENDANCE_WORK][NATIVE_FALLBACK_FAILED]",
+          {
+            clinicId: cId,
+            employeeId: staffId,
+            monthKey: mKey,
+            error: e.message,
+          }
+        );
+        nativeRows = [];
+      }
+    }
+  }
+
+  const rows = mergeAttendanceRowsUnique([
+    ...strictRows,
+    ...fallbackRows,
+    ...nativeRows,
+  ]);
+  const { totalMinutes, payableItems } =
+    getAttendancePayableItems(rows);
 
   const result = {
     minutes: totalMinutes,
@@ -1150,6 +1248,7 @@ async function getAttendanceRegularWorkSummaryForMonth({
     count: rows.length,
     strictCount: strictRows.length,
     fallbackCount: fallbackRows.length,
+    nativeCount: nativeRows.length,
     payableCount: payableItems.length,
     items: payableItems.slice(0, 31),
     personIds,
