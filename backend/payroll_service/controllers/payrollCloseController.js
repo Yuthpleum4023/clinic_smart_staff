@@ -1313,9 +1313,8 @@ async function getAttendanceRegularWorkSummaryForMonth({
 
       // Add discovered helper users.
       // Native query below will still decide payable rows.
-      for (const id of discoveredIds) {
-        helperUserIds.push(id);
-      }
+      // Broad attendance discovery remains diagnostic-only.
+      // Exact Employee identityUserIds are the only helper identities used for payroll.
     } catch (e) {
       console.log(
         "[PAYROLL_HELPER_ATTENDANCE_DISCOVERY_FAILED]",
