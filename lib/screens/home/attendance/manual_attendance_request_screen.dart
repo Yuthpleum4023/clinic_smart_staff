@@ -145,8 +145,8 @@ class _ManualAttendanceRequestScreenState
     _workDate = widget.previousWorkDate.trim().isNotEmpty
         ? widget.previousWorkDate.trim()
         : (widget.initialWorkDate.trim().isNotEmpty
-            ? widget.initialWorkDate.trim()
-            : _todayYmd());
+              ? widget.initialWorkDate.trim()
+              : _todayYmd());
 
     _manualRequestType = _normalizeType(widget.initialManualRequestType);
 
@@ -156,12 +156,13 @@ class _ManualAttendanceRequestScreenState
       _manualRequestType = 'forgot_checkout';
     }
 
-    _selectedReasonCode = widget.initialReasonCode.trim().isNotEmpty &&
+    _selectedReasonCode =
+        widget.initialReasonCode.trim().isNotEmpty &&
             _reasonLabels.containsKey(widget.initialReasonCode.trim())
         ? widget.initialReasonCode.trim()
         : (_isFixingPreviousPending
-            ? 'PREVIOUS_OPEN_SESSION'
-            : _defaultReasonByType(_manualRequestType));
+              ? 'PREVIOUS_OPEN_SESSION'
+              : _defaultReasonByType(_manualRequestType));
 
     _reasonTextCtrl.text = widget.initialReasonText.trim();
     _noteCtrl.text = widget.initialMessage.trim();
@@ -238,9 +239,9 @@ class _ManualAttendanceRequestScreenState
   }
 
   Map<String, String> _authHeaders(String token) => <String, String>{
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer $token',
-      };
+    'Content-Type': 'application/json',
+    'Authorization': 'Bearer $token',
+  };
 
   Future<http.Response> _tryPost(
     Uri uri, {
@@ -266,22 +267,24 @@ class _ManualAttendanceRequestScreenState
 
   String _extractApiMessage(http.Response res) {
     final decoded = _decodeBodyMap(res.body);
-    final code = (decoded['code'] ??
-            decoded['errorCode'] ??
-            decoded['statusCode'] ??
-            decoded['reason'] ??
-            '')
-        .toString()
-        .trim()
-        .toUpperCase();
+    final code =
+        (decoded['code'] ??
+                decoded['errorCode'] ??
+                decoded['statusCode'] ??
+                decoded['reason'] ??
+                '')
+            .toString()
+            .trim()
+            .toUpperCase();
 
-    final msg = (decoded['message'] ??
-            decoded['error'] ??
-            decoded['msg'] ??
-            decoded['detail'] ??
-            '')
-        .toString()
-        .trim();
+    final msg =
+        (decoded['message'] ??
+                decoded['error'] ??
+                decoded['msg'] ??
+                decoded['detail'] ??
+                '')
+            .toString()
+            .trim();
 
     final raw = '$code $msg'.toLowerCase();
 
@@ -457,14 +460,21 @@ class _ManualAttendanceRequestScreenState
       body['shiftId'] = _effectiveShiftId;
     }
 
+    if (_manualRequestType == 'forgot_checkout' &&
+        widget.previousSessionId.trim().isNotEmpty) {
+      body['sessionId'] = widget.previousSessionId.trim();
+    }
+
     if (_needsCheckInTime() && _checkInTime != null) {
-      body['requestedCheckInAt'] =
-          _toIsoWithOffset(_combineDateAndTime(_workDate, _checkInTime!));
+      body['requestedCheckInAt'] = _toIsoWithOffset(
+        _combineDateAndTime(_workDate, _checkInTime!),
+      );
     }
 
     if (_needsCheckOutTime() && _checkOutTime != null) {
-      body['requestedCheckOutAt'] =
-          _toIsoWithOffset(_combineDateAndTime(_workDate, _checkOutTime!));
+      body['requestedCheckOutAt'] = _toIsoWithOffset(
+        _combineDateAndTime(_workDate, _checkOutTime!),
+      );
     }
 
     return body;
@@ -597,10 +607,7 @@ class _ManualAttendanceRequestScreenState
       padding: const EdgeInsets.only(bottom: 8),
       child: Text(
         text,
-        style: const TextStyle(
-          fontSize: 15,
-          fontWeight: FontWeight.w800,
-        ),
+        style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
       ),
     );
   }
@@ -631,10 +638,7 @@ class _ManualAttendanceRequestScreenState
           children: [
             const Text(
               'คลินิกที่อ้างอิง',
-              style: TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w900,
-              ),
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
             ),
             const SizedBox(height: 8),
             Text(
@@ -672,10 +676,7 @@ class _ManualAttendanceRequestScreenState
           children: [
             const Text(
               'กะงานที่อ้างอิง',
-              style: TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w900,
-              ),
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
             ),
             const SizedBox(height: 8),
             Text(
@@ -755,13 +756,11 @@ class _ManualAttendanceRequestScreenState
     final intro = _isFixingPreviousPending
         ? 'คุณกำลังส่งคำขอแก้ไขรายการค้างของวันก่อน หลังส่งแล้วต้องรอคลินิกอนุมัติก่อน จึงจะเริ่มลงเวลาวันใหม่ได้'
         : (widget.initialMessage.trim().isNotEmpty
-            ? widget.initialMessage.trim()
-            : 'กรุณาระบุรายละเอียดคำขอให้ครบถ้วน เพื่อส่งให้คลินิกพิจารณาอนุมัติ');
+              ? widget.initialMessage.trim()
+              : 'กรุณาระบุรายละเอียดคำขอให้ครบถ้วน เพื่อส่งให้คลินิกพิจารณาอนุมัติ');
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('คำขอแก้ไขเวลาแบบ Manual'),
-      ),
+      appBar: AppBar(title: const Text('คำขอแก้ไขเวลาแบบ Manual')),
       body: SafeArea(
         child: Form(
           key: _formKey,
@@ -830,7 +829,9 @@ class _ManualAttendanceRequestScreenState
                                   _manualRequestType = v;
                                   _selectedReasonCode = _isFixingPreviousPending
                                       ? 'PREVIOUS_OPEN_SESSION'
-                                      : _defaultReasonByType(_manualRequestType);
+                                      : _defaultReasonByType(
+                                          _manualRequestType,
+                                        );
                                   _prefillTimesByType();
                                 });
                               },

@@ -4,11 +4,13 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
 import 'package:clinic_smart_staff/api/api_config.dart';
+import 'package:clinic_smart_staff/screens/home/attendance/manual_attendance_request_screen.dart';
 
 class AttendanceHistoryScreen extends StatefulWidget {
   final String token;
   final String role;
   final String clinicId;
+  final String userId;
   final String staffId;
 
   final String initialShiftId;
@@ -19,6 +21,7 @@ class AttendanceHistoryScreen extends StatefulWidget {
     required this.token,
     required this.role,
     required this.clinicId,
+    required this.userId,
     required this.staffId,
     this.initialShiftId = '',
     this.initialShiftLabel = '',
@@ -532,6 +535,12 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
     final d = _workDateForFilter(s);
     if (d == null) return false;
     return !d.isBefore(r.start) && !d.isAfter(r.end);
+  }
+
+  String _sessionId(Map<String, dynamic> s) {
+    return _s(
+      s['_id'] ?? s['id'] ?? s['sessionId'] ?? s['attendanceSessionId'],
+    );
   }
 
   String _sessionShiftId(Map<String, dynamic> s) {
@@ -1345,6 +1354,68 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
     );
   }
 
+  Future<void> _openForgotCheckoutRequest(Map<String, dynamic> session) async {
+    if (!_isHelper || !_isStaleOpen(session)) return;
+
+    final sessionId = _sessionId(session);
+    final workDate = _workDateText(session);
+    final shiftId = _sessionShiftId(session);
+    final clinicId = _extractClinicId(session);
+    final clinicName = _displayClinicText(session);
+
+    if (sessionId.isEmpty ||
+        workDate.isEmpty ||
+        workDate == '-' ||
+        shiftId.isEmpty) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'ข้อมูลรายการย้อนหลังไม่ครบ กรุณารีเฟรชประวัติแล้วลองอีกครั้ง',
+          ),
+        ),
+      );
+      return;
+    }
+
+    if (!mounted) return;
+
+    final submitted = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ManualAttendanceRequestScreen(
+          role: widget.role,
+          clinicId: clinicId.isNotEmpty ? clinicId : widget.clinicId,
+          userId: widget.userId,
+          staffId: widget.staffId,
+          initialClinicName: clinicName,
+          previousClinicName: clinicName,
+          initialWorkDate: workDate,
+          initialManualRequestType: 'forgot_checkout',
+          initialReasonCode: 'FORGOT_CHECKOUT',
+          initialReasonText: '',
+          initialMessage: 'ส่งคำขอลืมเช็กเอาท์จากรายการประวัติวันที่ $workDate',
+          initialShiftId: shiftId,
+          isFixingPreviousPending: true,
+          previousSessionId: sessionId,
+          previousWorkDate: workDate,
+          previousShiftId: shiftId,
+        ),
+      ),
+    );
+
+    if (!mounted) return;
+
+    if (submitted == true) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('ส่งคำขอลืมเช็กเอาท์เรียบร้อยแล้ว')),
+      );
+
+      await _load();
+    }
+  }
+
   Future<void> _showDetailSheet(Map<String, dynamic> s) async {
     final dateText = _workDateText(s);
     final ci = _fmtHM(_checkInValue(s));
@@ -1482,6 +1553,20 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
                       ),
                     ),
                   ),
+                  if (_isHelper && _isStaleOpen(s)) ...[
+                    SizedBox(
+                      width: double.infinity,
+                      child: FilledButton.icon(
+                        onPressed: () async {
+                          Navigator.pop(ctx);
+                          await _openForgotCheckoutRequest(s);
+                        },
+                        icon: const Icon(Icons.logout),
+                        label: const Text('ส่งคำขอลืมเช็กเอาท์'),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                  ],
                   SizedBox(
                     width: double.infinity,
                     child: OutlinedButton.icon(

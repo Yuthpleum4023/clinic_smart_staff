@@ -5187,7 +5187,10 @@ async function submitManualRequest(req, res) {
     const manualRequestType = normalizeManualRequestType(
       req.body?.manualRequestType
     );
-    const shiftId = getRequestedShiftId(req);
+    let shiftId = getRequestedShiftId(req);
+    const requestedSessionId = normalizeObjectIdString(
+      req.body?.sessionId || req.body?.attendanceSessionId
+    );
 
     if (!isYmd(workDate)) {
       return res
@@ -5201,6 +5204,83 @@ async function submitManualRequest(req, res) {
         message:
           "manualRequestType required (check_in | check_out | edit_check_in | edit_both | forgot_checkout)",
       });
+    }
+
+    // A forgot-checkout request belongs to an existing attendance
+    // session. That session is authoritative for its historical shift.
+    if (manualRequestType === "forgot_checkout" && requestedSessionId) {
+      const originalSession = await AttendanceSession.findById(
+        requestedSessionId
+      );
+
+      if (!originalSession) {
+        return res.status(404).json({
+          ok: false,
+          code: "SESSION_NOT_FOUND",
+          message:
+            "ไม่พบรายการลงเวลาที่ต้องการส่งคำขอลืมเช็กเอาท์ กรุณารีเฟรชแล้วลองใหม่",
+        });
+      }
+
+      const tokenPrincipal = getPrincipal(req);
+
+      const ownershipQuery = {
+        _id: originalSession._id,
+        $or: buildAttendanceActorOr({
+          principalId: tokenPrincipal.principalId,
+          userId: tokenPrincipal.userId,
+          staffId: tokenPrincipal.staffId,
+        }),
+      };
+
+      const ownedSession = await AttendanceSession.findOne(
+        ownershipQuery
+      );
+
+      if (!ownedSession) {
+        return res.status(403).json({
+          ok: false,
+          code: "SESSION_NOT_ASSIGNED_TO_USER",
+          message: "รายการลงเวลานี้ไม่ได้เป็นของผู้ใช้งานคนนี้",
+        });
+      }
+
+      if (s(ownedSession.workDate) !== workDate) {
+        return res.status(409).json({
+          ok: false,
+          code: "SESSION_DATE_MISMATCH",
+          message: "วันที่ของรายการลงเวลาไม่ตรงกับวันที่ที่ส่งคำขอ",
+          requestedWorkDate: workDate,
+          sessionWorkDate: s(ownedSession.workDate),
+        });
+      }
+
+      if (!ownedSession.checkInAt) {
+        return res.status(409).json({
+          ok: false,
+          code: "EXISTING_CHECKIN_REQUIRED",
+          message:
+            "คำขอลืมเช็กเอาท์ต้องอ้างอิงรายการที่มีเวลาเช็กอินอยู่แล้ว",
+        });
+      }
+
+      if (ownedSession.checkOutAt) {
+        return res.status(409).json({
+          ok: false,
+          code: "ATTENDANCE_ALREADY_COMPLETED",
+          message: "รายการลงเวลานี้มีเวลาเช็กเอาท์แล้ว",
+        });
+      }
+
+      const historicalShiftId = normalizeObjectIdString(
+        ownedSession.shiftId?._id ||
+          ownedSession.shiftId?.id ||
+          ownedSession.shiftId
+      );
+
+      if (historicalShiftId) {
+        shiftId = historicalShiftId;
+      }
     }
 
     const ctx = await resolveRuntimeContext(req, workDate, shiftId);

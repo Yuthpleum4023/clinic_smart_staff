@@ -2599,7 +2599,11 @@ class _HomeScreenState extends State<HomeScreen> {
             initialReasonCode: initialReasonCode,
             initialReasonText: initialReasonText,
             initialMessage: initialMessage,
-            initialShiftId: _isHelper ? _selectedHelperShiftId : '',
+            initialShiftId: _isHelper
+                ? (isFixingPreviousPending && previousShiftId.trim().isNotEmpty
+                      ? previousShiftId.trim()
+                      : _selectedHelperShiftId)
+                : '',
             isFixingPreviousPending: isFixingPreviousPending,
             previousSessionId: previousSessionId,
             previousWorkDate: previousWorkDate,
@@ -2720,6 +2724,7 @@ class _HomeScreenState extends State<HomeScreen> {
           token: token,
           role: _role,
           clinicId: _clinicId,
+          userId: _userId,
           staffId: _staffId,
           initialShiftId: _isHelper ? _selectedHelperShiftId : '',
           initialShiftLabel: _isHelper ? _selectedHelperShiftLabel : '',
@@ -4386,6 +4391,7 @@ class _HomeScreenState extends State<HomeScreen> {
           token: token,
           role: _role,
           clinicId: _clinicId,
+          userId: _userId,
           staffId: _staffId,
           initialShiftId: _isHelper ? _selectedHelperShiftId : '',
           initialShiftLabel: _isHelper ? _selectedHelperShiftLabel : '',
