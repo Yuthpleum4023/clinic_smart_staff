@@ -575,7 +575,71 @@ function timeToMin(hhmm) {
   const h = parseInt(parts[0], 10);
   const m = parseInt(parts[1], 10);
   if (Number.isNaN(h) || Number.isNaN(m)) return null;
+  if (h < 0 || h > 23 || m < 0 || m > 59) return null;
   return h * 60 + m;
+}
+
+function parseShiftNeedDateTime(dateText, timeText) {
+  const date = s(dateText);
+  const time = s(timeText);
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) return null;
+
+  const dt = new Date(`${date}T${time}:00+07:00`);
+  if (Number.isNaN(dt.getTime())) return null;
+
+  return dt;
+}
+
+function getShiftNeedStartAt(need) {
+  return parseShiftNeedDateTime(need?.date, need?.start);
+}
+
+function getShiftNeedEndAt(need) {
+  return parseShiftNeedDateTime(need?.date, need?.end);
+}
+
+function isShiftNeedExpired(need, now = new Date()) {
+  const endAt = getShiftNeedEndAt(need);
+  if (!endAt) return false;
+  return endAt.getTime() <= now.getTime();
+}
+
+function compareOpenNeedsByScheduleThenDistance(a, b) {
+  const aStart = getShiftNeedStartAt(a);
+  const bStart = getShiftNeedStartAt(b);
+
+  if (aStart && bStart) {
+    const diff = aStart.getTime() - bStart.getTime();
+    if (diff !== 0) return diff;
+  } else if (aStart && !bStart) {
+    return -1;
+  } else if (!aStart && bStart) {
+    return 1;
+  }
+
+  const aDist = numOrNull(a?.distanceKm);
+  const bDist = numOrNull(b?.distanceKm);
+
+  const aHasDist =
+    typeof aDist === "number" &&
+    Number.isFinite(aDist);
+
+  const bHasDist =
+    typeof bDist === "number" &&
+    Number.isFinite(bDist);
+
+  if (aHasDist && bHasDist && aDist !== bDist) {
+    return aDist - bDist;
+  }
+
+  if (aHasDist && !bHasDist) return -1;
+  if (!aHasDist && bHasDist) return 1;
+
+  const aCreated = s(a?.createdAt);
+  const bCreated = s(b?.createdAt);
+  return bCreated.localeCompare(aCreated);
 }
 
 function overlaps(aStart, aEnd, bStart, bEnd) {
@@ -835,7 +899,13 @@ async function listOpenNeeds(req, res) {
     const hasHelperLocation = isValidLatLng(helperLat, helperLng);
 
     const q = { status: "open" };
-    const items = await ShiftNeed.find(q).lean();
+    const rawItems = await ShiftNeed.find(q).lean();
+
+    const now = new Date();
+
+    const items = (rawItems || []).filter(
+      (need) => !isShiftNeedExpired(need, now)
+    );
 
     let clinicMap = new Map();
     if (Clinic && (items || []).length) {
@@ -904,32 +974,7 @@ async function listOpenNeeds(req, res) {
       };
     });
 
-    enriched.sort((a, b) => {
-      const aDist = numOrNull(a.distanceKm);
-      const bDist = numOrNull(b.distanceKm);
-
-      const aHas = typeof aDist === "number" && Number.isFinite(aDist);
-      const bHas = typeof bDist === "number" && Number.isFinite(bDist);
-
-      if (aHas && bHas) {
-        if (aDist !== bDist) return aDist - bDist;
-      }
-
-      if (aHas && !bHas) return -1;
-      if (!aHas && bHas) return 1;
-
-      const aDate = s(a.date);
-      const bDate = s(b.date);
-      if (aDate !== bDate) return aDate.localeCompare(bDate);
-
-      const aStart = s(a.start);
-      const bStart = s(b.start);
-      if (aStart !== bStart) return aStart.localeCompare(bStart);
-
-      const aCreated = s(a.createdAt);
-      const bCreated = s(b.createdAt);
-      return bCreated.localeCompare(aCreated);
-    });
+    enriched.sort(compareOpenNeedsByScheduleThenDistance);
 
     return res.json({ items: enriched });
   } catch (e) {
@@ -960,6 +1005,15 @@ async function applyNeed(req, res) {
     const need = await ShiftNeed.findById(id);
     if (!need) bad("need not found", 404);
     if (need.status !== "open") bad("need is not open", 400);
+
+    if (isShiftNeedExpired(need)) {
+      bad("need has already expired", 409, {
+        code: "NEED_EXPIRED",
+        date: s(need.date),
+        start: s(need.start),
+        end: s(need.end),
+      });
+    }
 
     const applicants = ensureApplicantsArray(need);
 
