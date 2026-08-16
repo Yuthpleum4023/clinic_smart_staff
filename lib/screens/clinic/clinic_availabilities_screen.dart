@@ -90,11 +90,9 @@ class _ClinicAvailabilitiesScreenState extends State<ClinicAvailabilitiesScreen>
       return a.distanceKm!.toDouble();
     }
 
-    final raw = _raw(a.distanceText)
-        .replaceAll('กม.', '')
-        .replaceAll('km', '')
-        .replaceAll('KM', '')
-        .trim();
+    final raw = _raw(
+      a.distanceText,
+    ).replaceAll('กม.', '').replaceAll('km', '').replaceAll('KM', '').trim();
 
     if (raw.isEmpty) return null;
     return double.tryParse(raw);
@@ -153,9 +151,10 @@ class _ClinicAvailabilitiesScreenState extends State<ClinicAvailabilitiesScreen>
     final token = await _needToken();
     final url = Uri.parse('${ApiConfig.payrollBaseUrl}$path');
 
-    final resp = await http.get(url, headers: {
-      'Authorization': 'Bearer $token',
-    });
+    final resp = await http.get(
+      url,
+      headers: {'Authorization': 'Bearer $token'},
+    );
 
     if (resp.statusCode < 200 || resp.statusCode >= 300) {
       final m = await _decodeJsonSafe(resp.body);
@@ -223,10 +222,7 @@ class _ClinicAvailabilitiesScreenState extends State<ClinicAvailabilitiesScreen>
   }
 
   Future<void> _loadAll() async {
-    await Future.wait([
-      _loadOpen(),
-      _loadBooked(),
-    ]);
+    await Future.wait([_loadOpen(), _loadBooked()]);
   }
 
   bool _isOpen(Availability a) {
@@ -314,166 +310,154 @@ class _ClinicAvailabilitiesScreenState extends State<ClinicAvailabilitiesScreen>
     return a.isNearby ? 'ใกล้คลินิก' : '';
   }
 
-
   Future<Map<String, dynamic>?> _askBookingNote(Availability a) async {
     String noteText = '';
+    String hourlyRateText = '';
     String? hourlyRateError;
-    final hourlyRateCtrl = TextEditingController();
 
-    try {
-      final bottom = MediaQuery.of(context).viewInsets.bottom;
+    final bottom = MediaQuery.of(context).viewInsets.bottom;
 
-      final ok = await showGeneralDialog<bool>(
-        context: context,
-        barrierDismissible: true,
-        barrierLabel: 'booking',
-        transitionDuration: const Duration(milliseconds: 180),
-        pageBuilder: (dialogContext, animation, secondaryAnimation) {
-          return Padding(
-            padding: EdgeInsets.only(
-              left: 16,
-              right: 16,
-              top: 24,
-              bottom: bottom + 24,
-            ),
-            child: Center(
-              child: Material(
-                color: Theme.of(dialogContext).dialogTheme.backgroundColor ??
-                    Theme.of(dialogContext).colorScheme.surface,
-                borderRadius: BorderRadius.circular(18),
-                clipBehavior: Clip.antiAlias,
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 420),
-                  child: SingleChildScrollView(
-                    child: StatefulBuilder(
-                      builder: (ctx, setLocal) {
-                        return Padding(
-                          padding: const EdgeInsets.fromLTRB(18, 18, 18, 16),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Text(
-                                'ยืนยันการจองผู้ช่วย?',
-                                style: TextStyle(
-                                  fontWeight: FontWeight.w900,
-                                  fontSize: 18,
-                                ),
+    final ok = await showGeneralDialog<bool>(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: 'booking',
+      transitionDuration: const Duration(milliseconds: 180),
+      pageBuilder: (dialogContext, animation, secondaryAnimation) {
+        return Padding(
+          padding: EdgeInsets.only(
+            left: 16,
+            right: 16,
+            top: 24,
+            bottom: bottom + 24,
+          ),
+          child: Center(
+            child: Material(
+              color:
+                  Theme.of(dialogContext).dialogTheme.backgroundColor ??
+                  Theme.of(dialogContext).colorScheme.surface,
+              borderRadius: BorderRadius.circular(18),
+              clipBehavior: Clip.antiAlias,
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 420),
+                child: SingleChildScrollView(
+                  child: StatefulBuilder(
+                    builder: (ctx, setLocal) {
+                      return Padding(
+                        padding: const EdgeInsets.fromLTRB(18, 18, 18, 16),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'ยืนยันการจองผู้ช่วย?',
+                              style: TextStyle(
+                                fontWeight: FontWeight.w900,
+                                fontSize: 18,
                               ),
-                              const SizedBox(height: 12),
-                              Text('วันที่ ${_s(a.date)}'),
-                              Text('เวลา ${_s(a.start)}-${_s(a.end)}'),
-                              if (_helperLocationDistanceLine(a).isNotEmpty) ...[
-                                const SizedBox(height: 6),
-                                Text(_helperLocationDistanceLine(a)),
-                              ],
-                              const SizedBox(height: 12),
-                              TextField(
-                                controller: hourlyRateCtrl,
-                                keyboardType:
-                                    const TextInputType.numberWithOptions(
-                                  decimal: true,
-                                ),
-                                onChanged: (_) {
-                                  if (hourlyRateError != null) {
-                                    setLocal(() => hourlyRateError = null);
-                                  }
-                                },
-                                onTapOutside: (_) =>
-                                    FocusScope.of(ctx).unfocus(),
-                                decoration: InputDecoration(
-                                  labelText: 'ค่าตอบแทน/ชม.',
-                                  hintText: 'เช่น 150',
-                                  suffixText: 'บาท/ชม.',
-                                  errorText: hourlyRateError,
-                                  border: const OutlineInputBorder(),
-                                ),
-                                textInputAction: TextInputAction.next,
-                              ),
-                              const SizedBox(height: 12),
-                              TextField(
-                                autofocus: false,
-                                onChanged: (v) => noteText = v,
-                                onTapOutside: (_) =>
-                                    FocusScope.of(ctx).unfocus(),
-                                decoration: const InputDecoration(
-                                  labelText: 'หมายเหตุถึงผู้ช่วย (ไม่บังคับ)',
-                                  border: OutlineInputBorder(),
-                                ),
-                                maxLines: 3,
-                                minLines: 2,
-                                textInputAction: TextInputAction.done,
-                                onSubmitted: (_) =>
-                                    FocusScope.of(ctx).unfocus(),
-                              ),
-                              const SizedBox(height: 16),
-                              Row(
-                                children: [
-                                  TextButton(
-                                    onPressed: () {
-                                      FocusScope.of(ctx).unfocus();
-                                      Navigator.pop(ctx, false);
-                                    },
-                                    child: const Text('ยกเลิก'),
-                                  ),
-                                  const Spacer(),
-                                  ElevatedButton.icon(
-                                    onPressed: () {
-                                      final hourlyRate = double.tryParse(
-                                            hourlyRateCtrl.text
-                                                .trim()
-                                                .replaceAll(',', ''),
-                                          ) ??
-                                          0.0;
-
-                                      if (hourlyRate <= 0) {
-                                        setLocal(() {
-                                          hourlyRateError =
-                                              'กรุณากรอกค่าตอบแทน/ชม.';
-                                        });
-                                        return;
-                                      }
-
-                                      FocusScope.of(ctx).unfocus();
-                                      Navigator.pop(ctx, true);
-                                    },
-                                    icon: const Icon(Icons.check),
-                                    label: const Text('ยืนยันจอง'),
-                                  ),
-                                ],
-                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            Text('วันที่ ${_s(a.date)}'),
+                            Text('เวลา ${_s(a.start)}-${_s(a.end)}'),
+                            if (_helperLocationDistanceLine(a).isNotEmpty) ...[
+                              const SizedBox(height: 6),
+                              Text(_helperLocationDistanceLine(a)),
                             ],
-                          ),
-                        );
-                      },
-                    ),
+                            const SizedBox(height: 12),
+                            TextField(
+                              keyboardType:
+                                  const TextInputType.numberWithOptions(
+                                    decimal: true,
+                                  ),
+                              onChanged: (value) {
+                                hourlyRateText = value;
+                                if (hourlyRateError != null) {
+                                  setLocal(() => hourlyRateError = null);
+                                }
+                              },
+                              onTapOutside: (_) => FocusScope.of(ctx).unfocus(),
+                              decoration: InputDecoration(
+                                labelText: 'ค่าตอบแทน/ชม.',
+                                hintText: 'เช่น 150',
+                                suffixText: 'บาท/ชม.',
+                                errorText: hourlyRateError,
+                                border: const OutlineInputBorder(),
+                              ),
+                              textInputAction: TextInputAction.next,
+                            ),
+                            const SizedBox(height: 12),
+                            TextField(
+                              autofocus: false,
+                              onChanged: (v) => noteText = v,
+                              onTapOutside: (_) => FocusScope.of(ctx).unfocus(),
+                              decoration: const InputDecoration(
+                                labelText: 'หมายเหตุถึงผู้ช่วย (ไม่บังคับ)',
+                                border: OutlineInputBorder(),
+                              ),
+                              maxLines: 3,
+                              minLines: 2,
+                              textInputAction: TextInputAction.done,
+                              onSubmitted: (_) => FocusScope.of(ctx).unfocus(),
+                            ),
+                            const SizedBox(height: 16),
+                            Row(
+                              children: [
+                                TextButton(
+                                  onPressed: () {
+                                    FocusScope.of(ctx).unfocus();
+                                    Navigator.pop(ctx, false);
+                                  },
+                                  child: const Text('ยกเลิก'),
+                                ),
+                                const Spacer(),
+                                ElevatedButton.icon(
+                                  onPressed: () {
+                                    final hourlyRate =
+                                        double.tryParse(
+                                          hourlyRateText.trim().replaceAll(
+                                            ',',
+                                            '',
+                                          ),
+                                        ) ??
+                                        0.0;
+
+                                    if (hourlyRate <= 0) {
+                                      setLocal(() {
+                                        hourlyRateError =
+                                            'กรุณากรอกค่าตอบแทน/ชม.';
+                                      });
+                                      return;
+                                    }
+
+                                    FocusScope.of(ctx).unfocus();
+                                    Navigator.pop(ctx, true);
+                                  },
+                                  icon: const Icon(Icons.check),
+                                  label: const Text('ยืนยันจอง'),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      );
+                    },
                   ),
                 ),
               ),
             ),
-          );
-        },
-      );
+          ),
+        );
+      },
+    );
 
-      if (ok != true) return null;
+    if (ok != true) return null;
 
-      final hourlyRate = double.tryParse(
-            hourlyRateCtrl.text.trim().replaceAll(',', ''),
-          ) ??
-          0.0;
+    final hourlyRate =
+        double.tryParse(hourlyRateText.trim().replaceAll(',', '')) ?? 0.0;
 
-      if (hourlyRate <= 0) return null;
+    if (hourlyRate <= 0) return null;
 
-      return <String, dynamic>{
-        'note': noteText.trim(),
-        'hourlyRate': hourlyRate,
-      };
-    } finally {
-      hourlyRateCtrl.dispose();
-    }
+    return <String, dynamic>{'note': noteText.trim(), 'hourlyRate': hourlyRate};
   }
-
-
 
   Future<void> _bookAvailability(Availability a) async {
     final id = a.id.trim();
@@ -505,8 +489,9 @@ class _ClinicAvailabilitiesScreenState extends State<ClinicAvailabilitiesScreen>
 
     try {
       final token = await _needToken();
-      final url =
-          Uri.parse('${ApiConfig.payrollBaseUrl}/availabilities/$id/book');
+      final url = Uri.parse(
+        '${ApiConfig.payrollBaseUrl}/availabilities/$id/book',
+      );
 
       final resp = await http.post(
         url,
@@ -536,7 +521,6 @@ class _ClinicAvailabilitiesScreenState extends State<ClinicAvailabilitiesScreen>
       if (mounted) setState(() => _booking[id] = false);
     }
   }
-
 
   Future<void> _clearAvailability(Availability a) async {
     final id = a.id.trim();
@@ -578,14 +562,13 @@ class _ClinicAvailabilitiesScreenState extends State<ClinicAvailabilitiesScreen>
 
     try {
       final token = await _needToken();
-      final url =
-          Uri.parse('${ApiConfig.payrollBaseUrl}/availabilities/$id/clear');
+      final url = Uri.parse(
+        '${ApiConfig.payrollBaseUrl}/availabilities/$id/clear',
+      );
 
       final resp = await http.post(
         url,
-        headers: {
-          'Authorization': 'Bearer $token',
-        },
+        headers: {'Authorization': 'Bearer $token'},
       );
 
       if (resp.statusCode >= 200 && resp.statusCode < 300) {
@@ -698,8 +681,9 @@ class _ClinicAvailabilitiesScreenState extends State<ClinicAvailabilitiesScreen>
 
     final title = '${_s(a.date)} • ${_s(a.start)}-${_s(a.end)}';
 
-    final helperName =
-        _raw(a.fullName).isNotEmpty ? _raw(a.fullName) : 'ผู้ช่วย';
+    final helperName = _raw(a.fullName).isNotEmpty
+        ? _raw(a.fullName)
+        : 'ผู้ช่วย';
     final phoneText = _raw(a.phone);
     final locationText = _helperLocationText(a);
     final distanceText = _helperDistanceText(a);
@@ -742,8 +726,10 @@ class _ClinicAvailabilitiesScreenState extends State<ClinicAvailabilitiesScreen>
                   ),
                 ),
                 Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 6,
+                  ),
                   decoration: BoxDecoration(
                     color: _statusBgColor(a),
                     borderRadius: BorderRadius.circular(999),
@@ -762,10 +748,7 @@ class _ClinicAvailabilitiesScreenState extends State<ClinicAvailabilitiesScreen>
             const SizedBox(height: 10),
             Text(
               helperName,
-              style: const TextStyle(
-                fontWeight: FontWeight.w800,
-                fontSize: 15,
-              ),
+              style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 15),
             ),
             if (locationText.isNotEmpty) ...[
               const SizedBox(height: 6),
@@ -803,9 +786,7 @@ class _ClinicAvailabilitiesScreenState extends State<ClinicAvailabilitiesScreen>
               const SizedBox(height: 4),
               Text(
                 phoneText,
-                style: TextStyle(
-                  color: cs.onSurface.withValues(alpha: 0.72),
-                ),
+                style: TextStyle(color: cs.onSurface.withValues(alpha: 0.72)),
               ),
             ],
             const SizedBox(height: 8),
@@ -887,11 +868,7 @@ class _ClinicAvailabilitiesScreenState extends State<ClinicAvailabilitiesScreen>
         separatorBuilder: (_, __) => const SizedBox(height: 10),
         itemBuilder: (_, i) {
           final a = _openItems[i];
-          return _buildCard(
-            a,
-            showActionsOpen: true,
-            showActionsBooked: false,
-          );
+          return _buildCard(a, showActionsOpen: true, showActionsBooked: false);
         },
       ),
     );
@@ -911,11 +888,7 @@ class _ClinicAvailabilitiesScreenState extends State<ClinicAvailabilitiesScreen>
         separatorBuilder: (_, __) => const SizedBox(height: 10),
         itemBuilder: (_, i) {
           final a = _bookedItems[i];
-          return _buildCard(
-            a,
-            showActionsOpen: false,
-            showActionsBooked: true,
-          );
+          return _buildCard(a, showActionsOpen: false, showActionsBooked: true);
         },
       ),
     );
@@ -943,10 +916,7 @@ class _ClinicAvailabilitiesScreenState extends State<ClinicAvailabilitiesScreen>
       ),
       body: TabBarView(
         controller: _tab,
-        children: [
-          _buildOpenTab(),
-          _buildBookedTab(),
-        ],
+        children: [_buildOpenTab(), _buildBookedTab()],
       ),
     );
   }

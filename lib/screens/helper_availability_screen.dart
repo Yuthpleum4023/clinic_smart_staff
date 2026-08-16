@@ -69,8 +69,10 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
   }
 
   Uri _u(String path) {
-    final base =
-        ApiConfig.payrollBaseUrl.trim().replaceAll(RegExp(r'\/+$'), '');
+    final base = ApiConfig.payrollBaseUrl.trim().replaceAll(
+      RegExp(r'\/+$'),
+      '',
+    );
     final p = path.startsWith('/') ? path : '/$path';
     return Uri.parse('$base$p');
   }
@@ -175,8 +177,8 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
       final List list = (data is Map && data['items'] is List)
           ? (data['items'] as List)
           : (data is List)
-              ? data
-              : const [];
+          ? data
+          : const [];
 
       final items = <Availability>[];
       for (final it in list) {
@@ -265,9 +267,7 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
       if (!mounted) return;
       await Navigator.push(
         context,
-        MaterialPageRoute(
-          builder: (_) => HelperAvailabilityDetailScreen(a: a),
-        ),
+        MaterialPageRoute(builder: (_) => HelperAvailabilityDetailScreen(a: a)),
       );
     } finally {
       _pushingDetail = false;
@@ -295,9 +295,7 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
       filled: true,
       fillColor: Colors.white,
       isDense: true,
-      border: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(14),
-      ),
+      border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
       enabledBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(14),
         borderSide: BorderSide(color: Colors.grey.shade300),
@@ -341,9 +339,7 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
             const SizedBox(height: 6),
             Text(
               'กรุณาตั้งพิกัดก่อนประกาศเวลาว่าง เพื่อให้คลินิกเห็นระยะทางจากตำแหน่งของคุณ',
-              style: TextStyle(
-                color: Colors.orange.shade900,
-              ),
+              style: TextStyle(color: Colors.orange.shade900),
             ),
             const SizedBox(height: 10),
             SizedBox(
@@ -363,9 +359,7 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
       width: double.infinity,
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: useSavedLocation
-            ? Colors.green.shade50
-            : Colors.grey.shade50,
+        color: useSavedLocation ? Colors.green.shade50 : Colors.grey.shade50,
         borderRadius: BorderRadius.circular(14),
         border: Border.all(
           color: useSavedLocation
@@ -377,7 +371,9 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            useSavedLocation ? 'จะใช้พิกัดนี้ในการประกาศ' : 'พบพิกัดที่บันทึกไว้',
+            useSavedLocation
+                ? 'จะใช้พิกัดนี้ในการประกาศ'
+                : 'พบพิกัดที่บันทึกไว้',
             style: TextStyle(
               color: useSavedLocation
                   ? Colors.green.shade900
@@ -427,8 +423,8 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
     TimeOfDay? pickedStart;
     TimeOfDay? pickedEnd;
 
-    final roleCtrl = TextEditingController();
-    final noteCtrl = TextEditingController();
+    String roleText = '';
+    String noteText = '';
 
     AppLocation? helperLocation = await _loadHelperLocation();
     if (!mounted) return;
@@ -494,8 +490,8 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
             context,
             MaterialPageRoute(
               builder: (_) => const HelperLocationSettingsScreen(
-          returnToAvailabilityAfterSync: true,
-        ),
+                returnToAvailabilityAfterSync: true,
+              ),
             ),
           );
 
@@ -523,11 +519,15 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
               ),
               focusedBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(14),
-                borderSide:
-                    BorderSide(color: Colors.purple.shade400, width: 1.4),
+                borderSide: BorderSide(
+                  color: Colors.purple.shade400,
+                  width: 1.4,
+                ),
               ),
-              contentPadding:
-                  const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 14,
+                vertical: 14,
+              ),
             ),
           ),
           child: StatefulBuilder(
@@ -539,8 +539,9 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
               final startText = pickedStart == null
                   ? 'เวลาเริ่ม'
                   : _fmtTimeOfDay(pickedStart!);
-              final endText =
-                  pickedEnd == null ? 'เวลาจบ' : _fmtTimeOfDay(pickedEnd!);
+              final endText = pickedEnd == null
+                  ? 'เวลาจบ'
+                  : _fmtTimeOfDay(pickedEnd!);
 
               final bottom = MediaQuery.of(ctx).viewInsets.bottom;
 
@@ -611,7 +612,7 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
                         ),
                         const SizedBox(height: 12),
                         TextField(
-                          controller: roleCtrl,
+                          onChanged: (value) => roleText = value,
                           textInputAction: TextInputAction.next,
                           autofillHints: const [],
                           decoration: _cleanInputDecoration(
@@ -621,7 +622,7 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
                         ),
                         const SizedBox(height: 10),
                         TextField(
-                          controller: noteCtrl,
+                          onChanged: (value) => noteText = value,
                           maxLines: 3,
                           textInputAction: TextInputAction.done,
                           autofillHints: const [],
@@ -652,8 +653,9 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
                                   if (!_hasUsableAppLocation(helperLocation) ||
                                       !useSavedLocation) {
                                     if (mounted) {
-                                      ScaffoldMessenger.of(context)
-                                          .showSnackBar(
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).showSnackBar(
                                         const SnackBar(
                                           content: Text(
                                             'กรุณาเลือกหรือบันทึกพิกัดก่อนประกาศเวลาว่าง',
@@ -668,11 +670,13 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
                                       pickedStart == null ||
                                       pickedEnd == null) {
                                     if (mounted) {
-                                      ScaffoldMessenger.of(context)
-                                          .showSnackBar(
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).showSnackBar(
                                         const SnackBar(
-                                          content:
-                                              Text('กรุณาเลือกวันที่/เวลาให้ครบ'),
+                                          content: Text(
+                                            'กรุณาเลือกวันที่/เวลาให้ครบ',
+                                          ),
                                         ),
                                       );
                                     }
@@ -683,8 +687,9 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
                                   final end = _fmtTimeOfDay(pickedEnd!);
                                   if (_timeToMin(end) <= _timeToMin(start)) {
                                     if (mounted) {
-                                      ScaffoldMessenger.of(context)
-                                          .showSnackBar(
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).showSnackBar(
                                         const SnackBar(
                                           content: Text(
                                             'เวลาจบต้องมากกว่าเวลาเริ่ม',
@@ -723,8 +728,6 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
     );
 
     if (ok != true) {
-      roleCtrl.dispose();
-      noteCtrl.dispose();
       return;
     }
 
@@ -747,10 +750,10 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
         'date': date,
         'start': start,
         'end': end,
-        'note': noteCtrl.text.trim(),
+        'note': noteText.trim(),
       };
 
-      final role = roleCtrl.text.trim();
+      final role = roleText.trim();
       if (role.isNotEmpty) {
         payload['role'] = role;
       }
@@ -800,8 +803,8 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
       final msg = e.toString().trim();
       _snack(msg.isEmpty ? 'ประกาศไม่สำเร็จ โปรดลองใหม่' : msg);
     } finally {
-      roleCtrl.dispose();
-      noteCtrl.dispose();
+      // Modal text values are plain local strings.
+      // No TextEditingController lifecycle is required here.
     }
   }
 
@@ -968,8 +971,9 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
                                           Text(
                                             'หมายเหตุของฉัน: ${_s(a.note)}',
                                             style: TextStyle(
-                                              color: cs.onSurface
-                                                  .withValues(alpha: 0.7),
+                                              color: cs.onSurface.withValues(
+                                                alpha: 0.7,
+                                              ),
                                             ),
                                           ),
                                         ],
@@ -978,8 +982,9 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
                                           Text(
                                             'หมายเหตุจากคลินิก: ${_s(a.bookedNote)}',
                                             style: TextStyle(
-                                              color: cs.onSurface
-                                                  .withValues(alpha: 0.7),
+                                              color: cs.onSurface.withValues(
+                                                alpha: 0.7,
+                                              ),
                                             ),
                                           ),
                                         ],
@@ -993,8 +998,7 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
                                             icon: const Icon(
                                               Icons.chevron_right_rounded,
                                             ),
-                                            label:
-                                                const Text('ดูรายละเอียด'),
+                                            label: const Text('ดูรายละเอียด'),
                                           ),
                                         ),
                                       ],
@@ -1020,7 +1024,9 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 10),
           decoration: BoxDecoration(
-            color: active ? cs.primary.withValues(alpha: 0.12) : Colors.transparent,
+            color: active
+                ? cs.primary.withValues(alpha: 0.12)
+                : Colors.transparent,
             borderRadius: BorderRadius.circular(12),
           ),
           child: Center(
@@ -1028,7 +1034,9 @@ class _HelperAvailabilityScreenState extends State<HelperAvailabilityScreen> {
               text,
               style: TextStyle(
                 fontWeight: FontWeight.w900,
-                color: active ? cs.primary : cs.onSurface.withValues(alpha: 0.7),
+                color: active
+                    ? cs.primary
+                    : cs.onSurface.withValues(alpha: 0.7),
               ),
             ),
           ),
