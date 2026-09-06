@@ -1,0 +1,26 @@
+{
+  "name": "inventory_service",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Clinic Smart Staff inventory authority service",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js && find middleware models routes controllers services utils -type f -name '*.js' -print0 | xargs -0 -n1 node --check"
+  },
+  "dependencies": {
+    "cors": "2.8.6",
+    "dotenv": "16.6.1",
+    "express": "4.22.1",
+    "express-mongo-sanitize": "2.2.0",
+    "express-rate-limit": "8.5.2",
+    "helmet": "8.1.0",
+    "hpp": "0.2.3",
+    "jsonwebtoken": "9.0.3",
+    "mongoose": "8.24.4"
+  },
+  "overrides": {
+    "qs": "6.16.0"
+  }
+}

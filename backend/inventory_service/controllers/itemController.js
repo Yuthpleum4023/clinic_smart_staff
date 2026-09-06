@@ -1,0 +1,959 @@
+const mongoose = require("mongoose");
+const StockItem = require("../models/StockItem");
+const StockMovement = require("../models/StockMovement");
+
+const {
+  resolveInventoryActor,
+} = require("../services/actorService");
+
+const { qty } = require("../utils/quantity");
+const { s } = require("../utils/strings");
+
+function bad(
+  message,
+  code = "BAD_REQUEST"
+) {
+  const err = new Error(message);
+  err.status = 400;
+  err.code = code;
+  return err;
+}
+
+function serializeItem(item) {
+  return item?.toObject
+    ? item.toObject()
+    : item;
+}
+
+exports.createItem =
+  async (req, res, next) => {
+    try {
+      const actor =
+        await resolveInventoryActor(req);
+
+      if (!actor.hasAdmin) {
+        const err =
+          new Error("Admin only");
+
+        err.status = 403;
+        err.code = "ADMIN_ONLY";
+        throw err;
+      }
+
+      const name = s(req.body?.name);
+      const unit = s(req.body?.unit);
+
+      if (!name) {
+        throw bad(
+          "name is required",
+          "NAME_REQUIRED"
+        );
+      }
+
+      if (!unit) {
+        throw bad(
+          "unit is required",
+          "UNIT_REQUIRED"
+        );
+      }
+
+      if (
+        req.body?.currentQty !==
+          undefined ||
+        req.body?.balance !==
+          undefined ||
+        req.body?.quantity !==
+          undefined
+      ) {
+        throw bad(
+          "Initial balance must be recorded through stock-in, not item creation",
+          "DIRECT_BALANCE_WRITE_FORBIDDEN"
+        );
+      }
+
+      const minimumQty =
+        req.body?.minimumQty ===
+        undefined
+          ? 0
+          : qty(
+              req.body.minimumQty,
+              "minimumQty"
+            );
+
+      if (minimumQty < 0) {
+        throw bad(
+          "minimumQty must be >= 0",
+          "INVALID_MINIMUM_QTY"
+        );
+      }
+
+      const lowStockAlertEnabled =
+        req.body
+          ?.lowStockAlertEnabled ===
+        undefined
+          ? true
+          : !!req.body
+              .lowStockAlertEnabled;
+
+      const item =
+        await StockItem.create({
+          clinicId:
+            actor.clinicId,
+
+          name,
+          sku: s(req.body?.sku),
+          category:
+            s(req.body?.category),
+          unit,
+
+          currentQty: 0,
+          minimumQty,
+
+          lowStockAlertEnabled,
+
+          lowStockActive:
+            lowStockAlertEnabled &&
+            0 <= minimumQty,
+
+          lowStockSince:
+            lowStockAlertEnabled &&
+            0 <= minimumQty
+              ? new Date()
+              : null,
+
+          active:
+            req.body?.active ===
+            undefined
+              ? true
+              : !!req.body.active,
+
+          createdBy:
+            actor.userId,
+
+          updatedBy:
+            actor.userId,
+        });
+
+      return res
+        .status(201)
+        .json({
+          ok: true,
+          item:
+            serializeItem(item),
+        });
+    } catch (err) {
+      return next(err);
+    }
+  };
+
+exports.listItems =
+  async (req, res, next) => {
+    try {
+      await resolveInventoryActor(req);
+
+      const q = {
+        clinicId:
+          req.inventoryClinicId,
+      };
+
+      if (
+        s(req.query?.active) ===
+        "true"
+      ) {
+        q.active = true;
+      }
+
+      if (
+        s(req.query?.active) ===
+        "false"
+      ) {
+        q.active = false;
+      }
+
+      const items =
+        await StockItem.find(q)
+          .sort({
+            active: -1,
+            name: 1,
+          })
+          .lean();
+
+      return res.json({
+        ok: true,
+        items,
+      });
+    } catch (err) {
+      return next(err);
+    }
+  };
+
+exports.getItem =
+  async (req, res, next) => {
+    try {
+      await resolveInventoryActor(req);
+
+      if (
+        !mongoose.Types.ObjectId.isValid(
+          req.params.id
+        )
+      ) {
+        throw bad(
+          "Invalid item id",
+          "INVALID_STOCK_ITEM_ID"
+        );
+      }
+
+      const item =
+        await StockItem.findOne({
+          _id: req.params.id,
+          clinicId:
+            req.inventoryClinicId,
+        }).lean();
+
+      if (!item) {
+        const err =
+          new Error(
+            "Stock item not found"
+          );
+
+        err.status = 404;
+        err.code =
+          "STOCK_ITEM_NOT_FOUND";
+
+        throw err;
+      }
+
+      return res.json({
+        ok: true,
+        item,
+      });
+    } catch (err) {
+      return next(err);
+    }
+  };
+
+exports.updateItem =
+  async (req, res, next) => {
+    try {
+      const actor =
+        await resolveInventoryActor(req);
+
+      if (!actor.hasAdmin) {
+        const err =
+          new Error("Admin only");
+
+        err.status = 403;
+        err.code = "ADMIN_ONLY";
+        throw err;
+      }
+
+      const forbidden = [
+        "currentQty",
+        "balance",
+        "quantity",
+        "minimumQty",
+        "lowStockActive",
+        "lowStockSince",
+      ];
+
+      if (
+        forbidden.some((k) =>
+          Object.prototype
+            .hasOwnProperty.call(
+              req.body || {},
+              k
+            )
+        )
+      ) {
+        throw bad(
+          "Balance and threshold fields cannot be changed through item update",
+          "PROTECTED_STOCK_FIELD"
+        );
+      }
+
+      if (
+        !mongoose.Types.ObjectId.isValid(
+          req.params.id
+        )
+      ) {
+        throw bad(
+          "Invalid item id",
+          "INVALID_STOCK_ITEM_ID"
+        );
+      }
+
+      const patch = {
+        updatedBy:
+          actor.userId,
+      };
+
+      for (
+        const key of [
+          "name",
+          "sku",
+          "category",
+          "unit",
+        ]
+      ) {
+        if (
+          Object.prototype
+            .hasOwnProperty.call(
+              req.body || {},
+              key
+            )
+        ) {
+          patch[key] =
+            s(req.body[key]);
+        }
+      }
+
+      if (
+        Object.prototype
+          .hasOwnProperty.call(
+            req.body || {},
+            "active"
+          )
+      ) {
+        patch.active =
+          !!req.body.active;
+      }
+
+      if (patch.name === "") {
+        throw bad(
+          "name must not be empty",
+          "INVALID_NAME"
+        );
+      }
+
+      if (patch.unit === "") {
+        throw bad(
+          "unit must not be empty",
+          "INVALID_UNIT"
+        );
+      }
+
+      const item =
+        await StockItem.findOneAndUpdate(
+          {
+            _id: req.params.id,
+            clinicId:
+              actor.clinicId,
+          },
+          { $set: patch },
+          {
+            new: true,
+            runValidators: true,
+          }
+        );
+
+      if (!item) {
+        const err =
+          new Error(
+            "Stock item not found"
+          );
+
+        err.status = 404;
+        err.code =
+          "STOCK_ITEM_NOT_FOUND";
+
+        throw err;
+      }
+
+      return res.json({
+        ok: true,
+        item:
+          serializeItem(item),
+      });
+    } catch (err) {
+      return next(err);
+    }
+  };
+
+exports.updateThreshold =
+  async (req, res, next) => {
+    try {
+      const actor =
+        await resolveInventoryActor(req);
+
+      if (!actor.hasAdmin) {
+        const err =
+          new Error("Admin only");
+
+        err.status = 403;
+        err.code = "ADMIN_ONLY";
+        throw err;
+      }
+
+      if (
+        !mongoose.Types.ObjectId.isValid(
+          req.params.id
+        )
+      ) {
+        throw bad(
+          "Invalid item id",
+          "INVALID_STOCK_ITEM_ID"
+        );
+      }
+
+      const minimumQty =
+        qty(
+          req.body?.minimumQty,
+          "minimumQty"
+        );
+
+      if (minimumQty < 0) {
+        throw bad(
+          "minimumQty must be >= 0",
+          "INVALID_MINIMUM_QTY"
+        );
+      }
+
+      const item =
+        await StockItem.findOne({
+          _id: req.params.id,
+          clinicId:
+            actor.clinicId,
+        });
+
+      if (!item) {
+        const err =
+          new Error(
+            "Stock item not found"
+          );
+
+        err.status = 404;
+        err.code =
+          "STOCK_ITEM_NOT_FOUND";
+
+        throw err;
+      }
+
+      if (
+        Object.prototype
+          .hasOwnProperty.call(
+            req.body || {},
+            "lowStockAlertEnabled"
+          )
+      ) {
+        item.lowStockAlertEnabled =
+          !!req.body
+            .lowStockAlertEnabled;
+      }
+
+      item.minimumQty =
+        minimumQty;
+
+      item.updatedBy =
+        actor.userId;
+
+      const nowLow =
+        item.lowStockAlertEnabled &&
+        Number(item.currentQty) <=
+          Number(item.minimumQty);
+
+      const wasLow =
+        !!item.lowStockActive;
+
+      item.lowStockActive =
+        nowLow;
+
+      if (!wasLow && nowLow) {
+        item.lowStockSince =
+          new Date();
+      }
+
+      if (wasLow && !nowLow) {
+        item.lowStockSince =
+          null;
+      }
+
+      await item.save();
+
+      return res.json({
+        ok: true,
+        item:
+          serializeItem(item),
+      });
+    } catch (err) {
+      return next(err);
+    }
+  };
+
+exports.listLowStock =
+  async (req, res, next) => {
+    try {
+      await resolveInventoryActor(req);
+
+      const items =
+        await StockItem.find({
+          clinicId:
+            req.inventoryClinicId,
+          active: true,
+          lowStockAlertEnabled:
+            true,
+          lowStockActive: true,
+        })
+          .sort({
+            currentQty: 1,
+            name: 1,
+          })
+          .lean();
+
+      return res.json({
+        ok: true,
+        items,
+      });
+    } catch (err) {
+      return next(err);
+    }
+  };
+
+exports.getStockCard =
+  async (req, res, next) => {
+    try {
+      const actor =
+        await resolveInventoryActor(req);
+
+      if (
+        !mongoose.Types.ObjectId.isValid(
+          req.params.id
+        )
+      ) {
+        throw bad(
+          "Invalid item id",
+          "INVALID_STOCK_ITEM_ID"
+        );
+      }
+
+      const item =
+        await StockItem.findOne({
+          _id: req.params.id,
+          clinicId:
+            req.inventoryClinicId,
+        }).lean();
+
+      if (!item) {
+        const err =
+          new Error(
+            "Stock item not found"
+          );
+
+        err.status = 404;
+        err.code =
+          "STOCK_ITEM_NOT_FOUND";
+
+        throw err;
+      }
+
+      function parseDate(
+        raw,
+        field
+      ) {
+        if (!s(raw)) {
+          return null;
+        }
+
+        const d = new Date(raw);
+
+        if (
+          Number.isNaN(
+            d.getTime()
+          )
+        ) {
+          throw bad(
+            `${field} must be a valid date`,
+            "INVALID_DATE_RANGE"
+          );
+        }
+
+        return d;
+      }
+
+      const from =
+        parseDate(
+          req.query?.from,
+          "from"
+        );
+
+      const to =
+        parseDate(
+          req.query?.to,
+          "to"
+        );
+
+      if (
+        from &&
+        to &&
+        from > to
+      ) {
+        throw bad(
+          "from must be before or equal to to",
+          "INVALID_DATE_RANGE"
+        );
+      }
+
+      const mode =
+        s(
+          req.query?.mode ||
+            "operational"
+        ).toLowerCase();
+
+      if (
+        ![
+          "operational",
+          "financial",
+        ].includes(mode)
+      ) {
+        throw bad(
+          "mode must be operational or financial",
+          "INVALID_STOCK_CARD_MODE"
+        );
+      }
+
+      if (
+        mode === "financial" &&
+        !actor.hasAdmin
+      ) {
+        const err =
+          new Error(
+            "Financial Stock Card is admin only"
+          );
+
+        err.status = 403;
+        err.code =
+          "FINANCIAL_STOCK_CARD_ADMIN_ONLY";
+
+        throw err;
+      }
+
+      const limit =
+        Math.min(
+          Math.max(
+            Number(
+              req.query?.limit
+            ) || 500,
+            1
+          ),
+          2000
+        );
+
+      const q = {
+        clinicId:
+          req.inventoryClinicId,
+        stockItemId:
+          item._id,
+      };
+
+      if (from || to) {
+        q.createdAt = {};
+
+        if (from) {
+          q.createdAt.$gte =
+            from;
+        }
+
+        if (to) {
+          q.createdAt.$lte =
+            to;
+        }
+      }
+
+      const [
+        movements,
+        totalCount,
+        firstInRange,
+        lastInRange,
+        grouped,
+      ] = await Promise.all([
+        StockMovement.find(q)
+          .sort({
+            createdAt: 1,
+            _id: 1,
+          })
+          .limit(limit)
+          .lean(),
+
+        StockMovement.countDocuments(q),
+
+        StockMovement.findOne(q)
+          .sort({
+            createdAt: 1,
+            _id: 1,
+          })
+          .lean(),
+
+        StockMovement.findOne(q)
+          .sort({
+            createdAt: -1,
+            _id: -1,
+          })
+          .lean(),
+
+        StockMovement.aggregate([
+          { $match: q },
+          {
+            $group: {
+              _id: "$type",
+              qty: {
+                $sum:
+                  "$quantityDelta",
+              },
+              count: { $sum: 1 },
+            },
+          },
+        ]),
+      ]);
+
+      let openingBalance = 0;
+
+      if (firstInRange) {
+        openingBalance =
+          Number(
+            firstInRange
+              .balanceBefore || 0
+          );
+      } else if (from) {
+        const previous =
+          await StockMovement.findOne({
+            clinicId:
+              req.inventoryClinicId,
+
+            stockItemId:
+              item._id,
+
+            createdAt: {
+              $lt: from,
+            },
+          })
+            .sort({
+              createdAt: -1,
+              _id: -1,
+            })
+            .lean();
+
+        openingBalance =
+          previous
+            ? Number(
+                previous
+                  .balanceAfter || 0
+              )
+            : 0;
+      } else if (!to) {
+        openingBalance =
+          Number(
+            item.currentQty || 0
+          );
+      }
+
+      const closingBalance =
+        lastInRange
+          ? Number(
+              lastInRange
+                .balanceAfter || 0
+            )
+          : from || to
+            ? openingBalance
+            : Number(
+                item.currentQty || 0
+              );
+
+      let stockInQty = 0;
+      let consumptionQty = 0;
+      let adjustmentNetQty = 0;
+      let reversalNetQty = 0;
+
+      for (const row of grouped) {
+        const value =
+          Number(row.qty || 0);
+
+        if (
+          row._id ===
+          "stock_in"
+        ) {
+          stockInQty +=
+            Math.max(
+              value,
+              0
+            );
+        } else if (
+          row._id ===
+            "manual_consumption" ||
+          row._id ===
+            "external_consumption"
+        ) {
+          consumptionQty +=
+            Math.abs(
+              Math.min(
+                value,
+                0
+              )
+            );
+        } else if (
+          row._id ===
+          "adjustment"
+        ) {
+          adjustmentNetQty +=
+            value;
+        } else if (
+          row._id ===
+          "reversal"
+        ) {
+          reversalNetQty +=
+            value;
+        }
+      }
+
+      function serializeMovement(
+        movement
+      ) {
+        const out = {
+          ...movement,
+        };
+
+        if (
+          mode !== "financial"
+        ) {
+          delete out.unitCost;
+          delete out.currency;
+        }
+
+        const delta =
+          Number(
+            out.quantityDelta ||
+              0
+          );
+
+        out.cardColumns = {
+          receivedQty:
+            out.type ===
+              "stock_in" &&
+            delta > 0
+              ? delta
+              : 0,
+
+          issuedQty:
+            (
+              out.type ===
+                "manual_consumption" ||
+              out.type ===
+                "external_consumption"
+            ) &&
+            delta < 0
+              ? Math.abs(delta)
+              : 0,
+
+          adjustmentQty:
+            out.type ===
+              "adjustment" ||
+            out.type ===
+              "reversal"
+              ? delta
+              : 0,
+        };
+
+        if (
+          mode ===
+            "financial" &&
+          out.unitCost !== null &&
+          out.unitCost !== undefined
+        ) {
+          out.totalCost =
+            Math.round(
+              Math.abs(delta) *
+                Number(
+                  out.unitCost
+                ) *
+                100
+            ) / 100;
+        }
+
+        return out;
+      }
+
+      return res.json({
+        ok: true,
+
+        stockCard: {
+          mode,
+
+          clinicId:
+            req.inventoryClinicId,
+
+          generatedAt:
+            new Date(),
+
+          generatedBy: {
+            userId:
+              actor.userId,
+            staffId:
+              actor.staffId,
+            name:
+              actor.displayName,
+            role:
+              actor.role,
+          },
+
+          item: {
+            _id: item._id,
+            name: item.name,
+            sku: item.sku,
+            category:
+              item.category,
+            unit: item.unit,
+
+            currentQty:
+              item.currentQty,
+
+            minimumQty:
+              item.minimumQty,
+
+            lowStockAlertEnabled:
+              item
+                .lowStockAlertEnabled,
+
+            lowStockActive:
+              item.lowStockActive,
+
+            active:
+              item.active,
+          },
+
+          period: {
+            basis:
+              "ledger_created_at",
+            from,
+            to,
+          },
+
+          openingBalance,
+          closingBalance,
+
+          summary: {
+            movementCount:
+              totalCount,
+            stockInQty,
+            consumptionQty,
+            adjustmentNetQty,
+            reversalNetQty,
+          },
+
+          movements:
+            movements.map(
+              serializeMovement
+            ),
+
+          truncated:
+            totalCount >
+            movements.length,
+
+          returnedCount:
+            movements.length,
+
+          totalCount,
+          limit,
+        },
+      });
+    } catch (err) {
+      return next(err);
+    }
+  };
