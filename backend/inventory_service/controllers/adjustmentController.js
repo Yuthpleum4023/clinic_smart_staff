@@ -36,9 +36,7 @@ exports.createRequest =
   async (req, res, next) => {
     try {
       const actor =
-        await resolveInventoryActor(req, {
-          verifyEmployee: true,
-        });
+        await resolveInventoryActor(req);
 
       if (actor.role !== "employee") {
         const err =

@@ -6,7 +6,6 @@ router.use(auth, requireClinic);
 
 router.post(
   "/in",
-  requireRole(["admin", "employee"]),
   ctrl.stockIn
 );
 

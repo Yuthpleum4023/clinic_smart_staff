@@ -47,3 +47,19 @@ Optional:
 - `CORS_ORIGINS`
 - `ALLOW_NEGATIVE_STOCK=false`
 - `STAFF_EMPLOYEE_BASE_PATH=/api/employees`
+
+
+## Inventory access authority
+
+Inventory access is scoped by the authenticated clinicId.
+
+- Helper is explicitly excluded from clinic inventory.
+- Clinic admin/owner may access inventory through authenticated clinic authority.
+- Any other clinic role must have an active Employee membership in staff_service
+  for the same userId and clinicId.
+- Role/position names are not whitelisted individually.
+- Item read and stock-in use this generic clinic-member authority.
+- Item configuration, threshold changes, Financial Stock Card, admin adjustment,
+  and adjustment approval/rejection remain admin-only unless explicitly changed
+  by a separate business contract.
+- Stock consumption permissions are not broadened by this rule.

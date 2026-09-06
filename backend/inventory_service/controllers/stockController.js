@@ -36,9 +36,7 @@ function resultPayload(result) {
 exports.stockIn = async (req, res, next) => {
   try {
     const actor =
-      await resolveInventoryActor(req, {
-        verifyEmployee: true,
-      });
+      await resolveInventoryActor(req);
 
     const amount =
       positiveQty(
@@ -129,9 +127,7 @@ exports.stockIn = async (req, res, next) => {
 exports.consume = async (req, res, next) => {
   try {
     const actor =
-      await resolveInventoryActor(req, {
-        verifyEmployee: true,
-      });
+      await resolveInventoryActor(req);
 
     const amount =
       positiveQty(

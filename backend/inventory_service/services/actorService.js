@@ -2,7 +2,7 @@ const { s } = require("../utils/strings");
 const { canonicalRole } = require("../middleware/auth");
 const { getEmployeeByUserId } = require("./staffClient");
 
-async function resolveInventoryActor(req, { verifyEmployee = false } = {}) {
+async function resolveInventoryActor(req) {
   const effectiveRole = canonicalRole(req.user?.role);
 
   const roleSet = new Set(
@@ -27,12 +27,22 @@ async function resolveInventoryActor(req, { verifyEmployee = false } = {}) {
   const hasAdmin = roleSet.has("admin");
   const hasEmployee = roleSet.has("employee");
 
-  if (!hasAdmin && !hasEmployee) {
+  // Inventory policy:
+  // - Helper is explicitly excluded.
+  // - Admin/clinic owner is trusted from authenticated clinic authority.
+  // - Every other clinic role must prove active Staff membership.
+  //
+  // We intentionally do not whitelist position/role names here.
+  const isHelper =
+    effectiveRole === "helper" ||
+    (!effectiveRole && roleSet.has("helper"));
+
+  if (isHelper) {
     const err = new Error(
-      "Inventory access is limited to clinic admin and staff"
+      "Helper role cannot access clinic inventory"
     );
     err.status = 403;
-    err.code = "INVENTORY_ROLE_FORBIDDEN";
+    err.code = "INVENTORY_HELPER_FORBIDDEN";
     throw err;
   }
 
@@ -44,7 +54,7 @@ async function resolveInventoryActor(req, { verifyEmployee = false } = {}) {
       req.user?.email
   );
 
-  if (verifyEmployee && !hasAdmin && hasEmployee) {
+  if (!hasAdmin) {
     const employee = await getEmployeeByUserId({
       userId,
       clinicId,

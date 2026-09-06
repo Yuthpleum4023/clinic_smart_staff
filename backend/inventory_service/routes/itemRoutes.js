@@ -2,7 +2,7 @@ const router = require("express").Router();
 const { auth, requireClinic, requireRole } = require("../middleware/auth");
 const ctrl = require("../controllers/itemController");
 
-router.use(auth, requireClinic, requireRole(["admin", "employee"]));
+router.use(auth, requireClinic);
 
 router.get("/low-stock", ctrl.listLowStock);
 router.post("/", requireRole(["admin"]), ctrl.createItem);
