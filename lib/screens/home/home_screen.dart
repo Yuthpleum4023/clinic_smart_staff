@@ -16,6 +16,7 @@ import 'package:local_auth/local_auth.dart';
 import 'package:clinic_smart_staff/api/attendance_api.dart';
 import 'package:clinic_smart_staff/services/auth_storage.dart';
 import 'package:clinic_smart_staff/services/auth_service.dart';
+import 'package:clinic_smart_staff/screens/inventory/inventory_screen.dart';
 
 import 'package:clinic_smart_staff/app/app_context.dart';
 import 'package:clinic_smart_staff/app/app_context_resolver.dart';
@@ -1161,6 +1162,20 @@ class _HomeScreenState extends State<HomeScreen> {
   bool get _isEmployee =>
       _role == 'employee' || _role == 'staff' || _role == 'emp';
   bool get _isHelper => _role == 'helper';
+
+  // INVENTORY_PHASE1_FLUTTER_V2
+  // UX-only gate. The inventory backend is the final authority.
+  // Do not enumerate clinic position names here; Helper is the explicit exclusion.
+  bool get _canOpenInventory =>
+      !_ctxLoading && _role.trim().isNotEmpty && !_isHelper;
+
+  Future<void> _openInventory() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => InventoryScreen(role: _role)),
+    );
+  }
+
   bool get _isAttendanceUser => _isEmployee || _isHelper;
 
   bool _featureEnabled(String key, {bool fallback = false}) {
@@ -5270,6 +5285,12 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         title: const Text('Clinic Smart Staff'),
         actions: [
+          if (_canOpenInventory)
+            IconButton(
+              tooltip: 'คลังสินค้า',
+              icon: const Icon(Icons.inventory_2_outlined),
+              onPressed: _openInventory,
+            ),
           IconButton(
             tooltip: 'รีเฟรชข้อมูล',
             icon: const Icon(Icons.refresh),

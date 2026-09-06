@@ -15,6 +15,13 @@
 // ============================================================
 
 class ApiConfig {
+  // INVENTORY_PHASE1_FLUTTER_V2
+  static const String inventoryBaseUrl = String.fromEnvironment(
+    'INVENTORY_BASE_URL',
+    defaultValue: 'https://inventory-service-cu5x.onrender.com',
+  );
+
+
   // ============================================================
   // ENV SWITCH
   // ============================================================
