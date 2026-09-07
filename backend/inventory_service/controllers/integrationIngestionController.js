@@ -4,6 +4,14 @@ const {
   "../services/integrationProcessingService"
 );
 
+const {
+  recordConnectorSeen,
+  recordConnectorSuccess,
+  recordConnectorError,
+} = require(
+  "../services/integrationOperationalService"
+);
+
 function s(value) {
   return String(value ?? "").trim();
 }
@@ -13,8 +21,10 @@ async function consume(
   res,
   next
 ) {
+  let connectorId = "";
+
   try {
-    const connectorId =
+    connectorId =
       s(
         req.connectorContext
           ?.connectorId
@@ -29,6 +39,14 @@ async function consume(
         "CONNECTOR_AUTH_CONTEXT_REQUIRED";
       throw err;
     }
+
+    // Operational telemetry is best-effort and
+    // must never alter ingestion authority.
+    try {
+      await recordConnectorSeen({
+        connectorId,
+      });
+    } catch (_) {}
 
     // Scope is server-owned.
     //
@@ -47,6 +65,12 @@ async function consume(
             : {},
       });
 
+    try {
+      await recordConnectorSuccess({
+        connectorId,
+      });
+    } catch (_) {}
+
     return res
       .status(
         result?.idempotentReplay
@@ -60,6 +84,16 @@ async function consume(
         data: result,
       });
   } catch (err) {
+    if (connectorId) {
+      try {
+        await recordConnectorError({
+          connectorId,
+          errorCode:
+            err?.code,
+        });
+      } catch (_) {}
+    }
+
     return next(err);
   }
 }

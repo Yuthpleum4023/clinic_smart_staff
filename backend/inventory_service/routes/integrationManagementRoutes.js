@@ -10,6 +10,10 @@ const ctrl = require(
   "../controllers/integrationManagementController"
 );
 
+const operationalCtrl = require(
+  "../controllers/integrationOperationalController"
+);
+
 router.use(
   auth,
   requireClinic,
@@ -49,6 +53,26 @@ router.post(
 router.patch(
   "/mappings/:mappingId",
   ctrl.updateMapping
+);
+
+router.get(
+  "/connectors/:connectorId/health",
+  operationalCtrl.getConnectorHealth
+);
+
+router.get(
+  "/connectors/:connectorId/events",
+  operationalCtrl.listEvents
+);
+
+router.get(
+  "/events/:eventId",
+  operationalCtrl.getEvent
+);
+
+router.post(
+  "/events/:eventId/reprocess",
+  operationalCtrl.reprocessEvent
 );
 
 module.exports = router;
