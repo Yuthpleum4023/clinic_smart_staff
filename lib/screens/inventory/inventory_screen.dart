@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 
 import 'package:clinic_smart_staff/api/inventory_api.dart';
 import 'package:clinic_smart_staff/models/inventory_item_model.dart';
+import 'package:clinic_smart_staff/screens/inventory/inventory_integration_screen.dart';
 
 enum _InventoryListFilter { active, lowStock, inactive }
 
@@ -310,6 +311,15 @@ class _InventoryScreenState extends State<InventoryScreen> {
         });
       }
     }
+  }
+
+  Future<void> _openIntegration() async {
+    if (!_adminMode) return;
+
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const InventoryIntegrationScreen()),
+    );
   }
 
   Future<void> _openStockCard(InventoryItem item) async {
@@ -640,6 +650,12 @@ class _InventoryScreenState extends State<InventoryScreen> {
       appBar: AppBar(
         title: const Text('คลังสินค้า'),
         actions: [
+          if (_adminMode)
+            IconButton(
+              tooltip: 'ระบบเชื่อมต่อ',
+              onPressed: _openIntegration,
+              icon: const Icon(Icons.sync_alt_outlined),
+            ),
           if (_adminMode)
             IconButton(
               tooltip: 'เพิ่มสินค้า',

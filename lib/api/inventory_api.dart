@@ -483,4 +483,226 @@ class InventoryApi {
       message: 'รูปแบบข้อมูล Stock Card ไม่ถูกต้อง',
     );
   }
+
+  // INVENTORY_PHASE2_FLUTTER_INTEGRATION_UI_V1
+  static Future<List<Map<String, dynamic>>> listIntegrationConnectors() async {
+    final response = await http
+        .get(
+          _uri('/api/inventory/integrations/admin/connectors'),
+          headers: await _headers(),
+        )
+        .timeout(_timeout);
+
+    _ensureSuccess(response);
+
+    final body = _decodeObject(response.body);
+    final raw = body['connectors'];
+
+    if (raw is! List) {
+      throw InventoryApiException(
+        statusCode: response.statusCode,
+        code: 'INVALID_RESPONSE',
+        message: 'รูปแบบข้อมูลระบบเชื่อมต่อไม่ถูกต้อง',
+      );
+    }
+
+    return raw
+        .whereType<Map>()
+        .map((item) => Map<String, dynamic>.from(item))
+        .toList(growable: false);
+  }
+
+  static Future<Map<String, dynamic>> getIntegrationConnectorHealth(
+    String connectorId,
+  ) async {
+    final id = connectorId.trim();
+    if (id.isEmpty) {
+      throw const InventoryApiException(
+        statusCode: 400,
+        code: 'CONNECTOR_REQUIRED',
+        message: 'ไม่พบรหัสระบบเชื่อมต่อ',
+      );
+    }
+
+    final response = await http
+        .get(
+          _uri(
+            '/api/inventory/integrations/admin/connectors/'
+            '${Uri.encodeComponent(id)}/health',
+          ),
+          headers: await _headers(),
+        )
+        .timeout(_timeout);
+
+    _ensureSuccess(response);
+
+    final body = _decodeObject(response.body);
+    final raw = body['health'];
+
+    if (raw is Map<String, dynamic>) return raw;
+    if (raw is Map) return Map<String, dynamic>.from(raw);
+
+    throw InventoryApiException(
+      statusCode: response.statusCode,
+      code: 'INVALID_RESPONSE',
+      message: 'รูปแบบข้อมูลสถานะระบบเชื่อมต่อไม่ถูกต้อง',
+    );
+  }
+
+  static Future<List<Map<String, dynamic>>> listIntegrationMappings(
+    String connectorId,
+  ) async {
+    final id = connectorId.trim();
+    if (id.isEmpty) {
+      throw const InventoryApiException(
+        statusCode: 400,
+        code: 'CONNECTOR_REQUIRED',
+        message: 'ไม่พบรหัสระบบเชื่อมต่อ',
+      );
+    }
+
+    final response = await http
+        .get(
+          _uri(
+            '/api/inventory/integrations/admin/connectors/'
+            '${Uri.encodeComponent(id)}/mappings',
+          ),
+          headers: await _headers(),
+        )
+        .timeout(_timeout);
+
+    _ensureSuccess(response);
+
+    final body = _decodeObject(response.body);
+    final raw = body['mappings'];
+
+    if (raw is! List) {
+      throw InventoryApiException(
+        statusCode: response.statusCode,
+        code: 'INVALID_RESPONSE',
+        message: 'รูปแบบข้อมูลการจับคู่สินค้าไม่ถูกต้อง',
+      );
+    }
+
+    return raw
+        .whereType<Map>()
+        .map((item) => Map<String, dynamic>.from(item))
+        .toList(growable: false);
+  }
+
+  static Future<List<Map<String, dynamic>>> listIntegrationEvents({
+    required String connectorId,
+    String status = '',
+    int limit = 50,
+  }) async {
+    final id = connectorId.trim();
+    if (id.isEmpty) {
+      throw const InventoryApiException(
+        statusCode: 400,
+        code: 'CONNECTOR_REQUIRED',
+        message: 'ไม่พบรหัสระบบเชื่อมต่อ',
+      );
+    }
+
+    final safeLimit = limit.clamp(1, 100);
+    final query = <String, String>{'limit': safeLimit.toString()};
+
+    final normalizedStatus = status.trim();
+    if (normalizedStatus.isNotEmpty) {
+      query['status'] = normalizedStatus;
+    }
+
+    final response = await http
+        .get(
+          _uri(
+            '/api/inventory/integrations/admin/connectors/'
+            '${Uri.encodeComponent(id)}/events',
+            query,
+          ),
+          headers: await _headers(),
+        )
+        .timeout(_timeout);
+
+    _ensureSuccess(response);
+
+    final body = _decodeObject(response.body);
+    final raw = body['events'];
+
+    if (raw is! List) {
+      throw InventoryApiException(
+        statusCode: response.statusCode,
+        code: 'INVALID_RESPONSE',
+        message: 'รูปแบบข้อมูลเหตุการณ์เชื่อมต่อไม่ถูกต้อง',
+      );
+    }
+
+    return raw
+        .whereType<Map>()
+        .map((item) => Map<String, dynamic>.from(item))
+        .toList(growable: false);
+  }
+
+  static Future<Map<String, dynamic>> getIntegrationEvent(
+    String eventId,
+  ) async {
+    final id = eventId.trim();
+    if (id.isEmpty) {
+      throw const InventoryApiException(
+        statusCode: 400,
+        code: 'EVENT_REQUIRED',
+        message: 'ไม่พบรหัสเหตุการณ์',
+      );
+    }
+
+    final response = await http
+        .get(
+          _uri(
+            '/api/inventory/integrations/admin/events/'
+            '${Uri.encodeComponent(id)}',
+          ),
+          headers: await _headers(),
+        )
+        .timeout(_timeout);
+
+    _ensureSuccess(response);
+
+    final body = _decodeObject(response.body);
+    final raw = body['event'];
+
+    if (raw is Map<String, dynamic>) return raw;
+    if (raw is Map) return Map<String, dynamic>.from(raw);
+
+    throw InventoryApiException(
+      statusCode: response.statusCode,
+      code: 'INVALID_RESPONSE',
+      message: 'รูปแบบข้อมูลเหตุการณ์ไม่ถูกต้อง',
+    );
+  }
+
+  static Future<Map<String, dynamic>> reprocessIntegrationEvent(
+    String eventId,
+  ) async {
+    final id = eventId.trim();
+    if (id.isEmpty) {
+      throw const InventoryApiException(
+        statusCode: 400,
+        code: 'EVENT_REQUIRED',
+        message: 'ไม่พบรหัสเหตุการณ์',
+      );
+    }
+
+    final response = await http
+        .post(
+          _uri(
+            '/api/inventory/integrations/admin/events/'
+            '${Uri.encodeComponent(id)}/reprocess',
+          ),
+          headers: await _headers(),
+          body: jsonEncode(const <String, dynamic>{}),
+        )
+        .timeout(_timeout);
+
+    _ensureSuccess(response);
+    return _decodeObject(response.body);
+  }
 }
