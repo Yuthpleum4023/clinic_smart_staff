@@ -1,3 +1,6 @@
+const InventoryItemMapping = require("../models/InventoryItemMapping");
+const StockItem = require("../models/StockItem");
+
 const {
   positiveQty,
 } = require("../utils/quantity");
@@ -94,7 +97,86 @@ function convertMappedQuantity({
   );
 }
 
+function withSession(query, session) {
+  return session
+    ? query.session(session)
+    : query;
+}
+
+async function resolveMappedInventoryItem({
+  clinicId,
+  connectorId,
+  externalItemId,
+  externalUnit,
+  session = null,
+}) {
+  const mappingQuery =
+    InventoryItemMapping.findOne({
+      clinicId: s(clinicId),
+      connectorId,
+      externalItemId: s(externalItemId),
+      externalUnit: s(externalUnit),
+      active: true,
+    });
+
+  const mapping =
+    await withSession(
+      mappingQuery,
+      session
+    );
+
+  if (!mapping) {
+    throw contractError(
+      "Inventory item mapping not found",
+      "ITEM_MAPPING_NOT_FOUND"
+    );
+  }
+
+  const itemQuery =
+    StockItem.findOne({
+      _id: mapping.stockItemId,
+      clinicId: s(clinicId),
+    });
+
+  const item =
+    await withSession(
+      itemQuery,
+      session
+    );
+
+  if (!item) {
+    throw contractError(
+      "Mapped stock item not found in connector clinic",
+      "MAPPED_STOCK_ITEM_NOT_FOUND"
+    );
+  }
+
+  if (!item.active) {
+    throw contractError(
+      "Mapped stock item is inactive",
+      "STOCK_ITEM_INACTIVE"
+    );
+  }
+
+  assertMappingUnits({
+    eventExternalUnit:
+      externalUnit,
+    mappingExternalUnit:
+      mapping.externalUnit,
+    stockItemUnit:
+      item.unit,
+    mappingInventoryUnit:
+      mapping.inventoryUnit,
+  });
+
+  return {
+    mapping,
+    item,
+  };
+}
+
 module.exports = {
   assertMappingUnits,
   convertMappedQuantity,
+  resolveMappedInventoryItem,
 };

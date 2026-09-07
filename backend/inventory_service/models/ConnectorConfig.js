@@ -126,7 +126,7 @@ ConnectorConfigSchema.index(
     partialFilterExpression: {
       credentialKeyId: {
         $type: "string",
-        $ne: "",
+        $gt: "",
       },
     },
   }

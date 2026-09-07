@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 
 const EVENT_STATUSES = [
   "received",
+  "processing",
   "applied",
   "blocked",
   "rejected",
