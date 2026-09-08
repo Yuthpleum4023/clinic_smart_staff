@@ -1,0 +1,15 @@
+{
+  "name": "clinic-smart-staff-local-connector-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Generic read-only connector runtime for external clinic systems",
+  "main": "src/core/connectorRuntime.js",
+  "type": "commonjs",
+  "scripts": {
+    "check": "find src scripts -type f -name '*.js' -print0 | xargs -0 -n1 node --check",
+    "test": "node scripts/test-runtime-contract-local.js && node scripts/test-backend-contract-compatibility.js && node scripts/test-mysql-readonly-driver-local.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

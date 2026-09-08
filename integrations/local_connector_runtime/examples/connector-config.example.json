@@ -1,0 +1,9 @@
+{
+  "baseUrl": "https://inventory-service.example.com",
+  "connectorTokenEnv": "CLINIC_CONNECTOR_TOKEN",
+  "driverId": "vendor-source-driver",
+  "adapterId": "vendor-adapter",
+  "checkpointKey": "vendor-source-instance",
+  "checkpointFile": "./state/checkpoints.json",
+  "source": {}
+}
