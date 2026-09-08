@@ -148,6 +148,50 @@ for (const forbidden of [
   );
 }
 
+
+const buildInstaller =
+  read(
+    path.join(
+      pipeline,
+      "build-installer.ps1"
+    )
+  );
+
+for (const [name, script] of [
+  ["build-installer.ps1", buildInstaller],
+  ["build-layout.ps1", buildLayout],
+  ["verify-build-layout.ps1", verify],
+  ["write-checksums.ps1", checksum]
+]) {
+  const firstStatement =
+    script
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find(Boolean);
+
+  assert.equal(
+    firstStatement,
+    "param(",
+    `${name} must declare param before executable statements`
+  );
+
+  assert.ok(
+    script.indexOf("param(") <
+      script.indexOf('$ErrorActionPreference = "Stop"'),
+    `${name} parameter binding must precede ErrorActionPreference`
+  );
+}
+
+assert.doesNotMatch(
+  buildInstaller,
+  /build_pipeline_pipeline/
+);
+
+assert.match(
+  buildInstaller,
+  /packaging\\windows\\build_pipeline"/
+);
+
 assert.equal(
   /CLINIC_CONNECTOR_TOKEN\s*=\s*["'][^"']+/.test(
     allText

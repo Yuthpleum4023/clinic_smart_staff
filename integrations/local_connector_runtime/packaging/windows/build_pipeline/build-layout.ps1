@@ -1,5 +1,3 @@
-$ErrorActionPreference = "Stop"
-
 param(
   [Parameter(Mandatory=$true)]
   [string]$RuntimeRoot,
@@ -10,6 +8,8 @@ param(
   [Parameter(Mandatory=$true)]
   [string]$OutputRoot
 )
+
+$ErrorActionPreference = "Stop"
 
 $RuntimeRoot = (Resolve-Path $RuntimeRoot).Path
 $BuildInputsRoot = (Resolve-Path $BuildInputsRoot).Path

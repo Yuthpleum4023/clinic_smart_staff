@@ -1,9 +1,9 @@
-$ErrorActionPreference = "Stop"
-
 param(
   [Parameter(Mandatory=$true)]
   [string]$ArtifactDirectory
 )
+
+$ErrorActionPreference = "Stop"
 
 $Output = Join-Path $ArtifactDirectory "SHA256SUMS.txt"
 

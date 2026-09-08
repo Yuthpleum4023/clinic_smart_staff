@@ -1,5 +1,3 @@
-$ErrorActionPreference = "Stop"
-
 param(
   [Parameter(Mandatory=$true)]
   [string]$RuntimeRoot,
@@ -17,8 +15,10 @@ param(
   [string]$WorkRoot
 )
 
+$ErrorActionPreference = "Stop"
+
 $PipelineRoot =
-  Join-Path $RuntimeRoot "packaging\windows\build_pipeline_pipeline"
+  Join-Path $RuntimeRoot "packaging\windows\build_pipeline"
 
 $LayoutRoot =
   Join-Path $WorkRoot "layout"

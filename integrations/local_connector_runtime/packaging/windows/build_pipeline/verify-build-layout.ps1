@@ -1,9 +1,9 @@
-$ErrorActionPreference = "Stop"
-
 param(
   [Parameter(Mandatory=$true)]
   [string]$LayoutRoot
 )
+
+$ErrorActionPreference = "Stop"
 
 $Required = @(
   "app\bin\connector.js",
