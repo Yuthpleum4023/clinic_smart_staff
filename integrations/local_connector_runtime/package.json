@@ -7,7 +7,7 @@
   "type": "commonjs",
   "scripts": {
     "check": "find src scripts -type f -name '*.js' -print0 | xargs -0 -n1 node --check",
-    "test": "node scripts/test-runtime-contract-local.js && node scripts/test-backend-contract-compatibility.js && node scripts/test-mysql-readonly-driver-local.js && node scripts/test-generic-adapter-contract-fixture.js"
+    "test": "node scripts/test-runtime-contract-local.js && node scripts/test-backend-contract-compatibility.js && node scripts/test-mysql-readonly-driver-local.js && node scripts/test-generic-adapter-contract-fixture.js && node scripts/test-fd-adapter-scaffold-local.js"
   },
   "engines": {
     "node": ">=18"

@@ -1,0 +1,14 @@
+{
+  "schemaVerified": false,
+  "sourceName": "fd",
+  "fields": {
+    "eventId": "",
+    "lineId": "",
+    "itemId": "",
+    "quantity": "",
+    "unit": "",
+    "occurredAt": "",
+    "referenceNo": "",
+    "referenceType": ""
+  }
+}
