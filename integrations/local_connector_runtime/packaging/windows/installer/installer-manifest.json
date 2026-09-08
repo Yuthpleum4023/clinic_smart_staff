@@ -1,0 +1,24 @@
+{
+  "installerType": "future-msi-or-inno-setup",
+  "installScope": "per-machine",
+  "requiresAdministrator": true,
+  "defaultInstallDirectory": "%ProgramFiles%\\Clinic Smart Staff Connector",
+  "directories": [
+    "app",
+    "node",
+    "service",
+    "config",
+    "state",
+    "logs",
+    "scripts"
+  ],
+  "postInstall": [
+    "configure connector credential securely",
+    "configure source DB credential securely",
+    "write connector-config.json without secrets",
+    "install Windows service",
+    "start Windows service"
+  ],
+  "uninstallKeepsStateByDefault": true,
+  "publicDatabasePortRequired": false
+}

@@ -1,0 +1,29 @@
+{
+  "productName": "Clinic Smart Staff Connector",
+  "serviceName": "ClinicSmartStaffConnector",
+  "supportedWindows": [
+    "Windows 10",
+    "Windows 11",
+    "Windows Server 2019",
+    "Windows Server 2022",
+    "Windows Server 2025"
+  ],
+  "legacyPatientWorkstationInstall": false,
+  "runtime": {
+    "entrypoint": "app\\bin\\connector.js",
+    "configPath": "config\\connector-config.json",
+    "stateDirectory": "state",
+    "logsDirectory": "logs"
+  },
+  "serviceWrapper": {
+    "type": "winsw",
+    "binaryRequired": "ClinicSmartStaffConnectorService.exe",
+    "configRequired": "ClinicSmartStaffConnectorService.xml"
+  },
+  "secrets": {
+    "embeddedInInstaller": false,
+    "embeddedInConfig": false,
+    "connectorTokenEnvironmentVariable": "CLINIC_CONNECTOR_TOKEN",
+    "databasePasswordEnvironmentVariable": "CLINIC_SOURCE_DB_PASSWORD"
+  }
+}
