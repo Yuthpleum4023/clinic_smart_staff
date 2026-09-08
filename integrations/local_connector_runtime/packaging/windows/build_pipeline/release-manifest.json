@@ -1,0 +1,15 @@
+{
+  "productName": "Clinic Smart Staff Connector",
+  "artifactBaseName": "ClinicSmartStaffConnectorSetup",
+  "packageVersion": "0.1.0",
+  "architecture": "x64",
+  "installer": "inno-setup",
+  "serviceWrapper": "winsw",
+  "buildInputs": {
+    "nodeRuntimeDirectory": "build-inputs/node",
+    "winSwBinary": "build-inputs/ClinicSmartStaffConnectorService.exe"
+  },
+  "outputDirectory": "dist",
+  "checksumsFile": "SHA256SUMS.txt",
+  "signed": false
+}
