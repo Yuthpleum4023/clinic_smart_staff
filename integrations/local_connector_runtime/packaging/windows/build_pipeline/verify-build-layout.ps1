@@ -8,6 +8,8 @@ param(
 $Required = @(
   "app\bin\connector.js",
   "app\package.json",
+  "app\package-lock.json",
+  "app\node_modules\mysql2\package.json",
   "node\node.exe",
   "service\ClinicSmartStaffConnectorService.exe",
   "service\ClinicSmartStaffConnectorService.xml",

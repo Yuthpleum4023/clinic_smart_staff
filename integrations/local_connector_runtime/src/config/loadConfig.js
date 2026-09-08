@@ -27,7 +27,11 @@ function loadRuntimeConfig(filePath, env = process.env) {
     adapterId: s(config.adapterId),
     checkpointKey: s(config.checkpointKey),
     checkpointFile: s(config.checkpointFile),
-    source: config.source || {}
+    healthFile: s(config.healthFile),
+    pollIntervalMs: config.pollIntervalMs,
+    retry: config.retry || {},
+    source: config.source || {},
+    adapterProfile: config.adapterProfile || {}
   };
 }
 

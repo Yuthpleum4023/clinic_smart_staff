@@ -57,15 +57,31 @@ Copy-Item -Force `
   (Join-Path $RuntimeRoot "package.json") `
   (Join-Path $OutputRoot "app\package.json")
 
-if (Test-Path (Join-Path $RuntimeRoot "package-lock.json")) {
-  Copy-Item -Force `
-    (Join-Path $RuntimeRoot "package-lock.json") `
-    (Join-Path $OutputRoot "app\package-lock.json")
+if (-not (Test-Path (Join-Path $RuntimeRoot "package-lock.json"))) {
+  throw "package-lock.json is required for deterministic production dependency installation."
 }
+
+Copy-Item -Force `
+  (Join-Path $RuntimeRoot "package-lock.json") `
+  (Join-Path $OutputRoot "app\package-lock.json")
 
 Copy-Item -Recurse -Force `
   (Join-Path $NodeInput "*") `
   (Join-Path $OutputRoot "node")
+
+$NpmCmd = Join-Path $OutputRoot "node\npm.cmd"
+if (-not (Test-Path $NpmCmd)) {
+  throw "Bundled Node runtime must include npm.cmd."
+}
+
+Push-Location (Join-Path $OutputRoot "app")
+try {
+  & $NpmCmd ci --omit=dev --ignore-scripts --no-audit --no-fund
+  if ($LASTEXITCODE -ne 0) { throw "Production npm dependency installation failed." }
+}
+finally {
+  Pop-Location
+}
 
 Copy-Item -Force `
   $WinSwInput `
