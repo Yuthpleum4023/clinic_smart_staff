@@ -1,0 +1,227 @@
+name: Build Clinic Smart Staff Connector Windows
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Connector version (semver without leading v)"
+        required: true
+        default: "0.1.0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: clinic-smart-staff-connector-windows-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build unsigned Windows installer
+    runs-on: windows-2022
+    timeout-minutes: 30
+
+    env:
+      RUNTIME_ROOT: integrations/local_connector_runtime
+      BUILD_INPUTS_ROOT: ${{ github.workspace }}\connector-build-inputs
+      WORK_ROOT: ${{ github.workspace }}\connector-build-work
+      NODE_VERSION: "22.19.0"
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up pinned Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: integrations/local_connector_runtime/package-lock.json
+
+      - name: Validate repository inputs
+        shell: pwsh
+        env:
+          WINSW_URL: ${{ vars.CONNECTOR_WINSW_URL }}
+          WINSW_SHA256: ${{ vars.CONNECTOR_WINSW_SHA256 }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ([string]::IsNullOrWhiteSpace($env:WINSW_URL)) {
+            throw "Repository variable CONNECTOR_WINSW_URL is required."
+          }
+
+          if (
+            [string]::IsNullOrWhiteSpace($env:WINSW_SHA256) -or
+            $env:WINSW_SHA256 -notmatch '^[A-Fa-f0-9]{64}$'
+          ) {
+            throw "Repository variable CONNECTOR_WINSW_SHA256 must be a 64-character SHA-256."
+          }
+
+          if ("${{ inputs.version }}" -notmatch '^\d+\.\d+\.\d+([-.][0-9A-Za-z.-]+)?$') {
+            throw "workflow_dispatch version must be a semantic version."
+          }
+
+          Write-Host "CI_EXTERNAL_INPUT_CONTRACT_VALID=TRUE"
+
+      - name: Verify connector regression suite
+        shell: pwsh
+        working-directory: integrations/local_connector_runtime
+        run: |
+          $ErrorActionPreference = "Stop"
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm test
+
+      - name: Prepare pinned Node build input
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $nodeExe = (Get-Command node).Source
+          $nodeDir = Split-Path -Parent $nodeExe
+
+          $target = Join-Path $env:BUILD_INPUTS_ROOT "node"
+          New-Item -ItemType Directory -Force -Path $target | Out-Null
+
+          Copy-Item -Recurse -Force `
+            (Join-Path $nodeDir "*") `
+            $target
+
+          if (-not (Test-Path (Join-Path $target "node.exe"))) {
+            throw "Prepared Node build input is missing node.exe."
+          }
+
+          if (-not (Test-Path (Join-Path $target "npm.cmd"))) {
+            throw "Prepared Node build input is missing npm.cmd."
+          }
+
+          Write-Host "NODE_BUILD_INPUT_READY=TRUE"
+
+      - name: Fetch and verify WinSW build input
+        shell: pwsh
+        env:
+          WINSW_URL: ${{ vars.CONNECTOR_WINSW_URL }}
+          WINSW_SHA256: ${{ vars.CONNECTOR_WINSW_SHA256 }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          New-Item `
+            -ItemType Directory `
+            -Force `
+            -Path $env:BUILD_INPUTS_ROOT |
+          Out-Null
+
+          $target =
+            Join-Path `
+              $env:BUILD_INPUTS_ROOT `
+              "ClinicSmartStaffConnectorService.exe"
+
+          Invoke-WebRequest `
+            -Uri $env:WINSW_URL `
+            -OutFile $target
+
+          $actual =
+            (Get-FileHash -Algorithm SHA256 -Path $target).Hash.ToLower()
+
+          $expected =
+            $env:WINSW_SHA256.ToLower()
+
+          if ($actual -ne $expected) {
+            throw "WinSW SHA-256 verification failed."
+          }
+
+          Write-Host "WINSW_SHA256_VERIFIED=TRUE"
+
+      - name: Locate Inno Setup compiler
+        id: inno
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $candidates = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+          )
+
+          $compiler =
+            $candidates |
+            Where-Object { Test-Path $_ } |
+            Select-Object -First 1
+
+          if (-not $compiler) {
+            throw "Inno Setup 6 compiler not found on windows-2022 runner."
+          }
+
+          "compiler=$compiler" >> $env:GITHUB_OUTPUT
+          Write-Host "INNO_SETUP_COMPILER_FOUND=TRUE"
+
+      - name: Build unsigned installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $runtime =
+            Join-Path `
+              $env:GITHUB_WORKSPACE `
+              $env:RUNTIME_ROOT
+
+          & "$runtime\packaging\windows\build_pipeline\build-installer.ps1" `
+            -RuntimeRoot $runtime `
+            -BuildInputsRoot $env:BUILD_INPUTS_ROOT `
+            -InnoCompiler "${{ steps.inno.outputs.compiler }}" `
+            -Version "${{ inputs.version }}" `
+            -WorkRoot $env:WORK_ROOT
+
+      - name: Verify generated installer artifacts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $dist =
+            Join-Path `
+              $env:WORK_ROOT `
+              "dist"
+
+          $expectedInstaller =
+            Join-Path `
+              $dist `
+              "ClinicSmartStaffConnectorSetup-${{ inputs.version }}-x64.exe"
+
+          $checksums =
+            Join-Path `
+              $dist `
+              "SHA256SUMS.txt"
+
+          if (-not (Test-Path $expectedInstaller)) {
+            throw "Expected connector installer artifact not found."
+          }
+
+          if (-not (Test-Path $checksums)) {
+            throw "SHA256SUMS.txt not found."
+          }
+
+          $installerHash =
+            (Get-FileHash `
+              -Algorithm SHA256 `
+              -Path $expectedInstaller).Hash.ToLower()
+
+          $checksumText =
+            Get-Content `
+              -LiteralPath $checksums `
+              -Raw
+
+          if (-not $checksumText.Contains($installerHash)) {
+            throw "Installer SHA-256 is not present in SHA256SUMS.txt."
+          }
+
+          Write-Host "WINDOWS_INSTALLER_ARTIFACT_VERIFIED=TRUE"
+          Write-Host "SIGNED_INSTALLER_CREATED=FALSE"
+
+      - name: Upload unsigned installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: clinic-smart-staff-connector-windows-${{ inputs.version }}
+          path: |
+            ${{ env.WORK_ROOT }}\dist\ClinicSmartStaffConnectorSetup-${{ inputs.version }}-x64.exe
+            ${{ env.WORK_ROOT }}\dist\SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
