@@ -85,11 +85,11 @@ finally {
 
 Copy-Item -Force `
   $WinSwInput `
-  (Join-Path $OutputRoot "service\ClinicSmartStaffConnectorService.exe")
+  (Join-Path $OutputRoot "ClinicSmartStaffConnectorService.exe")
 
 Copy-Item -Force `
   (Join-Path $RuntimeRoot "packaging\windows\service\ClinicSmartStaffConnectorService.xml") `
-  (Join-Path $OutputRoot "service\ClinicSmartStaffConnectorService.xml")
+  (Join-Path $OutputRoot "ClinicSmartStaffConnectorService.xml")
 
 Copy-Item -Force `
   (Join-Path $RuntimeRoot "packaging\windows\templates\connector-config.template.json") `
@@ -106,6 +106,14 @@ Copy-Item -Force `
 Copy-Item -Force `
   (Join-Path $RuntimeRoot "packaging\windows\scripts\status.ps1") `
   (Join-Path $OutputRoot "scripts\status.ps1")
+
+Copy-Item -Force `
+  (Join-Path $RuntimeRoot "packaging\windows\scripts\validate-config.ps1") `
+  (Join-Path $OutputRoot "scripts\validate-config.ps1")
+
+Copy-Item -Force `
+  (Join-Path $RuntimeRoot "packaging\windows\scripts\provision-and-start-service.ps1") `
+  (Join-Path $OutputRoot "scripts\provision-and-start-service.ps1")
 
 Write-Host "CONNECTOR_BUILD_LAYOUT_CREATED=TRUE"
 Write-Host ("OUTPUT_ROOT=" + $OutputRoot)

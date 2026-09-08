@@ -1,37 +1,22 @@
 $ErrorActionPreference = "Stop"
+$InstallRoot = Split-Path -Parent $PSScriptRoot
+$ServiceExe = Join-Path $InstallRoot "ClinicSmartStaffConnectorService.exe"
+$ServiceXml = Join-Path $InstallRoot "ClinicSmartStaffConnectorService.xml"
+$Config = Join-Path $InstallRoot "config\connector-config.json"
+$Node = Join-Path $InstallRoot "node\node.exe"
+$Entrypoint = Join-Path $InstallRoot "app\bin\connector.js"
 
-$Base = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-$ServiceExe = Join-Path $Base "service\ClinicSmartStaffConnectorService.exe"
-$ServiceXml = Join-Path $Base "service\ClinicSmartStaffConnectorService.xml"
-$Config = Join-Path $Base "config\connector-config.json"
-$Node = Join-Path $Base "node\node.exe"
-$Entrypoint = Join-Path $Base "app\bin\connector.js"
-
-foreach ($required in @($ServiceExe, $ServiceXml, $Config, $Node, $Entrypoint)) {
-  if (-not (Test-Path $required)) {
-    throw "Required connector package file missing: $required"
-  }
+foreach ($required in @($ServiceExe,$ServiceXml,$Config,$Node,$Entrypoint)) {
+  if (-not (Test-Path $required)) { throw "Required connector package file missing: $required" }
 }
 
-if (-not $env:CLINIC_CONNECTOR_TOKEN) {
-  throw "CLINIC_CONNECTOR_TOKEN is not configured in the service environment."
+$Existing = Get-Service -Name "ClinicSmartStaffConnector" -ErrorAction SilentlyContinue
+if ($Existing) {
+  Write-Host "CONNECTOR_SERVICE_ALREADY_INSTALLED=TRUE"
+  exit 0
 }
-
-if (-not $env:CLINIC_SOURCE_DB_PASSWORD) {
-  throw "CLINIC_SOURCE_DB_PASSWORD is not configured in the service environment."
-}
-
-New-Item -ItemType Directory -Force -Path (Join-Path $Base "state") | Out-Null
-New-Item -ItemType Directory -Force -Path (Join-Path $Base "logs") | Out-Null
 
 & $ServiceExe install
-if ($LASTEXITCODE -ne 0) {
-  throw "Connector service installation failed."
-}
-
-& $ServiceExe start
-if ($LASTEXITCODE -ne 0) {
-  throw "Connector service start failed."
-}
-
+if ($LASTEXITCODE -ne 0) { throw "Connector service installation failed." }
 Write-Host "CLINIC_SMART_STAFF_CONNECTOR_SERVICE_INSTALLED=TRUE"
+Write-Host "CONNECTOR_SERVICE_STARTED=FALSE"

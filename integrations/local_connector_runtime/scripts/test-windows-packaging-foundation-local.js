@@ -48,8 +48,26 @@ assert.match(serviceXml, /app\\bin\\connector\.js/);
 
 const install = read("scripts/install-service.ps1");
 
-assert.match(install, /CLINIC_CONNECTOR_TOKEN/);
-assert.match(install, /CLINIC_SOURCE_DB_PASSWORD/);
+const provision = read("scripts/provision-and-start-service.ps1");
+
+assert.doesNotMatch(
+  install,
+  /CLINIC_CONNECTOR_TOKEN/
+);
+assert.doesNotMatch(
+  install,
+  /CLINIC_SOURCE_DB_PASSWORD/
+);
+
+assert.match(
+  provision,
+  /CLINIC_CONNECTOR_TOKEN/
+);
+
+assert.match(
+  provision,
+  /CLINIC_SOURCE_DB_PASSWORD/
+);
 
 for (const forbidden of [
   "INSERT INTO",

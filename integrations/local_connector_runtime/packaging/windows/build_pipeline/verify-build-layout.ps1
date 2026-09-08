@@ -11,12 +11,14 @@ $Required = @(
   "app\package-lock.json",
   "app\node_modules\mysql2\package.json",
   "node\node.exe",
-  "service\ClinicSmartStaffConnectorService.exe",
-  "service\ClinicSmartStaffConnectorService.xml",
+  "ClinicSmartStaffConnectorService.exe",
+  "ClinicSmartStaffConnectorService.xml",
   "config\connector-config.template.json",
   "scripts\install-service.ps1",
   "scripts\uninstall-service.ps1",
-  "scripts\status.ps1"
+  "scripts\status.ps1",
+  "scripts\validate-config.ps1",
+  "scripts\provision-and-start-service.ps1"
 )
 
 foreach ($rel in $Required) {

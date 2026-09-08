@@ -1,0 +1,44 @@
+"use strict";
+const assert=require("assert");
+const fs=require("fs");
+const path=require("path");
+const root=path.resolve(__dirname,"..","packaging","windows");
+const read=(...p)=>fs.readFileSync(path.join(root,...p),"utf8");
+const xml=read("service","ClinicSmartStaffConnectorService.xml");
+const install=read("scripts","install-service.ps1");
+const uninstall=read("scripts","uninstall-service.ps1");
+const status=read("scripts","status.ps1");
+const validate=read("scripts","validate-config.ps1");
+const provision=read("scripts","provision-and-start-service.ps1");
+const iss=read("installer","ClinicSmartStaffConnector.iss");
+const layout=read("build_pipeline","build-layout.ps1");
+const verify=read("build_pipeline","verify-build-layout.ps1");
+
+assert.match(xml,/%BASE%\\node\\node\.exe/);
+assert.match(xml,/%BASE%\\app\\bin\\connector\.js/);
+assert.match(xml,/%BASE%\\config\\connector-config\.json/);
+for (const s of [install,uninstall,status]) {
+  assert.match(s,/Split-Path -Parent \$PSScriptRoot/);
+  assert.doesNotMatch(s,/Split-Path -Parent \(Split-Path -Parent \$PSScriptRoot\)/);
+}
+assert.match(install,/CONNECTOR_SERVICE_STARTED=FALSE/);
+assert.match(validate,/CLINIC_SCOPE_MUST_NOT_BE_CONFIGURED_LOCALLY/);
+assert.match(validate,/CONNECTOR_SCOPE_MUST_NOT_BE_CONFIGURED_LOCALLY/);
+assert.match(validate,/ADAPTER_SCHEMA_VERIFICATION_REQUIRED/);
+assert.match(provision,/validate-config\.ps1/);
+assert.match(provision,/connector-config\.json/);
+assert.match(provision,/CurrentControlSet\\Services\\ClinicSmartStaffConnector/);
+assert.match(provision,/PropertyType MultiString/);
+assert.match(provision,/CONNECTOR_SERVICE_STARTED=TRUE/);
+assert.doesNotMatch(iss,/\[Run\]/);
+assert.doesNotMatch(iss,/\\scripts\\install-service\.ps1/);
+assert.match(iss,/\\scripts\\uninstall-service\.ps1/);
+assert.match(iss,/ClinicSmartStaffConnectorService\.exe"; DestDir: "\{app\}"/);
+assert.match(layout,/OutputRoot "ClinicSmartStaffConnectorService\.exe"/);
+assert.match(verify,/"ClinicSmartStaffConnectorService\.exe"/);
+console.log("WINDOWS_SERVICE_BOOTSTRAP_CONTRACT_TESTS_PASSED=TRUE");
+console.log("CANONICAL_INSTALL_ROOT_SINGLE_AUTHORITY=TRUE");
+console.log("WINSW_BASE_EQUALS_INSTALL_ROOT=TRUE");
+console.log("INSTALLER_FILES_ONLY=TRUE");
+console.log("CONFIG_PROVISIONING_SEPARATE=TRUE");
+console.log("SERVICE_INSTALL_AND_START_AFTER_PROVISION=TRUE");
