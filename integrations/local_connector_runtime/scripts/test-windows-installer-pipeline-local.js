@@ -116,6 +116,22 @@ assert.match(
   /SHA256/
 );
 
+
+assert.match(
+  checksum,
+  /\$Lines -join "`n"/
+);
+
+assert.match(
+  checksum,
+  /WriteAllText/
+);
+
+assert.doesNotMatch(
+  checksum,
+  /Set-Content[\s\S]*-Value \$Lines/
+);
+
 const allText =
   [
     releaseManifest,

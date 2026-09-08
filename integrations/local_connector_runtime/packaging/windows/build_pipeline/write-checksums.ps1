@@ -33,10 +33,18 @@ foreach ($file in $Files) {
   $Lines += "$hash  $relative"
 }
 
-Set-Content `
-  -Path $Output `
-  -Value $Lines `
-  -Encoding ASCII
+$ManifestText =
+  if ($Lines.Count -eq 0) {
+    ""
+  } else {
+    ($Lines -join "`n") + "`n"
+  }
+
+[System.IO.File]::WriteAllText(
+  $Output,
+  $ManifestText,
+  [System.Text.Encoding]::ASCII
+)
 
 Write-Host "CONNECTOR_SHA256_MANIFEST_CREATED=TRUE"
 Write-Host ("CHECKSUM_FILE=" + $Output)
