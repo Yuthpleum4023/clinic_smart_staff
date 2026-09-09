@@ -1,0 +1,10 @@
+{
+  "driverId": "mysql",
+  "source": {
+    "host": "",
+    "port": 3306,
+    "database": "FD5_5",
+    "user": "",
+    "passwordEnv": "CLINIC_SOURCE_DB_PASSWORD"
+  }
+}
