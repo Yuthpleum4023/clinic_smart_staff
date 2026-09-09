@@ -7,6 +7,7 @@ $ErrorActionPreference = "Stop"
 
 $Required = @(
   "app\bin\connector.js",
+  "app\bin\bootstrap-forward-only.js",
   "app\package.json",
   "app\package-lock.json",
   "app\node_modules\mysql2\package.json",

@@ -27,6 +27,10 @@ const {
   createRuntimeDependencies
 } = require("../src/runtime/runtimeFactory");
 
+const {
+  assertForwardOnlyActivation,
+} = require("../src/runtime/forwardOnlyActivation");
+
 function s(value) {
   return String(value ?? "").trim();
 }
@@ -44,6 +48,11 @@ async function main() {
 
   const deps =
     createRuntimeDependencies(config);
+
+  assertForwardOnlyActivation({
+    config,
+    checkpointStore: deps.checkpointStore,
+  });
 
   const runtime =
     new ConnectorRuntime(deps);

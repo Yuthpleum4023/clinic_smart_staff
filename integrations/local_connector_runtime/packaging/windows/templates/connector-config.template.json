@@ -29,12 +29,15 @@
   },
   "adapterProfile": {
     "schemaVerified": false,
+    "movementSemanticsVerified": false,
     "sourceName": "fd",
+    "unitLiteral": "",
     "fields": {
       "eventId": "",
       "lineId": "",
       "itemId": "",
-      "quantity": "",
+      "previousAmountUnit": "",
+      "amountUnit": "",
       "unit": "",
       "occurredAt": "",
       "referenceNo": "",
