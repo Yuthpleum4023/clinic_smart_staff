@@ -14,6 +14,8 @@ const {
     () =>
       createFdAdapter({
         schemaVerified: false,
+        movementSemanticsVerified:
+          true,
         fields: {}
       }),
     /FD_SCHEMA_VERIFICATION_REQUIRED/
@@ -21,13 +23,28 @@ const {
 
   assert.throws(
     () =>
+      createFdAdapter({
+        schemaVerified: true,
+        movementSemanticsVerified:
+          false,
+        fields: {}
+      }),
+    /FD_MOVEMENT_SEMANTICS_VERIFICATION_REQUIRED/
+  );
+
+  assert.throws(
+    () =>
       requiredProfile({
         schemaVerified: true,
+        movementSemanticsVerified:
+          true,
+        unitLiteral:
+          "fd_amount_unit",
         fields: {
           eventId: "",
           itemId: "",
-          quantity: "",
-          unit: "",
+          previousAmountUnit: "",
+          amountUnit: "",
           occurredAt: ""
         }
       }),
@@ -36,104 +53,172 @@ const {
 
   const profile = {
     schemaVerified: true,
+    movementSemanticsVerified:
+      true,
     sourceName: "fd",
+    unitLiteral:
+      "fd_amount_unit",
     fields: {
       eventId: "verified_event_key",
       lineId: "verified_line_key",
       itemId: "verified_item_key",
-      quantity: "verified_qty",
-      unit: "verified_unit",
+      previousAmountUnit:
+        "verified_previous_amount",
+      amountUnit:
+        "verified_amount",
+      unit: "",
       occurredAt: "verified_time",
       referenceNo: "verified_ref",
-      referenceType: ""
+      referenceType:
+        "verified_reference_type"
     }
   };
 
   const adapter =
     createFdAdapter(profile);
 
-  const row = {
+  const baseRow = {
     verified_event_key:
       "E-100",
     verified_line_key:
       "L-2",
     verified_item_key:
       "ITEM-X",
-    verified_qty:
-      3,
-    verified_unit:
-      "piece",
     verified_time:
       "2026-09-08T06:00:00Z",
     verified_ref:
-      "R-100"
+      "R-100",
+    verified_reference_type:
+      "source-doc"
   };
 
   assert.equal(
-    adapter.assertSourceRecord(row),
+    adapter.assertSourceRecord(
+      baseRow
+    ),
     true
   );
 
-  const event =
-    await adapter.transformRecord(row);
+  const inbound =
+    await adapter.transformRecord({
+      ...baseRow,
+      verified_previous_amount:
+        4,
+      verified_amount:
+        7
+    });
 
   assert.equal(
-    event.externalEventId,
+    inbound.externalEventId,
     "E-100"
   );
 
   assert.equal(
-    event.externalLineId,
+    inbound.externalLineId,
     "L-2"
   );
 
   assert.equal(
-    event.externalItemId,
+    inbound.externalItemId,
     "ITEM-X"
   );
 
   assert.equal(
-    event.quantity,
+    inbound.quantity,
     3
   );
 
   assert.equal(
-    event.unit,
-    "piece"
+    inbound.unit,
+    "fd_amount_unit"
   );
 
   assert.equal(
-    event.eventType,
-    "dispensed"
+    inbound.eventType,
+    "inventory_in"
   );
 
-  for (const field of [
-    "clinicId",
-    "connectorId",
-    "externalSystem",
-    "stockItemId",
-    "mappingId",
-    "stockMovementId",
-    "normalizedQuantity",
-    "reprocess"
+  const outbound =
+    await adapter.transformRecord({
+      ...baseRow,
+      verified_previous_amount:
+        7,
+      verified_amount:
+        2
+    });
+
+  assert.equal(
+    outbound.quantity,
+    5
+  );
+
+  assert.equal(
+    outbound.eventType,
+    "inventory_out"
+  );
+
+  const zeroDelta =
+    await adapter.transformRecord({
+      ...baseRow,
+      verified_previous_amount:
+        2,
+      verified_amount:
+        2
+    });
+
+  assert.equal(
+    zeroDelta,
+    null
+  );
+
+  for (const event of [
+    inbound,
+    outbound
   ]) {
-    assert.equal(
-      Object.prototype.hasOwnProperty.call(
-        event,
-        field
-      ),
-      false
-    );
+    for (const field of [
+      "clinicId",
+      "connectorId",
+      "externalSystem",
+      "stockItemId",
+      "mappingId",
+      "stockMovementId",
+      "normalizedQuantity",
+      "reprocess",
+      "currentStock",
+      "balanceBefore",
+      "balanceAfter"
+    ]) {
+      assert.equal(
+        Object.prototype
+          .hasOwnProperty.call(
+            event,
+            field
+          ),
+        false
+      );
+    }
   }
 
   console.log(
-    "FD_ADAPTER_SCAFFOLD_TESTS_PASSED=TRUE"
+    "FD_ADAPTER_MOVEMENT_TESTS_PASSED=TRUE"
   );
   console.log(
     "FD_SCHEMA_ASSUMPTIONS_ALLOWED=FALSE"
   );
   console.log(
     "FD_SCHEMA_VERIFICATION_REQUIRED=TRUE"
+  );
+  console.log(
+    "FD_MOVEMENT_SEMANTICS_VERIFIED=TRUE"
+  );
+  console.log(
+    "FD_DIRECTION_DERIVATION=AMOUNT_UNIT_DELTA"
+  );
+  console.log(
+    "FD_DOCTYPE_USED_FOR_DIRECTION=FALSE"
+  );
+  console.log(
+    "FD_ZERO_DELTA_MATERIALIZED=FALSE"
   );
   console.log(
     "FD_STOCK_AUTHORITY=FALSE"

@@ -23,15 +23,17 @@ fs.writeFileSync(configPath, JSON.stringify({
     user: "readonly_user", passwordEnv: "CLINIC_SOURCE_DB_PASSWORD",
     poll: {
       schema: "verified_db", table: "verified_usage",
-      columns: ["event_key","line_key","item_key","qty","unit","occurred_at"],
+      columns: ["event_key","line_key","item_key","prv_amount_unit","amount_unit","occurred_at"],
       cursorColumn: "occurred_at", tieBreakerColumn: "line_key", limit: 50
     }
   },
   adapterProfile: {
-    schemaVerified: true, sourceName: "fd",
+    schemaVerified: true, movementSemanticsVerified: true,
+    sourceName: "fd", unitLiteral: "fd_amount_unit",
     fields: {
       eventId: "event_key", lineId: "line_key", itemId: "item_key",
-      quantity: "qty", unit: "unit", occurredAt: "occurred_at",
+      previousAmountUnit: "prv_amount_unit", amountUnit: "amount_unit",
+      unit: "", occurredAt: "occurred_at",
       referenceNo: "", referenceType: ""
     }
   }

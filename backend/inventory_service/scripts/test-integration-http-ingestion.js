@@ -168,6 +168,7 @@ async function postJson({
   baseUrl,
   token = "",
   body,
+  path = "/consumption",
 }) {
   const headers = {
     "content-type":
@@ -181,7 +182,7 @@ async function postJson({
 
   const response =
     await fetch(
-      `${baseUrl}/api/inventory/integrations/consumption`,
+      `${baseUrl}/api/inventory/integrations${path}`,
       {
         method: "POST",
         headers,
@@ -508,6 +509,195 @@ async function run() {
       1
     );
 
+    const eventCountBeforeLegacyMovement =
+      await IntegrationEvent
+        .countDocuments();
+
+    const legacyMovementAttempt =
+      await postJson({
+        baseUrl,
+        token:
+          credentialA.token,
+        path:
+          "/consumption",
+        body: {
+          ...baseEvent,
+          externalEventId:
+            "HTTP-EVENT-LEGACY-MOVE-IN",
+          externalLineId:
+            "1",
+          quantity: 3,
+          eventType:
+            "inventory_in",
+        },
+      });
+
+    assert.equal(
+      legacyMovementAttempt.status,
+      400
+    );
+
+    assert.equal(
+      legacyMovementAttempt
+        .payload?.code,
+      "UNSUPPORTED_CONSUMPTION_EVENT_TYPE"
+    );
+
+    assert.equal(
+      await qtyOf(
+        itemA._id
+      ),
+      8
+    );
+
+    assert.equal(
+      await IntegrationEvent
+        .countDocuments(),
+      eventCountBeforeLegacyMovement
+    );
+
+    const movementIn =
+      await postJson({
+        baseUrl,
+        token:
+          credentialA.token,
+        path:
+          "/movements",
+        body: {
+          ...baseEvent,
+          externalEventId:
+            "HTTP-EVENT-MOVE-IN",
+          externalLineId:
+            "1",
+          quantity: 3,
+          eventType:
+            "inventory_in",
+        },
+      });
+
+    assert.equal(
+      movementIn.status,
+      201
+    );
+
+    assert.equal(
+      movementIn.payload?.ok,
+      true
+    );
+
+    assert.equal(
+      await qtyOf(
+        itemA._id
+      ),
+      11
+    );
+
+    const movementOut =
+      await postJson({
+        baseUrl,
+        token:
+          credentialA.token,
+        path:
+          "/movements",
+        body: {
+          ...baseEvent,
+          externalEventId:
+            "HTTP-EVENT-MOVE-OUT",
+          externalLineId:
+            "1",
+          quantity: 3,
+          eventType:
+            "inventory_out",
+        },
+      });
+
+    assert.equal(
+      movementOut.status,
+      201
+    );
+
+    assert.equal(
+      movementOut.payload?.ok,
+      true
+    );
+
+    assert.equal(
+      await qtyOf(
+        itemA._id
+      ),
+      8
+    );
+
+    const inboundMovement =
+      await StockMovement.findOne({
+        clinicId:
+          "ingress-clinic-a",
+        type:
+          "external_stock_in",
+      }).lean();
+
+    assert.ok(
+      inboundMovement
+    );
+
+    assert.equal(
+      inboundMovement
+        .quantityDelta,
+      3
+    );
+
+    const movementInReplay =
+      await postJson({
+        baseUrl,
+        token:
+          credentialA.token,
+        path:
+          "/movements",
+        body: {
+          ...baseEvent,
+          externalEventId:
+            "HTTP-EVENT-MOVE-IN",
+          externalLineId:
+            "1",
+          quantity: 3,
+          eventType:
+            "inventory_in",
+        },
+      });
+
+    assert.equal(
+      movementInReplay.status,
+      200
+    );
+
+    assert.equal(
+      movementInReplay.payload
+        ?.data
+        ?.idempotentReplay,
+      true
+    );
+
+    assert.equal(
+      await qtyOf(
+        itemA._id
+      ),
+      8
+    );
+
+    const inboundMovementCount =
+      await StockMovement
+        .countDocuments({
+          clinicId:
+            "ingress-clinic-a",
+          type:
+            "external_stock_in",
+        });
+
+    assert.equal(
+      inboundMovementCount,
+      1
+    );
+
     const missingToken =
       await postJson({
         baseUrl,
@@ -766,6 +956,18 @@ async function run() {
     );
     console.log(
       "HTTP_SINGLE_STOCK_MOVEMENT=PASS"
+    );
+    console.log(
+      "LEGACY_CONSUMPTION_ENDPOINT_MOVEMENT_REJECTED=PASS"
+    );
+    console.log(
+      "GENERIC_MOVEMENT_INBOUND_8_TO_11=PASS"
+    );
+    console.log(
+      "GENERIC_MOVEMENT_OUTBOUND_11_TO_8=PASS"
+    );
+    console.log(
+      "GENERIC_MOVEMENT_REPLAY_IDEMPOTENT=PASS"
     );
     console.log(
       "SERVER_SCOPE_OVERRIDES_BODY_SCOPE=PASS"

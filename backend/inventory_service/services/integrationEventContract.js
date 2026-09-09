@@ -11,8 +11,12 @@ const {
 
 const CONTRACT_VERSION = 1;
 
+// Additive v1 event-type expansion.
+// Existing "dispensed" payload semantics remain unchanged.
 const SUPPORTED_EVENT_TYPES = new Set([
   "dispensed",
+  "inventory_in",
+  "inventory_out",
 ]);
 
 function bad(message, code) {
@@ -22,7 +26,11 @@ function bad(message, code) {
   return err;
 }
 
-function requiredString(value, label, code) {
+function requiredString(
+  value,
+  label,
+  code
+) {
   const out = s(value);
 
   if (!out) {
@@ -35,7 +43,10 @@ function requiredString(value, label, code) {
   return out;
 }
 
-function requiredDate(value, label = "occurredAt") {
+function requiredDate(
+  value,
+  label = "occurredAt"
+) {
   if (
     value === null ||
     value === undefined ||
@@ -85,7 +96,8 @@ function normalizeMetadata(value) {
 
 function canonicalPayload(normalized) {
   return {
-    contractVersion: CONTRACT_VERSION,
+    contractVersion:
+      CONTRACT_VERSION,
     externalEventId:
       normalized.externalEventId,
     externalLineId:
@@ -99,7 +111,8 @@ function canonicalPayload(normalized) {
     eventType:
       normalized.eventType,
     occurredAt:
-      normalized.occurredAt.toISOString(),
+      normalized.occurredAt
+        .toISOString(),
     referenceType:
       normalized.referenceType,
     referenceNo:
@@ -118,7 +131,9 @@ function payloadHash(normalized) {
     .digest("hex");
 }
 
-function normalizeConsumptionEvent(input = {}) {
+function normalizeMovementEvent(
+  input = {}
+) {
   const externalEventId =
     requiredString(
       input.externalEventId,
@@ -138,7 +153,8 @@ function normalizeConsumptionEvent(input = {}) {
 
   const externalUnit =
     requiredString(
-      input.unit ?? input.externalUnit,
+      input.unit ??
+        input.externalUnit,
       "unit",
       "EXTERNAL_UNIT_REQUIRED"
     );
@@ -159,7 +175,10 @@ function normalizeConsumptionEvent(input = {}) {
       )
     );
 
-  if (!SUPPORTED_EVENT_TYPES.has(eventType)) {
+  if (
+    !SUPPORTED_EVENT_TYPES
+      .has(eventType)
+  ) {
     throw bad(
       `Unsupported eventType: ${eventType}`,
       "UNSUPPORTED_EVENT_TYPE"
@@ -167,7 +186,9 @@ function normalizeConsumptionEvent(input = {}) {
   }
 
   const occurredAt =
-    requiredDate(input.occurredAt);
+    requiredDate(
+      input.occurredAt
+    );
 
   const normalized = {
     externalEventId,
@@ -185,7 +206,9 @@ function normalizeConsumptionEvent(input = {}) {
       s(input.referenceNo),
 
     metadata:
-      normalizeMetadata(input.metadata),
+      normalizeMetadata(
+        input.metadata
+      ),
   };
 
   return {
@@ -195,10 +218,19 @@ function normalizeConsumptionEvent(input = {}) {
   };
 }
 
+// Backward-compatible function name. The v1 payload
+// shape is unchanged; event-type support is additive.
+function normalizeConsumptionEvent(
+  input = {}
+) {
+  return normalizeMovementEvent(input);
+}
+
 module.exports = {
   CONTRACT_VERSION,
   SUPPORTED_EVENT_TYPES,
   canonicalPayload,
   payloadHash,
+  normalizeMovementEvent,
   normalizeConsumptionEvent,
 };

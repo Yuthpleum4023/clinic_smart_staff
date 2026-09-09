@@ -1,4 +1,5 @@
 const {
+  processMovementEvent,
   processConsumptionEvent,
 } = require(
   "../services/integrationProcessingService"
@@ -16,11 +17,13 @@ function s(value) {
   return String(value ?? "").trim();
 }
 
-async function consume(
+async function ingest({
   req,
   res,
-  next
-) {
+  next,
+  processor,
+  action,
+}) {
   let connectorId = "";
 
   try {
@@ -55,7 +58,7 @@ async function consume(
     // from the request body is used
     // as authority here.
     const result =
-      await processConsumptionEvent({
+      await processor({
         connectorId,
         input:
           req.body &&
@@ -79,8 +82,7 @@ async function consume(
       )
       .json({
         ok: true,
-        action:
-          "external_consumption_processed",
+        action,
         data: result,
       });
   } catch (err) {
@@ -98,6 +100,62 @@ async function consume(
   }
 }
 
+async function processLegacyConsumptionEvent(
+  args = {}
+) {
+  const eventType =
+    s(
+      args?.input?.eventType
+    ).toLowerCase();
+
+  if (eventType !== "dispensed") {
+    const err = new Error(
+      "Legacy consumption endpoint only accepts dispensed events"
+    );
+    err.status = 400;
+    err.code =
+      "UNSUPPORTED_CONSUMPTION_EVENT_TYPE";
+    throw err;
+  }
+
+  return processConsumptionEvent(
+    args
+  );
+}
+
+async function movement(
+  req,
+  res,
+  next
+) {
+  return ingest({
+    req,
+    res,
+    next,
+    processor:
+      processMovementEvent,
+    action:
+      "external_movement_processed",
+  });
+}
+
+async function consume(
+  req,
+  res,
+  next
+) {
+  return ingest({
+    req,
+    res,
+    next,
+    processor:
+      processLegacyConsumptionEvent,
+    action:
+      "external_consumption_processed",
+  });
+}
+
 module.exports = {
+  movement,
   consume,
 };

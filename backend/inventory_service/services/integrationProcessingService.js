@@ -7,6 +7,7 @@ const StockItem = require("../models/StockItem");
 const StockMovement = require("../models/StockMovement");
 
 const {
+  normalizeMovementEvent,
   normalizeConsumptionEvent,
 } = require("./integrationEventContract");
 
@@ -50,6 +51,49 @@ function codedError(
   }
 
   return err;
+}
+
+function resolveIntegrationMovement(
+  eventType,
+  normalizedQuantity
+) {
+  switch (s(eventType)) {
+    case "inventory_in":
+      return {
+        type: "external_stock_in",
+        quantityDelta:
+          normalizedQuantity,
+        reason:
+          "external inventory in",
+      };
+
+    case "inventory_out":
+      return {
+        type:
+          "external_consumption",
+        quantityDelta:
+          -normalizedQuantity,
+        reason:
+          "external inventory out",
+      };
+
+    case "dispensed":
+      return {
+        type:
+          "external_consumption",
+        quantityDelta:
+          -normalizedQuantity,
+        reason:
+          "external consumption",
+      };
+
+    default:
+      throw codedError(
+        `Unsupported integration eventType: ${eventType}`,
+        "UNSUPPORTED_EVENT_TYPE",
+        400
+      );
+  }
 }
 
 function validConnectorId(value) {
@@ -401,6 +445,12 @@ async function processReceivedEvent({
               mapping.conversionDenominator,
           });
 
+        const movementSemantics =
+          resolveIntegrationMovement(
+            normalized.eventType,
+            normalizedQuantity
+          );
+
         const movementResult =
           await applyMovement(
             {
@@ -411,10 +461,11 @@ async function processReceivedEvent({
                 item._id,
 
               type:
-                "external_consumption",
+                movementSemantics.type,
 
               quantityDelta:
-                -normalizedQuantity,
+                movementSemantics
+                  .quantityDelta,
 
               sourceType:
                 "connector",
@@ -447,7 +498,7 @@ async function processReceivedEvent({
                 "connector",
 
               reason:
-                "external consumption",
+                movementSemantics.reason,
 
               occurredAt:
                 normalized.occurredAt,
@@ -611,16 +662,11 @@ async function processReceivedEvent({
   }
 }
 
-async function processConsumptionEvent({
+async function processNormalizedEvent({
   connectorId,
-  input,
+  normalized,
   reprocessBlocked = false,
 }) {
-  const normalized =
-    normalizeConsumptionEvent(
-      input || {}
-    );
-
   const connector =
     await resolveConnector(
       connectorId
@@ -667,7 +713,41 @@ async function processConsumptionEvent({
   });
 }
 
+async function processMovementEvent({
+  connectorId,
+  input,
+  reprocessBlocked = false,
+}) {
+  return processNormalizedEvent({
+    connectorId,
+    normalized:
+      normalizeMovementEvent(
+        input || {}
+      ),
+    reprocessBlocked,
+  });
+}
+
+// Backward-compatible processing name used by
+// the legacy route and existing reprocess flow.
+async function processConsumptionEvent({
+  connectorId,
+  input,
+  reprocessBlocked = false,
+}) {
+  return processNormalizedEvent({
+    connectorId,
+    normalized:
+      normalizeConsumptionEvent(
+        input || {}
+      ),
+    reprocessBlocked,
+  });
+}
+
 module.exports = {
+  processMovementEvent,
   processConsumptionEvent,
+  resolveIntegrationMovement,
   materializationKey,
 };

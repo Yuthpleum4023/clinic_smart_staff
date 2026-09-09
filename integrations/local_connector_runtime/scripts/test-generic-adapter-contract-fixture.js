@@ -438,7 +438,7 @@ function createDriver(records) {
   );
 
   console.log(
-    "GENERIC_RUNTIME_CORE_CHANGED_REQUIRED=FALSE"
+    "GENERIC_RUNTIME_LEGACY_TRANSPORT_COMPATIBILITY=TRUE"
   );
 
   console.log(

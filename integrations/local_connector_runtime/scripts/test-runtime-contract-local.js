@@ -39,7 +39,7 @@ const { ConnectorRuntime } = require("../src/core/connectorRuntime");
         externalItemId: record.item,
         unit: record.unit,
         quantity: record.qty,
-        eventType: "dispensed",
+        eventType: "inventory_in",
         occurredAt: record.at
       };
     }
@@ -73,7 +73,7 @@ const { ConnectorRuntime } = require("../src/core/connectorRuntime");
     driver: drivers.create("mock"),
     adapter: adapters.get("mock-vendor"),
     transport: {
-      async sendConsumption(payload) {
+      async sendMovement(payload) {
         sent.push(payload);
         return { ok: true };
       }
@@ -87,6 +87,7 @@ const { ConnectorRuntime } = require("../src/core/connectorRuntime");
   assert.equal(result.recordsRead, 1);
   assert.equal(result.eventsSent, 1);
   assert.equal(sent.length, 1);
+  assert.equal(sent[0].eventType, "inventory_in");
   assert.equal(checkpointStore.get("mock-instance"), "cursor-2");
 
   console.log("GENERIC_LOCAL_CONNECTOR_RUNTIME_TESTS_PASSED=TRUE");

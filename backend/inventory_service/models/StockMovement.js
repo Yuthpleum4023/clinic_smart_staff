@@ -4,6 +4,7 @@ const MOVEMENT_TYPES = [
   "stock_in",
   "manual_consumption",
   "external_consumption",
+  "external_stock_in",
   "adjustment",
   "reversal",
 ];
