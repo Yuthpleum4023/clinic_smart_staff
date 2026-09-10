@@ -68,6 +68,19 @@ function requiredProfile(
     );
   }
 
+  const movementDerivation =
+    s(profile.movementDerivation) ||
+    "balance_delta";
+
+  if (
+    movementDerivation !== "balance_delta" &&
+    movementDerivation !== "direct_quantity"
+  ) {
+    throw new Error(
+      "FD_MOVEMENT_DERIVATION_UNSUPPORTED"
+    );
+  }
+
   const unitField =
     s(fields.unit);
 
@@ -83,14 +96,17 @@ function requiredProfile(
     );
   }
 
-  return {
+  const out = {
     schemaVerified: true,
-    movementSemanticsVerified:
-      true,
+    movementSemanticsVerified: true,
+    movementDerivation,
     sourceName:
       s(profile.sourceName) ||
       "fd",
     unitLiteral,
+    eventTypeLiteral:
+      s(profile.eventTypeLiteral)
+        .toLowerCase(),
     fields: {
       eventId:
         requiredFieldName(
@@ -105,15 +121,11 @@ function requiredProfile(
           "FD_ITEM_ID_FIELD"
         ),
       previousAmountUnit:
-        requiredFieldName(
-          fields.previousAmountUnit,
-          "FD_PREVIOUS_AMOUNT_UNIT_FIELD"
-        ),
+        s(fields.previousAmountUnit),
       amountUnit:
-        requiredFieldName(
-          fields.amountUnit,
-          "FD_AMOUNT_UNIT_FIELD"
-        ),
+        s(fields.amountUnit),
+      quantity:
+        s(fields.quantity),
       unit:
         unitField,
       occurredAt:
@@ -127,6 +139,41 @@ function requiredProfile(
         s(fields.referenceType)
     }
   };
+
+  if (movementDerivation === "balance_delta") {
+    out.fields.previousAmountUnit =
+      requiredFieldName(
+        fields.previousAmountUnit,
+        "FD_PREVIOUS_AMOUNT_UNIT_FIELD"
+      );
+    out.fields.amountUnit =
+      requiredFieldName(
+        fields.amountUnit,
+        "FD_AMOUNT_UNIT_FIELD"
+      );
+  }
+
+  if (movementDerivation === "direct_quantity") {
+    out.fields.quantity =
+      requiredFieldName(
+        fields.quantity,
+        "FD_QUANTITY_FIELD"
+      );
+
+    if (
+      ![
+        "dispensed",
+        "inventory_in",
+        "inventory_out"
+      ].includes(out.eventTypeLiteral)
+    ) {
+      throw new Error(
+        "FD_DIRECT_EVENT_TYPE_REQUIRED"
+      );
+    }
+  }
+
+  return out;
 }
 
 function requiredValue(
@@ -211,28 +258,56 @@ function createFdAdapter(
             "FD_ITEM_ID_VALUE_REQUIRED"
           );
 
-        const previousAmountUnit =
-          requiredNumber(
-            row,
-            f.previousAmountUnit,
-            "FD_PREVIOUS_AMOUNT_UNIT_VALUE_REQUIRED"
-          );
+        let quantity;
+        let eventType;
 
-        const amountUnit =
-          requiredNumber(
-            row,
-            f.amountUnit,
-            "FD_AMOUNT_UNIT_VALUE_REQUIRED"
-          );
+        if (
+          profile.movementDerivation ===
+          "balance_delta"
+        ) {
+          const previousAmountUnit =
+            requiredNumber(
+              row,
+              f.previousAmountUnit,
+              "FD_PREVIOUS_AMOUNT_UNIT_VALUE_REQUIRED"
+            );
 
-        const delta =
-          amountUnit -
-          previousAmountUnit;
+          const amountUnit =
+            requiredNumber(
+              row,
+              f.amountUnit,
+              "FD_AMOUNT_UNIT_VALUE_REQUIRED"
+            );
 
-        // V8 closure: zero-delta rows do not represent
-        // a stock movement and must not be materialized.
-        if (delta === 0) {
-          return null;
+          const delta =
+            amountUnit -
+            previousAmountUnit;
+
+          if (delta === 0) {
+            return null;
+          }
+
+          quantity = Math.abs(delta);
+          eventType =
+            delta > 0
+              ? "inventory_in"
+              : "inventory_out";
+        } else {
+          quantity =
+            requiredNumber(
+              row,
+              f.quantity,
+              "FD_QUANTITY_VALUE_REQUIRED"
+            );
+
+          if (!(quantity > 0)) {
+            throw new Error(
+              "FD_QUANTITY_VALUE_REQUIRED"
+            );
+          }
+
+          eventType =
+            profile.eventTypeLiteral;
         }
 
         const unit =
@@ -267,16 +342,12 @@ function createFdAdapter(
               externalItemId
             ),
 
-          quantity:
-            Math.abs(delta),
+          quantity,
 
           unit:
             String(unit),
 
-          eventType:
-            delta > 0
-              ? "inventory_in"
-              : "inventory_out",
+          eventType,
 
           occurredAt,
 
@@ -302,7 +373,7 @@ function createFdAdapter(
             sourceAdapter:
               profile.sourceName,
             movementDerivation:
-              "amount_unit_delta"
+              profile.movementDerivation
           }
         };
 
@@ -326,7 +397,9 @@ function createFdAdapter(
 
     schemaVerified: true,
     movementSemanticsVerified:
-      true
+      true,
+    movementDerivation:
+      profile.movementDerivation
   });
 }
 
