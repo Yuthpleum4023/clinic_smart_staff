@@ -126,6 +126,8 @@ function requiredProfile(
         s(fields.amountUnit),
       quantity:
         s(fields.quantity),
+      validationQuantity:
+        s(fields.validationQuantity),
       unit:
         unitField,
       occurredAt:
@@ -150,6 +152,11 @@ function requiredProfile(
       requiredFieldName(
         fields.amountUnit,
         "FD_AMOUNT_UNIT_FIELD"
+      );
+    out.fields.validationQuantity =
+      requiredFieldName(
+        fields.validationQuantity,
+        "FD_VALIDATION_QUANTITY_FIELD"
       );
   }
 
@@ -283,11 +290,34 @@ function createFdAdapter(
             amountUnit -
             previousAmountUnit;
 
+          const validationQuantity =
+            requiredNumber(
+              row,
+              f.validationQuantity,
+              "FD_VALIDATION_QUANTITY_VALUE_REQUIRED"
+            );
+
+          const movementMagnitude =
+            Math.abs(delta);
+          const validationMagnitude =
+            Math.abs(validationQuantity);
+
+          if (
+            Math.abs(
+              movementMagnitude -
+              validationMagnitude
+            ) > 0.000001
+          ) {
+            throw new Error(
+              "FD_MOVEMENT_MAGNITUDE_INVARIANT_VIOLATION"
+            );
+          }
+
           if (delta === 0) {
             return null;
           }
 
-          quantity = Math.abs(delta);
+          quantity = movementMagnitude;
           eventType =
             delta > 0
               ? "inventory_in"

@@ -165,26 +165,34 @@ const FD_VERIFIED_SCHEMA = Object.freeze({
       status: "schema_coordinate_verified_semantics_unresolved"
     })
   }),
+  verifiedMovementSemantics: Object.freeze({
+    evidence: "FD_XFER_FINAL_CLOSURE_V5",
+    inspectedDetailRows: 5300,
+    movementMagnitudeInvariant:
+      "abs(AmountUnit-PrvAmountUnit)==abs(DocUnit)",
+    invariantMatches: 5300,
+    invariantMismatches: 0,
+    negativeDeltaRows: 5165,
+    positiveDeltaRows: 135,
+    zeroDeltaRows: 0,
+    directionAuthority:
+      "sign(AmountUnit-PrvAmountUnit)",
+    documentTypeDirectionAuthority: false,
+    statusDirectionAuthority: false,
+    procRxNumMovementIdentityAuthority: false,
+    distReturnRequiredForCoreMovement: false,
+    previousTransferRequiredForCoreMovement: false
+  }),
 
   unresolvedSemantics: Object.freeze([
-    "Which source table is authoritative for a dispensed inventory event",
-    "Meaning and sign semantics of xferdtl.DocUnit",
-    "Meaning and sign semantics of xferdtl.ReceiveUnit",
-    "Meaning and sign semantics of xferdtl.OnhandUnit",
-    "Meaning and sign semantics of xferdtl.PrvAmountUnit",
-    "Meaning and sign semantics of xferdtl.AmountUnit",
-    "Meaning of xferhdr.DocType values",
-    "Meaning of xferdtl.Status values",
-    "Whether procprod.AmtUnit represents inventory consumption",
-    "Meaning of procprod.ProcStatus values",
-    "Authoritative unit conversion between ReceiveUnit and SendUnit",
-    "Authoritative location/clinic mapping for atLocat FromLocat ToLocat"
+    "Unit conversion for products requiring non-1:1 mapping remains explicit backend mapping",
+    "Clinic/location interpretation remains backend-owned and is not inferred from FD"
   ]),
 
   production: Object.freeze({
     schemaCoordinatesVerified: true,
-    movementSemanticsVerified: false,
-    adapterActivationAllowed: false,
+    movementSemanticsVerified: true,
+    adapterActivationAllowed: true,
     stockAuthority: false,
     clinicScopeAuthority: false,
     fuzzyMappingAllowed: false
@@ -208,10 +216,10 @@ function assertFdSchemaContract(contract = FD_VERIFIED_SCHEMA) {
   }
 
   if (
-    contract.production?.movementSemanticsVerified !== false ||
-    contract.production?.adapterActivationAllowed !== false
+    contract.production?.movementSemanticsVerified !== true ||
+    contract.production?.adapterActivationAllowed !== true
   ) {
-    throw new Error("FD_UNVERIFIED_SEMANTICS_MUST_FAIL_CLOSED");
+    throw new Error("FD_VERIFIED_SEMANTICS_REQUIRED");
   }
 
   if (

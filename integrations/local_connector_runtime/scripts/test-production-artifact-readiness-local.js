@@ -23,7 +23,7 @@ fs.writeFileSync(configPath, JSON.stringify({
     user: "readonly_user", passwordEnv: "CLINIC_SOURCE_DB_PASSWORD",
     poll: {
       schema: "verified_db", table: "verified_usage",
-      columns: ["event_key","line_key","item_key","prv_amount_unit","amount_unit","occurred_at"],
+      columns: ["event_key","line_key","item_key","prv_amount_unit","amount_unit","doc_unit","occurred_at"],
       cursorColumn: "occurred_at", tieBreakerColumn: "line_key", limit: 50
     }
   },
@@ -33,6 +33,7 @@ fs.writeFileSync(configPath, JSON.stringify({
     fields: {
       eventId: "event_key", lineId: "line_key", itemId: "item_key",
       previousAmountUnit: "prv_amount_unit", amountUnit: "amount_unit",
+      validationQuantity: "doc_unit",
       unit: "", occurredAt: "occurred_at",
       referenceNo: "", referenceType: ""
     }
