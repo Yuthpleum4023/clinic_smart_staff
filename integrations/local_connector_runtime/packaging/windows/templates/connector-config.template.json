@@ -21,9 +21,14 @@
     "poll": {
       "schema": "",
       "table": "",
+      "alias": "",
       "columns": [],
+      "joins": [],
+      "predicates": [],
       "cursorColumn": "",
+      "cursorTableAlias": "",
       "tieBreakerColumn": "",
+      "tieBreakerTableAlias": "",
       "limit": 500
     }
   },

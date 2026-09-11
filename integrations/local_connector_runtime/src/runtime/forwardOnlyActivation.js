@@ -3,6 +3,7 @@
 const {
   normalizePollSpec,
   normalizeCheckpoint,
+  buildTailQuery,
 } = require("../drivers/mysqlReadOnlyDriver");
 
 const {
@@ -107,22 +108,12 @@ async function captureMySqlTailCheckpoint(
   }
 
   try {
-    const selectSql = spec.tieBreakerColumn
-      ? `${spec.cursorColumn}, ${spec.tieBreakerColumn}`
-      : spec.cursorColumn;
+    const tailQuery = buildTailQuery(spec);
 
-    const orderSql = spec.tieBreakerColumn
-      ? `ORDER BY ${spec.cursorColumn} DESC, ${spec.tieBreakerColumn} DESC`
-      : `ORDER BY ${spec.cursorColumn} DESC`;
-
-    const sql = [
-      `SELECT ${selectSql}`,
-      `FROM ${spec.table}`,
-      orderSql,
-      "LIMIT 1",
-    ].join(" ");
-
-    const [rows] = await connection.execute(sql, []);
+    const [rows] = await connection.execute(
+      tailQuery.sql,
+      tailQuery.values
+    );
 
     if (!Array.isArray(rows)) {
       throw codedError(
