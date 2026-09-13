@@ -226,7 +226,7 @@ class _InventoryIntegrationScreenState
                       enabled ? Icons.power_outlined : Icons.power_off_outlined,
                       size: 17,
                     ),
-                    label: Text(enabled ? 'เปิดใช้งาน' : 'ปิดใช้งาน'),
+                    label: Text(enabled ? 'กำลังใช้งาน' : 'ปิดใช้งาน'),
                   ),
                 ],
               ),
@@ -247,7 +247,7 @@ class _InventoryIntegrationScreenState
                     value: _i(counts['blocked']) + _i(counts['rejected']),
                   ),
                   _MiniMetric(
-                    label: 'กำลังทำ',
+                    label: 'กำลังประมวลผล',
                     value: _i(counts['received']) + _i(counts['processing']),
                   ),
                 ],
@@ -532,8 +532,8 @@ class _InventoryConnectorDetailScreenState
               children: [
                 _MiniMetric(label: 'ทั้งหมด', value: _i(counts['total'])),
                 _MiniMetric(label: 'สำเร็จ', value: _i(counts['applied'])),
-                _MiniMetric(label: 'Blocked', value: _i(counts['blocked'])),
-                _MiniMetric(label: 'Rejected', value: _i(counts['rejected'])),
+                _MiniMetric(label: 'รอแก้ไข', value: _i(counts['blocked'])),
+                _MiniMetric(label: 'ปฏิเสธ', value: _i(counts['rejected'])),
               ],
             ),
             const SizedBox(height: 12),
@@ -569,6 +569,16 @@ class _InventoryConnectorDetailScreenState
     final active = mapping['active'] != false;
     final numerator = _i(mapping['conversionNumerator']);
     final denominator = _i(mapping['conversionDenominator']);
+    final stockItem = _map(mapping['stockItemId']);
+    final stockName = _s(stockItem['name']);
+    final stockSku = _s(stockItem['sku']);
+    final stockLabel = [
+      if (stockName.isNotEmpty) stockName,
+      if (stockSku.isNotEmpty) stockSku,
+    ].join(' • ');
+    final inventoryLabel = stockLabel.isNotEmpty
+        ? stockLabel
+        : 'ไม่พบรายละเอียดสินค้าในคลัง';
 
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
@@ -579,7 +589,7 @@ class _InventoryConnectorDetailScreenState
           '(${_s(mapping['externalUnit'])})',
         ),
         subtitle: Text(
-          '→ Stock ${_s(mapping['stockItemId'])}\n'
+          '→ $inventoryLabel\n'
           'หน่วยคลัง: ${_s(mapping['inventoryUnit'])}'
           '${numerator > 0 && denominator > 0 ? ' • แปลง $numerator/$denominator' : ''}',
         ),
@@ -786,7 +796,7 @@ class _InventoryConnectorDetailScreenState
           _healthCard(),
           const SizedBox(height: 12),
           Text(
-            'Exact Item Mapping',
+            'การจับคู่สินค้าแบบตรงกัน',
             style: Theme.of(
               context,
             ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
@@ -803,7 +813,7 @@ class _InventoryConnectorDetailScreenState
             ..._mappings.map(_mappingCard),
           const SizedBox(height: 16),
           Text(
-            'Integration Events',
+            'เหตุการณ์จากระบบเชื่อมต่อ',
             style: Theme.of(
               context,
             ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
