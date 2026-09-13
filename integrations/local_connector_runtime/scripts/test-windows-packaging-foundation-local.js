@@ -32,6 +32,15 @@ assert.equal(
 );
 
 assert.equal(
+  configTemplate.profileId,
+  "fd_xfer_relational_candidate_v1"
+);
+
+assert.equal("adapterProfile" in configTemplate, false);
+assert.equal("database" in configTemplate.source, false);
+assert.equal("poll" in configTemplate.source, false);
+
+assert.equal(
   Object.prototype.hasOwnProperty.call(
     configTemplate.source,
     "password"

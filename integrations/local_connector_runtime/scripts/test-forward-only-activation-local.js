@@ -235,26 +235,10 @@ const {
     )
   );
 
-  assert.equal(
-    template.adapterProfile
-      .movementSemanticsVerified,
-    false
-  );
-  assert.equal(
-    "previousAmountUnit" in
-      template.adapterProfile.fields,
-    true
-  );
-  assert.equal(
-    "amountUnit" in
-      template.adapterProfile.fields,
-    true
-  );
-  assert.equal(
-    "quantity" in
-      template.adapterProfile.fields,
-    false
-  );
+  assert.equal(template.profileId, "fd_xfer_relational_candidate_v1");
+  assert.equal("adapterProfile" in template, false);
+  assert.equal("database" in template.source, false);
+  assert.equal("poll" in template.source, false);
 
   const verify = fs.readFileSync(
     path.join(

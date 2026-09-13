@@ -3,7 +3,8 @@
   "connectorTokenEnv": "CLINIC_CONNECTOR_TOKEN",
   "driverId": "mysql",
   "adapterId": "fd",
-  "checkpointKey": "clinic-source-instance",
+  "profileId": "fd_xfer_relational_candidate_v1",
+  "checkpointKey": "replace-with-backend-issued-source-instance-key",
   "checkpointFile": ".\\state\\checkpoints.json",
   "healthFile": ".\\state\\health.json",
   "pollIntervalMs": 30000,
@@ -13,40 +14,9 @@
     "multiplier": 2
   },
   "source": {
-    "host": "127.0.0.1",
+    "host": "",
     "port": 3306,
-    "database": "",
     "user": "",
-    "passwordEnv": "CLINIC_SOURCE_DB_PASSWORD",
-    "poll": {
-      "schema": "",
-      "table": "",
-      "alias": "",
-      "columns": [],
-      "joins": [],
-      "predicates": [],
-      "cursorColumn": "",
-      "cursorTableAlias": "",
-      "tieBreakerColumn": "",
-      "tieBreakerTableAlias": "",
-      "limit": 500
-    }
-  },
-  "adapterProfile": {
-    "schemaVerified": false,
-    "movementSemanticsVerified": false,
-    "sourceName": "fd",
-    "unitLiteral": "",
-    "fields": {
-      "eventId": "",
-      "lineId": "",
-      "itemId": "",
-      "previousAmountUnit": "",
-      "amountUnit": "",
-      "unit": "",
-      "occurredAt": "",
-      "referenceNo": "",
-      "referenceType": ""
-    }
+    "passwordEnv": "CLINIC_SOURCE_DB_PASSWORD"
   }
 }

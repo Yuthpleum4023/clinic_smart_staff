@@ -5,6 +5,7 @@ const os = require("os");
 const path = require("path");
 const { loadRuntimeConfig } = require("../src/config/loadConfig");
 const { createRuntimeDependencies } = require("../src/runtime/runtimeFactory");
+const { FD_OBSERVED_XFER_SOURCE_PROFILE } = require("../src/adapters/fd/observedXferSourceProfile");
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "css-ready-"));
 const configPath = path.join(tmp, "connector-config.json");
@@ -13,30 +14,15 @@ fs.writeFileSync(configPath, JSON.stringify({
   connectorTokenEnv: "CLINIC_CONNECTOR_TOKEN",
   driverId: "mysql",
   adapterId: "fd",
+  profileId: "fd_xfer_relational_candidate_v1",
   checkpointKey: "verified-source",
   checkpointFile: path.join(tmp, "checkpoint.json"),
   healthFile: path.join(tmp, "health.json"),
   pollIntervalMs: 45000,
   retry: { initialDelayMs: 2000, maxDelayMs: 10000, multiplier: 2 },
   source: {
-    host: "127.0.0.1", port: 3306, database: "verified_db",
-    user: "readonly_user", passwordEnv: "CLINIC_SOURCE_DB_PASSWORD",
-    poll: {
-      schema: "verified_db", table: "verified_usage",
-      columns: ["event_key","line_key","item_key","prv_amount_unit","amount_unit","doc_unit","occurred_at"],
-      cursorColumn: "occurred_at", tieBreakerColumn: "line_key", limit: 50
-    }
-  },
-  adapterProfile: {
-    schemaVerified: true, movementSemanticsVerified: true,
-    sourceName: "fd", unitLiteral: "fd_amount_unit",
-    fields: {
-      eventId: "event_key", lineId: "line_key", itemId: "item_key",
-      previousAmountUnit: "prv_amount_unit", amountUnit: "amount_unit",
-      validationQuantity: "doc_unit",
-      unit: "", occurredAt: "occurred_at",
-      referenceNo: "", referenceType: ""
-    }
+    host: "127.0.0.1", port: 3306,
+    user: "readonly_user", passwordEnv: "CLINIC_SOURCE_DB_PASSWORD"
   }
 }, null, 2));
 
@@ -49,6 +35,9 @@ assert.equal(config.healthFile, path.join(tmp, "health.json"));
 assert.equal(config.pollIntervalMs, 45000);
 assert.equal(config.retry.initialDelayMs, 2000);
 assert.equal(config.adapterProfile.schemaVerified, true);
+assert.deepEqual(config.source.poll, FD_OBSERVED_XFER_SOURCE_PROFILE.source.poll);
+assert.deepEqual(config.adapterProfile, FD_OBSERVED_XFER_SOURCE_PROFILE.adapterProfile);
+assert.equal(config.source.database, "FD5_5");
 
 let mysqlConfig = null;
 const deps = createRuntimeDependencies(config, {

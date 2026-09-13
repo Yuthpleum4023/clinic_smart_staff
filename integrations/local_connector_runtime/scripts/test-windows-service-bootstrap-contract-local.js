@@ -24,7 +24,8 @@ for (const s of [install,uninstall,status]) {
 assert.match(install,/CONNECTOR_SERVICE_STARTED=FALSE/);
 assert.match(validate,/CLINIC_SCOPE_MUST_NOT_BE_CONFIGURED_LOCALLY/);
 assert.match(validate,/CONNECTOR_SCOPE_MUST_NOT_BE_CONFIGURED_LOCALLY/);
-assert.match(validate,/ADAPTER_SCHEMA_VERIFICATION_REQUIRED/);
+assert.match(validate,/ADAPTER_PROFILE_MUST_COME_FROM_VERIFIED_REGISTRY/);
+assert.match(validate,/SOURCE_POLL_MUST_COME_FROM_VERIFIED_REGISTRY/);
 assert.match(provision,/validate-config\.ps1/);
 assert.match(provision,/connector-config\.json/);
 assert.match(provision,/CurrentControlSet\\Services\\ClinicSmartStaffConnector/);
