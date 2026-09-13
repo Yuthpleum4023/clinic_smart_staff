@@ -49,7 +49,7 @@ const {
 
   const adapter = createFdAdapter(ap);
   const e = await adapter.transformRecord({
-    fd_detail_id: 25297,
+    id: 25297,
     fd_xfer_num: "W-20260796",
     fd_prod_num: 159,
     fd_doc_unit: 1,

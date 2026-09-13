@@ -93,7 +93,7 @@ function buildFdObservedXferSourceProfile() {
     sourceName: "fd_xfer",
     unitLiteral: "fd_balance_unit",
     fields: Object.freeze({
-      eventId: "fd_detail_id",
+      eventId: "id",
       lineId: "",
       itemId: "fd_prod_num",
       previousAmountUnit: "fd_previous_amount_unit",
