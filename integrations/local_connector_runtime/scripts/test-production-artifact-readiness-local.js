@@ -44,7 +44,7 @@ const deps = createRuntimeDependencies(config, {
   env,
   mysqlConnectionFactory: async cfg => {
     mysqlConfig = cfg;
-    return { execute: async () => [[], []], end: async () => {} };
+    return { query: async () => [[], []], end: async () => {} };
   },
   transport: { sendConsumption: async () => ({ ok: true }) }
 });

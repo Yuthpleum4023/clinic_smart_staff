@@ -133,7 +133,7 @@ const {
             config;
 
           return {
-            async execute(
+            async query(
               sql,
               values
             ) {

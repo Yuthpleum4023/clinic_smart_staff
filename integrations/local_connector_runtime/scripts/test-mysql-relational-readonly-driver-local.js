@@ -138,7 +138,7 @@ const {
     {
       async connectionFactory() {
         return {
-          async execute(sql, values) {
+          async query(sql, values) {
             executedSql = sql;
             executedValues = values;
             return [

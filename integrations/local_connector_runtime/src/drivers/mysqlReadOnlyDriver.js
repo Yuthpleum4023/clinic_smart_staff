@@ -639,7 +639,7 @@ function createMySqlReadOnlyDriver(
 
       if (
         !connection ||
-        typeof connection.execute !==
+        typeof connection.query !==
           "function" ||
         typeof connection.end !==
           "function"
@@ -670,7 +670,7 @@ function createMySqlReadOnlyDriver(
         );
 
       const [rows] =
-        await connection.execute(
+        await connection.query(
           query.sql,
           query.values
         );

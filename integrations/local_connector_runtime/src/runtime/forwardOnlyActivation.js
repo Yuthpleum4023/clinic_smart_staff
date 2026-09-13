@@ -98,7 +98,7 @@ async function captureMySqlTailCheckpoint(
 
   if (
     !connection ||
-    typeof connection.execute !== "function" ||
+    typeof connection.query !== "function" ||
     typeof connection.end !== "function"
   ) {
     throw codedError(
@@ -110,7 +110,7 @@ async function captureMySqlTailCheckpoint(
   try {
     const tailQuery = buildTailQuery(spec);
 
-    const [rows] = await connection.execute(
+    const [rows] = await connection.query(
       tailQuery.sql,
       tailQuery.values
     );

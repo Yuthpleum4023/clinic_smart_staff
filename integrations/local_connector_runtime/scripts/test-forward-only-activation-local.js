@@ -60,7 +60,7 @@ const {
             false
           );
           return {
-            async execute(sql, values) {
+            async query(sql, values) {
               tailSql = sql;
               assert.deepEqual(values, []);
               return [[{
