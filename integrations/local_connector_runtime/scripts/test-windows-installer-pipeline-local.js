@@ -40,6 +40,11 @@ assert.equal(
 );
 
 assert.equal(
+  releaseManifest.provenanceFile,
+  "BUILD-PROVENANCE.json"
+);
+
+assert.equal(
   releaseManifest.serviceWrapper,
   "winsw"
 );
@@ -207,6 +212,14 @@ assert.match(
   buildInstaller,
   /packaging\\windows\\build_pipeline"/
 );
+
+assert.match(buildInstaller, /BUILD-PROVENANCE\.json/);
+for (const field of [
+  "SourceRepository", "SourceCommit", "SourceRef", "WorkflowName",
+  "WorkflowRunId", "WorkflowRunAttempt", "NodeVersion", "WinSwSha256"
+]) {
+  assert.match(buildInstaller, new RegExp(`\\$${field}\\b`));
+}
 
 assert.equal(
   /CLINIC_CONNECTOR_TOKEN\s*=\s*["'][^"']+/.test(

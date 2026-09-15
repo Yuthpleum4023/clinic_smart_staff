@@ -58,6 +58,11 @@ assert.match(
   /SHA256SUMS\.txt/
 );
 
+assert.match(workflow, /BUILD-PROVENANCE\.json/);
+assert.match(workflow, /github\.sha/);
+assert.match(workflow, /github\.run_id/);
+assert.match(workflow, /BUILD_PROVENANCE_VERIFIED=TRUE/);
+
 assert.match(
   workflow,
   /actions\/upload-artifact@v4/
@@ -106,3 +111,6 @@ console.log(
 console.log(
   "CI_EMBEDS_CONNECTOR_SECRETS=FALSE"
 );
+
+console.log("BUILD_PROVENANCE_REQUIRED=TRUE");
+console.log("ARTIFACT_SOURCE_COMMIT_VERIFIED=TRUE");

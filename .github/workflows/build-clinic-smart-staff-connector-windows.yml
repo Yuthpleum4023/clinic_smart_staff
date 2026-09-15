@@ -169,7 +169,15 @@ jobs:
             -BuildInputsRoot $env:BUILD_INPUTS_ROOT `
             -InnoCompiler "${{ steps.inno.outputs.compiler }}" `
             -Version "${{ inputs.version }}" `
-            -WorkRoot $env:WORK_ROOT
+            -WorkRoot $env:WORK_ROOT `
+            -SourceRepository "${{ github.repository }}" `
+            -SourceCommit "${{ github.sha }}" `
+            -SourceRef "${{ github.ref }}" `
+            -WorkflowName "${{ github.workflow }}" `
+            -WorkflowRunId "${{ github.run_id }}" `
+            -WorkflowRunAttempt "${{ github.run_attempt }}" `
+            -NodeVersion $env:NODE_VERSION `
+            -WinSwSha256 "${{ vars.CONNECTOR_WINSW_SHA256 }}"
 
       - name: Verify generated installer artifacts
         shell: pwsh
@@ -191,12 +199,21 @@ jobs:
               $dist `
               "SHA256SUMS.txt"
 
+          $provenance =
+            Join-Path `
+              $dist `
+              "BUILD-PROVENANCE.json"
+
           if (-not (Test-Path $expectedInstaller)) {
             throw "Expected connector installer artifact not found."
           }
 
           if (-not (Test-Path $checksums)) {
             throw "SHA256SUMS.txt not found."
+          }
+
+          if (-not (Test-Path $provenance)) {
+            throw "BUILD-PROVENANCE.json not found."
           }
 
           $installerHash =
@@ -213,7 +230,19 @@ jobs:
             throw "Installer SHA-256 is not present in SHA256SUMS.txt."
           }
 
+          $provenanceHash =
+            (Get-FileHash -Algorithm SHA256 -Path $provenance).Hash.ToLower()
+          if (-not $checksumText.Contains($provenanceHash)) {
+            throw "Provenance SHA-256 is not present in SHA256SUMS.txt."
+          }
+          $provenanceDocument =
+            Get-Content -LiteralPath $provenance -Raw | ConvertFrom-Json
+          if ($provenanceDocument.source.commit -ne "${{ github.sha }}") {
+            throw "Provenance source commit does not match workflow commit."
+          }
+
           Write-Host "WINDOWS_INSTALLER_ARTIFACT_VERIFIED=TRUE"
+          Write-Host "BUILD_PROVENANCE_VERIFIED=TRUE"
           Write-Host "SIGNED_INSTALLER_CREATED=FALSE"
 
       - name: Upload unsigned installer artifact
@@ -222,6 +251,7 @@ jobs:
           name: clinic-smart-staff-connector-windows-${{ inputs.version }}
           path: |
             ${{ env.WORK_ROOT }}\dist\ClinicSmartStaffConnectorSetup-${{ inputs.version }}-x64.exe
+            ${{ env.WORK_ROOT }}\dist\BUILD-PROVENANCE.json
             ${{ env.WORK_ROOT }}\dist\SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14
