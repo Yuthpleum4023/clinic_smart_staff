@@ -235,7 +235,10 @@ const {
     )
   );
 
-  assert.equal(template.profileId, "fd_xfer_relational_candidate_v1");
+  assert.equal(template.driverId, "");
+  assert.equal(template.adapterId, "");
+  assert.equal(template.profileId, "");
+  assert.equal(template.source.port, 0);
   assert.equal("adapterProfile" in template, false);
   assert.equal("database" in template.source, false);
   assert.equal("poll" in template.source, false);

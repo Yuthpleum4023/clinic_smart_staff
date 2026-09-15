@@ -31,10 +31,10 @@ assert.equal(
   "CLINIC_SOURCE_DB_PASSWORD"
 );
 
-assert.equal(
-  configTemplate.profileId,
-  "fd_xfer_relational_candidate_v1"
-);
+assert.equal(configTemplate.driverId, "");
+assert.equal(configTemplate.adapterId, "");
+assert.equal(configTemplate.profileId, "");
+assert.equal(configTemplate.source.port, 0);
 
 assert.equal("adapterProfile" in configTemplate, false);
 assert.equal("database" in configTemplate.source, false);
@@ -59,6 +59,8 @@ const install = read("scripts/install-service.ps1");
 
 const provision = read("scripts/provision-and-start-service.ps1");
 
+const validate = read("scripts/validate-config.ps1");
+
 assert.doesNotMatch(
   install,
   /CLINIC_CONNECTOR_TOKEN/
@@ -76,6 +78,16 @@ assert.match(
 assert.match(
   provision,
   /CLINIC_SOURCE_DB_PASSWORD/
+);
+
+assert.doesNotMatch(
+  validate,
+  /fd_xfer_relational_candidate_v1/
+);
+
+assert.doesNotMatch(
+  validate,
+  /VERIFIED_PROFILE_NOT_REGISTERED/
 );
 
 for (const forbidden of [
@@ -94,3 +106,5 @@ console.log("CONFIG_EMBEDS_DB_PASSWORD=FALSE");
 console.log("WINDOWS_SERVICE_RESTART_POLICY=TRUE");
 console.log("LEGACY_PATIENT_WORKSTATION_REQUIRED=FALSE");
 console.log("PUBLIC_DATABASE_PORT_REQUIRED=FALSE");
+console.log("INSTALLER_SELECTS_VENDOR_PROFILE=FALSE");
+console.log("PROFILE_MEMBERSHIP_AUTHORITY=RUNTIME_VERIFIED_REGISTRY");

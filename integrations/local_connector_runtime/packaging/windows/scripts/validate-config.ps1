@@ -10,13 +10,23 @@ foreach ($field in @("baseUrl","connectorTokenEnv","driverId","adapterId","profi
   }
 }
 if ($Config.connectorTokenEnv -ne "CLINIC_CONNECTOR_TOKEN") { throw "CONNECTOR_TOKEN_ENV_CONTRACT_INVALID" }
-if ($Config.adapterId -eq "fd" -and $Config.profileId -ne "fd_xfer_relational_candidate_v1") { throw "VERIFIED_PROFILE_NOT_REGISTERED" }
 if (-not $Config.source) { throw "SOURCE_CONFIG_REQUIRED" }
 if ($Config.source.passwordEnv -ne "CLINIC_SOURCE_DB_PASSWORD") { throw "SOURCE_DB_PASSWORD_ENV_CONTRACT_INVALID" }
 foreach ($field in @("host","user")) {
   if (-not $Config.source.PSObject.Properties[$field] -or [string]::IsNullOrWhiteSpace([string]$Config.source.$field)) {
     throw "SOURCE_FIELD_REQUIRED:$field"
   }
+}
+if (-not $Config.source.PSObject.Properties["port"]) {
+  throw "SOURCE_FIELD_REQUIRED:port"
+}
+$SourcePort = 0
+if (
+  -not [int]::TryParse([string]$Config.source.port, [ref]$SourcePort) -or
+  $SourcePort -le 0 -or
+  $SourcePort -gt 65535
+) {
+  throw "SOURCE_PORT_INVALID"
 }
 if ($Config.PSObject.Properties["adapterProfile"]) { throw "ADAPTER_PROFILE_MUST_COME_FROM_VERIFIED_REGISTRY" }
 if ($Config.source.PSObject.Properties["database"]) { throw "SOURCE_DATABASE_MUST_COME_FROM_VERIFIED_REGISTRY" }

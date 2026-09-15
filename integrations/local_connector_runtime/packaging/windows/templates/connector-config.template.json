@@ -1,9 +1,9 @@
 {
   "baseUrl": "https://inventory-service.example.com",
   "connectorTokenEnv": "CLINIC_CONNECTOR_TOKEN",
-  "driverId": "mysql",
-  "adapterId": "fd",
-  "profileId": "fd_xfer_relational_candidate_v1",
+  "driverId": "",
+  "adapterId": "",
+  "profileId": "",
   "checkpointKey": "replace-with-backend-issued-source-instance-key",
   "checkpointFile": ".\\state\\checkpoints.json",
   "healthFile": ".\\state\\health.json",
@@ -15,7 +15,7 @@
   },
   "source": {
     "host": "",
-    "port": 3306,
+    "port": 0,
     "user": "",
     "passwordEnv": "CLINIC_SOURCE_DB_PASSWORD"
   }
