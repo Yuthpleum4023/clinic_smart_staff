@@ -1848,6 +1848,15 @@ class _InventoryStockCardScreenState extends State<_InventoryStockCardScreen> {
     }
   }
 
+  String _reasonLabel(String reason) {
+    switch (reason) {
+      case 'manual_internal_use':
+        return 'เบิกใช้ภายในคลินิก';
+      default:
+        return reason;
+    }
+  }
+
   String _delta(dynamic value) {
     final number = _number(value);
     final qty = _fmtQty(number);
@@ -1903,7 +1912,7 @@ class _InventoryStockCardScreenState extends State<_InventoryStockCardScreen> {
     final referenceNo = _text(movement['referenceNo']);
     final performedByName = _text(movement['performedByName']);
     final requestedByName = _text(movement['requestedByName']);
-    final reason = _text(movement['reason']);
+    final reason = _reasonLabel(_text(movement['reason']));
     final note = _text(movement['note']);
     final timestamp = _fmtDate(movement['occurredAt'] ?? movement['createdAt']);
 
