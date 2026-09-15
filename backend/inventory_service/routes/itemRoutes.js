@@ -5,7 +5,8 @@ const ctrl = require("../controllers/itemController");
 router.use(auth, requireClinic);
 
 router.get("/low-stock", ctrl.listLowStock);
-router.post("/", requireRole(["admin"]), ctrl.createItem);
+router.get("/staff-options", ctrl.listStaffOptions);
+router.post("/", ctrl.createItem);
 router.get("/", ctrl.listItems);
 router.get("/:id/card", ctrl.getStockCard);
 router.patch("/:id/threshold", requireRole(["admin"]), ctrl.updateThreshold);

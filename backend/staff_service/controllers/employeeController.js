@@ -1148,6 +1148,30 @@ exports.listForDropdown = async (req, res) => {
   }
 };
 
+exports.listForDropdownInternal = async (req, res) => {
+  try {
+    const clinicId = getInternalClinicId(req);
+    if (hasClinicIdField() && !clinicId) {
+      return res.status(400).json({ ok: false, message: "clinicId required" });
+    }
+
+    const q = { active: true };
+    if (hasClinicIdField()) q.clinicId = clinicId;
+
+    const list = await Employee.find(q)
+      .select("_id clinicId userId linkedUserId fullName employeeCode position active")
+      .sort({ fullName: 1 })
+      .lean();
+
+    return res.json({
+      ok: true,
+      items: list.map(withStaffId).filter((item) => item.staffId),
+    });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+};
+
 // --------------------------------------------------
 // GET BY USER ID
 // GET /api/employees/by-user/:userId

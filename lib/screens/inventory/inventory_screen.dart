@@ -68,6 +68,8 @@ class _InventoryScreenState extends State<InventoryScreen> {
     }
   }
 
+  bool get _inventoryOperatorMode => _adminMode || _consumeMode;
+
   int get _lowStockCount =>
       _items.where((item) => item.lowStockActive && item.active).length;
 
@@ -624,7 +626,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
                       color: Theme.of(context).colorScheme.onSurfaceVariant,
                     ),
                   ),
-                  if (_adminMode &&
+                  if (_inventoryOperatorMode &&
                       _filter == _InventoryListFilter.active &&
                       _searchController.text.trim().isEmpty) ...[
                     const SizedBox(height: 16),
@@ -656,7 +658,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
               onPressed: _openIntegration,
               icon: const Icon(Icons.sync_alt_outlined),
             ),
-          if (_adminMode)
+          if (_inventoryOperatorMode)
             IconButton(
               tooltip: 'เพิ่มสินค้า',
               onPressed: _openCreateItem,
@@ -1330,10 +1332,12 @@ class _ConsumeInventoryDialog extends StatefulWidget {
 
 class _ConsumeInventoryDialogState extends State<_ConsumeInventoryDialog> {
   late final TextEditingController _quantity;
-  late final TextEditingController _reason;
-  late final TextEditingController _referenceNo;
-  late final TextEditingController _lotNo;
-  late final TextEditingController _note;
+  final TextEditingController _staffSearch = TextEditingController();
+
+  List<InventoryStaffOption> _staffOptions = const [];
+  InventoryStaffOption? _selectedStaff;
+  DateTime _occurredAt = DateTime.now();
+  bool _loadingStaff = true;
 
   bool _submitting = false;
   String _error = '';
@@ -1346,19 +1350,40 @@ class _ConsumeInventoryDialogState extends State<_ConsumeInventoryDialog> {
     super.initState();
 
     _quantity = TextEditingController();
-    _reason = TextEditingController();
-    _referenceNo = TextEditingController();
-    _lotNo = TextEditingController();
-    _note = TextEditingController();
+    _loadStaffOptions();
+  }
+
+  Future<void> _loadStaffOptions() async {
+    try {
+      final options = await InventoryApi.listStaffOptions();
+      if (!mounted) return;
+      InventoryStaffOption? current;
+      for (final option in options) {
+        if (option.isCurrentActor) {
+          current = option;
+          break;
+        }
+      }
+      setState(() {
+        _staffOptions = options;
+        _selectedStaff = current;
+        _loadingStaff = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _loadingStaff = false;
+        _error = error is InventoryApiException
+            ? error.message
+            : 'โหลดรายชื่อพนักงานไม่สำเร็จ';
+      });
+    }
   }
 
   @override
   void dispose() {
     _quantity.dispose();
-    _reason.dispose();
-    _referenceNo.dispose();
-    _lotNo.dispose();
-    _note.dispose();
+    _staffSearch.dispose();
 
     super.dispose();
   }
@@ -1396,11 +1421,115 @@ class _ConsumeInventoryDialogState extends State<_ConsumeInventoryDialog> {
     return <String>[
       widget.item.id,
       quantity.toString(),
-      _reason.text.trim(),
-      _referenceNo.text.trim(),
-      _lotNo.text.trim(),
-      _note.text.trim(),
+      _selectedStaff?.staffId ?? '',
+      _occurredAt.toUtc().toIso8601String(),
     ].join('|');
+  }
+
+  String _dateLabel(DateTime value) {
+    String two(int number) => number.toString().padLeft(2, '0');
+    return '${two(value.day)}/${two(value.month)}/${value.year}';
+  }
+
+  Future<void> _pickDate() async {
+    final now = DateTime.now();
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _occurredAt,
+      firstDate: DateTime(now.year - 5),
+      lastDate: DateTime(now.year, now.month, now.day),
+    );
+    if (picked == null || !mounted) return;
+    setState(() {
+      final isToday =
+          picked.year == now.year &&
+          picked.month == now.month &&
+          picked.day == now.day;
+      _occurredAt = isToday
+          ? now
+          : DateTime(picked.year, picked.month, picked.day, 12);
+      _idempotencyKey = null;
+      _idempotencyFingerprint = null;
+    });
+  }
+
+  Future<void> _selectStaff() async {
+    final selected = await showDialog<InventoryStaffOption>(
+      context: context,
+      builder: (dialogContext) {
+        var query = '';
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            final visible = _staffOptions
+                .where((option) {
+                  final needle = query.trim().toLowerCase();
+                  if (needle.isEmpty) return true;
+                  return '${option.fullName} ${option.employeeCode} ${option.position}'
+                      .toLowerCase()
+                      .contains(needle);
+                })
+                .toList(growable: false);
+            return AlertDialog(
+              title: const Text('เลือกผู้เบิก'),
+              content: SizedBox(
+                width: 420,
+                height: 480,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextField(
+                      controller: _staffSearch,
+                      autofocus: true,
+                      onChanged: (value) => setDialogState(() => query = value),
+                      decoration: const InputDecoration(
+                        labelText: 'ค้นหาชื่อพนักงาน',
+                        prefixIcon: Icon(Icons.search),
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Flexible(
+                      child: visible.isEmpty
+                          ? const Padding(
+                              padding: EdgeInsets.all(20),
+                              child: Text('ไม่พบพนักงาน'),
+                            )
+                          : ListView.builder(
+                              shrinkWrap: true,
+                              itemCount: visible.length,
+                              itemBuilder: (_, index) {
+                                final option = visible[index];
+                                final detail =
+                                    [option.employeeCode, option.position]
+                                        .where((value) => value.isNotEmpty)
+                                        .join(' • ');
+                                return ListTile(
+                                  title: Text(option.fullName),
+                                  subtitle: detail.isEmpty
+                                      ? null
+                                      : Text(detail),
+                                  onTap: () =>
+                                      Navigator.of(dialogContext).pop(option),
+                                );
+                              },
+                            ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+    _staffSearch.clear();
+    if (selected == null || !mounted) return;
+    setState(() {
+      _selectedStaff = selected;
+      _idempotencyKey = null;
+      _idempotencyFingerprint = null;
+      _error = '';
+    });
   }
 
   String _keyForFingerprint(String fingerprint) {
@@ -1455,11 +1584,10 @@ class _ConsumeInventoryDialogState extends State<_ConsumeInventoryDialog> {
       return;
     }
 
-    final reason = _reason.text.trim();
-
-    if (reason.isEmpty) {
+    final selectedStaff = _selectedStaff;
+    if (selectedStaff == null) {
       setState(() {
-        _error = 'กรุณาระบุเหตุผลในการเบิกใช้';
+        _error = 'กรุณาเลือกผู้เบิก';
       });
 
       return;
@@ -1479,10 +1607,8 @@ class _ConsumeInventoryDialogState extends State<_ConsumeInventoryDialog> {
         stockItemId: widget.item.id,
         quantity: quantity,
         idempotencyKey: key,
-        reason: reason,
-        referenceNo: _referenceNo.text,
-        lotNo: _lotNo.text,
-        note: _note.text,
+        requestedByStaffId: selectedStaff.staffId,
+        occurredAt: _occurredAt,
       );
 
       if (!mounted) return;
@@ -1531,45 +1657,38 @@ class _ConsumeInventoryDialogState extends State<_ConsumeInventoryDialog> {
               ),
             ),
             const SizedBox(height: 12),
-            TextField(
-              controller: _reason,
-              enabled: !_submitting,
-              onChanged: _payloadChanged,
-              decoration: const InputDecoration(
-                labelText: 'เหตุผล *',
-                hintText: 'เช่น ใช้รักษาผู้ป่วย',
-                border: OutlineInputBorder(),
-              ),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.calendar_month_outlined),
+              title: const Text('วันที่เบิก *'),
+              subtitle: Text(_dateLabel(_occurredAt)),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: _submitting ? null : _pickDate,
             ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _referenceNo,
-              enabled: !_submitting,
-              onChanged: _payloadChanged,
-              decoration: const InputDecoration(
-                labelText: 'เลขที่อ้างอิง',
-                border: OutlineInputBorder(),
+            const Divider(),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.person_search_outlined),
+              title: const Text('ผู้เบิก *'),
+              subtitle: Text(
+                _loadingStaff
+                    ? 'กำลังโหลดรายชื่อ...'
+                    : (_selectedStaff?.fullName ?? 'แตะเพื่อเลือกพนักงาน'),
               ),
+              trailing: _loadingStaff
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.chevron_right),
+              onTap: _submitting || _loadingStaff ? null : _selectStaff,
             ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _lotNo,
-              enabled: !_submitting,
-              onChanged: _payloadChanged,
-              decoration: const InputDecoration(
-                labelText: 'Lot No.',
-                border: OutlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _note,
-              enabled: !_submitting,
-              maxLines: 2,
-              onChanged: _payloadChanged,
-              decoration: const InputDecoration(
-                labelText: 'หมายเหตุ',
-                border: OutlineInputBorder(),
+            const SizedBox(height: 8),
+            const Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'สำหรับวัสดุใช้ภายในคลินิกเท่านั้น การจ่ายให้ผู้ป่วยจะหักผ่านระบบเชื่อมต่อ',
               ),
             ),
             if (_error.isNotEmpty) ...[
@@ -1783,6 +1902,7 @@ class _InventoryStockCardScreenState extends State<_InventoryStockCardScreen> {
     final type = _text(movement['type']);
     final referenceNo = _text(movement['referenceNo']);
     final performedByName = _text(movement['performedByName']);
+    final requestedByName = _text(movement['requestedByName']);
     final reason = _text(movement['reason']);
     final note = _text(movement['note']);
     final timestamp = _fmtDate(movement['occurredAt'] ?? movement['createdAt']);
@@ -1818,6 +1938,7 @@ class _InventoryStockCardScreenState extends State<_InventoryStockCardScreen> {
             ),
             if (referenceNo.isNotEmpty) Text('อ้างอิง: $referenceNo'),
             if (performedByName.isNotEmpty) Text('ผู้บันทึก: $performedByName'),
+            if (requestedByName.isNotEmpty) Text('ผู้เบิก: $requestedByName'),
             if (reason.isNotEmpty) Text('เหตุผล: $reason'),
             if (note.isNotEmpty) Text('หมายเหตุ: $note'),
             if (timestamp.isNotEmpty)

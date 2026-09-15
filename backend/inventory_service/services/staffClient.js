@@ -69,6 +69,35 @@ async function fetchEmployee(url, headers) {
   return pickEmployee(payload);
 }
 
+async function fetchEmployees(url, headers) {
+  let response;
+  try {
+    response = await fetch(url, {
+      method: "GET",
+      headers,
+      signal: AbortSignal.timeout(8000),
+    });
+  } catch (cause) {
+    const err = new Error("staff_service unavailable");
+    err.status = 503;
+    err.code = "STAFF_SERVICE_UNAVAILABLE";
+    err.cause = cause;
+    throw err;
+  }
+
+  const payload = await parseJson(response);
+  if (!response.ok) {
+    const err = new Error(
+      s(payload?.message || payload?.error) ||
+        `staff_service returned ${response.status}`
+    );
+    err.status = response.status >= 500 ? 503 : response.status;
+    err.code = "STAFF_LOOKUP_FAILED";
+    throw err;
+  }
+  return Array.isArray(payload?.items) ? payload.items : [];
+}
+
 async function getEmployeeByUserId({
   userId,
   clinicId,
@@ -116,4 +145,50 @@ async function getEmployeeByUserId({
   });
 }
 
-module.exports = { getEmployeeByUserId };
+async function getEmployeeByStaffId({ staffId, clinicId }) {
+  const base = baseUrl();
+  const key = internalKey();
+  if (!base) {
+    const err = new Error("STAFF_SERVICE_URL is not configured");
+    err.status = 503;
+    err.code = "STAFF_SERVICE_NOT_CONFIGURED";
+    throw err;
+  }
+  if (!key) {
+    const err = new Error("Staff internal key is not configured");
+    err.status = 503;
+    err.code = "STAFF_AUTH_CONTEXT_REQUIRED";
+    throw err;
+  }
+  const url =
+    `${base}${employeeBasePath()}/internal/by-staff/${encodeURIComponent(staffId)}` +
+    `?clinicId=${encodeURIComponent(clinicId)}`;
+  return fetchEmployee(url, {
+    "x-internal-key": key,
+    accept: "application/json",
+  });
+}
+
+async function listActiveEmployees({ clinicId }) {
+  const base = baseUrl();
+  const key = internalKey();
+  if (!base || !key) {
+    const err = new Error("Staff service internal access is not configured");
+    err.status = 503;
+    err.code = "STAFF_AUTH_CONTEXT_REQUIRED";
+    throw err;
+  }
+  const url =
+    `${base}${employeeBasePath()}/internal/dropdown` +
+    `?clinicId=${encodeURIComponent(clinicId)}`;
+  return fetchEmployees(url, {
+    "x-internal-key": key,
+    accept: "application/json",
+  });
+}
+
+module.exports = {
+  getEmployeeByUserId,
+  getEmployeeByStaffId,
+  listActiveEmployees,
+};

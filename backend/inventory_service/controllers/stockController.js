@@ -12,6 +12,25 @@ const {
 } = require("../utils/quantity");
 
 const { s } = require("../utils/strings");
+const { getEmployeeByStaffId } = require("../services/staffClient");
+
+function requiredOccurredAt(value) {
+  const raw = s(value);
+  const parsed = new Date(raw);
+  if (!raw || Number.isNaN(parsed.getTime())) {
+    const err = new Error("occurredAt is required and must be a valid date");
+    err.status = 400;
+    err.code = "OCCURRED_AT_REQUIRED";
+    throw err;
+  }
+  if (parsed.getTime() > Date.now() + 5 * 60 * 1000) {
+    const err = new Error("occurredAt must not be in the future");
+    err.status = 400;
+    err.code = "OCCURRED_AT_IN_FUTURE";
+    throw err;
+  }
+  return parsed;
+}
 
 function requestId(req) {
   return s(
@@ -135,19 +154,26 @@ exports.consume = async (req, res, next) => {
         "quantity"
       );
 
-    const reason =
-      s(req.body?.reason);
-
-    if (!reason) {
-      const err =
-        new Error(
-          "reason is required for manual consumption"
-        );
-
+    const requestedByStaffId = s(req.body?.requestedByStaffId);
+    if (!requestedByStaffId) {
+      const err = new Error("requestedByStaffId is required");
       err.status = 400;
-      err.code = "REASON_REQUIRED";
+      err.code = "REQUESTED_BY_STAFF_REQUIRED";
       throw err;
     }
+
+    const requestedByEmployee = await getEmployeeByStaffId({
+      staffId: requestedByStaffId,
+      clinicId: actor.clinicId,
+    });
+    if (!requestedByEmployee || requestedByEmployee.active === false) {
+      const err = new Error("Active staff member not found in this clinic");
+      err.status = 400;
+      err.code = "REQUESTED_BY_STAFF_INVALID";
+      throw err;
+    }
+
+    const occurredAt = requiredOccurredAt(req.body?.occurredAt);
 
     const result =
       await applyMovement({
@@ -180,12 +206,16 @@ exports.consume = async (req, res, next) => {
           actor.displayName,
         actorRole: actor.role,
 
-        reason,
-        note: s(req.body?.note),
+        requestedBy:
+          s(requestedByEmployee.userId || requestedByEmployee.linkedUserId) ||
+          requestedByStaffId,
+        requestedByStaffId,
+        requestedByName: s(requestedByEmployee.fullName),
 
-        occurredAt:
-          req.body?.occurredAt ||
-          new Date(),
+        reason: "manual_internal_use",
+        note: "",
+
+        occurredAt,
 
         metadata: {},
       });

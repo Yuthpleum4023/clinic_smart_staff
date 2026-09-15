@@ -22,6 +22,13 @@ const ctrl = require("../controllers/employeeController");
 
 // ✅ internal get by user
 router.get(
+  "/internal/dropdown",
+  requireInternalKey,
+  ctrl.listForDropdownInternal
+);
+
+// ✅ internal get by user
+router.get(
   "/internal/by-user/:userId",
   requireInternalKey,
   ctrl.getEmployeeByUserIdInternal

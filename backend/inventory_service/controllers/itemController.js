@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 const StockItem = require("../models/StockItem");
 const StockMovement = require("../models/StockMovement");
 const { allocateInventoryItemCode } = require("../services/itemCodeService");
+const { listActiveEmployees } = require("../services/staffClient");
 
 const {
   resolveInventoryActor,
@@ -26,18 +27,40 @@ function serializeItem(item) {
     : item;
 }
 
+exports.listStaffOptions = async (req, res, next) => {
+  try {
+    const actor = await resolveInventoryActor(req);
+    const employees = await listActiveEmployees({ clinicId: actor.clinicId });
+
+    return res.json({
+      ok: true,
+      items: employees.map((employee) => ({
+        staffId: s(employee.staffId || employee._id || employee.id),
+        fullName: s(employee.fullName),
+        employeeCode: s(employee.employeeCode),
+        position: s(employee.position),
+        isCurrentActor:
+          !!actor.staffId &&
+          s(employee.staffId || employee._id || employee.id) === actor.staffId,
+      })),
+    });
+  } catch (err) {
+    return next(err);
+  }
+};
+
 exports.createItem =
   async (req, res, next) => {
     try {
       const actor =
         await resolveInventoryActor(req);
 
-      if (!actor.hasAdmin) {
+      if (!actor.hasAdmin && !actor.hasEmployee) {
         const err =
-          new Error("Admin only");
+          new Error("Inventory operator required");
 
         err.status = 403;
-        err.code = "ADMIN_ONLY";
+        err.code = "INVENTORY_OPERATOR_REQUIRED";
         throw err;
       }
 

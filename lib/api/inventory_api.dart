@@ -24,6 +24,32 @@ class InventoryApiException implements Exception {
   String toString() => message;
 }
 
+class InventoryStaffOption {
+  final String staffId;
+  final String fullName;
+  final String employeeCode;
+  final String position;
+  final bool isCurrentActor;
+
+  const InventoryStaffOption({
+    required this.staffId,
+    required this.fullName,
+    required this.employeeCode,
+    required this.position,
+    required this.isCurrentActor,
+  });
+
+  factory InventoryStaffOption.fromJson(Map<String, dynamic> json) {
+    return InventoryStaffOption(
+      staffId: (json['staffId'] ?? '').toString().trim(),
+      fullName: (json['fullName'] ?? '').toString().trim(),
+      employeeCode: (json['employeeCode'] ?? '').toString().trim(),
+      position: (json['position'] ?? '').toString().trim(),
+      isCurrentActor: json['isCurrentActor'] == true,
+    );
+  }
+}
+
 class InventoryApi {
   static const Duration _timeout = Duration(seconds: 20);
 
@@ -244,14 +270,12 @@ class InventoryApi {
     required String stockItemId,
     required double quantity,
     required String idempotencyKey,
-    required String reason,
-    String referenceNo = '',
-    String lotNo = '',
-    String note = '',
+    required String requestedByStaffId,
+    required DateTime occurredAt,
   }) async {
     final itemId = stockItemId.trim();
     final key = idempotencyKey.trim();
-    final normalizedReason = reason.trim();
+    final normalizedStaffId = requestedByStaffId.trim();
 
     if (itemId.isEmpty) {
       throw const InventoryApiException(
@@ -277,34 +301,24 @@ class InventoryApi {
       );
     }
 
-    if (normalizedReason.isEmpty) {
+    if (normalizedStaffId.isEmpty) {
       throw const InventoryApiException(
         statusCode: 400,
-        code: 'REASON_REQUIRED',
-        message: 'กรุณาระบุเหตุผลในการเบิกใช้',
+        code: 'REQUESTED_BY_STAFF_REQUIRED',
+        message: 'กรุณาเลือกผู้เบิก',
       );
     }
 
     final body = <String, dynamic>{
       _stockItemBodyKey: itemId,
       _stockQuantityBodyKey: quantity,
-      'reason': normalizedReason,
+      'requestedByStaffId': normalizedStaffId,
+      'occurredAt': occurredAt.toUtc().toIso8601String(),
     };
 
     if (_idempotencyInBody) {
       body['idempotencyKey'] = key;
     }
-
-    void addText(String name, String value) {
-      final normalized = value.trim();
-      if (normalized.isNotEmpty) {
-        body[name] = normalized;
-      }
-    }
-
-    addText('referenceNo', referenceNo);
-    addText('lotNo', lotNo);
-    addText('note', note);
 
     final headers = await _headers();
 
@@ -322,6 +336,33 @@ class InventoryApi {
 
     _ensureSuccess(response);
     return _decodeObject(response.body);
+  }
+
+  static Future<List<InventoryStaffOption>> listStaffOptions() async {
+    final response = await http
+        .get(
+          _uri('/api/inventory/items/staff-options'),
+          headers: await _headers(),
+        )
+        .timeout(_timeout);
+    _ensureSuccess(response);
+    final body = _decodeObject(response.body);
+    final raw = body['items'];
+    if (raw is! List) {
+      throw const InventoryApiException(
+        statusCode: 500,
+        code: 'INVALID_STAFF_OPTIONS_RESPONSE',
+        message: 'รูปแบบรายชื่อพนักงานไม่ถูกต้อง',
+      );
+    }
+    return raw
+        .whereType<Map>()
+        .map(
+          (row) =>
+              InventoryStaffOption.fromJson(Map<String, dynamic>.from(row)),
+        )
+        .where((row) => row.staffId.isNotEmpty && row.fullName.isNotEmpty)
+        .toList(growable: false);
   }
 
   // INVENTORY_ADMIN_ITEM_UI_V2
