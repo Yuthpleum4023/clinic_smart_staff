@@ -1833,16 +1833,24 @@ class _InventoryStockCardScreenState extends State<_InventoryStockCardScreen> {
         '${two(local.hour)}:${two(local.minute)}';
   }
 
-  String _movementLabel(String type) {
+  String _movementLabel(String type, String referenceType) {
+    if (type == 'external_stock_in' && referenceType == 'A-add-pat') {
+      return 'คืนยอดการจ่าย';
+    }
+
     switch (type) {
       case 'stock_in':
         return 'รับเข้า';
       case 'manual_consumption':
         return 'เบิกออก';
+      case 'external_consumption':
+        return 'จ่ายจากโปรแกรมคลินิก';
+      case 'external_stock_in':
+        return 'รับเข้าจากระบบเชื่อมต่อ';
       case 'adjustment':
         return 'ปรับยอด';
       case 'reversal':
-        return 'กลับรายการ';
+        return 'คืนยอดการจ่าย';
       default:
         return type.isEmpty ? 'รายการเคลื่อนไหว' : type;
     }
@@ -1852,6 +1860,13 @@ class _InventoryStockCardScreenState extends State<_InventoryStockCardScreen> {
     switch (reason) {
       case 'manual_internal_use':
         return 'เบิกใช้ภายในคลินิก';
+      case 'external consumption':
+      case 'external inventory out':
+        return 'จ่ายให้ผู้ป่วยจากโปรแกรมคลินิก';
+      case 'external dispensing reversal':
+        return 'คืนยอดจากการแก้ไขรายการจ่าย';
+      case 'external inventory in':
+        return 'รับเข้าจากระบบเชื่อมต่อ';
       default:
         return reason;
     }
@@ -1910,6 +1925,7 @@ class _InventoryStockCardScreenState extends State<_InventoryStockCardScreen> {
   Widget _movementCard(Map<String, dynamic> movement) {
     final type = _text(movement['type']);
     final referenceNo = _text(movement['referenceNo']);
+    final referenceType = _text(movement['referenceType']);
     final performedByName = _text(movement['performedByName']);
     final requestedByName = _text(movement['requestedByName']);
     final reason = _reasonLabel(_text(movement['reason']));
@@ -1927,7 +1943,7 @@ class _InventoryStockCardScreenState extends State<_InventoryStockCardScreen> {
               children: [
                 Expanded(
                   child: Text(
-                    _movementLabel(type),
+                    _movementLabel(type, referenceType),
                     style: const TextStyle(fontWeight: FontWeight.w800),
                   ),
                 ),

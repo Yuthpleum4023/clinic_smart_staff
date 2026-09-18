@@ -5,7 +5,8 @@ const CONTRACT_VERSION = 1;
 const SUPPORTED_EVENT_TYPES = new Set([
   "dispensed",
   "inventory_in",
-  "inventory_out"
+  "inventory_out",
+  "reversal"
 ]);
 
 function s(v) {

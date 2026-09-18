@@ -107,6 +107,59 @@ function requiredProfile(
     eventTypeLiteral:
       s(profile.eventTypeLiteral)
         .toLowerCase(),
+
+    balanceDeltaSemantics:
+      profile.balanceDeltaSemantics &&
+      typeof profile.balanceDeltaSemantics === "object" &&
+      !Array.isArray(profile.balanceDeltaSemantics)
+        ? Object.freeze(
+            Object.fromEntries(
+              Object.entries(
+                profile.balanceDeltaSemantics
+              ).map(
+                ([referenceType, rule]) => {
+                  const normalizedReferenceType =
+                    s(referenceType);
+
+                  const direction =
+                    s(rule?.direction)
+                      .toLowerCase();
+
+                  const eventType =
+                    s(rule?.eventType)
+                      .toLowerCase();
+
+                  if (
+                    !normalizedReferenceType ||
+                    ![
+                      "positive",
+                      "negative"
+                    ].includes(direction) ||
+                    ![
+                      "dispensed",
+                      "inventory_in",
+                      "inventory_out",
+                      "reversal"
+                    ].includes(eventType)
+                  ) {
+                    throw new Error(
+                      "FD_BALANCE_DELTA_SEMANTICS_INVALID"
+                    );
+                  }
+
+                  return [
+                    normalizedReferenceType,
+                    Object.freeze({
+                      direction,
+                      eventType
+                    })
+                  ];
+                }
+              )
+            )
+          )
+        : null,
+
     fields: {
       eventId:
         requiredFieldName(
@@ -318,10 +371,52 @@ function createFdAdapter(
           }
 
           quantity = movementMagnitude;
-          eventType =
-            delta > 0
-              ? "inventory_in"
-              : "inventory_out";
+
+          if (
+            profile.balanceDeltaSemantics
+          ) {
+            const referenceType =
+              f.referenceType
+                ? s(row[f.referenceType])
+                : "";
+
+            const rule =
+              profile
+                .balanceDeltaSemantics[
+                  referenceType
+                ];
+
+            /*
+             * The row is still consumed by the forward-only
+             * cursor, but unverified movement semantics do not
+             * cross into Clinic Smart Staff.
+             */
+            if (!rule) {
+              return null;
+            }
+
+            const actualDirection =
+              delta > 0
+                ? "positive"
+                : "negative";
+
+            if (
+              rule.direction !==
+              actualDirection
+            ) {
+              throw new Error(
+                "FD_BALANCE_DELTA_DIRECTION_CONTRACT_VIOLATION"
+              );
+            }
+
+            eventType =
+              rule.eventType;
+          } else {
+            eventType =
+              delta > 0
+                ? "inventory_in"
+                : "inventory_out";
+          }
         } else {
           quantity =
             requiredNumber(

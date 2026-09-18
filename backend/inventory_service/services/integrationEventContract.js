@@ -17,6 +17,7 @@ const SUPPORTED_EVENT_TYPES = new Set([
   "dispensed",
   "inventory_in",
   "inventory_out",
+  "reversal",
 ]);
 
 function bad(message, code) {

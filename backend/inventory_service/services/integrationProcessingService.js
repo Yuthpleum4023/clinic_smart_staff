@@ -58,6 +58,15 @@ function resolveIntegrationMovement(
   normalizedQuantity
 ) {
   switch (s(eventType)) {
+    case "reversal":
+      return {
+        type: "reversal",
+        quantityDelta:
+          normalizedQuantity,
+        reason:
+          "external dispensing reversal",
+      };
+
     case "inventory_in":
       return {
         type: "external_stock_in",

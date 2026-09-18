@@ -59,7 +59,7 @@ const {
     fd_doc_type: "W-Sale"
   });
   assert.equal(e.quantity, 1);
-  assert.equal(e.eventType, "inventory_out");
+  assert.equal(e.eventType, "dispensed");
 
   console.log("FD_XFER_RELATIONAL_SOURCE_PROFILE_TESTS_PASSED=TRUE");
   console.log("FD_XFER_JOIN_SHAPE_VERIFIED=TRUE");

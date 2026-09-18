@@ -92,6 +92,25 @@ function buildFdObservedXferSourceProfile() {
     movementDerivation: "balance_delta",
     sourceName: "fd_xfer",
     unitLiteral: "fd_balance_unit",
+
+    /*
+     * Exact FD document types are structured source enums.
+     * They are not inferred from reference-number prefixes.
+     *
+     * Only verified patient-dispensing movements may cross
+     * the connector authority boundary.
+     */
+    balanceDeltaSemantics: Object.freeze({
+      "W-Sale": Object.freeze({
+        direction: "negative",
+        eventType: "dispensed"
+      }),
+      "A-add-pat": Object.freeze({
+        direction: "positive",
+        eventType: "reversal"
+      })
+    }),
+
     fields: Object.freeze({
       eventId: "id",
       lineId: "",
